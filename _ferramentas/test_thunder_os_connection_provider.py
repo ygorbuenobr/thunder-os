@@ -123,6 +123,23 @@ class ConnectionProviderTests(unittest.TestCase):
         with self.assertRaisesRegex(ConnectionProviderError, "connection_row_invalid"):
             self.provider(fake).fetch_page(0)
 
+    def test_accented_public_identifier_is_preserved_and_matched(self):
+        accented = row(1)
+        accented["vanityName"] = "joão-silva"
+        accented["profileUrl"] = "https://www.linkedin.com/in/jo%C3%A3o-silva/"
+        fake = FakeTransport([(200, page(0, [accented], end=True))])
+        result = self.provider(fake).fetch_page(0)
+        self.assertEqual("https://www.linkedin.com/in/joão-silva",
+                         result["connections"][0]["profileUrl"])
+
+    def test_unicode_identifier_cannot_escape_profile_path(self):
+        invalid = row(1)
+        invalid["vanityName"] = "joão/silva"
+        invalid["profileUrl"] = "https://www.linkedin.com/in/jo%C3%A3o%2Fsilva/"
+        fake = FakeTransport([(200, page(0, [invalid], end=True))])
+        with self.assertRaisesRegex(ConnectionProviderError, "connection_row_invalid"):
+            self.provider(fake).fetch_page(0)
+
     def test_429_does_not_retry_or_echo_provider_body(self):
         fake = FakeTransport([(429, {"error": "secret-value"})])
         with self.assertRaises(ConnectionProviderError) as caught:

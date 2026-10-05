@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 import json
 import re
+import unicodedata
 from typing import Callable, Mapping
 
 from .connection_intake import ConnectionIntakeError, PROVIDER_CALENDAR, _connected_at, profile_key
@@ -137,14 +138,14 @@ class ConnectionProvider:
         for row in rows:
             _require(type(row) is dict, "connection_row_invalid")
             vanity = row.get("vanityName")
-            _require(isinstance(vanity, str)
-                     and re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", vanity) is not None,
+            _require(isinstance(vanity, str) and 1 <= len(vanity) <= 100
+                     and all(char.isalnum() or char in "._-" for char in vanity),
                      "connection_row_invalid")
             try:
                 key = profile_key(row.get("profileUrl"))
             except ConnectionIntakeError:
                 raise ConnectionProviderError("connection_row_invalid") from None
-            _require(key == "https://www.linkedin.com/in/" + vanity.casefold()
+            _require(key == "https://www.linkedin.com/in/" + unicodedata.normalize("NFC", vanity).casefold()
                      and key not in seen, "connection_row_invalid")
             seen.add(key)
             clean = {"vanityName": vanity, "profileUrl": key,

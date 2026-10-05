@@ -137,6 +137,8 @@ class ConnectionIntakeTests(unittest.TestCase):
         self.assertEqual([0], calls)
 
     def test_conflicting_identity_and_untrusted_urls_fail_closed(self):
+        self.assertEqual("https://www.linkedin.com/in/joão-silva",
+                         profile_key("https://linkedin.com/in/jo%C3%A3o-silva/"))
         with self.assertRaisesRegex(ConnectionIntakeError, "connection_account_ambiguous"):
             self.classify([], account_by_profile={
                 "https://linkedin.com/in/same": "a.example",

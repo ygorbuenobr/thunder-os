@@ -11,6 +11,7 @@ from typing import Any, Callable, Mapping
 from urllib.parse import unquote, urlsplit
 from zoneinfo import ZoneInfo
 import re
+import unicodedata
 
 
 class ConnectionIntakeError(ValueError):
@@ -36,10 +37,13 @@ def profile_key(value: str) -> str:
     if (parsed.scheme != "https" or parsed.hostname not in {"linkedin.com", "www.linkedin.com"}
             or not valid_authority):
         raise ConnectionIntakeError("connection_profile_invalid")
-    match = re.fullmatch(r"/in/([A-Za-z0-9_.-]+)/?", unquote(parsed.path))
+    match = re.fullmatch(r"/in/([^/]+)/?", unquote(parsed.path))
     if not match:
         raise ConnectionIntakeError("connection_profile_invalid")
-    return "https://www.linkedin.com/in/" + match.group(1).casefold()
+    slug = unicodedata.normalize("NFC", match.group(1))
+    if not (1 <= len(slug) <= 100 and all(char.isalnum() or char in "._-" for char in slug)):
+        raise ConnectionIntakeError("connection_profile_invalid")
+    return "https://www.linkedin.com/in/" + slug.casefold()
 
 
 def _connected_at(value: Any) -> datetime:
