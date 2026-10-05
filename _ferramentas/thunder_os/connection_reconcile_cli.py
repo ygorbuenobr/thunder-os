@@ -21,6 +21,7 @@ from .connection_reconcile_runtime import _card_public_slug
 from .connection_runtime import load_config, _protected_file
 from .connectsafely_social_client import ConnectSafelySocialClient, post_identity
 from .connectsafely_social_transport import ConnectSafelySocialHTTPS
+from .connectsafely_client import ConnectSafelyClient
 
 
 def bindings_for_batch(cards, account_id, account_public_id, owner):
@@ -48,6 +49,13 @@ def bindings_for_batch(cards, account_id, account_public_id, owner):
                 "owner_profile_urn": owner, "post_urn": post,
             }
     return bindings
+
+
+def owner_profile_urn(value):
+    owner_id = ConnectSafelyClient._profile_identity(value)
+    if owner_id is None:
+        raise ReconciliationBlocked("owner_identity_unconfigured")
+    return "urn:li:fsd_profile:" + owner_id
 
 
 def _write_receipt(path, payload):
@@ -146,10 +154,7 @@ def main(argv=None):
             raise ReconciliationBlocked("receipt_target_required")
         if not args.recover_receipt and (args.receipt.exists() or args.receipt.is_symlink()):
             raise ReconciliationBlocked("receipt_target_invalid")
-        owner = config.get("self_profile_id")
-        if not isinstance(owner, str) or not owner.startswith("ACo"):
-            raise ReconciliationBlocked("owner_identity_unconfigured")
-        owner = "urn:li:fsd_profile:" + owner
+        owner = owner_profile_urn(config.get("self_profile_id"))
         credential_path = Path(config["api_credential_file"])
 
         def credential():

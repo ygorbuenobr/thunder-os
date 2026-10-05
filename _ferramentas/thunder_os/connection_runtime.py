@@ -18,6 +18,7 @@ from .connection_intake import ConnectionIntakeError
 from .connection_ledger import LIVE_CHECKPOINT, record_live_poll, research_request_kind
 from .connection_provider import ConnectionProvider, ConnectionProviderError
 from .connectsafely_transport import ConnectSafelyHTTPS
+from .connectsafely_client import ConnectSafelyClient
 from .db import Repository
 from .connection_work import WORK_LINK_KIND, enqueue_connection_research
 from .service import ThunderService
@@ -44,7 +45,13 @@ def load_config(path: Path) -> dict[str, Any]:
     except (OSError, UnicodeError, ValueError):
         raise ConnectionRuntimeError("connection_config_invalid") from None
     required = {"version", "repository", "account_id", "account_public_id", "api_credential_file"}
-    if not isinstance(data, dict) or not required.issubset(data) or data["version"] != 1:
+    if (not isinstance(data, dict) or not required.issubset(data)
+            or type(data.get("version")) is not int or data["version"] not in (1, 2)):
+        raise ConnectionRuntimeError("connection_config_invalid")
+    if data["version"] == 2 and (set(data) != required | {"self_profile_id", "start_ms"}
+                                 or ConnectSafelyClient._profile_identity(data.get("self_profile_id")) is None
+                                 or type(data.get("start_ms")) is not int
+                                 or not 0 < data["start_ms"] < 10**16):
         raise ConnectionRuntimeError("connection_config_invalid")
     for key in required - {"version"}:
         if not isinstance(data[key], str) or not data[key]:

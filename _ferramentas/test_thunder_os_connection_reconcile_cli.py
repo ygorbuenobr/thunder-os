@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from thunder_os.connection_reconcile_cli import (
     _finish_receipt, _recover_receipt, _write_receipt, bindings_for_batch,
+    owner_profile_urn, ReconciliationBlocked,
 )
 from thunder_os.connection_reconcile_apply import (
     _manifest, create_legacy_manifest, reconcile_legacy_batch,
@@ -18,6 +19,13 @@ from thunder_os.connection_reconcile_apply import (
 
 
 class ReconcileCLIContractTests(unittest.TestCase):
+    def test_owner_profile_normalizes_bare_and_urn_ids(self):
+        expected = "urn:li:fsd_profile:ACoFIXTURE"
+        self.assertEqual(expected, owner_profile_urn("ACoFIXTURE"))
+        self.assertEqual(expected, owner_profile_urn(expected))
+        with self.assertRaises(ReconciliationBlocked):
+            owner_profile_urn("urn:li:company:ACoFIXTURE")
+
     def test_bindings_require_exact_provider_identifiers(self):
         rows = [
             ("dm-ok", "", {"tipo": "dm", "perfil_url": "https://www.linkedin.com/in/diego/"}),

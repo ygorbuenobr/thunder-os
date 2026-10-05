@@ -76,6 +76,28 @@ class ConnectionRuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(ConnectionRuntimeError, "protected_file_invalid"):
             load_config(config)
 
+    def test_active_monitor_v2_config_is_accepted_without_weakening_validation(self):
+        credential = self.root / "credential-v2"
+        credential.write_text("synthetic-token-not-used", encoding="utf-8")
+        credential.chmod(0o600)
+        config = self.root / "config-v2.json"
+        payload = {**self.config, "version": 2, "account_public_id": "fixture-owner",
+                   "api_credential_file": str(credential), "self_profile_id": "ACoFIXTURE",
+                   "start_ms": 1790000000000}
+        config.write_text(json.dumps(payload), encoding="utf-8")
+        config.chmod(0o600)
+        self.assertEqual(2, load_config(config)["version"])
+        config.write_text(json.dumps({**payload,
+                                      "self_profile_id": "urn:li:fsd_profile:ACoFIXTURE"}),
+                          encoding="utf-8")
+        self.assertEqual(2, load_config(config)["version"])
+        config.write_text(json.dumps({**payload, "start_ms": "1790000000000"}), encoding="utf-8")
+        with self.assertRaisesRegex(ConnectionRuntimeError, "connection_config_invalid"):
+            load_config(config)
+        config.write_text(json.dumps({**payload, "extra_secret": "no"}), encoding="utf-8")
+        with self.assertRaisesRegex(ConnectionRuntimeError, "connection_config_invalid"):
+            load_config(config)
+
     def test_research_queue_has_shared_daily_cap_and_replays_pending_next_day(self):
         fiche = self.brain / "contas" / "fixture" / "ficha.md"
         profiles = [f"https://www.linkedin.com/in/fixture-person-{index}" for index in range(7)]
