@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 from .connection_intake import ConnectionIntakeError, profile_key
 
 
-LINK = re.compile(r"https://(?:www\.)?linkedin\.com/in/[A-Za-z0-9_.%-]+(?:\?[^\s|)\]]+)?", re.I)
+LINK = re.compile(r"https://(?:www\.)?linkedin\.com/in/[^\s|)\]]+", re.I)
 FIT_SECTOR = re.compile(r"\b(?:ind[uú]stri\w*|distribui[cç][aã]o|distribuidor\w*)\b", re.I)
 DOMAIN = re.compile(r"[a-z0-9][a-z0-9.-]*\.[a-z]{2,}\Z")
 
@@ -71,7 +71,10 @@ def load_connection_catalog(brain: str | Path) -> tuple[dict[str, str], dict[str
             fit[domain] = provenance
         for heading in ("Decisores", "Decisor", "Decisora", "Decisor e solicitante"):
             for match in LINK.finditer(_section(content, heading)):
-                key = profile_key(match.group(0).rstrip(".,;"))
+                try:
+                    key = profile_key(match.group(0).rstrip(".,;>"))
+                except ConnectionIntakeError:
+                    continue
                 existing = mapping.get(key)
                 if existing is not None and existing != domain:
                     raise ConnectionIntakeError("connection_account_ambiguous")

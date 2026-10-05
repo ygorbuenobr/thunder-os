@@ -11,7 +11,8 @@ from unittest.mock import patch
 
 from thunder_os.connection_reconcile_cli import (
     _finish_receipt, _recover_receipt, _write_receipt, bindings_for_batch,
-    owner_profile_urn, audit_chunk, consolidate_audit_chunks, ReconciliationBlocked,
+    owner_profile_urn, audit_chunk, consolidate_audit_chunks, canonical_panel_lock,
+    ReconciliationBlocked,
 )
 from thunder_os.connection_reconcile_apply import (
     _manifest, create_legacy_manifest, reconcile_legacy_batch,
@@ -19,6 +20,17 @@ from thunder_os.connection_reconcile_apply import (
 
 
 class ReconcileCLIContractTests(unittest.TestCase):
+    def test_apply_lock_matches_panel_brain_authority(self):
+        with tempfile.TemporaryDirectory() as temp:
+            profile = Path(temp) / "profile"
+            (profile / "brain").mkdir(parents=True)
+            (profile / "painel-dados").mkdir()
+            panel = profile / "painel-dados" / "painel.db"
+            self.assertEqual(profile / "brain/_log/.painel.lock",
+                             canonical_panel_lock(panel))
+            with self.assertRaises(ReconciliationBlocked):
+                canonical_panel_lock(profile / "wrong" / "painel.db")
+
     def test_consolidation_requires_all_ids_and_dedupes_across_chunks(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

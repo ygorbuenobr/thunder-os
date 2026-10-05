@@ -44,6 +44,20 @@ class ConnectionCatalogTests(unittest.TestCase):
         with self.assertRaisesRegex(ConnectionIntakeError, "connection_account_ambiguous"):
             load_connection_catalog(self.brain)
 
+    def test_invalid_profile_does_not_block_valid_exact_links(self):
+        self.ficha("account", "account.example", "https://linkedin.com/in/person%2Fbad")
+        path = self.brain / "contas" / "account" / "ficha.md"
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write("\n## Decisor\nhttps://linkedin.com/in/person-good\n")
+        mapping, fit = load_connection_catalog(self.brain)
+        self.assertEqual({"https://www.linkedin.com/in/person-good": "account.example"}, mapping)
+        self.assertIn("account.example", fit)
+
+    def test_extra_profile_path_is_not_truncated_into_valid_identity(self):
+        self.ficha("account", "account.example", "https://linkedin.com/in/person-good/evil")
+        mapping, _ = load_connection_catalog(self.brain)
+        self.assertEqual({}, mapping)
+
     def test_symlink_and_invalid_site_are_ignored(self):
         outside = self.brain / "outside.md"
         outside.write_text("# Outside\n- Site: https://outside.example\n## Decisores\nhttps://linkedin.com/in/outside")

@@ -59,6 +59,15 @@ def owner_profile_urn(value):
     return "urn:li:fsd_profile:" + owner_id
 
 
+def canonical_panel_lock(panel):
+    profile_root = panel.parent.parent
+    brain = profile_root / "brain"
+    if (panel.name != "painel.db" or panel.parent.name != "painel-dados"
+            or not brain.is_dir() or brain.is_symlink()):
+        raise ReconciliationBlocked("panel_lock_authority_unverified")
+    return brain / "_log" / ".painel.lock"
+
+
 def audit_chunk(cards, bindings, client, *, offset, limit):
     if (type(offset) is not int or type(limit) is not int or offset < 0
             or not 1 <= limit <= 10 or offset + limit > len(cards)):
@@ -223,6 +232,8 @@ def main(argv=None):
         panel = args.panel_db.resolve(strict=True)
         if panel != Path(config["repository"]).resolve(strict=True):
             raise ReconciliationBlocked("panel_repository_mismatch")
+        if args.apply and args.panel_lock.resolve(strict=False) != canonical_panel_lock(panel):
+            raise ReconciliationBlocked("panel_lock_mismatch")
         if args.create_manifest:
             digest = create_legacy_manifest(panel, args.manifest)
             print(json.dumps({"status": "manifest_created", "sha256": digest,
