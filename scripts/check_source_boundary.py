@@ -26,6 +26,7 @@ ALLOWED_TESTS = {
     "test_thunder_os_learning.py",
     "test_thunder_os_hermes_dependency.py",
     "test_thunder_os_hermes_auth_ro.py",
+    "test_thunder_os_connection_intake.py",
 }
 FORBIDDEN_PARTS = {
     "brain",
