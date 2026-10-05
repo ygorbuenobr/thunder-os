@@ -73,7 +73,7 @@ def reclassify_pending(
         records.sort(key=lambda row: row.get("status") != "qualified_waiting_budget")
         for record in records:
             status = record.get("status")
-            if status not in {"needs_identity", "needs_fit", "qualified_waiting_budget"}:
+            if status not in {"historical", "needs_identity", "needs_fit", "qualified_waiting_budget"}:
                 continue
             profile = record["id"]
             if (record.get("profile") != profile
@@ -85,6 +85,14 @@ def reclassify_pending(
             if account is not None and previous_account is not None and account != previous_account:
                 raise ConnectionIntakeError("connection_account_ambiguous")
             if account is None:
+                if status == "historical":
+                    payload = {key: value for key, value in record.items()
+                               if key not in {"id", "version", "updated_at"}}
+                    payload.update(status="needs_identity", catalog_version=catalog_version,
+                                   mapping_provenance=mapping_provenance)
+                    repository.put_states_atomic([(kind, profile, payload, record["version"])])
+                    changed.append({"profile": profile, "status": "needs_identity",
+                                    "catalog_version": catalog_version})
                 continue
             evidence = fit_evidence_by_account.get(account)
             if status == "qualified_waiting_budget" and not evidence:

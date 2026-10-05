@@ -68,7 +68,9 @@ class ConnectionLedgerTests(unittest.TestCase):
             second, observed_at=SECOND_POLL,
             account_by_profile={new["profileUrl"]: "acme.example"},
         )
-        self.assertEqual(["research", "needs_identity"], [item["status"] for item in decisions])
+        self.assertEqual(["research", "needs_identity", "needs_identity", "needs_identity"],
+                         [item["status"] for item in decisions])
+        self.assertEqual("needs_identity", self.repo.get_state(profile_kind("cs-a"), canonical)["status"])
         mapped = profile_key(new["profileUrl"])
         request = self.repo.get_state(research_request_kind("cs-a"), mapped)
         self.assertEqual("acme.example", request["account_id"])
@@ -86,6 +88,16 @@ class ConnectionLedgerTests(unittest.TestCase):
         self.assertEqual([], self.repo.list_state(research_request_kind("cs-b")))
         with sqlite3.connect(self.path) as con:
             self.assertEqual(("preserved",), con.execute("SELECT value FROM legacy_records WHERE id='old'").fetchone())
+
+    def test_baseline_history_enters_identity_triage_on_next_poll(self):
+        old = connection("baseline", 4)
+        self.assertEqual([], self.poll(page([old])))
+        key = profile_key(old["profileUrl"])
+        self.assertEqual("historical", self.repo.get_state(profile_kind("cs-a"), key)["status"])
+        transitions = self.poll(page([old]), observed_at=SECOND_POLL)
+        self.assertEqual(["needs_identity"], [item["status"] for item in transitions])
+        self.assertEqual("needs_identity", self.repo.get_state(profile_kind("cs-a"), key)["status"])
+        self.assertEqual([], self.repo.list_state(research_request_kind("cs-a")))
 
     def test_invalid_poll_is_atomic(self):
         old = connection("old", 5)
