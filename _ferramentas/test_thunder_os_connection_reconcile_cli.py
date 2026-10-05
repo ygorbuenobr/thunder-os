@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from thunder_os.connection_reconcile_cli import (
     _finish_receipt, _recover_receipt, _write_receipt, bindings_for_batch,
-    owner_profile_urn, ReconciliationBlocked,
+    owner_profile_urn, audit_chunk, consolidate_audit_chunks, ReconciliationBlocked,
 )
 from thunder_os.connection_reconcile_apply import (
     _manifest, create_legacy_manifest, reconcile_legacy_batch,
@@ -19,6 +19,48 @@ from thunder_os.connection_reconcile_apply import (
 
 
 class ReconcileCLIContractTests(unittest.TestCase):
+    def test_consolidation_requires_all_ids_and_dedupes_across_chunks(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            entries = [{"id": f"card-{index}"} for index in range(4)]
+            paths = []
+            for offset in (0, 2):
+                path = root / f"chunk-{offset}.json"
+                items = [{"card_id": f"card-{index}", "decision": "close",
+                          "proposed_status": "enviado",
+                          "evidence": {"account_sha256": "a" * 64,
+                                       "reference_sha256": "b" * 64}}
+                         for index in range(offset, offset + 2)]
+                _write_receipt(path, {"mode": "audit", "source_sha": "c" * 40,
+                                      "manifest_sha256": "d" * 64,
+                                      "report": {"audit_complete": False,
+                                                 "decisions_provisional": True,
+                                                 "scope_offset": offset, "scope_count": 2,
+                                                 "items": items}})
+                paths.append(path)
+            with self.assertRaisesRegex(ReconciliationBlocked, "audit_chunks_incomplete"):
+                consolidate_audit_chunks(paths[:1], entries, "c" * 40, "d" * 64)
+            report = consolidate_audit_chunks(paths, entries, "c" * 40, "d" * 64)
+            self.assertTrue(report["audit_complete"])
+            self.assertEqual(4, len(report["items"]))
+            self.assertTrue(all(item["decision"] == "inconclusive" for item in report["items"]))
+            self.assertTrue(all("evidence" not in item for item in report["items"]))
+
+    def test_read_only_chunk_keeps_exact_manifest_slice(self):
+        cards = [(f"card-{index}", "", {"id": f"card-{index}"}) for index in range(12)]
+        bindings = {key: {"card_id": key} for key, _, _ in cards}
+        with patch("thunder_os.connection_reconcile_cli.audit_cards",
+                   return_value={"items": [{"card_id": f"card-{index}",
+                                            "decision": "inconclusive"} for index in range(5, 8)]}) as audit:
+            report = audit_chunk(cards, bindings, object(), offset=5, limit=3)
+        self.assertEqual([row["card_id"] for row in report["items"]],
+                         ["card-5", "card-6", "card-7"])
+        self.assertEqual(set(audit.call_args.args[1]), {"card-5", "card-6", "card-7"})
+        self.assertTrue(report["read_only"])
+        self.assertEqual([], report["applied"])
+        with self.assertRaises(ReconciliationBlocked):
+            audit_chunk(cards, bindings, object(), offset=10, limit=3)
+
     def test_owner_profile_normalizes_bare_and_urn_ids(self):
         expected = "urn:li:fsd_profile:ACoFIXTURE"
         self.assertEqual(expected, owner_profile_urn("ACoFIXTURE"))

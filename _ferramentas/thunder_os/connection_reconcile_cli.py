@@ -18,6 +18,7 @@ from .connection_reconcile_apply import (
     reconcile_legacy_batch,
 )
 from .connection_reconcile_runtime import _card_public_slug
+from .connection_reconcile_runtime import audit_cards
 from .connection_runtime import load_config, _protected_file
 from .connectsafely_social_client import ConnectSafelySocialClient, post_identity
 from .connectsafely_social_transport import ConnectSafelySocialHTTPS
@@ -56,6 +57,73 @@ def owner_profile_urn(value):
     if owner_id is None:
         raise ReconciliationBlocked("owner_identity_unconfigured")
     return "urn:li:fsd_profile:" + owner_id
+
+
+def audit_chunk(cards, bindings, client, *, offset, limit):
+    if (type(offset) is not int or type(limit) is not int or offset < 0
+            or not 1 <= limit <= 10 or offset + limit > len(cards)):
+        raise ReconciliationBlocked("audit_chunk_invalid")
+    selected = cards[offset:offset + limit]
+    result = audit_cards([card for _, _, card in selected],
+                         {key: bindings[key] for key, _, _ in selected if key in bindings},
+                         client)
+    if len(result["items"]) != len(selected):
+        raise ReconciliationBlocked("audit_chunk_incomplete")
+    return {"scope_offset": offset, "scope_limit": limit,
+            "scope_count": len(selected), "manifest_complete": True,
+            "audit_complete": False, "decisions_provisional": True,
+            "read_only": True, "items": result["items"], "applied": []}
+
+
+def consolidate_audit_chunks(paths, entries, source_sha, manifest_sha):
+    if not paths or len(paths) > len(entries):
+        raise ReconciliationBlocked("audit_chunks_invalid")
+    indexed = {}
+    receipt_hashes = []
+    for path in paths:
+        info = path.lstat()
+        if (not path.is_file() or path.is_symlink() or info.st_mode & 0o077
+                or info.st_uid not in {0, os.geteuid()}):
+            raise ReconciliationBlocked("audit_chunk_receipt_invalid")
+        raw = path.read_bytes()
+        receipt = json.loads(raw)
+        report = receipt.get("report")
+        if (receipt.get("mode") != "audit" or receipt.get("source_sha") != source_sha
+                or receipt.get("manifest_sha256") != manifest_sha
+                or not isinstance(report, dict) or report.get("audit_complete") is not False
+                or report.get("decisions_provisional") is not True):
+            raise ReconciliationBlocked("audit_chunk_receipt_invalid")
+        offset, count = report.get("scope_offset"), report.get("scope_count")
+        if (type(offset) is not int or type(count) is not int or count < 1
+                or offset < 0 or offset + count > len(entries)
+                or not isinstance(report.get("items"), list)
+                or len(report["items"]) != count):
+            raise ReconciliationBlocked("audit_chunk_receipt_invalid")
+        for position, item in enumerate(report["items"], offset):
+            if (position in indexed or not isinstance(item, dict)
+                    or item.get("card_id") != entries[position]["id"]):
+                raise ReconciliationBlocked("audit_chunk_overlap_or_mismatch")
+            if item.get("decision") == "close" and not isinstance(item.get("evidence"), dict):
+                raise ReconciliationBlocked("audit_chunk_receipt_invalid")
+            indexed[position] = dict(item)
+        receipt_hashes.append(sha256(raw).hexdigest())
+    if set(indexed) != set(range(len(entries))):
+        raise ReconciliationBlocked("audit_chunks_incomplete")
+    items = [indexed[position] for position in range(len(entries))]
+    owners = Counter((item.get("evidence", {}).get("account_sha256"),
+                      item.get("evidence", {}).get("reference_sha256"))
+                     for item in items if item.get("decision") == "close")
+    for item in items:
+        evidence = item.get("evidence")
+        if (item.get("decision") == "close" and isinstance(evidence, dict)
+                and owners[(evidence.get("account_sha256"),
+                            evidence.get("reference_sha256"))] > 1):
+            item.pop("evidence", None)
+            item.pop("proposed_status", None)
+            item.update(decision="inconclusive", reason="shared_receipt_ambiguous")
+    return {"manifest_complete": True, "audit_complete": True,
+            "read_only": True, "items": items, "receipt_sha256": receipt_hashes,
+            "applied": []}
 
 
 def _write_receipt(path, payload):
@@ -137,9 +205,19 @@ def main(argv=None):
     parser.add_argument("--create-manifest", action="store_true")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--recover-receipt", action="store_true")
+    parser.add_argument("--audit-offset", type=int)
+    parser.add_argument("--audit-limit", type=int)
+    parser.add_argument("--consolidate-receipts", type=Path, nargs="+")
     args = parser.parse_args(argv)
-    if sum((args.create_manifest, args.apply, args.recover_receipt)) > 1:
+    if sum((args.create_manifest, args.apply, args.recover_receipt,
+            args.consolidate_receipts is not None)) > 1:
         parser.error("manifest creation, apply and recovery are separate operations")
+    if ((args.audit_offset is None) != (args.audit_limit is None)
+            or args.apply and args.audit_offset is not None
+            or args.create_manifest and args.audit_offset is not None
+            or args.recover_receipt and args.audit_offset is not None
+            or args.consolidate_receipts is not None and args.audit_offset is not None):
+        parser.error("chunk options are only for read-only audit")
     try:
         config = load_config(args.config)
         panel = args.panel_db.resolve(strict=True)
@@ -171,6 +249,17 @@ def main(argv=None):
         if not isinstance(source_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", source_sha):
             raise ReconciliationBlocked("source_revision_unverified")
         manifest_sha = sha256(args.manifest.read_bytes()).hexdigest()
+        if args.consolidate_receipts is not None:
+            report = consolidate_audit_chunks(args.consolidate_receipts, entries,
+                                              source_sha, manifest_sha)
+            _write_receipt(args.receipt.absolute(), {
+                "observed_at": datetime.now(timezone.utc).isoformat(),
+                "mode": "consolidated_audit", "source_sha": source_sha,
+                "manifest_sha256": manifest_sha, "report": report})
+            print(json.dumps({"status": "ok", "audit_complete": True,
+                              "items": len(report["items"]),
+                              "receipt": str(args.receipt.absolute())}, sort_keys=True))
+            return 0
         if args.recover_receipt:
             print(json.dumps(_recover_receipt(args.receipt.absolute(), panel, entries,
                                               source_sha, manifest_sha), sort_keys=True))
@@ -183,8 +272,11 @@ def main(argv=None):
                                           "manifest_sha256": manifest_sha,
                                           "started_at": datetime.now(timezone.utc).isoformat()})
         try:
-            report = reconcile_legacy_batch(panel, args.panel_lock, args.manifest,
-                                            bindings, client, apply=args.apply)
+            report = (audit_chunk(cards, bindings, client,
+                                  offset=args.audit_offset, limit=args.audit_limit)
+                      if args.audit_offset is not None else
+                      reconcile_legacy_batch(panel, args.panel_lock, args.manifest,
+                                             bindings, client, apply=args.apply))
         except BaseException:
             if args.apply:
                 print(json.dumps({"status": "uncertain", "receipt": str(receipt_path),
@@ -207,7 +299,9 @@ def main(argv=None):
             raise
         counts = dict(Counter(item["decision"] for item in report["items"]))
         print(json.dumps({"status": "ok", "mode": payload["mode"],
-                          "baseline_complete": report["baseline_complete"],
+                          "baseline_complete": report.get("baseline_complete", False),
+                          "audit_complete": report.get("audit_complete",
+                                                       report.get("baseline_complete", False)),
                           "decisions": counts, "applied": len(report["applied"]),
                           "receipt": str(args.receipt.absolute())}, sort_keys=True))
         return 0
