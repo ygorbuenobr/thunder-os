@@ -1,0 +1,11 @@
+[Unit]
+Description=Schedule daily Thunder OS connection backfill
+
+[Timer]
+Unit=thunder-os-connections-backfill.service
+OnCalendar=daily
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

@@ -112,8 +112,8 @@ class ThunderService:
             raise AuthorizationError("complete canonical research required for delegated dispatch") from exc
         return "hermes (delegado)"
 
-    def _consume_delegated_use(self, action: str, reference_id: str) -> None:
-        day = datetime.now(timezone.utc).date().isoformat()
+    def _consume_delegated_use(self, action: str, reference_id: str, *, day: str | None = None) -> None:
+        day = day or datetime.now(timezone.utc).date().isoformat()
         try:
             self.repository.reserve_delegated_action("hermes", action, day)
         except RepositoryConflict as exc:
@@ -135,8 +135,17 @@ class ThunderService:
                 if old_scope != new_scope:
                     raise RepositoryConflict("effect key payload mismatch")
                 return existing
+            authorization_day = datetime.now(timezone.utc).date().isoformat()
             if actor == "hermes":
-                self._consume_delegated_use(action, reference_id)
+                self._consume_delegated_use(action, reference_id, day=authorization_day)
+            if action == "like":
+                delegation = self.repository.get_state("delegation", "hermes") if actor == "hermes" else None
+                self.repository.append_state("effect_authorization", effect_key, {
+                    "action": "like", "actor": payload["actor"], "payload_hash": payload_hash(payload),
+                    "authorized_by": "ygor" if actor == "ygor" else delegation.get("actor"),
+                    "delegation_version": delegation["version"] if delegation else None,
+                    "day": authorization_day,
+                })
             return self.repository.enqueue_effect(effect_key, payload)
 
     def _authorize_delegated_scope(self, actor: str, action: str) -> str:

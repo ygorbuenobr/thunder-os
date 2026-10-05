@@ -1,6 +1,6 @@
 """Explicit internal continuous operation. Never consumes legacy/effect queues.
 
-Only Ygor's post-activation research/copy requests qualify. Attempt records are
+Only Ygor's post-activation requests and canonical connection research qualify. Attempt records are
 committed before inference; any interrupted attempt requires a NEW human request.
 No automatic retry, LLM fallback, tools, approvals or external-action adapters.
 """
@@ -20,11 +20,14 @@ from uuid import uuid4
 from .agent_consumer import atomic_json, enforce_external_gate, source_revision
 from .agent_worker import AgentWorker
 from .agents import AgentResult, AgentRunner
+from .connection_backfill import DAILY_RESEARCH_LIMIT
+from .connection_intake import PROVIDER_CALENDAR
+from .connection_work import CONNECTION_ACTOR, WORK_LINK_KIND, canonical_connection_request
 from .db import Repository, RepositoryConflict
 from .hermes_text_adapter import LIMIT, bounded_process_transport, load_catalog_context
 from .knowledge import KnowledgeStore
 from .service import ThunderService
-from .models import ContractError
+from .models import ContractError, WorkStatus
 from .research import COVERAGE_STATUSES, SOURCE_AREAS
 from .research_producer import PublicResearchProducer, ResearchCollectionError
 
@@ -272,19 +275,61 @@ class EligibleRepository:
             rows = con.execute("SELECT * FROM thunder_outbox WHERE kind='agent_job' AND state='pending' AND (lease_until IS NULL OR lease_until<=?) ORDER BY rowid", (now.isoformat(),)).fetchall()
             for row in rows:
                 try:
+                    connection_claim = False
                     original = json.loads(row['payload'])
                     created = datetime.fromisoformat(original['created_at'])
                     item = self.repository.get_work(row['entity_id'])
                     context = original.get('context', {})
-                    if (original.get('actor') != 'ygor' or original.get('logical_owner') != 'ygor'
-                            or created < datetime.fromisoformat(cutoff)
-                            or context.get('capability') not in {'research', 'copy'}
-                            or not context.get('account_id') or item is None or item.logical_owner != 'ygor'):
+                    if (created < datetime.fromisoformat(cutoff)
+                            or item is None or original.get('id') != item.id
+                            or original.get('actor') != item.actor
+                            or original.get('logical_owner') != item.logical_owner
+                            or context != item.context):
                         continue
+                    if original['actor'] == CONNECTION_ACTOR:
+                        if (original['logical_owner'] != CONNECTION_ACTOR
+                                or context.get('capability') != 'research'):
+                            continue
+                        link = self.repository.get_state(WORK_LINK_KIND, item.id)
+                        if (link is None
+                                or link.get('connectsafely_account_id') != context.get('connectsafely_account_id')
+                                or link.get('profile') != context.get('connection_profile')
+                                or link.get('request_version') != context.get('connection_request_version')):
+                            continue
+                        request = canonical_connection_request(
+                            self.repository, context.get('connectsafely_account_id'),
+                            context.get('connection_profile'))
+                        if (request['account_id'] != context.get('account_id')
+                                or request['version'] != context.get('connection_request_version')):
+                            continue
+                        connection_claim = True
+                    elif (original['actor'] != 'ygor' or original['logical_owner'] != 'ygor'
+                          or context.get('capability') not in {'research', 'copy'}
+                          or not context.get('account_id')):
+                        continue
+                except ContractError:
+                    continue
                 except (ValueError, KeyError, TypeError):
                     continue
+                budget_day = None
+                claimed_ids = None
+                if (connection_claim and item.status in {WorkStatus.REQUESTED, WorkStatus.IN_PROGRESS}
+                        and self.repository.get_state('agent_attempt', item.id) is None):
+                    budget_day = now.astimezone(PROVIDER_CALENDAR).date().isoformat()
+                    budget = self.repository.get_state('connection_research_execution_day', budget_day)
+                    claimed_ids = budget.get('work_ids', []) if budget else []
+                    if (not isinstance(claimed_ids, list)
+                            or any(not isinstance(value, str) for value in claimed_ids)
+                            or len(claimed_ids) != len(set(claimed_ids))
+                            or len(claimed_ids) > DAILY_RESEARCH_LIMIT):
+                        continue
+                    if item.id not in claimed_ids and len(claimed_ids) >= DAILY_RESEARCH_LIMIT:
+                        continue
                 token, until = f'{worker_id}:{uuid4().hex}', (now + lease_for).isoformat()
                 con.execute('UPDATE thunder_outbox SET lease_owner=?,lease_until=? WHERE id=?', (token, until, row['id']))
+                if budget_day is not None and item.id not in claimed_ids:
+                    self.repository.put_state('connection_research_execution_day', budget_day,
+                                              {'work_ids': [*claimed_ids, item.id]})
                 return {**dict(row), 'lease_owner': token, 'lease_until': until}
         return None
 

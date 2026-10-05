@@ -21,7 +21,7 @@ from .knowledge import KnowledgeStore
 from .db import Repository, RepositoryConflict
 from .models import effect_payload_hash, payload_hash
 from .providers.email import EmailAdapter
-from .providers.unipile import ProviderResult, UnipileAdapter
+from .providers.result import ProviderResult
 from .touch_ledger import TouchBlocked, TouchLedger
 
 
@@ -89,9 +89,10 @@ class EffectCoordinator:
 class WorkerRuntime:
     def __init__(
         self, repository: Repository, ledger: TouchLedger, adapters: Mapping[str, Any],
-        *, worker_id: str, health_path: Path, revision: str, knowledge_store=None, approved_catalog=None,
+        *, worker_id: str, health_path: Path, revision: str, knowledge_store=None, approved_catalog=None, connectsafely_app=None,
     ):
         self.repository = repository
+        self.connectsafely_app = connectsafely_app
         self.authorization_service = ThunderService(repository, knowledge_store=knowledge_store, approved_catalog=approved_catalog)
         self.ledger = ledger
         self.adapters = dict(adapters)
@@ -122,6 +123,11 @@ class WorkerRuntime:
         self._last_health = time.monotonic()
 
     def process_one(self) -> bool:
+        if self.connectsafely_app is not None and self.connectsafely_app.process_one():
+            self.processed += 1
+            self.last_progress_at = datetime.now(timezone.utc).isoformat()
+            self._health("ok")
+            return True
         job = self.repository.claim_effect(
             self.worker_id, datetime.now(timezone.utc), timedelta(seconds=30)
         )
@@ -179,7 +185,7 @@ class WorkerRuntime:
                 result = adapter.send(effect)
             state = {"confirmed": "sent", "rejected": "failed", "uncertain": "uncertain", "not_configured": "failed"}.get(result.status, "uncertain")
             stored = self.ledger.finish(expected, state, result.receipt_ref, result.error_code)
-            finish(state, stored.get("receipt_ref"), stored.get("error_code"))
+            finish(stored["status"], stored.get("receipt_ref"), stored.get("error_code"))
         except TouchBlocked as exc:
             finish("failed", None, str(exc))
         except RepositoryConflict:
@@ -225,7 +231,22 @@ class WorkerRuntime:
                     or action not in delegation.get("scopes", [])):
                 return "delegation_disabled_or_out_of_scope"
         cadence_id = payload.get("cadence_id")
-        if not cadence_id:  # Low-level fixture jobs do not claim a cadence authorization.
+        if not cadence_id:
+            # Likes have a separate, immutable producer authorization. Neither
+            # actor strings nor fake adapters are authority for orphan jobs.
+            grant=self.repository.get_state("effect_authorization",expected)
+            if (payload.get("delegated_action")!="like" or step.get("action")!="like"
+                    or step.get("channel")!="linkedin" or step.get("content")!="like"
+                    or not grant or grant.get("action")!="like" or grant.get("authorized_by")!="ygor"
+                    or grant.get("actor")!=payload.get("actor") or grant.get("payload_hash")!=payload_hash(payload)
+                    or grant.get("day")!=datetime.now(timezone.utc).date().isoformat()):
+                return "approval_not_active"
+            if payload.get("actor")=="hermes (delegado)":
+                if delegation.get("actor")!="ygor" or grant.get("delegation_version")!=delegation["version"]:
+                    return "delegation_authorization_changed"
+            elif payload.get("actor")!="ygor":return "approval_not_active"
+            try:self.ledger.preflight(expected,step,raise_blocked=True)
+            except TouchBlocked as exc:return str(exc)
             return None
         cadence = self.repository.get_state("cadence", str(cadence_id))
         approval = self.repository.get_state("approval", str(cadence_id))
@@ -326,7 +347,16 @@ class DisabledRuntime:
             time.sleep(poll_seconds)
 
 
-def build_runtime() -> WorkerRuntime | DisabledRuntime:
+class _SimulatedLinkedInAdapter:
+    """Offline effect result. Cannot accept or call a provider transport."""
+    def send(self, effect):
+        allowed = {"target", "content", "effect_id"}
+        if set(effect) != allowed or not all(isinstance(effect.get(k), str) and effect[k].strip() for k in allowed):
+            raise ValueError("invalid linkedin effect")
+        return ProviderResult(effect["effect_id"], "confirmed", "simulation:linkedin:" + effect["effect_id"])
+
+
+def build_runtime(*, connectsafely_app=None) -> WorkerRuntime | DisabledRuntime:
     if os.environ.get("THUNDER_EXTERNAL_EFFECTS_ENABLED", "").lower() != "true":
         return DisabledRuntime()
     database = os.environ.get("THUNDER_OS_DB") or os.environ.get("PAINEL_DB")
@@ -338,7 +368,7 @@ def build_runtime() -> WorkerRuntime | DisabledRuntime:
     adapters: dict[str, Any]
     if fake:
         adapters = {
-            "linkedin": UnipileAdapter(_FakeTransport("linkedin")),
+            "linkedin": _SimulatedLinkedInAdapter(),
             "email": EmailAdapter("fake", _FakeTransport("email")),
         }
     else:
@@ -350,6 +380,7 @@ def build_runtime() -> WorkerRuntime | DisabledRuntime:
         worker_id=os.environ.get("THUNDER_OS_WORKER_ID", "worker-1"),
         health_path=Path(os.environ.get("THUNDER_OS_WORKER_HEALTH", "/var/lib/thunder-os/worker-health.json")),
         revision=os.environ.get("THUNDER_OS_SOURCE_SHA", "unknown"),
+        connectsafely_app=connectsafely_app,
         knowledge_store=KnowledgeStore(os.environ.get("THUNDER_BRAIN_ROOT", str(Path(__file__).resolve().parents[2]))),
     )
 

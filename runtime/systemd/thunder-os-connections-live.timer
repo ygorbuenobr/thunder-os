@@ -1,0 +1,10 @@
+[Unit]
+Description=Schedule frequent Thunder OS live connection intake
+
+[Timer]
+Unit=thunder-os-connections-live.service
+OnCalendar=*:0/10
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

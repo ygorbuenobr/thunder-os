@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Mapping
 
-from .unipile import ProviderResult
+from .result import ProviderResult
 
 
 class EmailAdapter:

@@ -1,0 +1,29 @@
+[Unit]
+Description=Thunder OS GET-only live connection intake
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/thunder-os/current
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONPATH=/opt/thunder-os/current/_ferramentas
+Environment=THUNDER_EXTERNAL_EFFECTS_ENABLED=false
+ExecStart=/usr/bin/flock --exclusive --nonblock --conflict-exit-code 75 /var/lib/thunder-os-inbound-monitor/connections-intake.lock /usr/bin/python3 -m thunder_os.connection_runtime --config /var/lib/thunder-os-inbound-monitor/config.json --brain /root/.hermes/profiles/ygor-personal/brain --mode live
+Restart=no
+TimeoutStartSec=300s
+TimeoutStopSec=30s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadOnlyPaths=/opt/thunder-os/current
+ReadOnlyPaths=/var/lib/thunder-os-inbound-monitor/config.json
+ReadOnlyPaths=/root/.hermes/profiles/ygor-personal/brain
+ReadWritePaths=/var/lib/thunder-os-inbound-monitor
+ReadWritePaths=/root/.hermes/profiles/ygor-personal/painel-dados
+LockPersonality=true
+RestrictSUIDSGID=true

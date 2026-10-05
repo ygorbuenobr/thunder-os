@@ -2,7 +2,7 @@
 from typing import Any, Mapping
 from ..models import payload_hash
 from ..db import RepositoryConflict
-from .unipile import ProviderResult
+from .result import ProviderResult
 
 
 class HubSpotAdapter:

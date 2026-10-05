@@ -22,9 +22,15 @@ class TouchBlocked(toques.ErroBanco):
 
 
 class TouchLedger:
+    def __init__(self, *, db_context=None):
+        self._explicit_db_context = db_context is not None
+        self._banco = db_context or toques._banco
+
     def migrate(self) -> None:
+        if self._explicit_db_context:
+            raise ValueError("explicit_schema_provisioning_required")
         toques.migrar()
-        with toques._banco() as (connection, _marker):
+        with self._banco() as (connection, _marker):
             connection.cursor().execute(
                 """CREATE TABLE IF NOT EXISTS thunder_suppressions (
                     canal text NOT NULL, pessoa_chave text NOT NULL, reason text NOT NULL,
@@ -70,7 +76,7 @@ class TouchLedger:
 
     def reserve(self, effect_key: str, step_id: str, step: Mapping[str, Any]) -> tuple[bool, dict[str, Any]]:
         channel, action, person, target = self._scope(step, effect_key)
-        with toques._banco() as (connection, marker):
+        with self._banco() as (connection, marker):
             self._lock(connection, marker, channel, person)
             cursor = connection.cursor()
             cursor.execute(
@@ -120,7 +126,7 @@ class TouchLedger:
         self, effect_key: str, step: Mapping[str, Any], *, raise_blocked: bool = False,
     ) -> dict[str, Any]:
         channel, action, person, target = self._scope(step, effect_key)
-        with toques._banco() as (connection, marker):
+        with self._banco() as (connection, marker):
             cursor = connection.cursor()
             cursor.execute(
                 "SELECT reason FROM thunder_suppressions WHERE canal=" + marker + " AND pessoa_chave=" + marker,
@@ -153,7 +159,7 @@ class TouchLedger:
     ) -> dict[str, Any]:
         if status not in STATUS_TO_DB:
             raise ValueError("invalid touch status")
-        with toques._banco() as (connection, marker):
+        with self._banco() as (connection, marker):
             cursor = connection.cursor()
             cursor.execute(
                 "SELECT touch_id FROM thunder_effect_touches WHERE effect_key=" + marker,
@@ -164,16 +170,26 @@ class TouchLedger:
                 raise TouchBlocked("reservation missing")
             cursor.execute(
                 "UPDATE toques SET status=" + marker + ",provider_id=" + marker + ",detalhe=" + marker
-                + ",atualizado_em=CURRENT_TIMESTAMP WHERE id=" + marker,
+                # Confirmation is terminal, including its original receipt.
+                # The predicate is evaluated under the database row/write lock,
+                # so a delayed uncertain response cannot undo reconciliation.
+                + ",atualizado_em=CURRENT_TIMESTAMP WHERE id=" + marker + " AND status<>'feito'",
                 (STATUS_TO_DB[status], receipt_ref, error_code, row[0]),
             )
+            cursor.execute(
+                "SELECT id,status,provider_id,detalhe FROM toques WHERE id=" + marker,
+                (row[0],),
+            )
+            stored = cursor.fetchone()
+            if not stored:
+                raise TouchBlocked("reservation missing")
             return {
-                "id": str(row[0]), "status": status,
-                "receipt_ref": receipt_ref, "error_code": error_code,
+                "id": str(stored[0]), "status": STATUS_FROM_DB[stored[1]],
+                "receipt_ref": stored[2], "error_code": stored[3],
             }
 
     def release_failed_for_retry(self, effect_key: str) -> dict[str, Any]:
-        with toques._banco() as (connection, marker):
+        with self._banco() as (connection, marker):
             cursor = connection.cursor()
             cursor.execute(
                 "SELECT t.id,t.status FROM thunder_effect_touches e JOIN toques t ON t.id=e.touch_id WHERE e.effect_key=" + marker,
@@ -190,7 +206,7 @@ class TouchLedger:
 
     def suppress(self, channel: str, person: str, reason: str) -> None:
         person_key = toques.normalizar_pessoa(channel, person)
-        with toques._banco() as (connection, marker):
+        with self._banco() as (connection, marker):
             self._lock(connection, marker, channel, person_key)
             connection.cursor().execute(
                 "INSERT INTO thunder_suppressions(canal,pessoa_chave,reason) VALUES ("
@@ -207,7 +223,7 @@ class TouchLedger:
             "opt_out": "negativa", "risk": "negativa", "unrelated": "neutra",
         }[classification]
         person_key = toques.normalizar_pessoa(channel, person)
-        with toques._banco() as (connection, marker):
+        with self._banco() as (connection, marker):
             self._lock(connection, marker, channel, person_key)
             cursor = connection.cursor()
             cursor.execute(

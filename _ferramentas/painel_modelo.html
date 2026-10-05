@@ -1,0 +1,2225 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Painel</title>
+<style>
+:root{
+  color-scheme:light;
+  --bg:#eeefe9; --surface:#ffffff; --surface2:#f7f7f3; --line:#d8d9d2;
+  --text:#20211f; --muted:#64665f; --faint:#777a72;
+  --mostarda:#e0a933; --roxo:#6557a7; --ok:#237a55; --alerta:#b43b34;
+  --display:system-ui,-apple-system,"Segoe UI",sans-serif;
+  --body:system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+*{box-sizing:border-box}
+html,body{background:var(--bg)}
+body{color:var(--text);font:15px/1.55 var(--body);padding:0 clamp(16px,4vw,40px) 56px;max-width:1120px;margin:0 auto;overflow-x:hidden}
+h1,h2{font-family:var(--display);font-stretch:80%;letter-spacing:.01em;margin:0;text-wrap:balance}
+h1{font-size:clamp(26px,4vw,38px);font-weight:800;line-height:1}
+h1 b{color:var(--mostarda);font-weight:800}
+h2{font-size:15px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+.topo{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px 24px;padding:30px 0 22px;border-bottom:1px solid var(--line)}
+.sync{font:12px/1.4 var(--body);color:var(--muted);text-align:right}
+.sync .pt{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ok);margin-right:6px;vertical-align:1px}
+.sync .pt.velho{background:var(--mostarda)}
+section{margin-top:32px;display:grid;gap:14px;align-content:start}
+.voce{background:linear-gradient(180deg,rgba(224,169,51,.10),rgba(224,169,51,0) 70%);border:1px solid rgba(224,169,51,.35);border-radius:10px;padding:18px 20px}
+.voce h2{color:var(--mostarda)}
+.pend{display:grid;gap:10px;margin:0;padding:0;list-style:none}
+.pend li{display:grid;grid-template-columns:auto 1fr auto;gap:4px 12px;align-items:baseline}
+.pend .quando{font:12px var(--body);color:var(--faint)}
+.pend .txt b{font-weight:600}
+.vazio{color:var(--faint);font-size:13px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px}
+.kpi{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:12px 14px}
+.kpi .n{font:800 28px/1 var(--display);font-stretch:80%;font-variant-numeric:tabular-nums}
+.kpi .l{font-size:12px;color:var(--muted);margin-top:4px}
+.kpi .spark{display:flex;gap:2px;align-items:flex-end;height:18px;margin-top:8px}
+.kpi .spark i{flex:1;background:var(--roxo);opacity:.55;border-radius:1px;min-height:2px}
+.kpi .spark i:last-child{opacity:1;background:var(--mostarda)}
+.duas{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:28px}
+@media (max-width:860px){.duas{grid-template-columns:minmax(0,1fr)}}
+.tabela{overflow-x:auto;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th{font:600 11px var(--body);text-transform:uppercase;letter-spacing:.07em;color:var(--faint);text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:0}
+td.num{font-variant-numeric:tabular-nums;text-align:right}
+td .sub{color:var(--muted);font-size:12px}
+a{color:var(--roxo);text-decoration:none}
+a:hover,a:focus-visible{text-decoration:underline}
+:focus-visible{outline:2px solid var(--mostarda);outline-offset:2px}
+.chip{display:inline-block;font:500 11px/1 var(--body);padding:4px 7px;border-radius:4px;background:var(--surface2);color:var(--muted);white-space:nowrap}
+.a-hermes{color:#1a1206;background:var(--mostarda)}
+.a-chrome{color:#fff;background:#6E48A8}
+.a-unipile{color:#fff;background:#0A66C2}
+.a-claude{color:var(--roxo);background:rgba(163,105,226,.14)}
+.a-ygor{color:var(--text);background:#3A3442}
+.t-resposta{color:var(--ok);background:rgba(79,178,134,.13)}
+.t-erro{color:var(--alerta);background:rgba(224,96,90,.13)}
+.filtros{display:flex;flex-wrap:wrap;gap:6px}
+.filtros button{font:500 12px var(--body);color:var(--muted);background:transparent;border:1px solid var(--line);border-radius:999px;padding:5px 11px;cursor:pointer}
+.filtros button[aria-pressed="true"]{color:var(--bg);background:var(--text);border-color:var(--text)}
+.feed{list-style:none;margin:0;padding:0;border-left:1px solid var(--line)}
+.feed li{display:grid;grid-template-columns:92px auto 1fr;gap:4px 12px;padding:9px 0 9px 16px;position:relative;align-items:baseline}
+.feed li::before{content:"";position:absolute;left:-4px;top:15px;width:7px;height:7px;border-radius:50%;background:var(--line)}
+.feed li.resposta::before{background:var(--ok)}
+.feed li.erro::before{background:var(--alerta)}
+.feed .quando{font:12px var(--body);color:var(--faint)}
+.feed .o{min-width:0}
+.feed .o .meta{font-size:12px;color:var(--muted)}
+@media (max-width:560px){.feed li{grid-template-columns:auto 1fr}.feed .quando{grid-column:1/-1}.pend li{grid-template-columns:1fr}}
+.rodape{margin-top:40px;color:var(--faint);font-size:12px}
+.rodape code{font-family:var(--body)}
+@media (prefers-reduced-motion:no-preference){.kpi,.voce{transition:border-color .2s}}
+/* decisoes */
+.voce-topo{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:8px 16px}
+.estado{font:12px var(--body);color:var(--muted)}
+.cards{display:grid;gap:12px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:18px;display:grid;gap:10px;min-width:0;box-shadow:0 1px 2px rgba(32,33,31,.04)}
+.card[data-st="aprovado"],.card[data-st="na-fila"]{border-color:rgba(163,105,226,.5)}
+.card[data-st="erro"]{border-color:rgba(224,96,90,.55)}
+.card .cab{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:baseline}
+.card h3{font:700 clamp(20px,3vw,26px)/1.2 var(--display);margin:0;overflow-wrap:anywhere}
+.mais{margin-top:28px}
+.mais>summary{cursor:pointer;color:var(--muted);padding-block:12px}
+[hidden]{display:none!important}
+.card .cab .sub{color:var(--muted);font-size:12px}
+.card .porque{color:var(--muted);font-size:13px;max-width:70ch}
+.card details{font-size:13px}
+.card summary{cursor:pointer;color:var(--muted);font-size:12px;width:fit-content}
+.conv{display:grid;gap:8px;margin:8px 0 0;padding:10px 12px;background:var(--surface2);border-radius:6px;max-height:320px;overflow:auto}
+.conv .m{display:grid;gap:2px}
+.conv .m .q{font:11px var(--body);color:var(--faint)}
+.conv .m.lead .q{color:var(--ok)}
+.conv .m .t{white-space:pre-wrap;overflow-wrap:anywhere}
+.fatos{margin:8px 0 0;padding-left:18px;color:var(--muted)}
+.rot{font:600 11px var(--body);text-transform:uppercase;letter-spacing:.07em;color:var(--faint)}
+textarea,input[type=text]{width:100%;font:14px/1.5 var(--body);color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:10px 12px;resize:vertical}
+textarea:focus,input[type=text]:focus{border-color:var(--mostarda);outline:none}
+.texto{min-height:96px}
+.conta-car{font:11px var(--body);color:var(--faint);text-align:right}
+.acoes{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.btn{font:600 13px var(--body);border-radius:8px;padding:10px 14px;min-height:44px;cursor:pointer;border:1px solid var(--line);background:transparent;color:var(--text)}
+.btn:hover{border-color:var(--muted)}
+.btn:disabled{opacity:.5;cursor:default}
+.btn.pri{background:var(--mostarda);border-color:var(--mostarda);color:#1a1206}
+.btn.pri:hover{filter:brightness(1.08)}
+.btn.conf{background:var(--ok);border-color:var(--ok);color:#06140d}
+.btn.fraco{color:var(--muted)}
+.btn.alerta{color:var(--alerta)}
+.falar{display:grid;gap:8px;padding:10px 12px;border:1px dashed var(--line);border-radius:6px}
+.falar label{display:flex;gap:6px;align-items:center;font-size:12px;color:var(--muted)}
+.resposta-claude{white-space:pre-wrap;font-size:13px;padding:10px 12px;background:rgba(163,105,226,.10);border-radius:6px}
+.msg{font-size:12px;color:var(--muted)}
+.msg.erro{color:var(--alerta)}
+.st-aprovado,.st-na-fila{color:var(--roxo);background:rgba(163,105,226,.14)}
+.st-enviado,.st-feito{color:var(--ok);background:rgba(79,178,134,.13)}
+.st-erro{color:var(--alerta);background:rgba(224,96,90,.13)}
+.st-copiar{color:var(--mostarda);background:rgba(224,169,51,.14)}
+.rec-descartar{color:var(--alerta)}
+.pedido{display:grid;gap:8px;margin-top:4px}
+.pedido .acoes{justify-content:flex-end}
+.resolvidos summary{cursor:pointer;color:var(--muted);font-size:13px}
+.resolvidos ul{list-style:none;margin:8px 0 0;padding:0;display:grid;gap:6px;font-size:13px}
+.resolvidos li{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:baseline}
+.prospeccao .vazio,.conta-painel .vazio{color:var(--muted)}
+.prospeccao .btn,.conta-painel .btn,.ver-conta{min-height:44px}
+.ver-conta{color:var(--roxo);text-decoration:underline;font:inherit;border:0;background:transparent;padding:8px;cursor:pointer}
+.relogio{font:500 12px/1.5 var(--body);color:var(--muted)}
+.relogio.amarelo{color:var(--mostarda)}
+.relogio.vermelho{color:#FF938D}
+.etiquetas{display:flex;flex-wrap:wrap;gap:8px}
+.etiquetas .btn{font-size:12px;padding:8px 10px}
+.etiquetas [aria-pressed="true"]{background:var(--text);color:var(--bg);border-color:var(--text)}
+.resposta-texto,.conta-painel p,.conta-painel li{white-space:pre-wrap;overflow-wrap:anywhere}
+.conta-painel{position:fixed;inset:0 0 0 auto;margin:0;width:100%;max-width:560px;height:100%;max-height:100%;padding:20px;border:0;border-left:1px solid var(--line);background:var(--surface);color:var(--text);overflow:auto}
+.conta-painel::backdrop{background:rgba(0,0,0,.65)}
+.conta-topo{display:flex;align-items:start;justify-content:space-between;gap:12px;position:sticky;top:-20px;padding-block:16px;background:var(--surface);z-index:1}
+.conta-topo h2{font-size:22px;text-transform:none;color:var(--text);overflow-wrap:anywhere}
+.conta-painel section{margin-top:24px;gap:10px}
+.conta-painel ul{padding-left:20px;margin:0}
+.conta-timeline{list-style:none;padding:0!important;display:grid;gap:16px}
+.conta-timeline li{border-left:2px solid var(--line);padding-left:12px}
+.conta-timeline p{margin:4px 0}
+.quentes-lista{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}
+.quente{background:var(--surface);border:1px solid rgba(224,169,51,.28);border-radius:8px;padding:14px;display:grid;gap:7px}
+.quente h3{font:700 18px/1.2 var(--display);margin:0}
+.quente .pontos{color:var(--mostarda);font:12px var(--body)}
+.sinal{display:grid;gap:2px;color:var(--muted);font-size:13px}
+.qualidade{font-size:12px;color:var(--muted)}
+.qualidade b{color:var(--mostarda)}
+.variantes{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.variante{border:1px solid var(--line);border-radius:7px;padding:12px;display:grid;gap:9px;align-content:start}
+.variante p{white-space:pre-wrap;margin:0;overflow-wrap:anywhere}
+.proximo{border-color:var(--mostarda)!important;background:rgba(224,169,51,.06)}
+.comite{display:grid;gap:8px;list-style:none;padding:0!important}
+.comite li{border:1px solid var(--line);border-radius:6px;padding:9px 10px}
+.brief h3{font:700 19px var(--display);margin:12px 0 6px}.brief p{margin:6px 0}.brief ul{margin-block:6px}
+@media (max-width:560px){.variantes{grid-template-columns:1fr}.quentes-lista{grid-template-columns:1fr}}
+.abas{display:flex;gap:4px;margin:0 0 26px;padding:12px 0;border-bottom:1px solid var(--line);position:sticky;top:0;background:rgba(238,239,233,.96);z-index:3;overflow-x:auto}
+.abas button{font:650 14px var(--body);color:var(--muted);background:transparent;border:0;border-radius:8px;padding:10px 14px;min-height:44px;cursor:pointer;white-space:nowrap}
+.abas button:hover{color:var(--text)}
+.abas button[aria-selected="true"]{color:var(--bg);background:var(--mostarda);border-color:var(--mostarda)}
+.abas .qt{margin-left:6px;font-variant-numeric:tabular-nums;opacity:.8}
+.abas .qt:empty{display:none}
+body[data-aba="hoje"] [data-painel]:not([data-painel~="hoje"]),
+body[data-aba="conversas"] [data-painel]:not([data-painel~="conversas"]),
+body[data-aba="aprovar"] [data-painel]:not([data-painel~="aprovar"]),
+body[data-aba="contas"] [data-painel]:not([data-painel~="contas"]){display:none}
+.hoje{max-width:760px;margin-inline:auto;display:grid;gap:18px}
+.hoje>header{margin:10px 0 2px}.hoje>header p{color:var(--muted);margin:4px 0 0}
+[data-prioridade="dia"]{border-left:4px solid var(--mostarda)}
+[data-prioridade="dia"] .proximo{font-weight:650;margin:0}.frescor{font-size:12px;color:var(--muted)}
+.pedido-dia{display:grid;gap:8px}.pedido-dia .acoes{justify-content:flex-end}
+.cadencia-revisao{display:grid;gap:10px;padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--surface2)}
+.cadencia-revisao ol{display:grid;gap:10px;margin:0;padding-left:22px}.cadencia-revisao li p{margin:4px 0}
+.cadencia-revisao .proxima-decisao{font-weight:650}.cadencia-revisao .alerta-humano{color:var(--alerta)}
+.grupo-dia{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:20px;display:grid;gap:12px}
+.grupo-dia h2{text-transform:none;letter-spacing:0;color:var(--text);font-size:20px}
+.grupo-dia .card{box-shadow:none;padding:15px}
+.grupo-topo{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.ver-todas{border:0;background:transparent;color:var(--roxo);font:650 13px var(--body);min-height:44px;cursor:pointer}
+.aprendizado{border-left:4px solid var(--mostarda)}
+.aprendizado h3{margin:0;font-size:18px}.aprendizado p{margin:0;color:var(--muted)}
+.aprendizado-detalhes{display:grid;gap:8px;padding-top:10px;border-top:1px solid var(--line)}
+.tudo-dia{text-align:center;padding:34px 20px}.tudo-dia h2{color:var(--text);text-transform:none;letter-spacing:0;font-size:22px}
+.detalhes-sistema{margin-top:34px;border-top:1px solid var(--line);padding-top:10px}
+.detalhes-sistema>summary{cursor:pointer;color:var(--muted);min-height:44px;display:flex;align-items:center}
+.detalhes-sistema code,.detalhes-sistema .sync,.detalhes-sistema table{font-family:var(--mono)}
+@media (max-width:560px){body{padding-inline:14px}.topo{padding-top:20px}.grupo-dia{padding:15px}.acoes{align-items:stretch}.acoes .btn{flex:1 1 auto}.hoje{width:100%}}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+/* ABM: reutiliza os tokens e a tabela do painel. */
+.abm{min-width:0}
+.abm>details{min-width:0}
+.abm .voce-topo{align-items:center}
+.abm h2,.abm th{letter-spacing:0}
+.abm th,.abm .sub{color:var(--muted)}
+.abm p{margin:0}
+.abm .btn,.abm summary{min-height:44px}
+.abm summary{cursor:pointer;padding-block:10px;color:var(--text)}
+.abm td{overflow-wrap:anywhere}
+.abm table{min-width:720px}
+.abm .tabela{max-width:100%}
+.abm a{color:var(--text);text-decoration:underline;display:inline-block;min-height:24px}
+.abm .abm-verificado{color:var(--ok)}
+.abm .abm-reconciliar,.abm .abm-erro{color:var(--mostarda)}
+.abm .abm-contagens{display:flex;flex-wrap:wrap;gap:8px 20px;font-variant-numeric:tabular-nums}
+.abm ul{padding-left:18px;margin:8px 0;max-width:36ch}
+.abm :focus-visible{outline:2px solid var(--mostarda);outline-offset:2px}
+#thunder-integrations-readback p{white-space:pre-wrap;overflow-wrap:anywhere}
+#thunder-integrations-readback h4{margin-block:0 .5em}
+#thunder-integrations-readback time{font-size:12px;color:var(--muted)}
+#hoje-integracoes>details>summary{cursor:pointer;padding-block:12px}
+#connectsafely-console-form{display:grid;gap:8px;max-width:760px}#connectsafely-console-form p{white-space:pre-wrap;overflow-wrap:anywhere}#connectsafely-console-form button{min-height:44px}#connectsafely-console-form input,#connectsafely-console-form textarea{width:100%;box-sizing:border-box}
+#hubspot-contact-form{display:grid;gap:8px;max-width:680px}
+#hubspot-contact-form input{width:100%;box-sizing:border-box}
+#hubspot-contact-form button{min-height:44px;justify-self:start}
+#hubspot-contact-form p{overflow-wrap:anywhere}
+#hubspot-contact-form .hs-change{border-block-end:1px solid var(--line);padding-block:12px}
+#hubspot-contact-form .hs-change p{margin-block:4px;white-space:pre-wrap}
+#hoje-hubspot>details>summary{cursor:pointer;padding-block:12px}
+#seqd-console-form{display:grid;gap:8px;max-width:680px}
+#seqd-console-form input,#seqd-console-form textarea{width:100%;box-sizing:border-box;font:inherit}
+#seqd-console-form button{min-height:44px;justify-self:start}
+#seqd-console-form p,#seqd-console-form pre{overflow-wrap:anywhere;white-space:pre-wrap;font-family:inherit}
+#hoje-seqd>details>summary{cursor:pointer;padding-block:12px}
+
+/* Clareza e acesso: mesmos elementos e cores do painel. */
+input:not([type="hidden"]),select,textarea { box-sizing:border-box; max-width:100%; font:inherit; color:var(--texto,#20211f); background:#fff; border:1px solid #bbbdb5; border-radius:6px; padding:10px 12px; }
+form label {display:block; margin:14px 0 5px; font-weight:600;}
+form input:not([type="hidden"]),form select,form textarea {width:100%;}
+button,.btn,select,input:not([type="hidden"]),summary {min-height:44px;}
+:focus-visible {outline:3px solid #6557a7 !important;outline-offset:3px;}
+[hidden] {display:none !important;}
+.ajuda,small {color:#53564e;}
+.mensagem-local {border-left:3px solid #bbbdb5; padding:10px 14px; margin:12px 0; overflow-wrap:anywhere;}
+.mensagem-local small {display:block; margin-top:4px;}
+[data-cs-list] .btn {margin:4px 6px 4px 0;}
+[data-cs-review] {overflow-wrap:anywhere;}
+[data-cs-review]:not(:empty) {border:1px solid #bbbdb5;padding:16px;margin:16px 0;border-radius:8px;}
+#abas button[aria-selected="true"] {color:#20211f;}
+</style>
+
+<header class="topo">
+  <div>
+    <h1>Seu <b>Painel</b></h1>
+    <div style="color:var(--muted);margin-top:6px">O que precisa de você aparece primeiro. Você aprova, o sistema faz.</div>
+  </div>
+</header>
+<p id="external-effects-status" class="msg" role="status" aria-live="polite" hidden>Envios desativados. As ações do painel antigo estão bloqueadas; pedidos e revisões do Thunder OS continuam disponíveis.</p>
+<nav class="abas" id="abas" role="tablist" aria-label="Seções do painel" hidden>
+  <button type="button" role="tab" data-aba="hoje" aria-selected="false">Hoje<span class="qt" id="qt-hoje"></span></button>
+  <button type="button" role="tab" data-aba="conversas" aria-selected="false">Conversas<span class="qt" id="qt-conversas"></span></button>
+  <button type="button" role="tab" data-aba="aprovar" aria-selected="false">Para aprovar<span class="qt" id="qt-aprovar"></span></button>
+  <button type="button" role="tab" data-aba="contas" aria-selected="false">Contas<span class="qt" id="qt-contas"></span></button>
+</nav>
+
+<main class="hoje" id="sec-hoje" data-painel="hoje" hidden>
+  <header><h2 style="font-size:26px;text-transform:none;letter-spacing:0;color:var(--text)">Hoje</h2><p>Um resumo curto para você começar pelo que importa.</p></header>
+  <section class="grupo-dia" id="hoje-pedido" aria-labelledby="h-hoje-pedido">
+    <h2 id="h-hoje-pedido">Pedir pesquisa ou preparo</h2>
+    <form class="pedido-dia" id="os-pedido">
+      <label for="os-pedido-tipo">O que vamos preparar?</label>
+      <select id="os-pedido-tipo"><option value="research">Pesquisa de conta</option><option value="copy">Preparar mensagem</option></select>
+      <label for="os-pedido-conta">Domínio da empresa</label>
+      <input id="os-pedido-conta" type="text" autocomplete="off" placeholder="empresa.com.br" required aria-describedby="os-pedido-ajuda">
+      <p id="os-pedido-ajuda">Preparar mensagem usa uma pesquisa já validada. O pedido registra trabalho; a execução depende da configuração disponível e não envia mensagens.</p>
+      <label for="os-pedido-texto">O que você precisa?</label>
+      <textarea id="os-pedido-texto" rows="2" placeholder="Ex.: pesquise a conta Acme e diga se vale abordar agora"></textarea>
+      <div class="acoes"><span class="msg" id="os-pedido-msg" role="status" aria-live="polite"></span><button class="btn pri" type="submit">Pedir</button></div>
+    </form>
+  </section>
+  <section class="grupo-dia" id="hoje-thunder-os" aria-labelledby="h-hoje-thunder-os">
+    <h2 id="h-hoje-thunder-os">Trabalho acompanhado</h2>
+    <p id="thunder-os-status" role="status" aria-live="polite">Aguardando consulta.</p><button class="btn" type="button" id="thunder-os-refresh">Atualizar andamento</button>
+    <div class="cards" id="thunder-os-readback"><p class="vazio">Carregando o andamento…</p></div>
+  </section>
+  <section class="grupo-dia" id="hoje-conexoes" aria-labelledby="h-hoje-conexoes">
+    <h2 id="h-hoje-conexoes">Novas conexões</h2>
+    <p id="conexoes-status" role="status" aria-live="polite">Aguardando consulta.</p>
+    <div class="acoes" role="group" aria-label="Consulta de conexões">
+      <button class="btn" type="button" id="conexoes-refresh">Atualizar conexões</button>
+      <button class="btn" type="button" id="conexoes-actions" aria-pressed="true">Ações</button>
+      <button class="btn" type="button" id="conexoes-history" aria-pressed="false">Histórico</button>
+    </div>
+    <p id="conexoes-resumo" class="vazio" role="status" aria-live="polite">Totais ainda não consultados.</p>
+    <p id="conexoes-contagens" class="vazio"></p>
+    <div id="conexoes-readback"><p class="vazio">Carregando conexões…</p></div>
+    <div class="acoes" role="group" aria-label="Páginas de conexões">
+      <button class="btn" type="button" id="conexoes-prev" disabled>Anterior</button>
+      <button class="btn" type="button" id="conexoes-next" disabled>Próxima página</button>
+    </div>
+  </section>
+  <section class="grupo-dia" id="hoje-integracoes" aria-labelledby="h-hoje-integracoes">
+    <h2 id="h-hoje-integracoes">Integrações e rascunhos</h2>
+    <details>
+      <summary>Ver disponibilidade e rascunhos locais</summary>
+      <p id="thunder-integrations-status" role="status" aria-live="polite">Aguardando consulta.</p>
+      <div id="thunder-integrations-readback"><p class="vazio">O andamento das integrações aparecerá após a consulta.</p></div>
+    </details>
+  </section>
+  <section class="grupo-dia" id="hoje-connectsafely" aria-labelledby="h-connectsafely">
+    <h2 id="h-connectsafely">LinkedIn</h2>
+    <p>Consulte conversas salvas e prepare uma ação para revisão. A leitura do histórico e a disponibilidade para agir são verificadas separadamente.</p>
+    <div id="connectsafely-monitor">
+      <details><summary>Atualização das conversas</summary>
+        <p>O histórico pode estar incompleto. Ler aqui não marca mensagens como lidas no LinkedIn.</p>
+        <button class="btn" type="button" data-monitor-refresh>Conferir atualização</button>
+        <p data-monitor-status role="status" aria-live="polite">Atualização ainda não consultada.</p>
+      </details>
+    </div>
+    <form id="connectsafely-console-form">
+      <p data-cs-account>Consulte as conversas para identificar a conta observada.</p>
+      <div class="acoes"><button class="btn" type="button" data-cs-inbox>Ver conversas salvas</button><button class="btn" type="button" data-cs-status-button>Conferir disponibilidade</button><button class="btn" type="button" data-cs-history>Histórico de ações</button></div>
+      <p data-cs-status role="status" aria-live="polite">Nenhuma consulta realizada.</p>
+      <details><summary>Informações para suporte</summary><div data-cs-diagnostics>Sem diagnóstico nesta consulta.</div></details>
+      <div data-cs-list></div><div data-cs-conversation aria-live="polite"></div>
+      <details><summary>Preparar uma ação</summary>
+        <p>Escolha o alvo, escreva e revise. Um rascunho não aprova nem envia uma ação.</p>
+        <label for="cs-action">O que você quer fazer?</label><select id="cs-action" name="action"><option value="dm">Enviar mensagem</option><option value="invite">Convidar para conectar</option><option value="comment">Comentar uma publicação</option><option value="reply">Responder a um comentário</option><option value="react_post">Reagir a uma publicação</option></select>
+        <div data-cs-field-person><label for="cs-target-select">Conversa salva</label><select id="cs-target-select" data-cs-target-select><option value="">Consulte as conversas acima</option></select>
+        <label for="cs-target-url">Ou cole o link do perfil no LinkedIn</label><input id="cs-target-url" name="target_url" type="url" maxlength="2000" placeholder="https://www.linkedin.com/in/…" autocomplete="off"><p class="ajuda">O perfil precisa ser confirmado antes de qualquer ação. O link sozinho não confirma a identidade.</p></div>
+        <div data-cs-field-post hidden><label for="cs-post-url">Link da publicação no LinkedIn</label><input id="cs-post-url" name="post_url" type="url" maxlength="2000" placeholder="https://www.linkedin.com/feed/update/…" autocomplete="off"></div>
+        <div data-cs-field-parent hidden><p>Ao revisar, os comentários disponíveis serão consultados para você escolher a resposta certa.</p><div data-cs-comment-choices></div></div>
+        <input type="hidden" name="recipient_public_id"><input type="hidden" name="recipient_profile_urn"><input type="hidden" name="conversation_urn"><input type="hidden" name="post_urn"><input type="hidden" name="parent_comment_urn">
+        <div data-cs-field-reaction hidden><label for="cs-reaction">Reação</label><select id="cs-reaction" name="reaction_type"><option value="LIKE">Gostei</option><option value="PRAISE">Parabéns</option><option value="APPRECIATION">Apoio</option><option value="EMPATHY">Amei</option><option value="INTEREST">Genial</option><option value="ENTERTAINMENT">Engraçado</option></select></div>
+        <div data-cs-field-content><label for="cs-content">Texto da ação</label><textarea id="cs-content" name="content" maxlength="8000" rows="5"></textarea></div>
+        <button class="btn" type="submit" data-cs-prepare>Revisar rascunho</button>
+        <div data-cs-review aria-live="polite"></div>
+        <button class="btn" type="button" data-cs-back hidden>Voltar ao rascunho</button>
+        <button class="btn pri" type="button" data-cs-execute disabled hidden>Aprovar esta ação e colocar na fila</button>
+        <button class="btn" type="button" data-cs-refresh disabled hidden>Conferir resultado</button>
+        <button class="btn" type="button" data-cs-reconcile disabled hidden>Conferir sem reenviar</button>
+        <button class="btn" type="button" data-cs-recover disabled hidden>Liberar revisão da tentativa não enviada</button>
+      </details>
+    </form>
+  </section>
+  <section class="grupo-dia" id="hoje-hubspot" aria-labelledby="h-hoje-hubspot">
+    <h2 id="h-hoje-hubspot">Contato no HubSpot</h2>
+    <details>
+      <summary>Preparar e revisar um contato</summary>
+      <p>Crie ou atualize um contato após conferir os dados. Empresas e negócios não fazem parte deste formulário. Nenhuma mensagem será enviada.</p>
+      <form id="hubspot-contact-form">
+        <button class="btn" type="button" data-hs-verify>Conferir acesso ao HubSpot</button>
+        <label for="hs-firstname">Nome (obrigatório)</label><input id="hs-firstname" name="firstname" type="text" autocomplete="given-name" maxlength="200" required>
+        <label for="hs-lastname">Sobrenome</label><input id="hs-lastname" name="lastname" type="text" autocomplete="family-name" maxlength="200">
+        <label for="hs-email">E-mail (obrigatório)</label><input id="hs-email" name="email" type="email" autocomplete="email" maxlength="254" required>
+        <label for="hs-jobtitle">Cargo</label><input id="hs-jobtitle" name="jobtitle" type="text" autocomplete="organization-title" maxlength="200">
+        <label for="hs-phone">Telefone</label><input id="hs-phone" name="phone" type="tel" autocomplete="tel" maxlength="100">
+        <button class="btn" type="submit" data-hs-prepare disabled>Preparar prévia</button>
+        <p data-hs-status role="status" aria-live="polite">Confira o acesso antes de preparar o contato.</p>
+        <div data-hs-review></div>
+        <button class="btn pri" type="button" data-hs-execute disabled>Confirmar gravação deste contato</button>
+        <button class="btn" type="button" data-hs-reconcile hidden disabled>Rever no CRM</button>
+      </form>
+    </details>
+  </section>
+  <section class="grupo-dia" id="hoje-seqd" aria-labelledby="h-hoje-seqd">
+    <h2 id="h-hoje-seqd">E-mail</h2>
+    <details><summary>Consultar caixa e preparar e-mail</summary>
+      <p>Caixa: ygor.bueno@thundermustard.com · consulte a conexão abaixo. A caixa atualiza quando você solicitar.</p>
+      <form id="seqd-console-form">
+        <button class="btn" type="button" data-seqd-verify>Conferir conexão</button>
+        <button class="btn" type="button" data-seqd-messages>Consultar até 10 mensagens</button>
+        <div data-seqd-list></div><div data-seqd-message></div>
+        <label for="seqd-to">Para (um e-mail, obrigatório)</label><input id="seqd-to" name="to" type="email" required maxlength="254" autocomplete="off">
+        <label for="seqd-subject">Assunto (obrigatório)</label><input id="seqd-subject" name="subject" required maxlength="200" autocomplete="off">
+        <label for="seqd-body">Mensagem (obrigatória)</label><textarea id="seqd-body" name="body" required maxlength="20000" rows="7"></textarea>
+        <button class="btn" type="submit" data-seqd-prepare>Preparar revisão</button>
+        <p role="status" aria-live="polite" data-seqd-status>Nenhuma consulta realizada. O texto fica local até preparar a revisão.</p>
+        <div data-seqd-review></div>
+        <button class="btn pri" type="button" data-seqd-execute disabled>Aprovar e enviar este e-mail</button>
+        <button class="btn" type="button" data-seqd-reconcile hidden>Conferir resultado sem reenviar</button>
+      </form>
+    </details>
+  </section>
+  <section class="grupo-dia" id="hoje-responder" aria-labelledby="h-hoje-responder">
+    <div class="grupo-topo"><h2 id="h-hoje-responder">Responder primeiro</h2><button class="ver-todas" id="hoje-responder-todas" type="button" data-ir="conversas" hidden></button></div>
+    <div class="cards" id="hoje-respostas"><p class="vazio">Carregando respostas…</p></div>
+  </section>
+  <section class="grupo-dia" id="hoje-conferir" aria-labelledby="h-hoje-conferir">
+    <div class="grupo-topo"><h2 id="h-hoje-conferir">Para conferir</h2><button class="ver-todas" id="hoje-conferir-todas" type="button" data-ir="aprovar" hidden></button></div>
+    <div class="cards" id="hoje-aprovacoes"><p class="vazio">Carregando itens…</p></div>
+  </section>
+  <section class="grupo-dia" id="hoje-oportunidades" aria-labelledby="h-hoje-oportunidades">
+    <div class="grupo-topo"><h2 id="h-hoje-oportunidades">Boas oportunidades</h2><button class="ver-todas" id="hoje-oportunidades-todas" type="button" data-ir="contas" hidden></button></div>
+    <div class="quentes-lista" id="hoje-quentes"><p class="vazio">Carregando oportunidades…</p></div>
+  </section>
+  <section class="grupo-dia aprendizado" id="aprendizado" hidden aria-labelledby="h-aprendizado">
+    <h2 id="h-aprendizado">Uma coisa que aprendemos</h2>
+    <h3 id="aprendizado-hipotese"></h3><p id="aprendizado-evidencia"></p>
+    <div class="aprendizado-detalhes" id="aprendizado-detalhes" hidden></div>
+    <div class="acoes"><button class="btn pri" type="button" data-sugestao="testando">Testar</button><button class="btn" type="button" data-sugestao="ignorada">Agora não</button><button class="btn fraco" type="button" id="aprendizado-entender" aria-expanded="false">Entender melhor</button><span class="msg" id="aprendizado-msg" role="status"></span></div>
+  </section>
+  <section class="grupo-dia tudo-dia" id="hoje-vazio" hidden><h2>Nenhuma pendência nesta consulta</h2><p>As listas serão atualizadas conforme as integrações consultarem novos dados. Consulte a disponibilidade de cada canal.</p></section>
+</main>
+
+<section class="prospeccao" id="sec-quentes" data-painel="contas" aria-labelledby="h-quentes" hidden>
+  <div class="voce-topo"><h2 id="h-quentes">Contas quentes hoje</h2><span class="estado" id="quentes-estado">Carregando contas…</span></div>
+  <div class="quentes-lista" id="quentes"></div>
+</section>
+
+<section class="prospeccao" id="sec-respostas" data-painel="conversas" aria-labelledby="h-respostas" hidden>
+  <div class="voce-topo"><h2 id="h-respostas">Responderam</h2><span class="estado" id="respostas-estado" role="status">Carregando respostas…</span></div>
+  <div class="porque">As respostas mais antigas aparecem primeiro. Amarelo após 4 horas úteis; vermelho após 24 horas corridas. Horas úteis: segunda a sexta, das 9h às 18h, no horário de São Paulo, sem descontar feriados.</div>
+  <div class="cards" id="respostas"></div>
+</section>
+<section class="prospeccao" id="sec-aceites" data-painel="conversas" aria-labelledby="h-aceites" hidden>
+  <div class="voce-topo"><h2 id="h-aceites">Aceitaram seu convite</h2><span class="estado" id="aceites-estado" role="status">Carregando aceites…</span></div>
+  <div class="cards" id="aceites"></div>
+</section>
+<section class="prospeccao" id="aprovar-topo" data-painel="aprovar" aria-labelledby="h-aprovar" hidden>
+  <div class="voce-topo"><h2 id="h-aprovar">Para aprovar</h2><span class="estado" id="aprovar-total">0 pendentes</span></div>
+  <div class="filtros" id="aprovar-filtros" role="group" aria-label="Filtrar itens para aprovar">
+    <button type="button" data-filtro-aprovar="mensagens" aria-pressed="true">Mensagens</button>
+    <button type="button" data-filtro-aprovar="comentarios" aria-pressed="true">Comentários</button>
+    <button type="button" data-filtro-aprovar="decisoes" aria-pressed="true">Pedidos e decisões</button>
+  </div>
+</section>
+<section class="prospeccao" id="sec-mensagens" data-painel="aprovar" aria-labelledby="h-mensagens" hidden>
+  <div class="voce-topo"><h2 id="h-mensagens">Sugestões de mensagem</h2><span class="estado" id="mensagens-estado" role="status"></span></div>
+  <div class="cards" id="mensagens"></div>
+</section>
+<section class="prospeccao" id="sec-comentarios" data-painel="aprovar" aria-labelledby="h-comentarios" hidden>
+  <div class="voce-topo"><h2 id="h-comentarios">Sugestões de comentário</h2><span class="estado" id="comentarios-estado" role="status"></span></div>
+  <div class="porque">Posts recentes das pessoas que você está aquecendo. Nada é comentado sem a sua aprovação.</div>
+  <div class="cards" id="comentarios"></div>
+</section>
+<dialog class="conta-painel" id="conta-painel" aria-labelledby="conta-titulo">
+  <div class="conta-topo"><h2 id="conta-titulo">Ficha da conta</h2><button class="btn" id="conta-fechar" type="button" autofocus>Fechar</button></div>
+  <div id="conta-conteudo" aria-live="polite"></div>
+  <button class="btn" id="conta-tentar" type="button" hidden>Tentar novamente</button>
+</dialog>
+<section class="voce" data-painel="aprovar" aria-labelledby="h-voce">
+  <div class="voce-topo">
+    <h2 id="h-voce">Precisa de você</h2>
+    <span class="estado" id="dec-estado">carregando decisões…</span>
+  </div>
+  <div class="cards" id="decisoes"></div>
+  <ul class="pend" id="pend" hidden></ul>
+  <form class="pedido" id="pedido" hidden>
+    <label class="rot" for="pedido-txt">Pedir pesquisa ou preparo</label>
+    <textarea id="pedido-txt" rows="2" placeholder="Ex.: pesquisa a Agro Baggio e me traz uma abordagem para o Roberto Petri"></textarea>
+    <div class="acoes"><span class="msg" id="pedido-msg"></span><button class="btn" type="submit">Enviar pedido</button></div>
+  </form>
+  <details class="resolvidos" id="resolvidos" hidden><summary>Resolvidos</summary><ul id="resolvidos-lista"></ul></details>
+</section>
+
+<details class="detalhes-sistema" id="detalhes-sistema">
+<summary>Detalhes do sistema</summary>
+<div class="sync" id="sync"></div>
+<section class="abm" id="sec-abm" aria-labelledby="h-abm">
+  <div class="voce-topo">
+    <h2 id="h-abm">Contas ABM</h2>
+    <button type="button" class="btn" id="abm-atualizar">Atualizar ABM</button>
+  </div>
+  <div class="abm-contagens" id="abm-contagens" hidden></div>
+  <p class="sub" id="abm-estado" role="status" aria-live="polite">Carregando observações ABM…</p>
+  <p class="sub" id="abm-frescor">Verificação referente à data observada; o CRM pode ter mudado depois.</p>
+  <div class="tabela" id="abm-tabela" role="region" aria-label="Observações ABM por conta" tabindex="0" hidden>
+    <table aria-labelledby="h-abm">
+      <thead><tr><th scope="col">Conta</th><th scope="col">Situação observada</th><th scope="col">Observada em</th><th scope="col">Negócio</th><th scope="col">Recibo</th></tr></thead>
+      <tbody id="abm-contas"></tbody>
+    </table>
+  </div>
+  <p class="sub" id="abm-lote-estado" role="status">Carregando inventário do lote…</p>
+  <details id="abm-lote" hidden>
+    <summary>Inventário do lote</summary>
+    <div class="abm-contagens" id="abm-lote-contagens"></div>
+    <div class="tabela" role="region" aria-label="Convites do lote ABM" tabindex="0">
+      <table><thead><tr><th scope="col">Índice na origem</th><th scope="col">Conta</th><th scope="col">Situação do convite</th><th scope="col">IDs e pendências</th></tr></thead>
+        <tbody id="abm-lote-itens"></tbody>
+      </table>
+    </div>
+  </details>
+</section>
+
+<details class="mais">
+<summary>Ver números, contas e atividade</summary>
+<section aria-labelledby="h-sem">
+  <h2 id="h-sem">Últimos 7 dias</h2>
+  <div class="kpis" id="kpis"></div>
+</section>
+
+<div class="duas">
+  <section aria-labelledby="h-contas">
+    <h2 id="h-contas">Contas</h2>
+    <div class="tabela"><table><thead><tr><th>Conta</th><th>Estágio</th><th>Última ação</th><th class="num">Resp.</th></tr></thead><tbody id="contas"></tbody></table></div>
+  </section>
+  <section aria-labelledby="h-fila">
+    <h2 id="h-fila">Fila LinkedIn</h2>
+    <div class="tabela"><table><thead><tr><th>Pessoa</th><th>Última ação</th></tr></thead><tbody id="fila"></tbody></table></div>
+  </section>
+</div>
+
+<section aria-labelledby="h-feed">
+  <div style="display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px;align-items:center">
+    <h2 id="h-feed">Atividade</h2>
+    <div class="filtros" id="filtros" role="group" aria-label="Filtrar por agente"></div>
+  </div>
+  <ul class="feed" id="feed"></ul>
+</section>
+
+</details>
+
+<p class="rodape" id="rodape">Gerado de <code>~/thunder-gtm</code> (log <code>_log/atividade.jsonl</code>, <code>contas/</code>, <code>fila-linkedin.md</code>). No Mac atualiza a cada 10 min; aqui, a cada rodada das rotinas.</p>
+</details>
+
+<script id="abm-client">
+(function(){
+'use strict';
+const modo = /*MODO*/'artifact';
+const $ = id => document.getElementById(id);
+const estados = {VERIFIED:'Verificada', NEEDS_RECONCILIATION:'Precisa de reconciliação', UNVERIFIED:'Não verificada'};
+const motivos = {
+  portal:'Portal', canonical_identity:'Identidade canônica', deal_properties:'Propriedades do negócio',
+  company_association:'Vínculo da empresa', contact_association:'Vínculo do contato',
+  note_association:'Vínculo da nota', task_association:'Vínculo da tarefa', company_exists:'Empresa existente',
+  contact_identity:'Identidade do contato', unique_contact_pipeline:'Mais de um negócio do contato no pipeline',
+  unique_company_pipeline:'Mais de um negócio da empresa no pipeline', note_body:'Conteúdo da nota',
+  task_completed:'Conclusão da tarefa', task_subject:'Assunto da tarefa', task_timestamp:'Data da tarefa',
+  portal_mismatch:'Portal divergente', readback_failed:'Falha na leitura de confirmação'
+};
+const idLabels = {company:'Empresa', contact:'Contato', deal:'Negócio', note:'Nota', task:'Tarefa'};
+let ocupado = false, timer, assinatura = '', anterior = false;
+function no(tag, texto, classe) {
+  const el = document.createElement(tag);
+  if(texto !== undefined) el.textContent = String(texto);
+  if(classe) el.className = classe;
+  return el;
+}
+function idade(stamp) {
+  const minutos = Math.floor((Date.now() - Date.parse(stamp))/60000);
+  if(minutos < 0) return 'Data futura; confira o horário da observação';
+  if(minutos < 1) return 'Há menos de 1 min';
+  if(minutos < 60) return 'Há ' + minutos + ' min';
+  if(minutos < 1440) return 'Há ' + Math.floor(minutos/60) + ' h';
+  return 'Há ' + Math.floor(minutos/1440) + ' dias';
+}
+const categorias = {
+  STRUCTURAL_COMPLETE:'Estrutura presente; dossiê não auditado',
+  NEEDS_RECONCILIATION:'Precisa de reconciliação', MISSING_DATA:'Faltam dados',
+  MISSING_RESEARCH:'Falta pesquisa', UNVERIFIED:'Não verificado'
+};
+const motivosLote = {
+  company_missing_or_duplicate:'Empresa ausente ou duplicada',
+  contact_missing_or_duplicate:'Contato ausente ou duplicado',
+  contact_specific_completed_task_not_proven:'Tarefa concluída desta pessoa não comprovada',
+  contact_specific_note_not_proven:'Dossiê desta pessoa não comprovado',
+  existing_content_needs_quality_review:'Conteúdo existente precisa de revisão',
+  hunter_deal_missing_or_duplicate:'Negócio Hunter ausente ou duplicado',
+  legacy_url_attribution_requalified:'Atribuição antiga por URL reavaliada',
+  note_identity_name_only_url_unverified:'Nota identificada pelo nome; URL não comprovada',
+  other_contact_note_excluded:'Nota de outra pessoa não usada como evidência',
+  other_contact_task_excluded:'Tarefa de outra pessoa não usada como evidência',
+  research_claims_not_independently_verified:'Fontes da pesquisa ainda não verificadas independentemente',
+  task_correlated_by_source_minute_only:'Tarefa relacionada apenas pelo horário aproximado',
+  task_identity_name_only_url_unverified:'Tarefa identificada pelo nome; URL não comprovada',
+  approved_body_reference_not_located:'Referência do conteúdo aprovado não localizada',
+  company_missing_or_nonunique:'Empresa ausente ou sem identificação única',
+  completed_task_missing:'Tarefa concluída não localizada',
+  contact_missing_or_nonunique:'Contato ausente ou sem identificação única',
+  crm_readback_predates_completed_writer:'Leitura do CRM anterior à conclusão da gravação',
+  dossier_note_missing:'Nota do dossiê não localizada',
+  existing_writer_running:'Gravação existente em andamento',
+  hunter_deal_missing:'Negócio Hunter não localizado',
+  invite_task_url_provenance_unverified:'Origem da URL na tarefa de convite não verificada',
+  multiple_hunter_deals:'Mais de um negócio Hunter',
+  required_section_not_detected:'Seção obrigatória não detectada',
+  tier_or_owner_missing:'Tier ou responsável ausente',
+  ...motivos, duplicate_deal:'Negócios duplicados', duplicate_contact:'Contatos duplicados',
+  missing_contact:'Contato ausente', missing_deal:'Negócio ausente', missing_company:'Empresa ausente',
+  missing_note:'Nota ausente', missing_task:'Tarefa ausente', missing_research:'Pesquisa ausente',
+  missing_source_links:'Fontes ausentes', missing_tier_owner:'Tier ou responsável ausente',
+  contact:'Contato', hunter_deal:'Negócio Hunter', company:'Empresa', note:'Nota',
+  sections_complete:'Seções do dossiê', source_links:'Fontes do dossiê',
+  completed_invite_task:'Tarefa de convite concluída', tier_owner:'Tier e responsável',
+  unverified:'Não verificado', unrecognized_reason:'Motivo não reconhecido'
+};
+let assinaturaLote = '';
+function desenharLote(batch) {
+  if(!batch?.available || !Number.isFinite(Date.parse(batch.observed_at)) ||
+     !Array.isArray(batch.items) || !Number.isInteger(batch.total) || batch.total!==batch.items.length ||
+     !batch.counts || batch.items.some(c=>!Object.hasOwn(categorias,c.category) ||
+       typeof c.account_slug!=='string' || !Array.isArray(c.reason_codes) || !c.ids)) {
+    if($('abm-lote').contains(document.activeElement)) $('abm-atualizar').focus({preventScroll:true});
+    $('abm-lote').hidden=true;
+    $('abm-lote-estado').textContent='Lote indisponível. As observações de contas continuam acima.';
+    return;
+  }
+  const assinaturaNova = JSON.stringify(batch.items);
+  if(assinaturaLote !== assinaturaNova) {
+    const linhas=batch.items.map(c=>{
+      const tr=no('tr'); tr.append(no('td',c.source_index),no('td',c.account_slug),no('td',categorias[c.category]));
+      const detalhe=no('td'), lista=no('ul');
+      for(const [key,label] of Object.entries(idLabels)) {
+        const valores=Array.isArray(c.ids[key])?c.ids[key].filter(v=>/^[0-9]{1,32}$/.test(String(v))):[];
+        if(valores.length) lista.append(no('li',label+': '+valores.join(', ')));
+      }
+      if(!lista.childElementCount) lista.append(no('li','IDs não registrados'));
+      for(const code of c.reason_codes) lista.append(no('li',Object.hasOwn(motivosLote,code)?motivosLote[code]:'Motivo não reconhecido'));
+      detalhe.append(lista); tr.append(detalhe); return tr;
+    });
+    $('abm-lote-itens').replaceChildren(...linhas); assinaturaLote=assinaturaNova;
+  }
+  $('abm-lote-contagens').replaceChildren(...Object.entries(categorias).map(([code,label])=>
+    no('span',label+': '+(Number.isInteger(batch.counts[code])?batch.counts[code]:0))));
+  $('abm-lote-estado').textContent='Convites na origem: '+batch.total+'. Observados em '+
+    new Date(batch.observed_at).toLocaleString('pt-BR')+' ('+idade(batch.observed_at)+').';
+  $('abm-lote').hidden=false;
+}
+function desenhar(dados) {
+  if(!Array.isArray(dados.accounts) || !dados.counts || !Number.isFinite(Date.parse(dados.consulted_at)) ||
+     !['total','verified','reconciliation','unverified'].every(k=>Number.isInteger(dados.counts[k]) && dados.counts[k]>=0) ||
+     dados.counts.total !== dados.accounts.length ||
+     dados.accounts.some(c=>typeof c.account_slug!=='string' || !Object.hasOwn(estados,c.status) ||
+       !Number.isFinite(Date.parse(c.observed_at)) || !c.ids || !Array.isArray(c.reason_codes))) throw Error('invalid');
+  const texto = JSON.stringify(dados.accounts);
+  if(texto !== assinatura) {
+    const abertos = new Set([...$('abm-contas').querySelectorAll('details[open]')].map(d=>d.closest('tr').dataset.conta));
+    const ativo = document.activeElement;
+    const contaAtiva = ativo?.closest('#abm-contas tr')?.dataset.conta;
+    const tagAtiva = ativo?.tagName === 'SUMMARY' ? 'summary' : ativo?.tagName === 'A' ? 'a' : null;
+    const linhas = dados.accounts.map(c=>{
+      const tr = no('tr'); tr.dataset.conta = c.account_slug;
+      tr.append(no('td', c.account_slug));
+      tr.append(no('td', estados[c.status], c.status==='VERIFIED'?'abm-verificado':c.status==='NEEDS_RECONCILIATION'?'abm-reconciliar':''));
+      const observada = no('td');
+      const time = no('time', new Date(c.observed_at).toLocaleString('pt-BR')); time.dateTime = c.observed_at;
+      const idadeEl = no('div', idade(c.observed_at), 'sub'); idadeEl.dataset.observada = c.observed_at;
+      observada.append(time, idadeEl); tr.append(observada);
+      const negocio = no('td');
+      const id = String(c.deal_id || '');
+      const url = 'https://app.hubspot.com/contacts/51412240/record/0-3/' + id;
+      if(/^[0-9]{1,32}$/.test(id) && c.hubspot_url === url) {
+        const link = no('a', id); link.href = url; link.target = '_blank'; link.rel = 'noopener noreferrer';
+        link.setAttribute('aria-label', 'Abrir negócio ' + id + ' no HubSpot (nova aba)'); negocio.append(link);
+      } else negocio.textContent = 'Link indisponível';
+      tr.append(negocio);
+      const recibo = no('td'), details = no('details'), summary = no('summary', 'Ver recibo');
+      summary.setAttribute('aria-label', 'Ver recibo de ' + c.account_slug);
+      details.open = abertos.has(c.account_slug); details.append(summary);
+      details.append(no('p', 'Observação #' + String(c.id)));
+      const lista = no('ul');
+      for(const [key, label] of Object.entries(idLabels)) {
+        const valor = c.ids[key];
+        lista.append(no('li', label + ': ' + (/^[0-9]{1,32}$/.test(String(valor)) ? valor : 'indisponível')));
+      }
+      details.append(lista);
+      details.append(no('p', c.reason_codes.length?'Pendências observadas':'Sem pendências registradas'));
+      if(c.reason_codes.length) {
+        const razoes = no('ul');
+        for(const code of c.reason_codes) razoes.append(no('li', Object.hasOwn(motivos,code)?motivos[code]:'Motivo não reconhecido'));
+        details.append(razoes);
+      }
+      recibo.append(details); tr.append(recibo); return tr;
+    });
+    $('abm-contas').replaceChildren(...linhas); assinatura = texto;
+    if(contaAtiva && tagAtiva) {
+      const destino = linhas.find(tr=>tr.dataset.conta===contaAtiva)?.querySelector(tagAtiva);
+      (destino || $('abm-atualizar')).focus({preventScroll:true});
+    }
+  }
+  for(const el of $('abm-contas').querySelectorAll('[data-observada]')) el.textContent=idade(el.dataset.observada);
+  const rotulos = {total:'Contas', verified:'Verificadas', reconciliation:'A reconciliar', unverified:'Não verificadas'};
+  $('abm-contagens').replaceChildren(...Object.entries(rotulos).map(([k,label])=>no('span',label+': '+dados.counts[k])));
+  $('abm-contagens').hidden=false;
+  $('abm-tabela').hidden=!dados.accounts.length;
+  $('abm-estado').className='sub';
+  $('abm-estado').textContent=dados.accounts.length
+    ? 'Consulta atualizada em ' + new Date(dados.consulted_at).toLocaleString('pt-BR') + '.'
+    : 'Nenhuma observação ABM registrada. Atualize após uma nova conferência de conta.';
+  desenharLote(dados.batch);
+  anterior=true;
+}
+async function atualizar() {
+  if(ocupado || document.hidden) return;
+  ocupado=true; clearTimeout(timer);
+  $('sec-abm').setAttribute('aria-busy','true'); $('abm-atualizar').setAttribute('aria-disabled','true');
+  const controle=new AbortController(), limite=setTimeout(()=>controle.abort(),20000);
+  try {
+    const resposta=await fetch('/api/abm',{method:'GET',credentials:'same-origin',cache:'no-store',signal:controle.signal});
+    if(!resposta.ok) throw Error('unavailable');
+    desenhar(await resposta.json());
+  } catch(e) {
+    $('abm-estado').className='abm-erro';
+    $('abm-estado').textContent=(anterior?'Dados anteriores. ':'')+
+      'ABM indisponível. Não foi possível atualizar as observações. Tente Atualizar ABM.';
+  } finally {
+    clearTimeout(limite); ocupado=false;
+    $('sec-abm').setAttribute('aria-busy','false'); $('abm-atualizar').removeAttribute('aria-disabled');
+    timer=setTimeout(atualizar,30000);
+  }
+}
+if(modo!=='servidor') {
+  $('abm-estado').textContent='Observações ABM disponíveis no painel conectado ao servidor.';
+  $('abm-atualizar').hidden=true;
+  $('abm-lote-estado').textContent='Inventário do lote disponível no painel conectado ao servidor.';
+  return;
+}
+$('abm-atualizar').addEventListener('click',atualizar);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&$('detalhes-sistema').open) atualizar();});
+$('detalhes-sistema').addEventListener('toggle',()=>{if($('detalhes-sistema').open&&!anterior) atualizar();});
+})();
+</script>
+
+<script id="dados" type="application/json">/*DADOS*/{}</script>
+<script>
+(function(){
+const D = JSON.parse(document.getElementById('dados').textContent || '{}');
+const E = D.eventos || [], C = D.contas || [], F = D.fila || [];
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const dt = s => { const d = new Date(s); return isNaN(d) ? null : d; };
+const quando = s => { const d = dt(s); if(!d) return esc(s||''); const h = new Date();
+  const dia = d.toDateString()===h.toDateString() ? 'hoje' : d.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'});
+  return dia + ' ' + d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}); };
+const nomeAg = {hermes:'Hermes',unipile:'Unipile · histórico, sem fallback',chrome:'Chrome',claude:'Claude',ygor:'Ygor'};
+const chipAg = a => `<span class="chip a-${esc(a)}">${esc(nomeAg[a]||a||'?')}</span>`;
+const chipT = t => `<span class="chip t-${esc(t)}">${esc(t)}</span>`;
+const nomeConta = slug => (C.find(c=>c.slug===slug)||{}).nome || slug || '';
+
+// sync
+const s = document.getElementById('sync');
+const [sts, smsg] = (D.sync||'').split('|');
+const sd = dt(sts); const velho = !sd || (Date.now()-sd) > 36e5*3;
+s.innerHTML = `<span class="pt ${velho?'velho':''}"></span>último sync ${sd?quando(sts):'sem dado'}<br>painel gerado ${D.gerado?quando(D.gerado):'?'}`;
+
+// precisa de voce: respostas e comentarios sugeridos das ultimas 72h, erros das ultimas 24h
+const agora = Date.now();
+const pend = E.filter(e => { const d = dt(e.ts); if(!d) return false; const idade = agora-d;
+  return (e.tipo==='resposta' && idade<72*36e5) || (e.tipo==='comentario-sugerido' && idade<72*36e5) || (e.tipo==='erro' && idade<24*36e5); });
+document.getElementById('pend').innerHTML = pend.length ? pend.slice(0,12).map(e =>
+  `<li><span class="quando">${quando(e.ts)}</span><span class="txt">${chipT(e.tipo)} <b>${esc(e.pessoa||'')}</b>${e.conta?` · ${esc(nomeConta(e.conta))}`:''} · ${esc(e.resumo)}</span><span>${e.ref?`<span class="chip">${esc(e.ref)}</span>`:''}</span></li>`).join('')
+  : '<li class="vazio">Nada esperando por você agora. Respostas de lead e comentários sugeridos aparecem aqui.</li>';
+
+// kpis 7 dias
+const dias = [...Array(7)].map((_,i)=>{const d=new Date();d.setHours(0,0,0,0);d.setDate(d.getDate()-6+i);return d;});
+const grupos = [['Pesquisas',['pesquisa']],['Copy',['copy','comentario-sugerido']],['Curtidas',['curtida']],['Convites',['convite']],['Mensagens e e-mails',['mensagem','email','comentario']],['Respostas',['resposta']]];
+document.getElementById('kpis').innerHTML = grupos.map(([rot,tipos])=>{
+  const por = dias.map(d0=>{const d1=new Date(d0);d1.setDate(d1.getDate()+1);return E.filter(e=>tipos.includes(e.tipo)&&dt(e.ts)>=d0&&dt(e.ts)<d1).length;});
+  const tot = por.reduce((a,b)=>a+b,0), mx = Math.max(1,...por);
+  return `<div class="kpi"><div class="n">${tot}</div><div class="l">${rot}</div><div class="spark" aria-hidden="true">${por.map(v=>`<i style="height:${Math.round(v/mx*100)}%"></i>`).join('')}</div></div>`;}).join('');
+
+// contas
+const ordem = [...C].sort((a,b)=>((b.ultimo||{}).ts||'').localeCompare((a.ultimo||{}).ts||''));
+document.getElementById('contas').innerHTML = ordem.length ? ordem.map(c=>`<tr><td><b>${esc(c.nome)}</b>${c.proximo?`<div class="sub">${esc(c.proximo)}</div>`:''}</td><td>${c.estagio?`<span class="chip">${esc(c.estagio)}</span>`:'<span class="sub">sem estágio</span>'}</td><td>${c.ultimo?`${chipAg(c.ultimo.agente)} <span class="sub">${esc(c.ultimo.tipo)} · ${quando(c.ultimo.ts)}</span>`:'<span class="sub">nada ainda</span>'}</td><td class="num">${c.respostas||''}</td></tr>`).join('')
+  : '<tr><td colspan="4" class="vazio">Nenhuma conta em <code>contas/</code> ainda. Mande a primeira para o Hermes.</td></tr>';
+
+// fila
+document.getElementById('fila').innerHTML = F.length ? F.map(f=>`<tr><td>${f.url?`<a href="${esc(f.url)}" target="_blank" rel="noopener">${esc(f.pessoa||f.url)}</a>`:esc(f.pessoa)}<div class="sub">${esc(nomeConta(f.conta))}</div></td><td class="sub">${esc(f.ultima||'pendente')}</td></tr>`).join('')
+  : '<tr><td colspan="2" class="vazio">Fila vazia. Leads entram em <code>fila-linkedin.md</code>.</td></tr>';
+
+// feed com filtro
+const ags = ['todos',...new Set(E.map(e=>e.agente).filter(Boolean))];
+let sel = 'todos';
+try { sel = localStorage.getItem('painel-ag') || 'todos'; if(!ags.includes(sel)) sel='todos'; } catch(e){}
+const fEl = document.getElementById('filtros'), feed = document.getElementById('feed');
+function desenha(){
+  fEl.innerHTML = ags.map(a=>`<button type="button" data-a="${esc(a)}" aria-pressed="${a===sel}">${a==='todos'?'Todos':esc(nomeAg[a]||a)}</button>`).join('');
+  const lista = E.filter(e=>sel==='todos'||e.agente===sel).slice(0,80);
+  feed.innerHTML = lista.length ? lista.map(e=>`<li class="${esc(e.tipo)}"><span class="quando">${quando(e.ts)}</span><span>${chipAg(e.agente)}</span><div class="o">${chipT(e.tipo)} ${esc(e.resumo)}<div class="meta">${[e.canal,e.pessoa,e.conta?nomeConta(e.conta):''].filter(Boolean).map(esc).join(' · ')}</div></div></li>`).join('')
+    : '<li class="vazio" style="grid-template-columns:1fr">Sem atividade registrada ainda. Cada ação de Hermes, Claude ou das rotinas vira uma linha aqui.</li>';
+}
+fEl.addEventListener('click', ev=>{const b=ev.target.closest('button'); if(!b) return; sel=b.dataset.a; try{localStorage.setItem('painel-ag',sel)}catch(e){} desenha();});
+desenha();
+})();
+</script>
+
+<script>
+/* Decisões: itens vivem no banco do painel (coleção "itens"). O Ygor aprova, edita,
+   pede para refazer ou pergunta. Aprovar grava no banco e dispara a tarefa executora,
+   que põe na fila-envios.md; a VPS envia pela Unipile. */
+(function(){
+const MODO = /*MODO*/'artifact';
+const EXECUTOR = /*EXECUTOR*/'';
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const agoraISO = () => new Date().toISOString();
+const quando = s => { const d = new Date(s); if (isNaN(d)) return esc(s||''); const h = new Date();
+  const dia = d.toDateString()===h.toDateString() ? 'hoje' : d.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'});
+  return dia + ' ' + d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}); };
+const TIPO = {dm:'mensagem', comentario:'comentário', whatsapp:'WhatsApp', decisao:'decisão', outro:'ação', pedido:'pedido'};
+const ST = {pendente:'pendente', aprovado:'aprovado, executando', 'na-fila':'na fila, sai em até 10 min', enviado:'enviado', erro:'erro', copiar:'copiar', descartado:'descartado', feito:'feito', 'aguardando-confirmacao':'aguardando você confirmar'};
+const ABERTOS = ['pendente','aprovado','na-fila','erro','copiar','aguardando-confirmacao'];
+const estado = $('dec-estado'), box = $('decisoes');
+let db = null, sample = null, mcp = null, apiServidor = null, dono = false, itens = [], regras = [], respostas = [];
+let aceitesIndisponiveis = false;
+const hojeContagens={respostas:0,aprovacoes:0,quentes:0};
+const hojeFalhas={respostas:false,aprovacoes:false,quentes:false};
+const filtrosAprovar=new Set(['mensagens','comentarios','decisoes']);
+const sujo = {};          // id -> texto editado ainda não salvo
+const confirmar = {};     // id -> true quando o botão de aprovar pede confirmação
+const conversa = {};      // id -> resposta do Claude a uma pergunta
+const variantesEscolhidas = {};
+
+// O adaptador mantém o contrato do banco e do sample usados pelo Artifact.
+function adaptadorServidor(){
+  const leitores = new Map();
+  async function api(caminho, metodo='GET', corpo){
+    let resposta;
+    try {
+      const headers=corpo === undefined ? {} : {'Content-Type':'application/json'};
+      if(caminho.startsWith('/api/os/v1/')&&corpo!==undefined){
+        const sessaoResposta=await fetch('/api/os/v1/session',{credentials:'same-origin'});
+        if(!sessaoResposta.ok)throw new Error('Sessão indisponível. Recarregue a página.');
+        const sessao=await sessaoResposta.json();
+        if(!sessao.nonce)throw new Error('Sessão inválida. Recarregue a página.');
+        headers['X-Thunder-Nonce']=sessao.nonce;
+      }
+      resposta = await fetch(caminho, {method:metodo, credentials:'same-origin',
+        headers,
+        ...(corpo === undefined ? {} : {body:JSON.stringify(corpo)})});
+    } catch(e){ throw new Error('Servidor indisponível. Tente novamente.'); }
+    let dados;
+    try { dados = await resposta.json(); }
+    catch(e){ throw new Error('Resposta inválida do servidor. Tente novamente.'); }
+    if (!resposta.ok) { const erro=new Error(dados.erro || 'Não consegui concluir. Tente novamente.'); erro.status=resposta.status; throw erro; }
+    if(caminho==='/api/itens' && metodo==='GET'){
+      const aceitesEstado=resposta.headers?.get?.('X-Painel-Aceites');
+      if(aceitesEstado==='indisponivel'||aceitesEstado==='ok'){
+        aceitesIndisponiveis=aceitesEstado==='indisponivel'; atualizarEstadoAceites();
+      }
+    }
+    return dados;
+  }
+  async function atualizar(nome){
+    await Promise.all([...(leitores.get(nome)||[])].map(ler=>ler()));
+  }
+  const banco = {collection(nome){
+    const caminho = '/api/' + encodeURIComponent(nome);
+    return {
+      doc(id){return {async update(campos){
+        const resultado = await api(caminho+'/'+encodeURIComponent(id),'PATCH',campos);
+        await atualizar(nome); return resultado;
+      }};},
+      async add(obj){
+        const resultado = await api(caminho,'POST',obj);
+        await atualizar(nome); return {id:resultado.id};
+      },
+      onSnapshot(cb, err){
+        let ativo = true, emCurso = null, anterior = null;
+        const ler = () => {
+          if (!ativo) return Promise.resolve();
+          if (emCurso) return emCurso.then(()=>ler());
+          emCurso = (async()=>{
+            try {
+              const lista = await api(caminho);
+              if (!Array.isArray(lista)) throw new Error('Lista inválida do servidor.');
+              const assinatura = JSON.stringify(lista);
+              if (ativo && assinatura !== anterior) {
+                cb({docs:lista.map(({id,...dados})=>({id,data(){return dados}}))});
+                anterior = assinatura;
+              }
+            } catch(e){ anterior = null; if (ativo && err) err(e); }
+          })().finally(()=>{emCurso=null});
+          return emCurso;
+        };
+        if (!leitores.has(nome)) leitores.set(nome,new Set());
+        leitores.get(nome).add(ler);
+        const timer = setInterval(ler,10000);
+        const foco = () => { if (!document.hidden) ler(); };
+        window.addEventListener('focus',foco);
+        document.addEventListener('visibilitychange',foco);
+        ler();
+        return () => {
+          ativo=false; clearInterval(timer); leitores.get(nome).delete(ler);
+          window.removeEventListener('focus',foco);
+          document.removeEventListener('visibilitychange',foco);
+        };
+      }
+    };
+  }};
+  const perguntar = async (prompt, opcoes={}) => {
+    const resultado = await api('/api/perguntar','POST',{prompt,...(opcoes.item_id ? {id:opcoes.item_id} : {})});
+    const text = typeof resultado === 'string' ? resultado : (resultado.texto ?? resultado.text);
+    if (typeof text !== 'string') throw new Error('Resposta inválida do Hermes.');
+    if (opcoes.onText) opcoes.onText({text});
+    return {text};
+  };
+  perguntar.json = (prompt, opcoes={}) => api('/api/perguntar','POST',{prompt,json:true,...(opcoes.item_id ? {id:opcoes.item_id} : {})});
+  return {db:banco,sample:perguntar,apiServidor:api};
+}
+
+/* THUNDER_CONNECTSAFELY_MONITOR_BEGIN */
+(function(root){
+  'use strict';
+  function mount(container,{api}){
+    if(!container)return;
+    const button=container.querySelector('[data-monitor-refresh]'),label=container.querySelector('[data-monitor-status]');
+    const count=n=>Number.isSafeInteger(n)&&n>=0?String(n):'não informado';
+    const date=n=>Number.isFinite(n)&&n>0?new Date(n*1000).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}):'ainda não disponível';
+    const doc=container.ownerDocument;let details;
+    if(doc){details=doc.createElement('details');const summary=doc.createElement('summary');summary.textContent='Informações para suporte';details.appendChild(summary);container.appendChild(details);}
+    async function refresh(){
+      if(button.disabled)return;
+      button.disabled=true;
+      try{
+        const s=await api('/api/os/v1/integrations/connectsafely/monitor','GET');
+        if(!s||typeof s.state!=='string'||typeof s.stale!=='boolean')throw Error('invalid monitor status');
+        const states={healthy:'Consulta concluída',ready:'Consulta concluída',ok:'Consulta concluída',blocked:'Monitor bloqueado',backoff:'Aguardando nova tentativa',running:'Consulta em andamento',unconfigured:'Monitor não configurado',not_started:'Ainda não consultado',error:'Falha na consulta'};
+        label.textContent=(states[s.state]||'Consulta indisponível')+'. '+(s.stale?'Os dados ainda não estão atualizados. ':'Os dados estão recentes dentro da parte consultada. ')+'Última atualização: '+date(s.last_finished_at)+'. Próxima consulta: '+date(s.next_run_at)+'. '+(s.window_complete===true?'Leitura concluída no período e nas conversas consultadas.':'A leitura ainda está parcial; pode haver outras respostas.')+' Esta consulta não autoriza envios.';
+        if(details){while(details.childNodes.length>1)details.removeChild(details.lastChild);const diagnostic=doc.createElement('p');diagnostic.textContent='Conta: '+String(s.account_public_id||'não informada')+'. Conversas listadas: '+count(s.listed_count)+'. Leituras bloqueadas: '+count(s.thread_blocked_count??0)+'. Pendências: '+count(s.pending_count)+'. Atraso do checkpoint (segundos): '+count(s.lag_seconds)+'. GETs nesta rodada: '+count(s.get_count)+'. Mensagens observadas: '+count(s.observed_count)+'. Novas recebidas: '+count(s.incoming_count)+'. Estado: '+s.state;details.appendChild(diagnostic);}
+      }catch(e){label.textContent='Não foi possível consultar o monitor. A cobertura e a atualização estão indisponíveis; não conclua que não houve respostas.';}
+      finally{button.disabled=false;}
+    }
+    button.addEventListener('click',refresh);
+    return {refresh};
+  }
+  root.ThunderConnectSafelyMonitor={mount};
+})(typeof globalThis!=='undefined'?globalThis:this);
+ThunderConnectSafelyMonitor.mount($('connectsafely-monitor'),{api:(...args)=>{
+  if(MODO!=='servidor'||!apiServidor)return Promise.reject(new Error('Consulta indisponível.'));
+  return apiServidor(...args);
+}});
+/* THUNDER_CONNECTSAFELY_MONITOR_END */
+/* THUNDER_CONNECTSAFELY_BEGIN */
+(function(root){
+  'use strict';
+  const base='/api/os/v1/integrations/connectsafely';
+  const actions={dm:'Mensagem',invite:'Convite',comment:'Comentário',reply:'Resposta a comentário',react_post:'Reação'};
+  const states={review_required:'Aguardando sua revisão',queued:'Na fila',running:'Em andamento',sent:'Confirmado',uncertain:'Resultado incerto',blocked:'Ação indisponível',failed:'Precisa de revisão',processed:'Resultado disponível',draft:'Rascunho'};
+  const reason=code=>({adapter_not_configured:'As ações do LinkedIn ainda não estão conectadas ao painel. Você pode consultar o histórico salvo e preparar um rascunho.',external_effects_disabled:'As ações externas estão pausadas. Nenhuma ação será realizada por este rascunho.',activation_evidence_unverified:'Falta concluir a verificação da conta e dos limites antes de liberar ações.',identity_unverified:'Ainda não foi possível confirmar a identidade deste contato. Confira o perfil antes de continuar.',rate_limited:'O LinkedIn pediu uma pausa. Aguarde antes de consultar novamente.'}[code]||'Esta ação ainda não está disponível. Consulte as informações para suporte.');
+  function mount(form,{api,clock=()=>Date.now()/1000}){
+    if(!form)return;
+    const doc=form.ownerDocument,q=n=>form.querySelector('[data-cs-'+n+']'),f=n=>form.querySelector('[name="'+n+'"]');
+    const status=q('status'),review=q('review'),list=q('list');
+    let access=null,local=null,preview=null,selected=null,busy=false,generation=0,chosen=null,pendingAttempt=null,commentObservation=null;const submitted=new Set();
+    const text=(tag,value)=>{const n=doc.createElement(tag);n.textContent=String(value??'');return n;};
+    const date=value=>{const d=new Date(typeof value==='number'?value*1000:value);return Number.isFinite(d.getTime())?d.toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo',dateStyle:'short',timeStyle:'short'}):'Horário não informado';};
+    const value=name=>f(name)?.value||'';
+    function info(parent,lines){const details=text('details',''),summary=text('summary','Informações para suporte');details.appendChild(summary);for(const line of lines.filter(Boolean))details.appendChild(text('p',line));parent.appendChild(details);}
+    function accountMatches(){return !local?.account?.public_id||!access?.account_public_id||local.account.public_id===access.account_public_id;}
+    function eligible(){return accountMatches()&&preview&&preview.state==='review_required'&&typeof preview.simulation==='boolean'&&preview.simulation===access?.simulation&&!submitted.has(preview.id)&&!preview.job&&!pendingAttempt&&Number.isInteger(preview.version)&&typeof preview.review_hash==='string'&&preview.review_hash&&preview.expires_at>clock()&&access?.enqueue_enabled===true&&(!access.action_capabilities||access.action_capabilities[preview.plan.action]?.enqueue_enabled===true);}
+    function buttons(){
+      q('prepare').disabled=busy;
+      q('execute').disabled=busy||!eligible();q('execute').hidden=!preview||!eligible();
+      q('refresh').disabled=busy||!selected;q('refresh').hidden=!selected;
+      q('recover').disabled=busy||!selected||preview?.result?.phase!=='not_dispatched'||!Number.isInteger(preview?.result?.version);q('recover').hidden=q('recover').disabled;
+      q('reconcile').disabled=busy||!selected||access?.capabilities?.reconcile!==true;q('reconcile').hidden=!selected;
+      for(const key of ['status-button','inbox','history'])q(key).disabled=busy;
+      if(q('back'))q('back').hidden=!review.childNodes.length;
+      if(form.setAttribute)form.setAttribute('aria-busy',String(busy));
+    }
+    function fields(){const action=value('action');for(const group of ['person','post','parent','reaction','content']){const n=q('field-'+group);if(n)n.hidden=group==='person'?!['dm','invite'].includes(action):group==='post'?['dm','invite'].includes(action):group==='parent'?action!=='reply':group==='reaction'?action!=='react_post':action==='react_post';}}
+    function changed(event){generation++;if(event?.target?.name==='post_url'||event?.target?.name==='action'){commentObservation=null;if(q('comment-choices'))q('comment-choices').replaceChildren();}preview=null;selected=pendingAttempt;review.replaceChildren();if(event?.target&&['target_url','post_url','parent_url'].includes(event.target.name)){chosen=null;for(const n of ['recipient_public_id','recipient_profile_urn','conversation_urn','post_urn','parent_comment_urn'])if(f(n))f(n).value='';}fields();buttons();}
+    form.addEventListener('input',changed);form.addEventListener('change',changed);
+    function render(p){
+      if(!p||typeof p.id!=='string'||!Number.isInteger(p.version)||!p.plan||typeof p.plan!=='object')throw Error('invalid preview');
+      selected=p.id;preview=p;review.replaceChildren();
+      review.appendChild(text('h3',p.simulation===true?'SIMULAÇÃO · nenhuma ação real':'Confira antes de aprovar'));
+      review.appendChild(text('p','Conta: '+(p.plan.account_public_id||'Identidade ainda não confirmada')));
+      review.appendChild(text('p','Ação: '+(actions[p.plan.action]||'Ação a conferir')));
+      review.appendChild(text('p','Para: '+(p.plan.recipient_public_id||p.plan.post_url||'Alvo precisa ser confirmado')));
+      if(chosen?.url&&chosen.url===p.plan.post_url){review.appendChild(text('p',chosen.title));if(chosen.postContent)review.appendChild(text('p','Publicação consultada: '+chosen.postContent));if(chosen.commentText)review.appendChild(text('p','Comentário escolhido: '+chosen.commentText));review.appendChild(text('p','Conteúdo observado para conferência; pode haver alterações no LinkedIn.'));}
+      if(p.plan.content)review.appendChild(text('p',p.plan.content));
+      if(p.plan.reaction_type)review.appendChild(text('p','Reação: '+({LIKE:'Gostei',PRAISE:'Parabéns',APPRECIATION:'Apoio',EMPATHY:'Amei',INTEREST:'Genial',ENTERTAINMENT:'Engraçado'}[p.plan.reaction_type]||'A conferir')));
+      review.appendChild(text('p','Revisão válida até '+date(p.expires_at)+'. Alterar o texto exige uma nova revisão.'));
+      const state=p.job?.state||p.job?.status||p.state;review.appendChild(text('p',states[state]||'Confira o resultado antes de qualquer nova ação.'));
+      const capability=access?.action_capabilities?.[p.plan.action];
+      if(capability?.enqueue_enabled===false)review.appendChild(text('p','Esta ação está bloqueada. '+(capability.blockers||[]).map(b=>reason(b.code||b)).join(' ')));
+      const result=p.result||p.job?.result;
+      if(typeof p.simulation!=='boolean')review.appendChild(text('p','Não foi possível confirmar a origem desta revisão. A aprovação está bloqueada.'));
+      else if(p.simulation===true)review.appendChild(text('p','Resultado de teste; não comprova uma ação no LinkedIn.'));
+      else if(result?.status==='sent'&&result.write_attribution_confirmed===true&&result.receipt_ref){review.appendChild(text('p','Ação confirmada no LinkedIn.'));if(pendingAttempt===p.id)pendingAttempt=null;}
+      else if(result)review.appendChild(text('p','Resultado ainda não confirmado. Confira o histórico; não repita a ação por dúvida.'));
+      info(review,['Referência: '+p.id,'Versão: '+p.version,'Hash revisado: '+(p.review_hash||'indisponível'),'Estado registrado: '+String(state),result?.receipt_ref?'Confirmação: '+result.receipt_ref:'',p.plan.recipient_profile_urn?'Perfil: '+p.plan.recipient_profile_urn:'',p.plan.parent_comment_urn?'Comentário: '+p.plan.parent_comment_urn:'']);
+      buttons();
+    }
+    async function current(id){const g=generation,p=await api(base+'/previews/'+encodeURIComponent(id));if(p?.id!==id)throw Error('preview mismatch');if(g===generation)render(p);}
+    async function task(action){if(busy)return;busy=true;buttons();try{await action();}catch(e){status.textContent='Não foi possível concluir esta consulta. Seu texto foi mantido. Confira a conexão e consulte o resultado antes de tentar outra ação.';}finally{busy=false;buttons();}}
+    function showAccess(){
+      const label=local?.account?.label||local?.account?.public_id||access?.account_public_id;
+      if(!accountMatches()){status.textContent='As consultas identificaram contas diferentes. Atualize a disponibilidade e as conversas antes de continuar.';return;}
+      if(q('account'))q('account').textContent=label?'Conta observada: '+label:'Ainda não há uma conta verificada nesta consulta.';
+      status.textContent=(access?.simulation===true?'SIMULAÇÃO. ':'')+(access?.enqueue_enabled===true?'Ações disponíveis mediante revisão e aprovação.':'Envios e ações do LinkedIn ainda não estão liberados pelo painel. Você pode consultar conversas salvas e revisar um rascunho.');
+      if(q('diagnostics')){q('diagnostics').replaceChildren();for(const b of access?.blockers||[]){const code=typeof b==='string'?b:b.code;q('diagnostics').appendChild(text('p',reason(code)));q('diagnostics').appendChild(text('code',code||'Estado não reconhecido'));}}
+    }
+    q('status-button').addEventListener('click',()=>task(async()=>{status.textContent='Conferindo o que está disponível…';access=null;preview=null;access=await api(base+'/status');showAccess();}));
+    function openConversation(row){
+      chosen=row;generation++;preview=null;selected=pendingAttempt;review.replaceChildren();
+      const target=row.resolved_target||{};for(const n of ['recipient_public_id','recipient_profile_urn','conversation_urn'])if(f(n))f(n).value=typeof target[n]==='string'?target[n]:'';
+      if(f('target_url'))f('target_url').value=local?.contacts?.find(c=>c.id===row.contact_id)?.profile_url||'';
+      if(q('target-select'))q('target-select').value=row.id;
+      const box=q('conversation');if(box){box.replaceChildren(text('h3',row.title||'Conversa do LinkedIn'));for(const m of row.messages||[]){const block=text('article','');block.className='mensagem-local';block.appendChild(text('strong',m.direction==='outgoing'?'Você':(m.sender_label||'Contato do LinkedIn')));block.appendChild(text('small',date(m.sent_at)));block.appendChild(text('p',m.text||'Conteúdo não disponível nesta observação.'));if(m.body_complete===false||m.revision_pending)block.appendChild(text('p','Este conteúdo ainda precisa de conferência.'));box.appendChild(block);}if(!(row.messages||[]).length)box.appendChild(text('p','Nenhuma mensagem foi salva desta conversa ainda.'));}
+      status.textContent='Conversa selecionada. Ler aqui não marca mensagens como lidas no LinkedIn. Nenhuma resposta foi preparada automaticamente.';buttons();
+    }
+    q('inbox').addEventListener('click',()=>task(async()=>{
+      status.textContent='Carregando conversas já salvas…';const response=await api(base+'/local-inbox');if(!response||response.read_only!==true||!Array.isArray(response.conversations))throw Error('invalid local inbox');local=response;
+      list.replaceChildren(text('h3','Conversas salvas'));if(q('target-select'))q('target-select').replaceChildren(text('option','Escolha uma conversa…'));
+      for(const row of response.conversations){const button=text('button',row.title||'Conversa do LinkedIn');button.type='button';button.className='btn';button.addEventListener('click',()=>openConversation(row));list.appendChild(button);if(q('target-select')){const option=text('option',row.title||'Conversa do LinkedIn');option.value=row.id;q('target-select').appendChild(option);}}
+      if(!response.conversations.length)list.appendChild(text('p',response.state==='blocked'?'Não foi possível identificar com segurança as conversas salvas. Consulte as informações para suporte.':'Nenhuma conversa disponível nesta consulta. O monitor continuará buscando novas mensagens.'));
+      list.appendChild(text('p',response.coverage==='complete'?'Histórico disponível no período consultado.':'Histórico parcial: algumas conversas podem ainda não aparecer.'));
+      showAccess();status.textContent='Conversas salvas consultadas. '+(response.coverage==='complete'?'':'A cobertura é parcial; uma lista vazia não comprova ausência de respostas. ')+(access?.enqueue_enabled===true?'':'As ações externas continuam indisponíveis.');
+    }));
+    if(q('target-select'))q('target-select').addEventListener('change',()=>{const row=local?.conversations?.find(r=>r.id===q('target-select').value);if(row)openConversation(row);});
+    q('history').addEventListener('click',()=>task(async()=>{const result=await api(base+'/previews');list.replaceChildren(text('h3','Revisões anteriores'));for(const [index,row] of (result.previews||[]).slice(0,100).entries()){const button=text('button',(row.simulation===true?'Teste · ':'')+(actions[row.action||row.plan?.action]||'Revisão')+' '+(index+1)+' · '+(states[row.state]||'Consultar resultado'));button.type='button';button.className='btn';button.addEventListener('click',()=>task(()=>current(row.id)));list.appendChild(button);}if(!(result.previews||[]).length)list.appendChild(text('p','Você ainda não tem revisões salvas aqui.'));status.textContent='Abra uma revisão para conferir o conteúdo e o resultado. Esta consulta não repete ações.';}));
+    function draft(blocker){
+      preview=null;selected=pendingAttempt;review.replaceChildren(text('h3','Rascunho para conferir'));
+      review.appendChild(text('p','Ação: '+(actions[value('action')]||'A escolher')));
+      review.appendChild(text('p','Alvo: '+(chosen?.title||value('target_url')||value('post_url')||'Ainda não escolhido')));
+      if(chosen?.url)review.appendChild(text('p','Link conferido: '+chosen.url));
+      if(chosen?.postContent)review.appendChild(text('p','Publicação consultada: '+chosen.postContent));
+      if(chosen?.commentText)review.appendChild(text('p','Comentário escolhido: '+chosen.commentText));
+      if(value('content'))review.appendChild(text('p','Seu texto: '+value('content')));
+      if(value('action')==='react_post')review.appendChild(text('p','Reação: '+(f('reaction_type')?.selectedOptions?.[0]?.textContent||'Gostei')));
+      review.appendChild(text('p',blocker+' Este rascunho fica apenas nesta tela; não foi aprovado, colocado na fila ou enviado.'));
+      status.textContent='Rascunho pronto para leitura. A ação continua bloqueada.';buttons();
+    }
+    form.addEventListener('submit',event=>{event.preventDefault();if(busy)return;
+      const action=value('action');if(action!=='react_post'&&!value('content').trim()){status.textContent='Escreva o texto que você quer revisar.';f('content')?.focus?.();return;}
+      if(pendingAttempt)return draft('Existe uma ação com resultado pendente. Confira essa tentativa antes de preparar outra.');
+      if(!accountMatches())return draft('As consultas identificaram contas diferentes. Atualize a disponibilidade e as conversas antes de continuar.');
+      const person=['dm','invite'].includes(action),url=value(person?'target_url':'post_url'),g=generation;
+      if(!url&&!(person?value('recipient_profile_urn'):value('post_urn')))return draft(person?'Escolha uma conversa com perfil identificado ou cole o link do perfil.':'Cole o link da publicação.');
+      preview=null;selected=null;review.replaceChildren();return task(async()=>{
+        let target=null;
+        if(url){
+          status.textContent='Conferindo o alvo no LinkedIn. Esta consulta não envia uma ação…';
+          const request=person?{action,profile_url:url}:{action,post_url:url};
+          const selectedComment=q('comment-select')?.value;
+          if(action==='reply'&&commentObservation&&selectedComment)Object.assign(request,{observation_id:commentObservation,selected_comment_id:selectedComment});
+          const resolved=await api(base+'/resolve-target','POST',request);
+          if(g!==generation)return;
+          if(resolved?.status==='selection_required'&&typeof resolved.observation_id==='string'&&Array.isArray(resolved.comments)&&q('comment-choices')){
+            commentObservation=resolved.observation_id;const box=q('comment-choices');box.replaceChildren();
+            const label=text('label','Escolha o comentário que você quer responder');label.htmlFor='cs-comment-select';box.appendChild(label);
+            const select=text('select','');select.id='cs-comment-select';select.setAttribute('data-cs-comment-select','');const empty=text('option','Escolha um comentário…');empty.value='';select.appendChild(empty);
+            for(const comment of resolved.comments){const option=text('option',(comment.author_label||'Autor não informado')+' · '+(comment.text||'Texto não disponível'));option.value=comment.id;select.appendChild(option);}box.appendChild(select);
+            status.textContent='Selecione o comentário e revise novamente. Nenhuma resposta foi preparada ou enviada.';return;
+          }
+          if(resolved?.resolved!==true||resolved.read_only!==true||resolved.target?.action!==action||(access?.account_id&&resolved.target.account_id!==access.account_id)||(access?.account_public_id&&resolved.target.account_public_id!==access.account_public_id)){
+            const explanation={provider_schema_invalid:'O LinkedIn retornou uma resposta incompleta ou diferente do esperado. Consulte novamente mais tarde; nenhuma ação foi preparada.',provider_rate_limited:'O limite de consultas do LinkedIn foi atingido. Aguarde antes de consultar novamente.',profile_quota_exhausted:'O limite de perfis consultados nesta janela foi atingido. Aguarde para consultar outro perfil.',provider_unauthorized:'A conexão do LinkedIn precisa ser verificada pelo responsável pela integração.',provider_forbidden:'A conta não permitiu esta consulta. Confira o acesso da integração.',provider_not_found:'O alvo não foi encontrado. Confira o link informado.'}[resolved?.error_code]||'Não foi possível confirmar o alvo nesta consulta. Confira o link e tente consultar novamente; a ação continua bloqueada.';
+            draft(explanation);if(resolved?.error_code)info(review,['Código da consulta: '+String(resolved.error_code)]);return;
+          }
+          target=resolved.target;if(q('account'))q('account').textContent='Conta verificada nesta consulta: '+target.account_public_id;chosen={title:resolved.preview?.label||resolved.preview?.name||url,url:target.post_url||url,postContent:resolved.preview?.content||'',commentText:action==='reply'?q('comment-select')?.selectedOptions?.[0]?.textContent||'':''};
+        }
+        if(access?.capabilities?.prepare!==true){draft('O alvo foi consultado, mas a execução de ações ainda não está disponível no painel.');return;}
+        let plan={account_id:access.account_id,account_public_id:access.account_public_id,action,channel:'linkedin',content:action==='react_post'?'':value('content')};
+        if(target)Object.assign(plan,target);
+        else if(person)Object.assign(plan,{recipient_public_id:value('recipient_public_id'),recipient_profile_urn:value('recipient_profile_urn'),conversation_urn:action==='dm'?(value('conversation_urn')||null):null,messaging_channel:'linkedin_inbox'});
+        else Object.assign(plan,{post_urn:value('post_urn'),post_url:'https://www.linkedin.com/feed/update/'+value('post_urn')+'/',parent_comment_urn:action==='reply'?value('parent_comment_urn'):null});
+        if(person&&(!plan.recipient_public_id||!plan.recipient_profile_urn)){draft('O perfil precisa ser confirmado antes de continuar.');return;}
+        if(!person&&!plan.post_urn||action==='reply'&&!plan.parent_comment_urn){draft('O alvo específico ainda precisa ser confirmado.');return;}
+        if(!person)plan.reaction_type=action==='react_post'?value('reaction_type'):null;
+        if(g!==generation)return;
+        const p=await api(base+'/preview','POST',plan);if(g===generation){render(p);status.textContent='Confira a conta, o alvo e o conteúdo. Nada foi colocado na fila.';}
+      });
+    });
+    q('execute').addEventListener('click',()=>{if(busy)return;if(!eligible()){preview=null;status.textContent='Esta revisão expirou ou está indisponível. Consulte o resultado antes de preparar outra.';buttons();return;}const accepted=preview,g=generation;submitted.add(accepted.id);pendingAttempt=accepted.id;preview=null;return task(async()=>{try{const queued=await api(base+'/execute','POST',{preview_id:accepted.id,expected_version:accepted.version,review_hash:accepted.review_hash});status.textContent=queued.simulation===true?'Ação simulada na fila. Nenhum envio real confirmado.':queued.state==='queued'?'Na fila. Aguardando confirmação do resultado.':'Confira o resultado desta revisão antes de qualquer nova ação.';}catch(e){status.textContent='A confirmação não chegou. Não repita a aprovação; consulte o resultado desta revisão.';}if(g===generation){try{await current(accepted.id);}catch(e){selected=accepted.id;preview=null;}}});});
+    q('refresh').addEventListener('click',()=>task(()=>current(selected)));
+    q('recover').addEventListener('click',()=>{if(busy||preview?.result?.phase!=='not_dispatched'||!Number.isInteger(preview?.result?.version))return;const id=selected,version=preview.result.version;return task(async()=>{await api(base+'/recover','POST',{preview_id:id,expected_attempt_version:version});if(pendingAttempt===id)pendingAttempt=null;await current(id);status.textContent='A tentativa não foi enviada. Você pode preparar uma nova revisão; nenhuma ação foi solicitada.';});});
+    q('reconcile').addEventListener('click',()=>task(async()=>{const id=selected;await api(base+'/reconcile','POST',{preview_id:id});await current(id);status.textContent='Resultado consultado. Nenhum novo envio foi solicitado.';}));
+    q('back')?.addEventListener('click',()=>{generation++;preview=null;selected=pendingAttempt;review.replaceChildren();status.textContent=pendingAttempt?'O resultado anterior continua pendente. Seu texto foi mantido.':'Revisão cancelada. Seu texto foi mantido; nada foi colocado na fila.';buttons();f('content')?.focus?.();});
+    fields();buttons();return {invalidate:changed};
+  }
+  root.ThunderConnectSafely={mount};
+})(typeof globalThis!=='undefined'?globalThis:this);
+ThunderConnectSafely.mount($('connectsafely-console-form'),{api:(...args)=>{
+  if(MODO!=='servidor'||!apiServidor)return Promise.reject(new Error('Consulta indisponível.'));
+  return apiServidor(...args);
+}});
+/* THUNDER_CONNECTSAFELY_END */
+/* THUNDER_HUBSPOT_CONTACT_BEGIN */
+/* Explicit contact review only. Never sends messages or executes automatically. */
+(function(root){
+  'use strict';
+  const labels={firstname:'Nome',lastname:'Sobrenome',email:'E-mail',jobtitle:'Cargo',phone:'Telefone'};
+  function mount(form,{api,uuid=()=>crypto.randomUUID(),clock=()=>Date.now()/1000}){
+    const doc=form.ownerDocument,field=name=>form.querySelector('[name="'+name+'"]');
+    const status=form.querySelector('[data-hs-status]'),review=form.querySelector('[data-hs-review]');
+    const verify=form.querySelector('[data-hs-verify]'),prepare=form.querySelector('[data-hs-prepare]'),execute=form.querySelector('[data-hs-execute]'),reconcile=form.querySelector('[data-hs-reconcile]');
+    let verified=null,preview=null,reconciliation=null,revision=0,busy=false,key=null;
+    function el(tag,text){const node=doc.createElement(tag);if(text!==undefined)node.textContent=String(text);return node;}
+    function freshRead(){return verified?.read_verified===true&&typeof verified.verified_at==='number'&&clock()>=verified.verified_at&&clock()-verified.verified_at<=300;}
+    function freshPreview(){return preview?.state==='review_required'&&preview.expires_at>clock();}
+    function buttons(){verify.disabled=busy;prepare.disabled=busy||!freshRead();execute.disabled=busy||!freshRead()||verified?.write_enabled!==true||preview?.write_enabled!==true||!freshPreview();reconcile.disabled=busy||!reconciliation;reconcile.hidden=!reconciliation;}
+    function discard(){preview=null;review.replaceChildren();execute.disabled=true;}
+    function changed(){revision++;key=null;reconciliation=null;discard();status.textContent='Campos alterados. Prepare uma nova prévia antes de confirmar.';buttons();}
+    form.addEventListener('input',changed);
+    verify.addEventListener('click',async()=>{
+      if(busy)return;busy=true;verified=null;discard();buttons();status.textContent='Conferindo acesso de leitura ao HubSpot…';
+      try{
+        const result=await api('/api/os/v1/integrations/hubspot/status');
+        verified=result;
+        status.textContent=freshRead()?(result.write_enabled===true?'Leitura conferida. Prepare o contato e revise as alterações antes de gravar.':'Leitura conferida. Gravação desativada; você pode preparar uma prévia.'):'Não foi possível confirmar a leitura desta conta. Confira o acesso e tente novamente.';
+      }catch(error){status.textContent='Não foi possível consultar o HubSpot. Confira a conexão e tente novamente.';}
+      finally{busy=false;buttons();}
+    });
+    form.addEventListener('submit',async event=>{
+      event.preventDefault();if(busy)return;
+      if(!freshRead()){discard();status.textContent='Confira a leitura do HubSpot novamente antes de preparar.';buttons();return;}
+      if(!form.reportValidity())return;
+      const properties={};for(const name of Object.keys(labels)){const value=field(name).value.trim();if(value)properties[name]=value;}
+      if(!properties.firstname||!properties.email)return;
+      const generation=revision;discard();busy=true;buttons();status.textContent='Preparando prévia e conferindo duplicidade. Nenhum contato foi gravado por esta preparação.';
+      try{
+        if(!key)key=uuid();
+        const result=await api('/api/os/v1/integrations/hubspot/preview','POST',{idempotency_key:key,object_type:'contacts',properties});
+        if(generation!==revision)return;
+        const plan=result?.plan,changes=plan?.changes;
+        if(result.state!=='review_required'||!Number.isInteger(result.version)||typeof result.id!=='string'||typeof plan?.plan_hash!=='string'||!plan.plan_hash||!['create','update'].includes(plan.operation)||typeof result.expires_at!=='number'||result.expires_at<=clock()||!changes||Array.isArray(changes)||typeof changes!=='object'||Object.entries(changes).some(([name,value])=>!labels[name]||typeof value!=='string'))throw Error('invalid preview');
+        preview=result;
+        review.appendChild(el('h4',plan.operation==='create'?'Criar contato':'Atualizar contato existente'));
+        if(plan.record_id){const info=el('details');info.appendChild(el('summary','Informações para suporte'));info.appendChild(el('p','Registro: '+plan.record_id));review.appendChild(info);}
+        const rows=Object.entries(changes);
+        if(!rows.length)review.appendChild(el('p','Os campos informados já correspondem ao contato. A confirmação fará apenas a conferência do registro.'));
+        for(const [name,value] of rows){
+          const group=el('div');group.className='hs-change';group.appendChild(el('strong',labels[name]));
+          const before=plan.before?.properties?.[name];group.appendChild(el('p','Antes: '+(typeof before==='string'?before:'não informado')));
+          group.appendChild(el('p','Depois: '+value));review.appendChild(group);
+        }
+        review.appendChild(el('p','Campos omitidos não serão apagados. Esta ação não envia e-mail nem mensagem.'));
+        execute.textContent=rows.length?'Confirmar gravação deste contato':'Confirmar conferência do contato';
+        status.textContent=result.write_enabled===true?'Confira o antes e depois. A gravação exige o botão de confirmação abaixo.':'Prévia disponível. Gravação desativada nesta instalação.';
+      }catch(error){if(generation===revision){discard();status.textContent='Não foi possível preparar uma prévia válida. Confira os dados e o acesso; nenhuma gravação foi solicitada.';}}
+      finally{busy=false;buttons();}
+    });
+    execute.addEventListener('click',async()=>{
+      if(busy)return;
+      if(!freshRead()||!freshPreview()||verified?.write_enabled!==true||preview.write_enabled!==true){discard();status.textContent='A revisão expirou ou a gravação está desativada. Confira o acesso e prepare uma nova prévia.';buttons();return;}
+      const accepted=preview,generation=revision;preview=null;reconciliation=null;busy=true;buttons();status.textContent='Registrando a decisão e conferindo o resultado no HubSpot…';
+      try{
+        const result=await api('/api/os/v1/integrations/hubspot/execute','POST',{preview_id:accepted.id,expected_version:accepted.version,plan_hash:accepted.plan.plan_hash,confirm:true});
+        if(generation===revision&&result?.id===accepted.id&&Number.isInteger(result.version)&&result?.plan?.plan_hash===accepted.plan.plan_hash&&['pending_reconciliation','needs_human'].includes(result?.result?.status))reconciliation=result;
+        status.textContent=result?.result?.status==='verified_state'?'Dados do contato conferidos no HubSpot. Nenhuma mensagem foi enviada.':'O resultado precisa ser conferido. Não repita a gravação enquanto houver dúvida.';
+      }catch(error){
+        // The POST may have committed. Recover only its existing review; never
+        // create another preview or repeat execute after a lost response.
+        try{
+          const current=await api('/api/os/v1/integrations/hubspot/previews/'+encodeURIComponent(accepted.id));
+          if(generation===revision&&current?.id===accepted.id&&Number.isInteger(current.version)&&current?.plan?.plan_hash===accepted.plan.plan_hash&&['approved','processed'].includes(current.state))reconciliation=current;
+        }catch(recoveryError){/* Keep the original uncertain result; no retry. */}
+        status.textContent=reconciliation?'A resposta da gravação não chegou. Use Rever no CRM para conferir; a gravação não será repetida.':'Não foi possível confirmar o resultado. Não repita a gravação; confira primeiro o contato no HubSpot.';
+      }
+      finally{busy=false;buttons();}
+    });
+    reconcile.addEventListener('click',async()=>{
+      if(busy||!reconciliation)return;
+      const current=reconciliation,generation=revision;busy=true;buttons();status.textContent='Conferindo o contato no CRM. Esta consulta não repete a gravação…';
+      try{
+        const result=await api('/api/os/v1/integrations/hubspot/reconcile','POST',{preview_id:current.id,expected_version:current.version,plan_hash:current.plan.plan_hash});
+        if(generation!==revision)return;
+        if(result?.id!==current.id||!Number.isInteger(result.version)||result?.plan?.plan_hash!==current.plan.plan_hash)throw Error('invalid reconciliation');
+        reconciliation=['pending_reconciliation','needs_human'].includes(result?.result?.status)?result:null;
+        status.textContent=result?.result?.status==='verified_state'?'Dados do contato conferidos no HubSpot. A gravação não foi repetida.':result?.result?.status==='not_attempted'?'Nenhuma tentativa de gravação foi registrada. Prepare uma nova revisão antes de agir.':'O resultado ainda precisa de conferência. Nenhuma gravação foi repetida.';
+      }catch(error){status.textContent='Não foi possível atualizar a conferência. Confira o contato no HubSpot; não repita a gravação.';}
+      finally{busy=false;buttons();}
+    });
+    buttons();return {invalidate:changed};
+  }
+  root.ThunderHubSpotContact={mount};
+})(typeof globalThis!=='undefined'?globalThis:this);
+/* THUNDER_HUBSPOT_CONTACT_END */
+ThunderHubSpotContact.mount($('hubspot-contact-form'),{api:(...args)=>{
+  if(MODO!=='servidor'||!apiServidor)return Promise.reject(new Error('Consulta indisponível nesta visualização.'));
+  return apiServidor(...args);
+}});
+/* THUNDER_SEQD_CONSOLE_BEGIN */
+(function(root){
+  'use strict';
+  const base='/api/os/v1/integrations/seqd',mailbox='ygor.bueno@thundermustard.com';
+  function mount(form,{api,clock=()=>Date.now()/1000}){
+    const doc=form.ownerDocument,q=name=>form.querySelector('[data-seqd-'+name+']'),field=name=>form.querySelector('[name="'+name+'"]');
+    const status=q('status'),review=q('review'),list=q('list'),message=q('message');
+    let busy=false,revision=0,preview=null,pending=null,access=null;
+    function node(tag,text){const el=doc.createElement(tag);if(text!==undefined)el.textContent=String(text);return el;}
+    function fresh(){return preview&&preview.expires_at>clock()&&preview.state==='review_required';}
+    function buttons(){for(const name of ['verify','messages','prepare'])q(name).disabled=busy||(name==='prepare'&&!!pending);q('execute').disabled=busy||!!pending||!fresh()||access?.send_enabled!==true||preview?.send_enabled!==true;q('reconcile').hidden=!pending;q('reconcile').disabled=busy||!pending;}
+    function discard(){preview=null;review.replaceChildren();}
+    function changed(){revision++;discard();status.textContent=pending?'Resultado pendente de conferência. A edição não autoriza outro envio.':'Texto alterado. Prepare e revise novamente antes de enviar.';buttons();}
+    form.addEventListener('input',changed);
+    function outcome(value){
+      const result=value?.result||value;
+      if(result?.status==='sent'&&typeof result.receipt_ref==='string'&&result.receipt_ref.startsWith('gmail:')&&result.receipt_ref.length>6){pending=null;const info=node('details');info.appendChild(node('summary','Informações para suporte'));info.appendChild(node('p','Confirmação: '+result.receipt_ref));review.appendChild(info);return 'Envio confirmado pelo Gmail.';}
+      if(result?.status==='not_attempted'){pending=null;return 'Nenhuma tentativa registrada. Prepare uma nova revisão antes de enviar.';}
+      return 'Resultado ainda incerto. Use Conferir resultado; nenhum envio será repetido.';
+    }
+    q('verify').addEventListener('click',async()=>{
+      if(busy)return;busy=true;access=null;buttons();status.textContent='Conferindo conexão da caixa…';
+      try{const value=await api(base+'/status');if(value.mailbox!==mailbox)throw Error('mailbox');access=value;status.textContent=value.read_verified===true?(value.send_enabled===true?'Caixa conectada. Cada envio exige revisar e aprovar o texto exato.':'Caixa conectada. Envio desativado nesta instalação.'):'Não foi possível confirmar a conexão. Tente conferir novamente.';}catch(_){status.textContent='Não foi possível consultar a conexão. Nenhum envio foi solicitado.';}finally{busy=false;buttons();}
+    });
+    q('messages').addEventListener('click',async()=>{
+      if(busy)return;busy=true;buttons();status.textContent='Consultando até 10 mensagens…';
+      try{const value=await api(base+'/messages');if(value.mailbox!==mailbox||!Array.isArray(value.messages))throw Error('messages');list.replaceChildren();
+        for(const entry of value.messages.slice(0,10)){if(typeof entry.id!=='string')continue;const row=node('div'),open=node('button',entry.subject||'Mensagem sem assunto');open.type='button';open.className='btn';row.appendChild(open);row.appendChild(node('p',[entry.from,entry.date].filter(v=>typeof v==='string').join(' · ')));list.appendChild(row);
+          open.addEventListener('click',async()=>{if(busy)return;busy=true;buttons();status.textContent='Lendo mensagem selecionada…';try{const value=await api(base+'/messages/'+encodeURIComponent(entry.id));if(value.mailbox!==mailbox)throw Error('mailbox');const content=value.message||value;message.replaceChildren(node('h4',content.subject||'Sem assunto'),node('p',content.from||''),node('pre',content.body_text||content.text||content.body||'Texto indisponível.'));status.textContent='Mensagem consultada. Nenhuma resposta foi enviada.';}catch(_){status.textContent='Não foi possível ler esta mensagem. Tente consultar novamente.';}finally{busy=false;buttons();}});
+        }
+        if(!list.childNodes.length)list.appendChild(node('p','Nenhuma mensagem retornada nesta consulta.'));
+        status.textContent='Consulta concluída. A caixa só atualiza quando você solicitar.';
+      }catch(_){status.textContent='Não foi possível consultar mensagens. Tente novamente.';}finally{busy=false;buttons();}
+    });
+    form.addEventListener('submit',async event=>{
+      event.preventDefault();if(busy||pending)return;if(!form.reportValidity())return;
+      const body={to:field('to').value.trim(),subject:field('subject').value.trim(),body:field('body').value};
+      if(!body.to||!body.subject||!body.body.trim())return;
+      const generation=revision;discard();busy=true;buttons();status.textContent='Preparando a revisão. Nenhum envio solicitado.';
+      try{const value=await api(base+'/preview','POST',body);if(generation!==revision)return;
+        const plan=value.plan;if(typeof value.id!=='string'||!Number.isInteger(value.version)||typeof value.content_hash!=='string'||!value.content_hash||value.state!=='review_required'||!(value.expires_at>clock())||!plan||plan.to!==body.to||plan.subject!==body.subject||plan.body!==body.body)throw Error('invalid preview');
+        preview=value;review.appendChild(node('h4','Revise este e-mail antes de aprovar'));review.appendChild(node('p','De: '+mailbox));review.appendChild(node('p','Para: '+plan.to));review.appendChild(node('p','Assunto: '+plan.subject));review.appendChild(node('pre',plan.body));review.appendChild(node('p','Aprovar envia somente este conteúdo ao destinatário exibido. Sem cópia, cópia oculta ou anexos.'));
+        status.textContent=value.send_enabled===true?'Revise destinatário, assunto e texto. O envio exige aprovação abaixo.':'Prévia pronta. Envio desativado nesta instalação.';
+      }catch(_){if(generation===revision){discard();status.textContent='Não foi possível preparar a revisão. Confira os campos e tente novamente.';}}finally{busy=false;buttons();}
+    });
+    q('execute').addEventListener('click',async()=>{
+      if(busy||pending||!fresh()||access?.send_enabled!==true||preview?.send_enabled!==true)return;
+      const accepted=preview;pending={id:accepted.id};preview=null;busy=true;buttons();status.textContent='Registrando sua aprovação e aguardando confirmação do envio…';
+      try{const value=await api(base+'/execute','POST',{preview_id:accepted.id,expected_version:accepted.version,content_hash:accepted.content_hash});status.textContent=outcome(value);}
+      catch(_){
+        try{const value=await api(base+'/previews/'+encodeURIComponent(accepted.id));if(value.id===accepted.id&&value.content_hash===accepted.content_hash&&value.result)status.textContent=outcome(value);else status.textContent='A resposta não chegou. Confira o resultado antes de qualquer novo envio.';}
+        catch(_){status.textContent='A resposta não chegou. Confira o resultado; não repita o envio.';}
+      }finally{busy=false;buttons();}
+    });
+    q('reconcile').addEventListener('click',async()=>{
+      if(busy||!pending)return;busy=true;buttons();status.textContent='Conferindo recibo existente. Esta ação não repete o envio…';
+      try{status.textContent=outcome(await api(base+'/reconcile','POST',{preview_id:pending.id}));}catch(_){status.textContent='Não foi possível conferir o resultado. O envio não foi repetido; tente apenas esta consulta novamente.';}finally{busy=false;buttons();}
+    });
+    buttons();return {invalidate:changed};
+  }
+  root.ThunderSEQDConsole={mount};
+})(typeof globalThis!=='undefined'?globalThis:this);
+/* THUNDER_SEQD_CONSOLE_END */
+ThunderSEQDConsole.mount($('seqd-console-form'),{api:(...args)=>{
+  if(MODO!=='servidor'||!apiServidor)return Promise.reject(new Error('Consulta indisponível nesta visualização.'));
+  return apiServidor(...args);
+}});
+/* THUNDER_INTEGRATIONS_PARTIAL_BEGIN */
+/* Read-only partial. Inject server projections; does not fetch or execute actions.
+ * Composition: ThunderIntegrationView.render(container, statusBody, draftsBody).
+ * All persisted/provider-derived text is inserted with textContent, never HTML.
+ */
+(function (root) {
+  'use strict';
+  const names = {hubspot:'HubSpot', connectsafely:'LinkedIn', unipile:'Histórico anterior do LinkedIn', seqd_email:'E-mail'};
+  const states = {not_verified:'Leitura ainda não verificada', stale:'Verificação de leitura vencida',
+    unavailable:'Leitura indisponível', read_verified:'Leitura verificada'};
+  const reasons = {legacy_no_fallback:'Histórico preservado; não é alternativa automática de envio.',consult_connectsafely_application:'Consulte a seção LinkedIn para ver o que está disponível.',read_adapter_not_configured:'Leitura ainda não ativada no painel.', read_not_verified:'Falta verificar a leitura desta conta.',
+    read_verification_expired:'É necessário verificar a leitura novamente.', provider_unavailable:'A integração não respondeu à última consulta.',
+    write_adapter_not_configured:'Gravação ainda não ativada no painel.', write_not_authorized:'Gravação ainda não autorizada.',
+    external_effects_disabled:'Ações externas estão desativadas.', approval_mode_pending:'O modo de aprovação ainda precisa ser definido.',
+    outbound_executor_not_available:'Envio ainda não disponível nesta integração.'};
+  function node(doc, type, text) {const el=doc.createElement(type);if(text!==undefined)el.textContent=String(text);return el;}
+  function message(container, text) {const p=node(container.ownerDocument,'p',text);p.setAttribute('role','status');container.replaceChildren(p);}
+  function render(container, status, local) {
+    if(!container || !container.ownerDocument)throw new TypeError('container required');
+    if(!status || status.schema_version!==1 || !Array.isArray(status.integrations)){
+      message(container,'Não foi possível consultar as integrações. Atualize o andamento para tentar novamente.');return;
+    }
+    const doc=container.ownerDocument, fragment=doc.createDocumentFragment();
+    fragment.appendChild(node(doc,'h3','Integrações'));
+    status.integrations.forEach(item=>{
+      if(!names[item.id])return;
+      const section=node(doc,item.id==='unipile'?'details':'section');section.className='card';if(item.id==='unipile')section.appendChild(node(doc,'summary','Histórico anterior do LinkedIn'));
+      if(item.id!=='unipile')section.appendChild(node(doc,'h4',names[item.id]));
+      section.appendChild(node(doc,'p',states[item.state]||states.not_verified));
+      if(item.last_checked_at){const parsed=new Date(item.last_checked_at);const when=node(doc,'time',Number.isNaN(+parsed)?'Horário indisponível':parsed.toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}));when.setAttribute('datetime',item.last_checked_at);section.appendChild(when);}
+      const list=node(doc,'ul');
+      (Array.isArray(item.blockers)?item.blockers:[]).forEach(code=>{if(reasons[code])list.appendChild(node(doc,'li',reasons[code]));});
+      if(list.childNodes.length)section.appendChild(list);
+      fragment.appendChild(section);
+    });
+    fragment.appendChild(node(doc,'h3','Rascunhos locais'));
+    if(!local || local.status==='unavailable' || local.status==='not_configured'){
+      fragment.appendChild(node(doc,'p','Rascunhos indisponíveis. Atualize o andamento para tentar novamente.'));
+    } else {
+      if(local.status==='partial')fragment.appendChild(node(doc,'p','Parte dos rascunhos não pôde ser consultada. Atualize para tentar novamente.'));
+      const drafts=Array.isArray(local.drafts)?local.drafts:[];
+      if(!drafts.length)fragment.appendChild(node(doc,'p','Nenhum rascunho local disponível. Novos rascunhos aparecerão após a leitura e revisão da conversa.'));
+      drafts.forEach(draft=>{
+        if(!names[draft.provider])return;
+        const article=node(doc,'article');article.className='card';
+        article.appendChild(node(doc,'h4',names[draft.provider]+' · Rascunho local'));
+        article.appendChild(node(doc,'p',draft.content||''));
+        article.appendChild(node(doc,'p','Não enviado. A conversa precisa ser conferida antes de qualquer envio.'));
+        fragment.appendChild(article);
+      });
+      const attempts=Array.isArray(local.hubspot_attempts)?local.hubspot_attempts:[];
+      if(attempts.length){
+        fragment.appendChild(node(doc,'h3','Registros acompanhados no HubSpot'));
+        const labels={reserved:'Aguardando conferência',attempted:'Resultado precisa de conferência',response_received:'Resposta recebida; conferir registro',
+          no_write:'Nenhuma gravação necessária',needs_human:'Precisa de revisão',verified_state:'Estado do registro conferido'};
+        attempts.forEach(item=>fragment.appendChild(node(doc,'p',labels[item.status]||'Precisa de reconciliação')));
+      }
+    }
+    container.replaceChildren(fragment);
+  }
+  root.ThunderIntegrationView={render,loading:container=>message(container,'Consultando integrações e rascunhos locais…')};
+})(typeof globalThis!=='undefined'?globalThis:this);
+/* THUNDER_INTEGRATIONS_PARTIAL_END */
+let thunderIntegrationsLoading=false;
+async function carregarIntegracoes(){
+  if(MODO!=='servidor'||!apiServidor||thunderIntegrationsLoading)return;
+  thunderIntegrationsLoading=true;
+  const alvo=$('thunder-integrations-readback'),estado=$('thunder-integrations-status');
+  estado.textContent='Consultando disponibilidade e rascunhos locais…';
+  try{
+    const [status,local]=await Promise.all([
+      apiServidor('/api/os/v1/integrations/status'),apiServidor('/api/os/v1/integrations/drafts')]);
+    ThunderIntegrationView.render(alvo,status,local);
+    estado.textContent='Consulta local atualizada. Nenhuma mensagem foi enviada por esta consulta.';
+  }catch(e){
+    ThunderIntegrationView.render(alvo,null,null);
+    estado.textContent='Consulta indisponível. Use Atualizar andamento para tentar novamente.';
+  }finally{thunderIntegrationsLoading=false;}
+}
+let thunderOSLoading=false;
+let thunderOSApproving=false;
+const ThunderConnectionsView=(()=>{
+  const labels={needs_identity:'Identificar empresa',needs_fit:'Confirmar encaixe',research:'Pesquisar conta',
+    dossier_review:'Revisar dossiê',approach_approval:'Revisar abordagem',
+    no_action:'Sem ação',already_contacted:'Contato anterior',unknown:'Estado desconhecido'};
+  function node(doc,tag,value){const el=doc.createElement(tag);el.textContent=value;return el;}
+  function render(container,data){
+    const doc=container.ownerDocument,fragment=doc.createDocumentFragment();
+    if(data?.schema_version!==1||!Array.isArray(data.accounts))throw new Error('Projeção de conexões inválida');
+    if(!data.accounts.length){fragment.appendChild(node(doc,'p',data.view==='history'?'Nenhuma conexão no histórico desta consulta.':'Nenhuma conexão canônica disponível nesta consulta.'));}
+    data.accounts.forEach(group=>{
+      if(!Array.isArray(group.connections))return;
+      const section=node(doc,'section','');section.className='grupo-conexoes';
+      section.setAttribute('aria-label',group.account_id||'Empresa não identificada');
+      section.appendChild(node(doc,'h3',group.account_id||'Empresa não identificada'));
+      const list=node(doc,'div','');list.className='cards';
+      group.connections.forEach(item=>{
+        const article=node(doc,'article','');article.className='card';
+        const title=node(doc,'h4',labels[item.stage]||labels.unknown);article.appendChild(title);
+        const url=typeof item.profile==='string'&&/^https:\/\/www\.linkedin\.com\/in\/[a-z0-9_.-]+$/.test(item.profile)?item.profile:null;
+        if(url){const link=node(doc,'a',url);link.href=url;link.target='_blank';link.rel='noopener noreferrer';article.appendChild(link);}
+        else article.appendChild(node(doc,'p','Perfil indisponível.'));
+        article.appendChild(node(doc,'p',item.detail||'Estado incompleto; atualize para conferir.'));
+        article.appendChild(node(doc,'small','Conta de conexão: '+(item.connectsafely_account_id||'desconhecida')));
+        list.appendChild(article);
+      });
+      section.appendChild(list);fragment.appendChild(section);
+    });
+    container.replaceChildren(fragment);
+    return data.accounts.reduce((total,group)=>total+(Array.isArray(group.connections)?group.connections.length:0),0);
+  }
+  return {render};
+})();
+let conexoesLoading=false;
+const conexoesPagina={view:'actions',offset:0,limit:100,hasMore:false,nextOffset:null};
+function atualizarControlesConexoes(){
+  $('conexoes-refresh').disabled=conexoesLoading;
+  $('conexoes-actions').disabled=conexoesLoading;
+  $('conexoes-history').disabled=conexoesLoading;
+  $('conexoes-actions').setAttribute('aria-pressed',String(conexoesPagina.view==='actions'));
+  $('conexoes-history').setAttribute('aria-pressed',String(conexoesPagina.view==='history'));
+  $('conexoes-prev').disabled=conexoesLoading||conexoesPagina.offset===0;
+  $('conexoes-next').disabled=conexoesLoading||!conexoesPagina.hasMore;
+}
+async function carregarConexoes({view=conexoesPagina.view,offset=conexoesPagina.offset}={}){
+  if(MODO!=='servidor'||!apiServidor||conexoesLoading)return;
+  conexoesLoading=true;
+  conexoesPagina.view=view;
+  conexoesPagina.offset=offset;
+  conexoesPagina.hasMore=false;
+  conexoesPagina.nextOffset=null;
+  atualizarControlesConexoes();
+  const alvo=$('conexoes-readback'),estado=$('conexoes-status');
+  estado.textContent='Consultando conexões canônicas…';
+  try{
+    const dados=view==='actions'&&offset===0
+      ?await apiServidor('/api/os/v1/connections')
+      :await apiServidor('/api/os/v1/connections?'+new URLSearchParams({view,offset:String(offset),limit:'100'}));
+    if(dados?.view!==view||dados.offset!==offset||!Number.isInteger(dados.total)||dados.total<0
+       ||!Number.isInteger(dados.limit)||dados.limit<1||dados.limit>100||typeof dados.has_more!=='boolean'
+       ||!dados.counts||typeof dados.counts!=='object'
+       ||(dados.has_more&&(!Number.isInteger(dados.next_offset)||dados.next_offset<=offset
+          ||dados.next_offset>dados.total)))throw new Error('Projeção de conexões inválida');
+    const visiveis=ThunderConnectionsView.render(alvo,dados);
+    const historico=(Number(dados.counts.no_action)||0)+(Number(dados.counts.already_contacted)||0);
+    const inicio=visiveis?offset+1:0, fim=offset+visiveis;
+    const nome=view==='history'?'registros no histórico':'ações';
+    $('conexoes-resumo').textContent=`Exibindo ${inicio}–${fim} de ${dados.total} ${nome}. ${dados.has_more?`Mais ${dados.total-fim} em outras páginas. `:''}${view==='actions'?`Histórico: ${historico}.`:''}`;
+    const etapas=view==='history'?['no_action','already_contacted']:
+      ['needs_identity','needs_fit','research','dossier_review','approach_approval','unknown'];
+    $('conexoes-contagens').textContent=etapas.filter(chave=>Number.isInteger(dados.counts[chave])&&dados.counts[chave]>0)
+      .map(chave=>`${({needs_identity:'Identificar empresa',needs_fit:'Confirmar encaixe',research:'Pesquisar conta',dossier_review:'Revisar dossiê',approach_approval:'Revisar abordagem',unknown:'Estado desconhecido',no_action:'Sem ação',already_contacted:'Contato anterior'})[chave]}: ${dados.counts[chave]}`).join(' · ');
+    conexoesPagina.limit=dados.limit;
+    conexoesPagina.hasMore=dados.has_more&&Number.isInteger(dados.next_offset)&&dados.next_offset>offset;
+    conexoesPagina.nextOffset=conexoesPagina.hasMore?dados.next_offset:null;
+    estado.textContent='Conexões consultadas. Esta consulta não executa ações externas.';
+  }catch(e){
+    alvo.replaceChildren();
+    const aviso=document.createElement('p');aviso.className='msg erro';
+    aviso.textContent='Não foi possível consultar conexões. Use Atualizar conexões para tentar novamente.';
+    alvo.appendChild(aviso);
+    $('conexoes-resumo').textContent='Totais indisponíveis nesta consulta.';
+    $('conexoes-contagens').textContent='';
+    estado.textContent='Consulta indisponível; o estado das conexões é desconhecido.';
+  }finally{conexoesLoading=false;atualizarControlesConexoes();}
+}
+$('conexoes-refresh').addEventListener('click',()=>carregarConexoes());
+$('conexoes-actions').addEventListener('click',()=>carregarConexoes({view:'actions',offset:0}));
+$('conexoes-history').addEventListener('click',()=>carregarConexoes({view:'history',offset:0}));
+$('conexoes-prev').addEventListener('click',()=>carregarConexoes({offset:Math.max(0,conexoesPagina.offset-conexoesPagina.limit)}));
+$('conexoes-next').addEventListener('click',()=>{
+  if(conexoesPagina.nextOffset!==null)void carregarConexoes({offset:conexoesPagina.nextOffset});
+});
+async function carregarThunderOS(){
+  if(MODO!=='servidor'||!apiServidor||thunderOSLoading||thunderOSApproving)return;
+  thunderOSLoading=true;
+  void carregarIntegracoes();
+  if(!$('hoje-conexoes').contains(document.activeElement))void carregarConexoes();
+  const alvo=$('thunder-os-readback'), estado=$('thunder-os-status');
+  try{
+    const dados=await apiServidor('/api/os/v1/today');
+    alvo.innerHTML=thunderOSHTML(dados);
+    ThunderWorkResult.render(alvo,dados);
+    $('external-effects-status').hidden=dados.external_effects_enabled!==false;
+    if(dados.external_effects_enabled===false){
+      $('os-pedido-msg').textContent='Envios estão desativados. Você pode registrar trabalho e revisar pacotes; isso não executa ações externas.';
+    }
+    estado.textContent=`Consultado às ${new Date().toLocaleTimeString('pt-BR')}. Atualização automática a cada 30 segundos; apenas consulta.`;
+  }catch(e){
+    estado.textContent='Não foi possível consultar agora. Os dados exibidos podem estar desatualizados. Use Atualizar andamento; se persistir, confira a conexão e a sessão.';
+    alvo.querySelectorAll('[data-os-approve]').forEach(b=>b.disabled=true);
+  }finally{thunderOSLoading=false;}
+}
+$('thunder-os-refresh').addEventListener('click',()=>carregarThunderOS());
+setInterval(()=>{if(!document.hidden&&!$('thunder-os-readback').contains(document.activeElement))carregarThunderOS();},30000);
+
+/* THUNDER_WORK_RESULT_BEGIN */
+(function(root){
+  'use strict';
+  function render(container,dados){
+    const work=new Map((Array.isArray(dados?.work)?dados.work:[]).map(w=>[String(w.id),w]));
+    const doc=container.ownerDocument;
+    function node(tag,value){const n=doc.createElement(tag);n.textContent=typeof value==='string'?value:'';return n;}
+    function sourceLink(value){
+      if(typeof value!=='string')return null;
+      try{const url=new URL(value);if(!['https:','http:'].includes(url.protocol)||url.username||url.password)return null;
+        const a=node('a',url.href);a.href=url.href;a.target='_blank';a.rel='noopener noreferrer';return a;
+      }catch(e){return null;}
+    }
+    for(const slot of container.querySelectorAll('[data-os-work-result]')){
+      slot.replaceChildren();
+      const id=slot.getAttribute('data-os-work-result'),w=work.get(id);
+      if(w?.status!=='succeeded')continue;
+      const result=w.result,artifact=result?.artifact,copy=typeof result?.copy==='string'?result.copy:null;
+      slot.appendChild(node('h4','Resultado da pesquisa'));
+      const outer=slot, detail=node('details','');detail.appendChild(node('summary','Ver pesquisa e fontes'));outer.appendChild(detail);
+      const trace=node('details','');trace.appendChild(node('summary','Informações para suporte'));trace.appendChild(node('p','Referência: '+id));outer.appendChild(trace);
+      if(!copy&&(!artifact||typeof artifact!=='object'||Array.isArray(artifact))){detail.appendChild(node('p','Conteúdo do resultado não disponível nesta consulta.'));continue;}
+      function section(title,values){
+        const text=(Array.isArray(values)?values:[values]).filter(x=>typeof x==='string'&&x.trim());
+        if(!text.length)return;
+        detail.appendChild(node('h5',title));
+        for(const value of text)detail.appendChild(node('p',value));
+      }
+      if(artifact){
+        section('Recomendação',artifact.recommendation);
+        const facts=Array.isArray(artifact.facts)?artifact.facts:[];
+        if(facts.length)detail.appendChild(node('h5','Fatos e fontes informadas'));
+        for(const fact of facts){
+          if(typeof fact?.statement!=='string')continue;
+          detail.appendChild(node('p',fact.statement));
+          const sourceDetail=node('p','Observado em: '+(typeof fact.observed_at==='string'?fact.observed_at:'data não informada'));
+          const link=sourceLink(fact.source);if(link){sourceDetail.appendChild(node('span',' · '));sourceDetail.appendChild(link);}else sourceDetail.appendChild(node('span',' · Fonte com URL válida não informada.'));
+          detail.appendChild(sourceDetail);section('Relevância',fact.relevance);
+        }
+        section('Inferências (não são fatos)',artifact.inferences);
+        section('Hipótese de oportunidade',artifact.opportunity_hypothesis);
+        section('Hipótese alternativa',artifact.alternative_hypothesis);
+        section('Lacunas',artifact.missing);
+        section('Lacunas do comitê',artifact.committee_gaps);
+        section('Riscos',artifact.risks);
+        section('Próximo passo',artifact.next_action||w.next_action);
+      }
+      if(copy){detail.appendChild(node('h5','Copy para revisão'));const text=node('p',copy);text.style.whiteSpace='pre-wrap';detail.appendChild(text);}
+      const refs=Array.isArray(result?.evidence)?result.evidence:[],seen=new Set();
+      const links=[];
+      for(const ref of refs){const link=sourceLink(ref?.source);if(link&&!seen.has(link.href)){seen.add(link.href);links.push(link);}}
+      if(links.length){detail.appendChild(node('h5','Evidências informadas'));for(const link of links){const line=node('p','');line.appendChild(link);detail.appendChild(line);}}
+      detail.appendChild(node('p','Fontes exibidas como informadas no resultado; não foram revalidadas nesta consulta. Resultado para revisão: não autoriza envios nem alterações externas.'));
+    }
+  }
+  root.ThunderWorkResult={render};
+})(typeof globalThis!=='undefined'?globalThis:this);
+/* THUNDER_WORK_RESULT_END */
+
+function thunderOSHTML(dados){
+  const trabalhos=Array.isArray(dados?.work)?dados.work:[];
+  const estados={requested:'Pedido registrado',in_progress:'Em andamento',needs_human:'Precisa da sua decisão',succeeded:'Resultado disponível',failed:'Falha: revisar',cancelled:'Cancelado'};
+  const acompanhamento=trabalhos.map(w=>`<article class="card"><h3>${esc(w.objective)}</h3><p>${esc(w.context?.account_id||'Conta não informada')} · ${esc(estados[w.status]||'Estado não reconhecido')}</p><p class="proximo">${esc(w.next_action||'Aguardar atualização do trabalho')}</p><details><summary>Informações para suporte</summary><small>Referência: ${esc(w.id)}</small></details><div style="overflow-wrap:anywhere;min-width:0" data-os-work-result="${esc(w.id)}"></div>${['requested','in_progress'].includes(w.status)?`<button class="btn" data-os-cancel="${esc(w.id)}">Cancelar execução interna</button>`:''}</article>`).join('');
+  const prioridades=Array.isArray(dados?.priorities)?dados.priorities:[];
+  const erros=Array.isArray(dados?.partial_errors)?dados.partial_errors:[];
+  const cadencias=Array.isArray(dados?.cadences)?dados.cadences:[];
+  const respostas=Array.isArray(dados?.replies)?dados.replies:[];
+  const copies=Array.isArray(dados?.copies)?dados.copies:[];
+  const consultas=Array.isArray(dados?.paid_queries)?dados.paid_queries:[];
+  const principal=prioridades.length?prioridades.map(p=>`<article class="card"><h3>${esc(p.account||'Conta')}</h3><p><b>Por que agora:</b> ${esc(p.reason)}</p><p class="proximo">Próximo passo: ${esc(p.next_action)}</p></article>`).join(''):'<p class="vazio">Nenhuma prioridade registrada nesta consulta. Isso não confirma que todas as integrações foram sincronizadas.</p>';
+  const revisoes=cadencias.filter(c=>['ready_for_review','approved','paused_reply'].includes(c.status)).map(c=>cadenciaHTML({...c,recipient:c.person_key})).join('');
+  const classificacoes=respostas.map(r=>`<article class="card"><h3>Resposta de ${esc(r.person_key||'pessoa a identificar')}</h3><p><b>Classificação:</b> ${esc(r.classification||'a confirmar')} · confiança ${esc(r.confidence??'a confirmar')}</p><p><b>Justificativa:</b> ${esc(r.justification||'a confirmar')}</p><p class="proximo">Próximo passo: ${esc(r.next_action)}</p></article>`).join('');
+  const pagas=consultas.map(q=>`<article class="card"><h3>Consulta paga</h3><p><b>Alvo:</b> ${esc(q.target)}</p><p><b>Finalidade:</b> ${esc(q.purpose)}</p><p><b>Custo:</b> ${esc(q.cost)}</p><p class="proximo">Próximo passo: ${esc(q.next_action)}</p></article>`).join('');
+  const rascunhos=copies.filter(c=>c.status==='draft_missing_evidence').map(c=>`<article class="card alerta-humano" role="status"><h3>Rascunho para revisão humana</h3><p>${esc(c.warning)}</p><p class="proximo">Hermes não pode despachar este rascunho.</p></article>`).join('');
+  const controle=dados.agent_controls?.[0]||{enabled:false,paused:true,version:0};
+  const alertas=(dados.operator_alerts||[]).flatMap(a=>Array.isArray(a.alerts)?a.alerts:(a.active===true?[a]:[])).map(a=>`<p class="msg erro">${esc(a.message||'O assistente precisa de atenção. Confira os detalhes antes de retomar.')}${a.code?`<details><summary>Informações para suporte</summary>${esc(a.code)}</details>`:''}</p>`).join('');
+  const usos=Array.isArray(dados.agent_usage)?dados.agent_usage:[];
+  const operacao=`<article class="card"><h3>Assistente de pesquisa</h3><p>${!controle.enabled?'Ainda não configurado':controle.paused?'Pedidos pausados':'Disponível para os pedidos permitidos'}. As aprovações de ações externas são tratadas separadamente em cada canal.</p><p>${usos.length} pedidos processados. O custo desses pedidos não é calculado pelo painel.</p><button class="btn" data-os-agent="${controle.paused?'resume':'pause'}" data-os-version="${Number(controle.version)||0}" ${!controle.enabled?'disabled':''}>${controle.paused?'Retomar pedidos':'Pausar pedidos'}</button> <button class="btn" data-os-agent="reset_circuit" data-os-version="${Number(controle.version)||0}">Reavaliar bloqueio após falha</button>${alertas}</article>`;
+  return operacao+acompanhamento+principal+revisoes+rascunhos+classificacoes+pagas+erros.map(e=>`<p class="msg erro">${esc(e.guidance)} As outras áreas continuam disponíveis.</p>`).join('');
+}
+
+$('thunder-os-readback').addEventListener('click',async ev=>{
+  const botao=ev.target.closest('[data-os-agent],[data-os-cancel]');if(!botao||botao.disabled)return;
+  botao.disabled=true;
+  try{
+    if(botao.dataset.osCancel)await apiServidor(`/api/os/v1/work/${encodeURIComponent(botao.dataset.osCancel)}/cancel`,'POST',{});
+    else await apiServidor('/api/os/v1/agent/control','POST',{action:botao.dataset.osAgent,expected_version:Number(botao.dataset.osVersion)});
+    await carregarThunderOS();
+  }catch(e){$('thunder-os-status').textContent=e.message||'Não foi possível registrar o controle.';}
+  finally{botao.disabled=false;}
+});
+
+$('thunder-os-readback').addEventListener('click',async ev=>{
+  const botao=ev.target.closest('[data-os-approve]');if(!botao||thunderOSApproving)return;
+  botao.disabled=true; thunderOSApproving=true;
+  try{
+    await apiServidor(`/api/os/v1/cadences/${encodeURIComponent(botao.dataset.osApprove)}/approve`,'POST',{
+      expected_version:Number(botao.dataset.osVersion),review_hash:botao.dataset.osReviewHash
+    });
+    $('thunder-os-status').textContent='Pacote aprovado. Atualize o andamento para consultar o resultado.';
+  }catch(e){
+    $('thunder-os-status').textContent=e.status===409
+      ?'Este pacote mudou desde sua revisão. Atualize o andamento, confira o conteúdo novamente e só então aprove.'
+      :'Não foi possível confirmar a aprovação. Atualize o andamento para verificar o estado antes de tentar novamente.';
+  }finally{thunderOSApproving=false;}
+});
+
+function notaServidor(it){
+  return ['dm','comentario'].includes(it.tipo) ? 'Na fila. Sai em até 10 min.' : 'Aprovado. O Claude executa na próxima rodada (até 1h).';
+}
+
+function atualizarEstadoAceites(){
+  if(MODO!=='servidor') return;
+  const quantidade=itens.filter(i=>i.origem==='aceite'&&ABERTOS.includes(i.status||'pendente')).length;
+  $('aceites-estado').textContent=aceitesIndisponiveis ? 'Aceites indisponíveis. Vou tentar novamente.' : quantidade?`${quantidade} para acompanhar`:'Nenhuma resposta nesta consulta';
+  if(!quantidade) $('aceites').innerHTML=aceitesIndisponiveis ? '<p class="vazio">Não consegui consultar os novos aceites. Eles aparecem aqui quando a consulta voltar a funcionar.</p>' : '<p class="vazio">Nenhum novo aceite esperando uma primeira mensagem. Os próximos aparecem aqui automaticamente.</p>';
+}
+
+const CLASSIFICACOES = {positiva:'Interessado',objecao:'Objeção',negativa:'Não agora','fora-do-perfil':'Fora do perfil',automatica:'Resposta automática',neutra:'Sem classificação'};
+function dataResposta(valor){
+  const s = String(valor||'').trim();
+  return new Date(/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d+)?$/.test(s) ? s.replace(' ','T')+'Z' : s);
+}
+function horasUteis(inicio, fim = new Date()){
+  const a=dataResposta(inicio), b=new Date(fim);
+  if (isNaN(a)||isNaN(b)||b<=a) return 0;
+  const formato=new Intl.DateTimeFormat('en-CA',{timeZone:'America/Sao_Paulo',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',hourCycle:'h23'});
+  const partes=d=>Object.fromEntries(formato.formatToParts(d).map(p=>[p.type,p.value]));
+  const p=partes(a), q=partes(b);
+  const ultimo=Date.UTC(+q.year,+q.month-1,+q.day);
+  let soma=0;
+  for(let dia=Date.UTC(+p.year,+p.month-1,+p.day);dia<=ultimo;dia+=864e5){
+    const semana=new Date(dia).getUTCDay(); if(semana===0||semana===6) continue;
+    const meio=dia+12*36e5, local=partes(new Date(meio));
+    const offset=Date.UTC(+local.year,+local.month-1,+local.day,+local.hour)-meio;
+    const abre=dia+9*36e5-offset, fecha=dia+18*36e5-offset;
+    soma+=Math.max(0,Math.min(+b,fecha)-Math.max(+a,abre));
+  }
+  return soma/36e5;
+}
+function relogioResposta(data, agora = new Date()){
+  const d=dataResposta(data); if(isNaN(d)) return {classe:'',texto:'horário não informado'};
+  const horas=Math.max(0,(new Date(agora)-d)/36e5), uteis=horas<24?horasUteis(data,agora):0;
+  const tempo=horas>=1 ? `${Math.floor(horas)}h` : `${Math.floor(horas*60)}min`;
+  const classe=horas>=24?'vermelho':uteis>=4?'amarelo':'';
+  return {classe,texto:`respondeu há ${tempo}${classe==='vermelho'?' · prioridade alta':classe==='amarelo'?' · atenção':''}`};
+}
+function ordenarRespostas(lista){
+  return [...lista].sort((a,b)=>(+dataResposta(a.criado_em)||Infinity)-(+dataResposta(b.criado_em)||Infinity)||String(a.id).localeCompare(String(b.id)));
+}
+function verConta(it){
+  return MODO==='servidor' ? `<button type="button" class="ver-conta" id="ver-conta-${it.criado_em?'resposta':'item'}-${esc(it.id)}" data-a="conta" data-conta="${esc(it.conta||'')}" data-pessoa="${esc(it.pessoa_chave||it.perfil_url||'')}">Ver conta</button>` : '';
+}
+function botaoReuniao(pessoa,conta,origem){
+  if(MODO!=='servidor'||!pessoa||!conta) return '';
+  return `<button type="button" class="btn" data-a="reuniao" data-pessoa="${esc(pessoa)}" data-conta="${esc(conta)}" data-origem="${esc(origem||'')}">Marcou reunião</button>`;
+}
+async function marcarReuniao(pessoa,conta,botao){
+  if(!pessoa||!conta||botao?.disabled) return;
+  if(botao) botao.disabled=true;
+  const data=new Date().toLocaleDateString('en-CA',{timeZone:'America/Sao_Paulo'});
+  const acao=`Reunião marcada com ${pessoa} (${conta}): gerar brief em contas/${conta}/brief-${data}.md e mover o negócio no HubSpot para Discovery Agendado`;
+  try{
+    await db.collection('itens').add({tipo:'pedido',titulo:`Gerar brief de ${pessoa}`.slice(0,60),pessoa,conta,
+      acao_aprovada:acao,status:'aprovado',criado:agoraISO(),atualizado:agoraISO(),decisao:{acao:'pedido',quando:agoraISO()}});
+    if(botao){botao.textContent='Brief pedido';botao.disabled=true;}
+  }catch(e){if(botao){botao.textContent='Tentar marcar reunião';botao.disabled=false;}}
+}
+const contagemAbas={};
+function atualizarHojeVazio(){
+  const vazio=Object.values(hojeContagens).every(n=>n===0)&&!Object.values(hojeFalhas).some(Boolean);
+  $('hoje-vazio').hidden=!vazio;
+  for(const id of ['hoje-responder','hoje-conferir','hoje-oportunidades']) $(id).hidden=vazio;
+}
+function atualizarAbas(){
+  Object.entries(contagemAbas).forEach(([a,n])=>{const e=$('qt-'+a); if(e) e.textContent=n?String(n):'';});
+  contagemAbas.conversas=(contagemAbas.respostas||0)+(contagemAbas.aceites||0);
+  contagemAbas.aprovar=(contagemAbas.mensagens||0)+(contagemAbas.comentarios||0)+(contagemAbas.decisoes||0);
+  contagemAbas.contas=contagemAbas.quentes||0;
+  contagemAbas.hoje=contagemAbas.conversas+contagemAbas.aprovar;
+  for(const a of ['hoje','conversas','aprovar','contas']){const e=$('qt-'+a);if(e)e.textContent=contagemAbas[a]?String(contagemAbas[a]):'';}
+}
+function mostrarAba(aba,{registrar=true}={}){
+  if(!['hoje','conversas','aprovar','contas'].includes(aba)) aba='hoje';
+  if(document.body)document.body.dataset.aba=aba;
+  $('abas').querySelectorAll('button').forEach(b=>{const ativa=b.dataset.aba===aba;b.setAttribute('aria-selected',String(ativa));b.tabIndex=ativa?0:-1;});
+  try{localStorage.setItem('painel-aba',aba)}catch(e){}
+  if(registrar&&location.hash!=='#'+aba)history.pushState(null,'','#'+aba);
+}
+function iniciarAbas(){
+  $('abas').hidden=false;
+  let aba='hoje';try{aba=localStorage.getItem('painel-aba')||aba}catch(e){}
+  const hash=location.hash.slice(1);if(['hoje','conversas','aprovar','contas'].includes(hash))aba=hash;
+  mostrarAba(aba,{registrar:false});
+  if($('abas').dataset.iniciada)return;
+  $('abas').dataset.iniciada='true';
+  $('abas').addEventListener('click',ev=>{const b=ev.target.closest('button[data-aba]');if(b)mostrarAba(b.dataset.aba);});
+  $('abas').addEventListener('keydown',ev=>{
+    const botoes=[...$('abas').querySelectorAll('button[data-aba]')],atual=botoes.indexOf(ev.target);
+    if(atual<0||!['ArrowLeft','ArrowRight','Home','End'].includes(ev.key))return;
+    ev.preventDefault();const n=ev.key==='Home'?0:ev.key==='End'?botoes.length-1:(atual+(ev.key==='ArrowRight'?1:-1)+botoes.length)%botoes.length;
+    mostrarAba(botoes[n].dataset.aba);botoes[n].focus();
+  });
+  window.addEventListener('popstate',()=>mostrarAba(location.hash.slice(1),{registrar:false}));
+  window.addEventListener('hashchange',()=>mostrarAba(location.hash.slice(1),{registrar:false}));
+  $('sec-hoje').hidden=false;
+}
+$('aprovar-filtros').addEventListener('click',ev=>{
+  const b=ev.target.closest('[data-filtro-aprovar]');if(!b)return;const f=b.dataset.filtroAprovar;
+  filtrosAprovar.has(f)?filtrosAprovar.delete(f):filtrosAprovar.add(f);b.setAttribute('aria-pressed',String(filtrosAprovar.has(f)));
+  const mapa={mensagens:'sec-mensagens',comentarios:'sec-comentarios',decisoes:null};
+  if(mapa[f])$(mapa[f]).hidden=!filtrosAprovar.has(f);else document.querySelector('[aria-labelledby="h-voce"]').hidden=!filtrosAprovar.has(f);
+});
+function respostaCardHTML(r){
+  const rel=relogioResposta(r.criado_em);
+  return `<article class="card" data-resposta="${esc(r.id)}"><h3>${esc(r.pessoa_nome||r.pessoa_chave||'Contato')}</h3>
+    <div class="cab"><span class="chip">${esc(CLASSIFICACOES[r.classificacao]||CLASSIFICACOES.neutra)}</span><span class="relogio ${rel.classe}" data-data="${esc(r.criado_em)}">${rel.texto}</span>${verConta(r)}</div>
+    ${r.conta?`<div class="porque">${esc(r.conta)}</div>`:''}<div class="resposta-texto">${esc(r.resumo||'Resposta recebida. Abra a ficha para ver o histórico.')}</div>
+    <div class="etiquetas" role="group" aria-label="Classificar resposta de ${esc(r.pessoa_nome||'contato')}">${Object.entries(CLASSIFICACOES).map(([valor,nome])=>`<button type="button" class="btn" id="etiqueta-${esc(r.id)}-${valor}" data-classificacao="${valor}" aria-pressed="${valor===(r.classificacao||'neutra')}">${nome}</button>`).join('')}</div>
+    <div class="acoes">${botaoReuniao(r.pessoa_nome||r.pessoa_chave,r.conta,'resposta-'+r.id)}</div>
+    <span class="msg" id="resposta-msg-${esc(r.id)}" role="status"></span></article>`;
+}
+function renderRespostas(){
+  const foco=document.activeElement?.id;
+  const ordenadas=ordenarRespostas(respostas);
+  $('respostas').innerHTML=respostas.length ? ordenadas.map(respostaCardHTML).join('') : '<p class="vazio">Nenhuma resposta aguardando retorno nesta consulta. A cobertura das conversas pode estar incompleta.</p>';
+  $('hoje-respostas').innerHTML=ordenadas.length?ordenadas.slice(0,3).map(respostaCardHTML).join(''):'<p class="vazio">Nenhuma resposta esperando por você.</p>';
+  const restantes=Math.max(0,ordenadas.length-3), ver=$('hoje-responder-todas');
+  ver.hidden=!restantes;ver.textContent=restantes?`Ver todas · mais ${restantes}`:'';
+  hojeContagens.respostas=ordenadas.length;hojeFalhas.respostas=false;atualizarHojeVazio();
+  contagemAbas.respostas=respostas.length; atualizarAbas();
+  $('respostas-estado').textContent=respostas.length?`${respostas.length} aguardando retorno`:'Nenhuma resposta nesta consulta';
+  if(foco?.startsWith('etiqueta-')) $(foco)?.focus();
+}
+function atualizarRelogios(agora = new Date()){
+  $('respostas').querySelectorAll('.relogio[data-data]').forEach(el=>{
+    const rel=relogioResposta(el.dataset.data,agora); el.className='relogio '+rel.classe; el.textContent=rel.texto;
+  });
+}
+const ICONES={curtida:'♡',comentario:'▤',convite:'＋',mensagem:'✉',dm:'✉',email:'@',whatsapp:'◉',resposta:'↩'};
+const TIPOS_CONTA={curtida:'Curtida',comentario:'Comentário',convite:'Convite',mensagem:'Mensagem',dm:'Mensagem',email:'E-mail',whatsapp:'WhatsApp',resposta:'Resposta'};
+function markdownHTML(texto){
+  const linhas=String(texto||'').split(/\r?\n/), saida=[];
+  let lista=false;
+  const inline=s=>esc(s).replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
+  for(const linha of linhas){
+    const item=linha.match(/^[-*]\s+(.+)/);
+    if(item){if(!lista){saida.push('<ul>');lista=true;}saida.push(`<li>${inline(item[1])}</li>`);continue;}
+    if(lista){saida.push('</ul>');lista=false;}
+    const titulo=linha.match(/^#{1,6}\s+(.+)/);
+    if(titulo){saida.push(`<h3>${inline(titulo[1])}</h3>`);continue;}
+    if(linha.trim()) saida.push(`<p>${inline(linha)}</p>`);
+  }
+  if(lista) saida.push('</ul>');
+  return saida.join('');
+}
+function urlWebSegura(value){
+  if(typeof value!=='string')return null;
+  try{const url=new URL(value);return ['http:','https:'].includes(url.protocol)&&!url.username&&!url.password?url.href:null;}catch(_){return null;}
+}
+function contaHTML(d){
+  const pessoas=d.pessoas||[], eventos=d.toques||[], fatos=d.fatos||[];
+  const sequencia=d.sequencia||[], comite=d.comite||[], proximo=d.proximo_na_sequencia;
+  const pessoaAtual=(pessoas.find(p=>p.pessoa_chave===contaAtual?.pessoa)||{}).pessoa || pessoas[0]?.pessoa || '';
+  return `<p>${esc(d.descricao||'Ainda não há uma descrição desta conta.')}</p>
+    ${pessoaAtual&&contaAtual?.slug?`<div class="acoes">${botaoReuniao(pessoaAtual,contaAtual.slug,'ficha')}</div>`:''}
+    <section><h2>Fatos com fonte</h2>${fatos.length?`<ul>${fatos.map(f=>`<li>${esc(f)}</li>`).join('')}</ul>`:'<p class="vazio">Nenhum fato com fonte registrado.</p>'}</section>
+    <section><h2>Pessoas</h2>${pessoas.length?`<ul>${pessoas.map(p=>`<li>${esc(p.pessoa||p.pessoa_chave)}</li>`).join('')}</ul>`:'<p class="vazio">Nenhuma pessoa registrada.</p>'}</section>
+    ${sequencia.length?`<section><h2>Próximos passos</h2><ol class="conta-timeline">${sequencia.map(s=>`<li class="${s===proximo?'proximo':''}"><b>Dia ${esc(s.dia)} · ${esc(s.canal)}</b><div class="msg">${esc(s.quando||'data a definir')} · ${esc(s.status||'pendente')}</div><p>${esc(s.acao)}</p></li>`).join('')}</ol></section>`:''}
+    ${comite.length?`<section><h2>Quem decide</h2><ul class="comite">${comite.map(p=>`<li><b>${urlWebSegura(p.url)?`<a href="${esc(urlWebSegura(p.url))}" target="_blank" rel="noopener noreferrer">${esc(p.nome)}</a>`:esc(p.nome)}</b><div class="msg">${esc(p.papel)}${p.cargo?` · ${esc(p.cargo)}`:''} · ${esc(p.status)}</div></li>`).join('')}</ul>${d.abordar_em_seguida?`<p><b>Abordar em seguida:</b> ${esc(d.abordar_em_seguida.nome)} · ${esc(d.abordar_em_seguida.papel)}</p>`:''}</section>`:''}
+    ${d.brief?.conteudo?`<section class="brief"><h2>Brief da reunião</h2><div>${markdownHTML(d.brief.conteudo)}</div></section>`:''}
+    <section><h2>Linha do tempo</h2>${eventos.length?`<ol class="conta-timeline">${eventos.map(t=>`<li><b><span aria-hidden="true">${ICONES[t.tipo]||'·'}</span> ${esc(TIPOS_CONTA[t.tipo]||t.tipo)}</b><div class="msg">${quando(dataResposta(t.data))} · ${esc(t.pessoa||t.pessoa_chave||'')}${t.canal?` · ${esc(t.canal)}`:''}${t.status?` · ${esc(ST[t.status]||t.status)}`:''}</div><p>${esc(t.texto||'Sem texto registrado.')}</p></li>`).join('')}</ol>`:'<p class="vazio">Nenhum contato registrado ainda.</p>'}</section>
+    <section><h2>Próximo passo</h2><p>${esc(d.proximo_passo||'Ainda não há um próximo passo registrado.')}</p></section>`;
+}
+let contaAtual=null, contaPedido=0, contaFoco=null, quentesAtuais=[];
+function quenteHTML(q){return `<article class="quente"><h3>${esc(q.nome||q.pessoa_nome||'Conta')}</h3>${q.empresa&&q.empresa!==q.nome?`<div class="msg">${esc(q.empresa)}</div>`:''}<p>${esc(q.motivo||'Sinal recente')}</p><div class="pontos">${esc(q.pontuacao)} pontos</div><button type="button" class="btn" data-a="conta" data-conta="${esc(q.conta||'')}" data-pessoa="${esc(q.pessoa_chave||'')}">Ver conta</button></article>`;}
+function pesquisaRotulo(q){
+  if(!q.observado_em) return 'Fonte ainda precisa ser confirmada';
+  const data=new Date(q.observado_em);
+  return isNaN(data)?'Fonte ainda precisa ser confirmada':`Fonte conferida em ${data.toLocaleDateString('pt-BR')}`;
+}
+function prioridadeHTML(q){
+  return `<article class="quente" data-prioridade="dia"><h3>${esc(q.nome||q.pessoa_nome||'Conta')}</h3><p><b>Por que agora:</b> ${esc(q.motivo||'Falta confirmar o momento da conta')}</p><div class="frescor">${esc(pesquisaRotulo(q))}</div><p class="proximo">Próximo passo: ${esc(q.proximo_passo||'abrir a conta e conferir a pesquisa')}</p><button type="button" class="btn pri" data-a="conta" data-conta="${esc(q.conta||'')}" data-pessoa="${esc(q.pessoa_chave||'')}">Ver contexto e decidir</button></article>`;
+}
+async function carregarPrioridades(loader,renderizar,relogio=()=>performance.now()){
+  const inicio=relogio(),dados=await loader();renderizar(dados);
+  const elapsed_ms=relogio()-inicio;return {elapsed_ms,within_target:elapsed_ms<=2000};
+}
+function renderQuentes(lista){
+  const quentes=(Array.isArray(lista)?[...lista]:[]).sort((a,b)=>Number(b.pontuacao||0)-Number(a.pontuacao||0));quentesAtuais=quentes;
+  $('quentes').innerHTML=quentes.length?quentes.map(quenteHTML).join(''):'<p class="vazio">Nenhuma conta quente hoje.</p>';
+  $('hoje-quentes').innerHTML=quentes.length?quentes.slice(0,3).map(prioridadeHTML).join(''):'<p class="vazio">Nenhuma oportunidade nova agora.</p>';
+  const restantes=Math.max(0,quentes.length-3), ver=$('hoje-oportunidades-todas');ver.hidden=!restantes;ver.textContent=restantes?`Ver todas · mais ${restantes}`:'';
+  hojeContagens.quentes=quentes.length;hojeFalhas.quentes=false;atualizarHojeVazio();
+  $('quentes-estado').textContent=quentes.length?`${quentes.length} em destaque`:'sem sinais recentes';
+  contagemAbas.quentes=quentes.length; atualizarAbas();
+}
+async function carregarQuentes(){
+  try{await carregarPrioridades(()=>apiServidor('/api/quentes'),renderQuentes);}
+  catch(e){$('quentes-estado').textContent='Não consegui atualizar agora.';$('quentes').innerHTML='<p class="vazio">Tente novamente em alguns minutos.</p>';$('hoje-quentes').innerHTML='<p class="msg erro">Não foi possível atualizar as oportunidades.</p><button class="btn" type="button" data-retry="quentes">Tentar novamente</button>';hojeFalhas.quentes=true;atualizarHojeVazio();}
+}
+async function abrirConta(slug,pessoa,acionador){
+  if(MODO!=='servidor') return;
+  contaAtual={slug,pessoa}; if(acionador) contaFoco=acionador;
+  const pedido=++contaPedido, painel=$('conta-painel');
+  $('conta-titulo').textContent='Ficha da conta';
+  $('conta-conteudo').textContent='Carregando ficha e histórico…'; $('conta-tentar').hidden=true;
+  if(!painel.open) painel.showModal();
+  try{
+    const d=await apiServidor('/api/conta/'+encodeURIComponent(slug||'')+'?pessoa_chave='+encodeURIComponent(pessoa||''));
+    if(pedido!==contaPedido) return;
+    $('conta-titulo').textContent=d.nome||'Histórico da pessoa'; $('conta-conteudo').innerHTML=contaHTML(d);
+  }catch(e){
+    if(pedido!==contaPedido) return;
+    $('conta-conteudo').textContent='Não consegui carregar a ficha. Tente novamente.'; $('conta-tentar').hidden=false;
+  }
+}
+$('conta-fechar').addEventListener('click',()=>$('conta-painel').close());
+$('conta-painel').addEventListener('close',()=>{contaPedido++;(contaFoco?.id?$(contaFoco.id):contaFoco)?.focus();});
+$('conta-tentar').addEventListener('click',()=>abrirConta(contaAtual.slug,contaAtual.pessoa));
+$('quentes').addEventListener('click',ev=>{const b=ev.target.closest('button[data-a="conta"]');if(b) abrirConta(b.dataset.conta,b.dataset.pessoa,b);});
+$('conta-conteudo').addEventListener('click',ev=>{const b=ev.target.closest('button[data-a="reuniao"]');if(b) marcarReuniao(b.dataset.pessoa,b.dataset.conta,b);});
+const etiquetasSalvando=new Set();
+$('respostas').addEventListener('click',async ev=>{
+  const b=ev.target.closest('button'); if(!b) return;
+  if(b.dataset.a==='conta') return abrirConta(b.dataset.conta,b.dataset.pessoa,b);
+  if(b.dataset.a==='reuniao') return marcarReuniao(b.dataset.pessoa,b.dataset.conta,b);
+  const id=b.closest('[data-resposta]')?.dataset.resposta;
+  if(!id||!CLASSIFICACOES[b.dataset.classificacao]||etiquetasSalvando.has(id)) return;
+  etiquetasSalvando.add(id);
+  const mensagem=$('resposta-msg-'+id); b.disabled=true; mensagem.textContent='Salvando etiqueta…';
+  try{await db.collection('respostas').doc(id).update({classificacao:b.dataset.classificacao});$('resposta-msg-'+id).textContent='Etiqueta salva.';}
+  catch(e){mensagem.textContent='Não consegui salvar a etiqueta. Tente novamente.';}
+  finally{b.disabled=false;etiquetasSalvando.delete(id);}
+});
+
+function fallback(msg){
+  estado.textContent = msg;
+  $('pend').hidden = false;
+}
+
+function tituloItem(it){
+  if (it.titulo) return it.titulo;
+  const nome = (it.pessoa||'').trim().split(/\s+/)[0] || 'contato';
+  const conta = it.conta_nome ? ` (${it.conta_nome})` : '';
+  const ctx = Array.isArray(it.contexto) ? it.contexto : [];
+  const quem = String(ctx.at(-1)?.quem || '').trim().toLowerCase();
+  const lead = quem === 'lead' || (it.pessoa && (quem === it.pessoa.trim().toLowerCase() || quem === nome.toLowerCase()));
+  if (it.tipo === 'dm') return `${lead ? 'Responder' : 'Mandar mensagem para'} ${nome}${conta}`;
+  if (it.tipo === 'comentario') return `Comentar no post de ${nome}`;
+  if (it.tipo === 'whatsapp') return `Chamar ${nome} no WhatsApp`;
+  return it.tipo === 'decisao' ? 'Decisão' : (it.pessoa || 'Pedido');
+}
+
+function anguloChipHTML(it){
+  const angulo=it.angulo_nome||it.angulo;
+  return angulo ? `<span class="chip" title="${esc(it.angulo||angulo)}">${esc(angulo)}</span>` : '';
+}
+function pesquisaHTML(it){
+  const ctx=Array.isArray(it.contexto)?it.contexto:[], fatos=Array.isArray(it.fatos)?it.fatos:[];
+  if(!ctx.length&&!fatos.length) return '';
+  return `<details><summary>Ver pesquisa</summary>${ctx.length?`<div class="conv">${ctx.map(m=>`<div class="m ${m.quem==='lead'||(m.quem&&m.quem!=='Ygor')?'lead':''}"><span class="q">${esc(m.quando||'')} · ${esc(m.quem||'')}</span><span class="t">${esc(m.texto||'')}</span></div>`).join('')}</div>`:''}${fatos.length?`<ul class="fatos">${fatos.map(f=>`<li>${esc(f)}</li>`).join('')}</ul>`:''}</details>`;
+}
+function estadoEfeitoHumano(status){
+  return ({draft:'em preparo',approved:'pronto para a data combinada',due:'pronto para hoje',sent:'enviado',failed:'não foi possível enviar',uncertain:'precisa conferir',paused_reply:'pausado porque houve resposta',skipped_reply:'não será enviado porque houve resposta',not_configured:'canal ainda não está disponível'})[status]||'aguardando decisão';
+}
+function cadenciaHTML(cadencia){
+  if(!cadencia||!Array.isArray(cadencia.steps)||!cadencia.steps.length)return '';
+  const passos=[...cadencia.steps].sort((a,b)=>Number(a.order)-Number(b.order));
+  const canais={linkedin:'LinkedIn',email:'E-mail',whatsapp:'WhatsApp'};
+  const intervalo=h=>Number(h)===0?'no início':`${esc(h)} horas depois do contato anterior`;
+  const aviso=cadencia.approval_invalidated?'A sequência mudou. Confira novamente antes de aprovar.':cadencia.reply_received?'A sequência foi pausada porque essa pessoa respondeu.':cadencia.partial_error?'Uma parte está indisponível. As demais informações continuam válidas.':'';
+  const proxima=cadencia.reply_received?'Ler a resposta e decidir o próximo passo':cadencia.approval_invalidated?'Revisar somente o que mudou':cadencia.next_action||'Aprovar a sequência completa';
+  return `<section class="cadencia-revisao" aria-label="Sequência de contatos"><div><b>Para:</b> ${esc(cadencia.recipient||'destinatário a confirmar')}</div><div><b>Objetivo:</b> ${esc(cadencia.objective||'objetivo a confirmar')}</div><div><b>Base da abordagem:</b> ${esc(cadencia.source_context||'pesquisa ainda precisa ser confirmada')}</div>${cadencia.research_hash?`<details><summary>Informações para suporte</summary><div>Referência da pesquisa: ${esc(cadencia.research_hash)}</div></details>`:''}<div><b>Consequência:</b> ${esc(cadencia.consequence||'autoriza somente estes contatos')}</div><div><b>Custo:</b> ${esc(cadencia.cost||'sem custo informado')}</div>${aviso?`<div class="alerta-humano" role="status">${esc(aviso)}</div>`:''}<ol>${passos.map(p=>`<li><b>${esc(canais[p.channel]||p.channel)} · ${intervalo(p.interval_hours)}</b>${p.subject?`<p><b>Assunto:</b> ${esc(p.subject)}</p>`:''}<p>${esc(p.content||'Conteúdo a confirmar')}</p><span class="frescor">${esc(estadoEfeitoHumano(p.status))}${p.effective_due_at?` · previsto para ${esc(p.effective_due_at)}`:p.predecessor_id?' · aguarda confirmação anterior':p.due_at?` · previsto para ${esc(p.due_at)}`:''}</span>${p.receipt_ref?`<details><summary>Confirmação registrada</summary>${esc(p.receipt_ref)}</details>`:''}</li>`).join('')}</ol>${cadencia.pause_reason?`<p>Motivo da pausa: ${esc(cadencia.pause_reason)}</p>`:''}<div class="proxima-decisao">Próxima ação: ${esc(proxima)}</div>${cadencia.status==='ready_for_review'&&cadencia.id&&Number.isInteger(cadencia.version)&&cadencia.review_hash?`<button class="btn pri" type="button" data-os-approve="${esc(cadencia.id)}" data-os-version="${esc(cadencia.version)}" data-os-review-hash="${esc(cadencia.review_hash)}">Aprovar pacote exato</button>`:''}</section>`;
+}
+function variantesHTML(it){
+  const variantes=Array.isArray(it.variantes)?it.variantes.filter(v=>v&&typeof v.texto==='string'):[];
+  if(variantes.length<2||variantesEscolhidas[it.id]) return '';
+  return `<div class="variantes">${variantes.map((v,i)=>`<div class="variante">${anguloChipHTML(v)}<p>${esc(v.texto)}</p><button class="btn" type="button" data-a="variante" data-variante="${i}">Usar esta</button></div>`).join('')}</div>`;
+}
+async function usarVariante(it,variante){
+  if(!variante||typeof variante.texto!=='string') return;
+  variantesEscolhidas[it.id]=true;
+  await salvar(it.id,{texto:variante.texto,angulo:variante.angulo||''});
+}
+
+function cardHTML(it){
+  const id = it.id, st = it.status || 'pendente', aberto = st === 'pendente' || st === 'erro' || (it.tipo === 'comentario' && st === 'copiar') || (it.tipo === 'whatsapp' && st === 'aguardando-confirmacao');
+  const texto = sujo[id] ?? it.texto ?? '';
+  const preparando = MODO === 'servidor' && it.origem === 'aceite' && !String(it.texto||'').trim();
+  const vers = Array.isArray(it.versoes) ? it.versoes : [];
+  const temVariantes = Array.isArray(it.variantes) && it.variantes.filter(v=>v&&typeof v.texto==='string').length > 1 && !variantesEscolhidas[id];
+  const envia = it.tipo === 'dm' || it.tipo === 'comentario';
+  const descartar = it.recomendacao === 'descartar';
+  const rot = it.tipo === 'comentario' ? 'Aprovar e comentar' : (envia ? 'Aprovar e enviar' : 'Aprovar');
+  const conf = confirmar[id];
+  const link = it.post_url ? `<a href="${esc(it.post_url)}" target="_blank" rel="noopener">abrir post</a>` : (it.perfil_url ? `<a href="${esc(it.perfil_url)}" target="_blank" rel="noopener">perfil</a>` : '');
+  return `<article class="card" data-id="${esc(id)}" data-st="${esc(st)}">
+    <h3>${esc(tituloItem(it))}</h3>
+    ${it.sinal ? `<div class="sinal"><b>Por que agora</b><span>${it.sinal_fonte?`<a href="${esc(it.sinal_fonte)}" target="_blank" rel="noopener">${esc(it.sinal)}</a>`:esc(it.sinal)}</span></div>` : (it.porque ? `<div class="porque"><b>Por que agora:</b> ${esc(it.porque)}</div>` : '')}
+    ${anguloChipHTML(it)}
+    ${Number.isFinite(Number(it.nota_qualidade))?`<div class="qualidade"><b>Qualidade ${esc(it.nota_qualidade)}/5</b>${it.nota_motivo?` · ${esc(it.nota_motivo)}`:''}</div>`:''}
+    <div class="cab">
+      <span class="chip">${esc(TIPO[it.tipo]||it.tipo||'item')}</span>
+      ${it.cargo ? `<span class="sub">${esc(it.cargo)}</span>` : ''}
+      ${it.conta_nome ? `<span class="sub">· ${esc(it.conta_nome)}</span>` : ''}
+      <span class="chip st-${esc(st)}">${esc(st==='aprovado' && !EXECUTOR ? 'aprovado; executa na próxima rodada (até 1h)' : ST[st]||st)}</span>
+      ${descartar && aberto ? `<span class="chip rec-descartar">Sugestão: descartar</span>` : ''}
+      ${link ? `<span class="sub">${link}</span>` : ''}
+      ${verConta(it)}
+    </div>
+    ${it.nota && st !== 'pendente' ? `<div class="msg ${st==='erro'?'erro':''}">${esc(it.nota)}</div>` : ''}
+    ${pesquisaHTML(it)}
+    ${typeof cadenciaHTML==='function'?cadenciaHTML(it.cadencia):''}
+    ${it.tipo === 'decisao' ? '' : it.tipo === 'pedido' ? `<div class="porque">${esc(it.acao_aprovada||'')}</div>` : `
+    ${variantesHTML(it)}<div ${temVariantes?'hidden':''}>
+      <label class="rot" for="txt-${esc(id)}">${it.tipo==='comentario'?'Comentário sugerido':'Mensagem sugerida'}${vers.length>1?` · versão ${vers.length}`:''}</label>
+      <textarea class="texto" id="txt-${esc(id)}" data-id="${esc(id)}" ${aberto && dono && !preparando ? '' : 'readonly'}>${esc(texto)}</textarea>
+      ${preparando ? '<div class="msg">rascunho em preparo. A primeira mensagem aparece aqui quando estiver pronta.</div>' : ''}
+      <div class="conta-car" id="car-${esc(id)}">${texto.length} caracteres</div>
+    </div>`}
+    ${vers.length > 1 ? `<details><summary>Versões anteriores</summary><div class="conv">${vers.slice(0,-1).reverse().map((v,i)=>`<div class="m"><span class="q">v${vers.length-1-i} · ${esc(v.por||'')} · ${quando(v.quando)}${v.instrucao?` · pedido: ${esc(v.instrucao)}`:''}</span><span class="t">${esc(v.texto||'')}</span></div>`).join('')}</div></details>` : ''}
+    ${aberto && dono ? `
+    <div class="acoes">
+      ${descartar ? `<button class="btn pri" type="button" data-a="descartar">Descartar</button>` : ''}
+      ${it.tipo === 'decisao' ? (it.opcoes||[]).map(o=>`<button class="btn ${descartar?'':'pri'}" type="button" data-a="opcao" data-opcao="${esc(o.id)}">${esc(o.rotulo)}</button>`).join('') : it.tipo === 'whatsapp' ? `<button class="btn ${descartar?'':'pri'}" type="button" data-a="whatsapp">Copiar e abrir WhatsApp</button><button class="btn" type="button" data-a="whatsapp-feito">Já mandei</button>` : it.tipo !== 'pedido' && !preparando ? `<button class="btn ${descartar?'':conf?'conf':'pri'}" type="button" data-a="aprovar">${conf ? (envia ? `Confirmar ${it.tipo==='comentario'?'comentário':'envio'} para ${esc((it.pessoa||'').split(' ')[0])}` : 'Confirmar') : rot}</button>` : ''}
+      ${preparando ? '' : conf ? `<button class="btn fraco" type="button" data-a="cancelar">Voltar</button>` : `<button class="btn" type="button" data-a="falar">${it.tipo==='decisao'?'Perguntar':'Refazer ou perguntar'}</button>`}
+      ${!descartar ? `<button class="btn fraco alerta" type="button" data-a="descartar">Descartar</button>` : ''}
+      <span class="msg" role="status" id="msg-${esc(id)}"></span>
+    </div>
+    <div class="falar" id="falar-${esc(id)}" hidden>
+      <label class="rot" for="fb-${esc(id)}" style="text-transform:uppercase">O que você quer mudar ou saber?</label>
+      <input type="text" id="fb-${esc(id)}" placeholder="Ex.: tá formal demais, vai pela linha da feira que ele citou">
+      <label><input type="checkbox" id="regra-${esc(id)}"> Vale como regra para as próximas mensagens</label>
+      <div class="acoes">
+        ${it.tipo!=='decisao' ? `<button class="btn" type="button" data-a="refazer">Reescrever</button>` : ''}
+        <button class="btn" type="button" data-a="perguntar">Só perguntar</button>
+      </div>
+      ${conversa[id] ? `<div class="resposta-claude">${esc(conversa[id])}</div>` : ''}
+    </div>` : ''}
+
+  </article>`;
+}
+
+function todayCardHTML(it){
+  const st=it.status||'pendente', confirma=confirmar[it.id], envia=['dm','comentario'].includes(it.tipo);
+  const rotulo=it.cadencia?'Aprovar sequência':it.tipo==='comentario'?'Aprovar e comentar':envia?'Aprovar e enviar':'Aprovar';
+  return `<article class="card" data-today-id="${esc(it.id)}" data-st="${esc(st)}"><h3>${esc(tituloItem(it))}</h3>
+    ${it.porque?`<div class="porque">${esc(it.porque)}</div>`:''}<div class="cab"><span class="chip">${esc(TIPO[it.tipo]||it.tipo||'item')}</span><span class="chip st-${esc(st)}">${esc(ST[st]||st)}</span>${verConta(it)}</div>
+    ${it.texto?`<div class="resposta-texto">${esc(it.texto)}</div>`:''}${cadenciaHTML(it.cadencia)}<div class="acoes">
+    ${it.tipo==='decisao'?(it.opcoes||[]).map(o=>`<button class="btn pri" type="button" data-today-a="opcao" data-opcao="${esc(o.id)}">${esc(o.rotulo)}</button>`).join(''):it.tipo==='pedido'?'':`<button class="btn ${confirma?'conf':'pri'}" type="button" data-today-a="aprovar">${confirma?(envia?`Confirmar ${it.tipo==='comentario'?'comentário':'envio'}`:'Confirmar'):rotulo}</button>`}
+    ${confirma?'<button class="btn" type="button" data-today-a="cancelar">Voltar</button>':''}<button class="btn fraco alerta" type="button" data-today-a="descartar">Descartar</button><span class="msg" id="msg-hoje-${esc(it.id)}" role="status"></span></div></article>`;
+}
+
+function render(){
+  const ab = itens.filter(i => ABERTOS.includes(i.status||'pendente'));
+  const ordem = {erro:0, pendente:1, copiar:2, 'aguardando-confirmacao':3, aprovado:4, 'na-fila':5};
+  ab.sort((a,b)=> (ordem[a.status||'pendente']-ordem[b.status||'pendente']) || String(b.criado||'').localeCompare(String(a.criado||'')));
+  // preserva o campo aberto de "refazer" e o foco
+  const caixas = MODO==='servidor' ? [box,$('aceites'),$('mensagens'),$('comentarios')] : [box];
+  const abertos = new Set(caixas.flatMap(c=>[...c.querySelectorAll('.falar:not([hidden])')]).map(e=>e.id));
+  const foco = document.activeElement && document.activeElement.id;
+  const fbVal = {}; caixas.forEach(c=>c.querySelectorAll('input[type=text]').forEach(e=>{ if(e.value) fbVal[e.id]=e.value; }));
+  const aceites=MODO==='servidor'?ab.filter(i=>i.origem==='aceite'):[];
+  const demais=MODO==='servidor'?ab.filter(i=>i.origem!=='aceite'):ab;
+  if(MODO==='servidor'){
+    $('aceites').innerHTML=aceites.length?aceites.map(cardHTML).join(''):'<p class="vazio">Nenhum novo aceite esperando uma primeira mensagem. Os próximos aparecem aqui automaticamente.</p>';
+    atualizarEstadoAceites();
+  }
+  const TIPOS_MSG=['dm','whatsapp','email'];
+  const mensagensL=MODO==='servidor'?demais.filter(i=>TIPOS_MSG.includes(i.tipo)):[];
+  const comentariosL=MODO==='servidor'?demais.filter(i=>i.tipo==='comentario'):[];
+  const restoL=MODO==='servidor'?demais.filter(i=>!TIPOS_MSG.includes(i.tipo)&&i.tipo!=='comentario'):demais;
+  if(MODO==='servidor'){
+    const aprovFechadas=demais;
+    $('hoje-aprovacoes').innerHTML=aprovFechadas.length?aprovFechadas.slice(0,4).map(todayCardHTML).join(''):'<p class="vazio">Nada para conferir agora.</p>';
+    const restantes=Math.max(0,aprovFechadas.length-4), ver=$('hoje-conferir-todas');ver.hidden=!restantes;ver.textContent=restantes?`Ver todas · mais ${restantes}`:'';
+    hojeContagens.aprovacoes=aprovFechadas.length;hojeFalhas.aprovacoes=false;atualizarHojeVazio();
+  }
+  if(MODO==='servidor'){
+    const pendDe=l=>l.filter(i=>['pendente','erro','copiar','aguardando-confirmacao'].includes(i.status||'pendente')).length;
+    $('mensagens').innerHTML=mensagensL.length?mensagensL.map(cardHTML).join(''):'<p class="vazio">Nenhuma sugestão de mensagem agora.</p>';
+    $('comentarios').innerHTML=comentariosL.length?comentariosL.map(cardHTML).join(''):'<p class="vazio">Nenhuma sugestão de comentário agora. Quando alguém que você aquece postar, a sugestão aparece aqui.</p>';
+    $('mensagens-estado').textContent=pendDe(mensagensL)?`${pendDe(mensagensL)} para decidir`:'Nenhuma resposta nesta consulta';
+    $('comentarios-estado').textContent=pendDe(comentariosL)?`${pendDe(comentariosL)} para decidir`:'Nenhuma resposta nesta consulta';
+    contagemAbas.mensagens=pendDe(mensagensL)+pendDe(aceites); contagemAbas.comentarios=pendDe(comentariosL); contagemAbas.decisoes=pendDe(restoL);
+    $('aprovar-total').textContent=`${contagemAbas.mensagens-pendDe(aceites)+contagemAbas.comentarios+contagemAbas.decisoes} pendentes`;
+    atualizarAbas();
+  }
+  box.innerHTML = restoL.length ? restoL.map(cardHTML).join('') : (MODO==='servidor' ? '<p class="vazio">Nada esperando por você agora. Pedidos e decisões para aprovar aparecem aqui.</p>' : '<p class="vazio">Nada esperando por você agora. Respostas de lead, mensagens e comentários para aprovar aparecem aqui.</p>');
+  abertos.forEach(id => { const e = $(id); if (e) e.hidden = false; });
+  Object.entries(fbVal).forEach(([id,v]) => { const e = $(id); if (e) e.value = v; });
+  if (foco) { const e = $(foco); if (e) e.focus(); }
+  const pend = (MODO==='servidor'?restoL:ab).filter(i=>['pendente','erro','copiar','aguardando-confirmacao'].includes(i.status||'pendente')).length;
+  estado.textContent = pend ? `${pend} para decidir` : ab.length ? 'ações em andamento' : 'Nenhuma resposta nesta consulta';
+  const res = itens.filter(i => !ABERTOS.includes(i.status||'pendente')).sort((a,b)=>String(b.atualizado||'').localeCompare(String(a.atualizado||''))).slice(0,20);
+  $('resolvidos').hidden = !res.length;
+  $('resolvidos-lista').innerHTML = res.map(i=>`<li><span class="chip st-${esc(i.status)}">${esc(ST[i.status]||i.status)}</span><b>${esc(i.pessoa||i.titulo||'')}</b><span class="sub" style="color:var(--muted)">${esc(TIPO[i.tipo]||'')} · ${quando(i.atualizado||i.criado)}</span></li>`).join('');
+}
+
+function msg(id, t, erro){
+  for(const e of [$('msg-'+id),$('msg-hoje-'+id)]) if(e){e.textContent=t;e.className='msg'+(erro?' erro':'');}
+}
+const item = id => itens.find(i=>i.id===id);
+
+async function salvar(id, campos){
+  const { id: _x, ...resto } = campos;
+  await db.collection('itens').doc(id).update({ ...resto, atualizado: agoraISO() });
+}
+
+async function disparar(id){
+  if (!EXECUTOR || !mcp) return false;
+  try { await mcp.callTool('Claude Code Remote', 'fire_trigger', { trigger_id: EXECUTOR, text: 'item:' + id }); return true; }
+  catch(e){ console.warn('disparo', e && e.code); return false; }
+}
+
+async function aprovar(it){
+  const ta = $('txt-'+it.id);
+  const texto = ta ? ta.value.trim() : (it.texto||'');
+  if (it.tipo !== 'pedido' && !texto) { msg(it.id, 'Escreva a mensagem antes de aprovar.', true); return; }
+  const vers = Array.isArray(it.versoes) ? [...it.versoes] : [];
+  if (!vers.length || vers[vers.length-1].texto !== texto) vers.push({ texto, quando: agoraISO(), por: 'ygor' });
+  msg(it.id, 'Aprovando…');
+  try {
+    await salvar(it.id, { status: 'aprovado', texto, versoes: vers, decisao: { acao: 'aprovar', quando: agoraISO() }, nota: '' });
+  } catch(e){ msg(it.id, MODO === 'servidor' && e.message ? e.message : 'Não consegui salvar a aprovação. Tente de novo.', true); return; }
+  delete sujo[it.id]; delete confirmar[it.id];
+  const ok = await disparar(it.id);
+  const nota = MODO === 'servidor' ? notaServidor(it) : ok ? 'aprovado, executando' : 'aprovado; executa na próxima rodada (até 1h)';
+  try { await salvar(it.id, { nota }); } catch(e){}
+}
+
+async function escolher(it, opcao){
+  await salvar(it.id, {status:'aprovado', decisao:{opcao:opcao.id, quando:agoraISO()}, acao_aprovada:opcao.acao, nota:''});
+  const ok = await disparar(it.id);
+  await salvar(it.id, {nota:MODO === 'servidor' ? notaServidor(it) : ok ? 'aprovado, executando' : 'aprovado; executa na próxima rodada (até 1h)'});
+}
+
+function telefoneWhatsApp(telefone){
+  let numero = String(telefone||'').replace(/\D/g,'');
+  if ((numero.length === 12 || numero.length === 13) && numero.startsWith('55')) numero = numero.slice(2);
+  if (!/^\d{10,11}$/.test(numero)) throw new Error('telefone');
+  return '55' + numero;
+}
+
+async function abrirWhatsApp(it){
+  const texto = ($('txt-'+it.id)?.value ?? it.texto ?? '').trim();
+  if (!texto) { msg(it.id,'Escreva a mensagem antes de abrir o WhatsApp.',true); return; }
+  let numero;
+  try { numero = telefoneWhatsApp(it.telefone); }
+  catch(e){ msg(it.id,'Confira o telefone com DDD antes de abrir o WhatsApp.',true); return; }
+  // Reserva a aba no clique para evitar bloqueio de popup após aguardar clipboard.
+  const aba = window.open('about:blank','_blank');
+  if (!aba) { msg(it.id,'Libere a nova aba e tente novamente.',true); return; }
+  aba.opener = null;
+  try { await navigator.clipboard.writeText(texto); }
+  catch(e){ aba.close(); msg(it.id,'Não consegui copiar. Libere a área de transferência e tente novamente.',true); return; }
+  aba.location.href = 'https://wa.me/' + numero + '?text=' + encodeURIComponent(texto);
+  try {
+    await salvar(it.id,{texto,status:'aguardando-confirmacao',nota:'Mandou? Marque abaixo'});
+    delete sujo[it.id];
+  } catch(e){ msg(it.id,'WhatsApp aberto, mas não consegui salvar. Se enviou, clique em Já mandei.',true); }
+
+}
+
+function promptBase(it){
+  const ctx = (it.contexto||[]).map(m=>`[${m.quando||''}] ${m.quem||''}: ${m.texto||''}`).join('\n') || '(sem histórico)';
+  const rg = regras.map(r=>'- '+r.texto).join('\n') || '(nenhuma ainda)';
+  return `Você é o segundo cérebro comercial do Ygor Bueno, Growth Partner na Thunder Mustard (consultoria B2B de crescimento: estratégia comercial, outbound, RevOps, HubSpot). ICP: empresas B2B brasileiras, sobretudo indústria e distribuição, faturamento acima de R$10 mi/ano.
+Voz do Ygor: curta, conversacional, de igual para igual, com um próximo passo claro. Sem bajulação, sem jargão de vendedor, sem emoji, sem travessão. Não invente fato sobre a pessoa, a empresa, clientes ou resultados; use só o que está abaixo. Responda ao que a pessoa efetivamente disse.
+
+Tipo: ${TIPO[it.tipo]||it.tipo}${it.tipo==='whatsapp'?' no WhatsApp':it.tipo==='decisao'?'':' no LinkedIn'}
+Decisão: ${it.titulo||''}
+Opções: ${JSON.stringify(it.opcoes||[])}
+Pessoa: ${it.pessoa||''}${it.cargo?' ('+it.cargo+')':''}${it.conta_nome?' · '+it.conta_nome:''}
+Situação: ${it.porque||''}
+Fatos da conta:
+${(it.fatos||[]).map(f=>'- '+f).join('\n') || '(nenhum)'}
+Conversa (mais antiga primeiro):
+${ctx}
+Regras que o Ygor já deu:
+${rg}
+Texto atual sugerido:
+"""${($('txt-'+it.id)||{}).value ?? it.texto ?? ''}"""`;
+}
+
+async function refazer(it){
+  const fb = $('fb-'+it.id), instr = (fb && fb.value.trim()) || '';
+  if (!instr) { msg(it.id, 'Diga o que mudar.', true); return; }
+  if (!sample) { msg(it.id, 'Reescrever aqui não está disponível nesta visualização.', true); return; }
+  const regra = $('regra-'+it.id) && $('regra-'+it.id).checked;
+  msg(it.id, 'Reescrevendo…');
+  try {
+    const r = await sample.json(promptBase(it) + `
+
+O Ygor pediu: "${instr}"
+Reescreva seguindo o pedido. Devolva só JSON: {"texto": "<a nova mensagem pronta para enviar>", "nota": "<1 frase curta do que mudou>"}`, { ...(MODO === 'servidor' ? {item_id:it.id} : {}), modelTier: 'default', cache: false });
+    const novo = String(r && r.texto || '').trim();
+    if (!novo) throw { code: 'vazio' };
+    const vers = Array.isArray(it.versoes) ? [...it.versoes] : [];
+    vers.push({ texto: novo, quando: agoraISO(), por: 'claude', instrucao: instr });
+    const fbk = Array.isArray(it.feedback) ? [...it.feedback] : [];
+    fbk.push({ texto: instr, quando: agoraISO(), regra: !!regra });
+    delete sujo[it.id];
+    conversa[it.id] = r.nota ? 'Mudei: ' + r.nota : '';
+    await salvar(it.id, { texto: novo, versoes: vers, feedback: fbk });
+    if (regra) await db.collection('regras').add({ texto: instr, contexto: `${TIPO[it.tipo]||''} · ${it.pessoa||''}`, processada: false, criado: agoraISO() });
+    if (fb) fb.value = '';
+  } catch(e){
+    msg(it.id, e && e.code === 'rate_limited' ? 'Muitos pedidos seguidos. Espere um minuto.' : e && e.code === 'not_granted' ? 'Você não liberou o Claude neste painel.' : 'Não consegui reescrever agora. Tente de novo.', true);
+  }
+}
+
+async function perguntar(it){
+  const fb = $('fb-'+it.id), q = (fb && fb.value.trim()) || '';
+  if (!q) { msg(it.id, 'Escreva a pergunta.', true); return; }
+  if (!sample) { msg(it.id, 'Perguntar aqui não está disponível nesta visualização.', true); return; }
+  msg(it.id, 'Pensando…');
+  try {
+    const r = await sample(promptBase(it) + `
+
+O Ygor pergunta sobre este caso: "${q}"
+Responda direto, em até 5 linhas, com sua recomendação. Não reescreva a mensagem a menos que ele peça.`, { ...(MODO === 'servidor' ? {item_id:it.id} : {}), modelTier: 'default', cache: false,
+      onText: ({text}) => { conversa[it.id] = text; const f = $('falar-'+it.id); const c = f && f.querySelector('.resposta-claude'); if (c) c.textContent = text; else if (f) { f.insertAdjacentHTML('beforeend', '<div class="resposta-claude"></div>'); f.lastElementChild.textContent = text; } } });
+    conversa[it.id] = r.text; msg(it.id, ''); render();
+  } catch(e){ msg(it.id, e && e.code === 'rate_limited' ? 'Muitos pedidos seguidos. Espere um minuto.' : 'Não consegui responder agora.', true); }
+}
+
+[box,$('aceites'),$('mensagens'),$('comentarios')].forEach(caixa=>{
+caixa.addEventListener('input', ev => {
+  const t = ev.target; if (!t.classList.contains('texto')) return;
+  sujo[t.dataset.id] = t.value; const c = $('car-'+t.dataset.id); if (c) c.textContent = t.value.length + ' caracteres';
+});
+caixa.addEventListener('click', async ev => {
+  const b = ev.target.closest('button[data-a]'); if (!b) return;
+  if (b.dataset.a === 'conta') return abrirConta(b.dataset.conta,b.dataset.pessoa,b);
+  const card = b.closest('.card'); const it = item(card.dataset.id); if (!it) return;
+  const a = b.dataset.a;
+  if (!dono) return;
+  if (a === 'variante') {
+    const variante=(it.variantes||[])[Number(b.dataset.variante)];
+    b.disabled=true;
+    try{await usarVariante(it,variante);}catch(e){msg(it.id,'Não consegui escolher esta versão. Tente novamente.',true);b.disabled=false;}
+    return;
+  }
+  if (['whatsapp','whatsapp-feito','opcao'].includes(a)) {
+    b.disabled = true;
+    try {
+      if (a === 'whatsapp' && it.tipo === 'whatsapp') await abrirWhatsApp(it);
+      if (a === 'whatsapp-feito' && it.tipo === 'whatsapp') await salvar(it.id,{status:'feito',decisao:{acao:'whatsapp-manual'},nota:'Enviado manualmente por você'});
+      if (a === 'opcao' && it.tipo === 'decisao') {
+        const opcao = (it.opcoes||[]).find(o=>String(o.id)===b.dataset.opcao);
+        if (opcao) await escolher(it,opcao);
+      }
+    } catch(e){ msg(it.id,'Não consegui registrar. Tente novamente.',true); }
+    finally { b.disabled = false; }
+    return;
+  }
+  if (a === 'aprovar') {
+    if (!confirmar[it.id]) { const ta = $('txt-'+it.id); if (ta) sujo[it.id] = ta.value; confirmar[it.id] = true; render(); return; }
+    b.disabled = true; await aprovar(it); b.disabled = false; return;
+  }
+  if (a === 'cancelar') { delete confirmar[it.id]; render(); return; }
+  if (a === 'falar') { const f = $('falar-'+it.id); f.hidden = !f.hidden; if (!f.hidden) $('fb-'+it.id).focus(); return; }
+  if (a === 'refazer') { b.disabled = true; await refazer(it); b.disabled = false; return; }
+  if (a === 'perguntar') { b.disabled = true; await perguntar(it); b.disabled = false; return; }
+  if (a === 'descartar') { try { await salvar(it.id, { status: 'descartado', decisao: { acao: 'descartar', quando: agoraISO() } }); } catch(e){ msg(it.id, 'Não consegui descartar. Tente de novo.', true); } return; }
+  if (a === 'copiar') { try { await navigator.clipboard.writeText(it.texto||''); msg(it.id, 'Copiado.'); } catch(e){ const ta = $('txt-'+it.id); if (ta){ ta.removeAttribute('readonly'); ta.select(); } msg(it.id, 'Selecionei o texto: use Cmd+C.'); } return; }
+  if (a === 'feito') { try { await salvar(it.id, { status: 'feito', nota: 'comentado pelo Ygor' }); } catch(e){} return; }
+});
+
+});
+
+$('sec-hoje').addEventListener('click',async ev=>{
+  const retry=ev.target.closest('[data-retry]');if(retry){if(retry.dataset.retry==='quentes')carregarQuentes();else window.location.reload();return;}
+  const ir=ev.target.closest('[data-ir]');if(ir){mostrarAba(ir.dataset.ir);$('abas').querySelector(`[data-aba="${ir.dataset.ir}"]`)?.focus();return;}
+  const conta=ev.target.closest('[data-a="conta"]');if(conta){abrirConta(conta.dataset.conta,conta.dataset.pessoa,conta);return;}
+  const reuniao=ev.target.closest('[data-a="reuniao"]');if(reuniao){marcarReuniao(reuniao.dataset.pessoa,reuniao.dataset.conta,reuniao);return;}
+  const b=ev.target.closest('[data-today-a]');if(!b)return;
+  const card=b.closest('[data-today-id]'),it=item(card?.dataset.todayId);if(!it||b.disabled)return;
+  const a=b.dataset.todayA;
+  if(a==='cancelar'){delete confirmar[it.id];render();return;}
+  if(a==='aprovar'){
+    if(!confirmar[it.id]){confirmar[it.id]=true;render();document.querySelector(`[data-today-id="${it.id}"] [data-today-a="aprovar"]`)?.focus();return;}
+    b.disabled=true;try{await aprovar(it);}finally{b.disabled=false;document.querySelector(`[data-today-id="${it.id}"] [data-today-a="aprovar"]`)?.focus();}return;
+  }
+  if(a==='opcao'){
+    const opcao=(it.opcoes||[]).find(o=>String(o.id)===b.dataset.opcao);if(!opcao)return;
+    b.disabled=true;try{await escolher(it,opcao);}finally{b.disabled=false;}return;
+  }
+  if(a==='descartar'){
+    b.disabled=true;try{await salvar(it.id,{status:'descartado',decisao:{acao:'descartar',quando:agoraISO()}});}catch(e){card.querySelector('.msg').textContent='Não consegui descartar. Tente novamente.';}finally{b.disabled=false;}
+  }
+});
+
+$('hoje-respostas').addEventListener('click',ev=>{
+  const b=ev.target.closest('button');if(!b)return;
+  if(b.dataset.a==='conta'||b.dataset.a==='reuniao')return;
+  const id=b.closest('[data-resposta]')?.dataset.resposta;
+  if(id&&CLASSIFICACOES[b.dataset.classificacao]) db.collection('respostas').doc(id).update({classificacao:b.dataset.classificacao}).catch(()=>{});
+});
+
+$('pedido').addEventListener('submit', async ev => {
+  ev.preventDefault();
+  const t = $('pedido-txt').value.trim(); if (!t) return;
+  const m = $('pedido-msg'); m.textContent = 'Enviando…'; m.className = 'msg';
+  try {
+    const ref = await db.collection('itens').add({ tipo: 'pedido', titulo: t.slice(0,60), acao_aprovada: t, status: 'aprovado', criado: agoraISO(), atualizado: agoraISO(), decisao: { acao: 'pedido', quando: agoraISO() } });
+    $('pedido-txt').value = '';
+    const ok = await disparar(ref.id);
+    m.textContent = MODO === 'servidor' ? notaServidor({tipo:'pedido'}) : ok ? 'Pedido enviado. O Claude já começou; o resultado volta aqui.' : 'Pedido registrado. Entra na próxima varredura (de hora em hora).';
+  } catch(e){ m.textContent = 'Não consegui registrar o pedido. Tente de novo.'; m.className = 'msg erro'; }
+});
+
+let osPedidoPendente=null;
+function montarPedidoOS(texto,capability,dominio){
+  const account_id=dominio.trim().toLowerCase();
+  if(!['research','copy'].includes(capability))throw new Error('Escolha o tipo de trabalho.');
+  if(!/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(account_id))throw new Error('Informe o domínio da empresa, como empresa.com.br, sem https ou caminhos.');
+  if(!texto.trim())throw new Error('Escreva o que você precisa.');
+  return {objective:texto.trim(),context:{capability,account_id}};
+}
+$('os-pedido').addEventListener('submit', async ev => {
+  ev.preventDefault();
+  const campo=$('os-pedido-texto'),mensagem=$('os-pedido-msg');
+  let pedido;
+  try{pedido=montarPedidoOS(campo.value,$('os-pedido-tipo').value,$('os-pedido-conta').value);}
+  catch(e){mensagem.textContent=e.message;mensagem.className='msg erro';return;}
+  const fingerprint=JSON.stringify(pedido);
+  if(!osPedidoPendente||osPedidoPendente.fingerprint!==fingerprint){
+    osPedidoPendente={fingerprint,chave:`painel-${crypto.randomUUID()}`};
+  }
+  const botao=ev.currentTarget.querySelector('button[type="submit"]');botao.disabled=true;
+  mensagem.textContent='Registrando pedido…';mensagem.className='msg';
+  try{
+    if(!apiServidor)throw new Error('indisponível');
+    const trabalho=await apiServidor('/api/os/v1/work','POST',{...pedido,idempotency_key:osPedidoPendente.chave});
+    mensagem.textContent=`Pedido registrado (${trabalho.id}). A execução depende da configuração disponível; acompanhe o estado abaixo.`;
+    osPedidoPendente=null;campo.value='';
+    await carregarThunderOS();
+  }catch(e){mensagem.textContent='Não foi possível confirmar o registro. Seu texto foi preservado; tente novamente para consultar ou registrar o mesmo pedido sem duplicar.';mensagem.className='msg erro';}
+  finally{botao.disabled=false;}
+});
+
+let sugestaoAtual=null;
+function percentual(valor){return Number.isFinite(Number(valor))?(Number(valor)*100).toLocaleString('pt-BR',{maximumFractionDigits:1})+'%':'não disponível';}
+function renderSugestao(s){
+  sugestaoAtual=s||null;$('aprendizado').hidden=!s;if(!s)return;
+  $('aprendizado-hipotese').textContent=s.hypothesis;$('aprendizado-evidencia').textContent=s.evidence;
+  const anterior=s.comparison||{};
+  $('aprendizado-detalhes').innerHTML=`<div><b>Amostra:</b> ${esc(s.sample)}</div><div><b>Taxa:</b> ${esc(percentual(s.response_rate))}</div><div><b>Comparação:</b> ${anterior.sample?`${esc(anterior.sample)} casos · ${esc(percentual(anterior.response_rate))}`:'sem período comparável'}</div><div><b>Limitação:</b> ${esc(s.limitation)}</div><div><b>Fonte:</b> reflexão semanal</div>`;
+}
+async function carregarSugestao(){
+  if(MODO!=='servidor'||!apiServidor)return;
+  try{const dados=await apiServidor('/api/sugestoes');renderSugestao(dados.items?.[0]);}catch(e){renderSugestao(null);}
+}
+$('aprendizado-entender').addEventListener('click',()=>{const detalhes=$('aprendizado-detalhes'),abrir=detalhes.hidden;detalhes.hidden=!abrir;$('aprendizado-entender').setAttribute('aria-expanded',String(abrir));});
+$('aprendizado').addEventListener('click',async ev=>{
+  const b=ev.target.closest('[data-sugestao]');if(!b||!sugestaoAtual)return;
+  b.disabled=true;$('aprendizado-msg').textContent='Salvando…';
+  try{await apiServidor('/api/sugestoes/'+encodeURIComponent(sugestaoAtual.id),'PATCH',{status:b.dataset.sugestao});renderSugestao(null);$('aprendizado-msg').textContent='Decisão salva.';}
+  catch(e){$('aprendizado-msg').textContent='Não consegui salvar. Tente novamente.';b.disabled=false;}
+});
+
+(async () => {
+  try {
+    if (MODO === 'servidor') {
+      ({db,sample,apiServidor} = adaptadorServidor());
+      $('sec-quentes').hidden=false; $('sec-respostas').hidden=false; $('sec-aceites').hidden=false;
+      $('sec-mensagens').hidden=false; $('sec-comentarios').hidden=false; $('aprovar-topo').hidden=false; iniciarAbas();
+      dono = true; mcp = null;
+      $('rodape').textContent = 'Servidor: painel.r3xdigital.tech';
+      carregarQuentes();
+      carregarSugestao();
+      carregarThunderOS();
+    } else {
+      const user = await claude.use('user');
+      dono = user ? await user.isOwner() : false;
+      db = await claude.use('db');
+      if (!db) return fallback('decisões indisponíveis nesta visualização');
+      if (!dono) return fallback('só o Ygor decide por aqui');
+      sample = await claude.use('sample');
+      mcp = await claude.use('mcp');
+    }
+    $('pedido').hidden = false;
+    db.collection('regras').onSnapshot(s => { regras = s.docs.map(d=>d.data()).filter(Boolean); }, () => {});
+    db.collection('itens').onSnapshot(s => {
+      if (MODO === 'servidor') $('pend').hidden = true;
+      itens = s.docs.map(d => ({ id: d.id, ...d.data() }));
+      // item que mudou no banco sai do modo confirmação
+      render();
+    }, e => {
+      if(MODO==='servidor') $('aceites-estado').textContent='Não consegui carregar os aceites. Vou tentar novamente.';
+      if(MODO==='servidor') $('hoje-aprovacoes').innerHTML='<p class="msg erro">Não foi possível atualizar os itens para conferir.</p><button class="btn" type="button" data-retry="aprovacoes">Tentar novamente</button>';
+      hojeFalhas.aprovacoes=true;atualizarHojeVazio();
+      fallback(e && e.code === 'unavailable' ? 'banco fora do ar agora; tente recarregar' : 'não consegui ler as decisões');
+    });
+    if(MODO==='servidor'){
+      db.collection('respostas').onSnapshot(s=>{respostas=s.docs.map(d=>({id:d.id,...d.data()}));renderRespostas();},()=>{$('respostas-estado').textContent='Não consegui atualizar as respostas. Vou tentar novamente.';$('hoje-respostas').innerHTML='<p class="msg erro">Não foi possível atualizar as respostas.</p><button class="btn" type="button" data-retry="respostas">Tentar novamente</button>';hojeFalhas.respostas=true;atualizarHojeVazio();});
+      setInterval(()=>{if(!document.hidden) atualizarRelogios();},60000);
+    }
+  } catch(e){ fallback('decisões indisponíveis nesta visualização'); }
+})();
+})();
+</script>

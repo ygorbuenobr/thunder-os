@@ -10,10 +10,25 @@ ALLOWED_FILES = {
     "README.md",
     ".gitignore",
     ".checks/thunder-os-source.md",
+    ".checks/connection-copilot.md",
     ".specs/features/thunder-os-v1/spec.md",
     ".specs/features/thunder-os-v1/context.md",
     ".specs/features/thunder-os-v1/design.md",
     "scripts/check_source_boundary.py",
+    "scripts/build_runtime_bundle.py",
+    "scripts/check_runtime_bundle.py",
+    "scripts/test_runtime_bundle.py",
+    "scripts/test_connection_units.py",
+    "runtime/dependencies.json",
+    "runtime/systemd/thunder-os-agent-pythonpath.conf",
+    "runtime/systemd/thunder-os-agent-pythonpath-v1.md",
+    "runtime/systemd/thunder-os-connections-live.service",
+    "runtime/systemd/thunder-os-connections-live.timer",
+    "runtime/systemd/thunder-os-connections-backfill.service",
+    "runtime/systemd/thunder-os-connections-backfill.timer",
+    "_ferramentas/painel.py",
+    "_ferramentas/painel_servidor.py",
+    "_ferramentas/painel_modelo.html",
 }
 ALLOWED_TESTS = {
     "test_thunder_os_models.py",
@@ -27,6 +42,19 @@ ALLOWED_TESTS = {
     "test_thunder_os_hermes_dependency.py",
     "test_thunder_os_hermes_auth_ro.py",
     "test_thunder_os_connection_intake.py",
+    "test_thunder_os_connection_ledger.py",
+    "test_thunder_os_connection_provider.py",
+    "test_thunder_os_connection_backfill.py",
+    "test_thunder_os_connection_catalog.py",
+    "test_thunder_os_connection_runtime.py",
+    "test_thunder_os_connection_worker.py",
+    "test_thunder_os_connection_panel.py",
+    "test_thunder_os_connection_reconcile.py",
+    "test_thunder_os_connection_reconcile_runtime.py",
+    "test_thunder_os_connection_reconcile_apply.py",
+    "test_thunder_os_connection_reconcile_cli.py",
+    "test_thunder_os_connectsafely_client.py",
+    "test_thunder_os_connectsafely_transport.py",
 }
 FORBIDDEN_PARTS = {
     "brain",
@@ -54,12 +82,10 @@ def allowed(path: str) -> bool:
         return False
     if path in ALLOWED_FILES:
         return True
-    if path.startswith("_ferramentas/thunder_os/") and path.endswith(".py"):
-        return "__pycache__" not in parts
+    if path.startswith("_ferramentas/thunder_os/"):
+        return "__pycache__" not in parts and path.endswith((".py", ".sql"))
     if path.startswith("_ferramentas/test_thunder_os_"):
         return PurePosixPath(path).name in ALLOWED_TESTS
-    if path.startswith("_ferramentas/thunder_os/"):
-        return path.endswith(".py")
     return False
 
 
