@@ -141,6 +141,8 @@ class ConnectionIntakeTests(unittest.TestCase):
                          profile_key("https://linkedin.com/in/jo%C3%A3o-silva/"))
         self.assertNotEqual(profile_key("https://linkedin.com/in/straße"),
                             profile_key("https://linkedin.com/in/strasse"))
+        self.assertNotEqual(profile_key("https://linkedin.com/in/K"),
+                            profile_key("https://linkedin.com/in/K"))
         self.assertEqual(profile_key(profile_key("https://linkedin.com/in/%C4%B0")),
                          profile_key("https://linkedin.com/in/%C4%B0"))
         with self.assertRaisesRegex(ConnectionIntakeError, "connection_account_ambiguous"):

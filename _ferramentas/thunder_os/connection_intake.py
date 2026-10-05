@@ -11,7 +11,6 @@ from typing import Any, Callable, Mapping
 from urllib.parse import unquote, urlsplit
 from zoneinfo import ZoneInfo
 import re
-import unicodedata
 
 
 class ConnectionIntakeError(ValueError):
@@ -21,7 +20,7 @@ class ConnectionIntakeError(ValueError):
 def canonical_profile_slug(value: str) -> str:
     if not isinstance(value, str):
         raise ConnectionIntakeError("connection_profile_invalid")
-    slug = unicodedata.normalize("NFC", value)
+    slug = value
     if not (1 <= len(slug) <= 100 and all(char.isalnum() or char in "._-" for char in slug)):
         raise ConnectionIntakeError("connection_profile_invalid")
     return "".join(char.lower() if char.isascii() else char for char in slug)
