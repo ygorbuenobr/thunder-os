@@ -19,6 +19,9 @@ MAX_RESPONSE_BYTES = 1_000_000
 PAGE_LIMIT = 10
 ENGLISH_MONTHS = {name: month for month, name in enumerate(
     ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"), 1)}
+ENGLISH_MONTHS.update({name: month for month, name in enumerate(
+    ("January", "February", "March", "April", "May", "June", "July", "August",
+     "September", "October", "November", "December"), 1)})
 
 
 class ConnectionProviderError(ValueError):
@@ -47,7 +50,7 @@ def _date(value: object) -> str:
              "connection_row_invalid")
     if isinstance(value, str):
         _require(0 < len(value) <= 100, "connection_row_invalid")
-        match = re.fullmatch(r"Connected on ([A-Z][a-z]{2}) ([1-9]|[12]\d|3[01]), (20\d\d)", value)
+        match = re.fullmatch(r"Connected on ([A-Z][a-z]+) ([1-9]|[12]\d|3[01]), (20\d\d)", value)
         if match:
             try:
                 return datetime(int(match[3]), ENGLISH_MONTHS[match[1]], int(match[2]),

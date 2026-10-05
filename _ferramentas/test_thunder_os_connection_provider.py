@@ -71,6 +71,16 @@ class ConnectionProviderTests(unittest.TestCase):
         self.assertEqual("2026-10-05T00:00:00-03:00",
                          result["connections"][0]["connectedDate"])
 
+    def test_provider_full_english_month_observed_on_older_pages(self):
+        fake = FakeTransport([(200, page(0, [row(1, "Connected on October 5, 2026"),
+                                             row(2, "Connected on September 29, 2026")], end=True))])
+        result = self.provider(fake).fetch_page(0)
+        self.assertEqual(["2026-10-05T00:00:00-03:00", "2026-09-29T00:00:00-03:00"],
+                         [item["connectedDate"] for item in result["connections"]])
+        invalid = FakeTransport([(200, page(0, [row(1, "Connected on Smarch 5, 2026")], end=True))])
+        with self.assertRaisesRegex(ConnectionProviderError, "connection_row_invalid"):
+            self.provider(invalid).fetch_page(0)
+
     def test_partial_page_is_not_terminal(self):
         fake = FakeTransport([(200, page(0, [row(1), row(2)]))])
         result = self.provider(fake).fetch_page(0)
