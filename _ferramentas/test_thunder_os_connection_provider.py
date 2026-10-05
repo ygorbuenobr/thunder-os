@@ -140,6 +140,14 @@ class ConnectionProviderTests(unittest.TestCase):
         with self.assertRaisesRegex(ConnectionProviderError, "connection_row_invalid"):
             self.provider(fake).fetch_page(0)
 
+    def test_unicode_identifier_does_not_fold_distinct_spellings(self):
+        different = row(1)
+        different["vanityName"] = "straße"
+        different["profileUrl"] = "https://www.linkedin.com/in/strasse/"
+        fake = FakeTransport([(200, page(0, [different], end=True))])
+        with self.assertRaisesRegex(ConnectionProviderError, "connection_row_invalid"):
+            self.provider(fake).fetch_page(0)
+
     def test_429_does_not_retry_or_echo_provider_body(self):
         fake = FakeTransport([(429, {"error": "secret-value"})])
         with self.assertRaises(ConnectionProviderError) as caught:

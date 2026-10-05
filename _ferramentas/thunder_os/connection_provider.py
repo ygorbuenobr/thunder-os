@@ -10,10 +10,11 @@ from __future__ import annotations
 from datetime import datetime
 import json
 import re
-import unicodedata
 from typing import Callable, Mapping
 
-from .connection_intake import ConnectionIntakeError, PROVIDER_CALENDAR, _connected_at, profile_key
+from .connection_intake import (
+    ConnectionIntakeError, PROVIDER_CALENDAR, _connected_at, canonical_profile_slug, profile_key,
+)
 
 
 MAX_RESPONSE_BYTES = 1_000_000
@@ -145,7 +146,7 @@ class ConnectionProvider:
                 key = profile_key(row.get("profileUrl"))
             except ConnectionIntakeError:
                 raise ConnectionProviderError("connection_row_invalid") from None
-            _require(key == "https://www.linkedin.com/in/" + unicodedata.normalize("NFC", vanity).casefold()
+            _require(key == "https://www.linkedin.com/in/" + canonical_profile_slug(vanity)
                      and key not in seen, "connection_row_invalid")
             seen.add(key)
             clean = {"vanityName": vanity, "profileUrl": key,

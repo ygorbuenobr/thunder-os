@@ -18,6 +18,15 @@ class ConnectionIntakeError(ValueError):
     pass
 
 
+def canonical_profile_slug(value: str) -> str:
+    if not isinstance(value, str):
+        raise ConnectionIntakeError("connection_profile_invalid")
+    slug = unicodedata.normalize("NFC", value)
+    if not (1 <= len(slug) <= 100 and all(char.isalnum() or char in "._-" for char in slug)):
+        raise ConnectionIntakeError("connection_profile_invalid")
+    return "".join(char.lower() if char.isascii() else char for char in slug)
+
+
 MONTHS_PT = {
     "janeiro": 1, "fevereiro": 2, "março": 3, "abril": 4,
     "maio": 5, "junho": 6, "julho": 7, "agosto": 8,
@@ -40,10 +49,7 @@ def profile_key(value: str) -> str:
     match = re.fullmatch(r"/in/([^/]+)/?", unquote(parsed.path))
     if not match:
         raise ConnectionIntakeError("connection_profile_invalid")
-    slug = unicodedata.normalize("NFC", match.group(1))
-    if not (1 <= len(slug) <= 100 and all(char.isalnum() or char in "._-" for char in slug)):
-        raise ConnectionIntakeError("connection_profile_invalid")
-    return "https://www.linkedin.com/in/" + slug.casefold()
+    return "https://www.linkedin.com/in/" + canonical_profile_slug(match.group(1))
 
 
 def _connected_at(value: Any) -> datetime:
