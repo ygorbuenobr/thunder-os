@@ -85,6 +85,30 @@ class FakeFetcher:
 
 
 class PublicResearchProducerTests(unittest.TestCase):
+    def test_header_date_and_footer_text_do_not_become_article_evidence(self):
+        page = _HTMLMetadata()
+        page.feed('<header><span>06 de Outubro de 2026</span></header>'
+                  '<article><h1>Undated article</h1><p>The company operates a technical training program for distributors.</p></article>'
+                  '<footer><p>Navigation: browse our complete catalogue and contact every regional office.</p></footer>')
+        self.assertIsNone(page.page_date)
+        self.assertFalse(any('Navigation' in text for text in page.statements))
+        page = _HTMLMetadata()
+        page.feed('<div>06 de Outubro de 2026</div><article><h1>Different container</h1></article>')
+        self.assertIsNone(page.page_date)
+        page = _HTMLMetadata()
+        page.feed('<article><small>04 de Setembro de 2026</small><h1>Training program</h1>'
+                  '<p>The company operates a technical training program for distributors.</p></article>'
+                  '<div><p>Unrelated content outside the article must not become its body text.</p></div>')
+        self.assertEqual('2026-09-04', page.page_date)
+        self.assertFalse(any('Unrelated' in text for text in page.statements))
+        page = _HTMLMetadata()
+        page.feed('<section><div><small>04 de Setembro de 2026</small></div>'
+                  '<div><h1>Article heading</h1><p>The company operates a technical training program for distributors.</p></div></section>')
+        self.assertEqual('2026-09-04', page.page_date)
+        page = _HTMLMetadata()
+        page.feed('<main><article>04 de Setembro de 2026</article><article><h1>Different article</h1></article></main>')
+        self.assertIsNone(page.page_date)
+
     def test_article_date_and_text_are_not_taken_from_navigation_or_sidebar(self):
         page = _HTMLMetadata()
         page.feed('<nav><p>Long navigation paragraph advertising the complete product catalogue.</p></nav>'

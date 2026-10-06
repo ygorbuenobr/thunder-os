@@ -258,19 +258,38 @@ class _HTMLMetadata(HTMLParser):
         self._capture_jsonld = False
         self._jsonld_parts: list[str] = []
         self._heading_count = 0
-        self._pre_heading_dates: list[str] = []
+        self._pre_heading_dates: list[tuple[str, tuple[int, ...]]] = []
         self.article_paragraphs: list[str] = []
+        self._containers: list[tuple[str, int]] = []
+        self._container_sequence = 0
+        self._heading_scope: tuple[int, ...] = ()
+        self._heading_date_scope: tuple[int, ...] = ()
+
+    def _scope(self):
+        return tuple(number for _, number in self._containers)
+
+    def _chrome(self):
+        return any(tag in {'header', 'footer', 'nav', 'aside'} for tag, _ in self._containers)
+
+    def _date_scope(self):
+        semantic = tuple(number for tag, number in self._containers if tag in {'article', 'main', 'section'})
+        return semantic or self._scope()
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]):
         values = {key.lower(): (value or "") for key, value in attrs}
+        if tag in {'div', 'article', 'main', 'section', 'header', 'footer', 'nav', 'aside'}:
+            self._container_sequence += 1
+            self._containers.append((tag, self._container_sequence))
         if tag in {"script", "style", "noscript", "svg"}:
             self._skip_depth += 1
             if tag == "script" and values.get("type", "").lower().split(";", 1)[0].strip() == "application/ld+json":
                 self._capture_jsonld = True
                 self._jsonld_parts = []
-        elif tag == "h1" and not self._skip_depth:
+        elif tag == "h1" and not self._skip_depth and not self._chrome():
             self._heading_count += 1
-        elif tag == "p" and not self._skip_depth:
+            self._heading_scope = self._scope()
+            self._heading_date_scope = self._date_scope()
+        elif tag == "p" and not self._skip_depth and not self._chrome():
             self._in_paragraph = True
             self._paragraph_parts = []
         elif tag == "title":
@@ -282,7 +301,7 @@ class _HTMLMetadata(HTMLParser):
                 self.description = content
             if name in {"article:published_time", "datepublished", "date", "pubdate"} and content and not self.published_at:
                 self.published_at = _date_from_text(content)
-        elif tag == "time":
+        elif tag == "time" and not self._chrome():
             value = values.get("datetime", "").strip()
             if value:
                 self._times.append(value)
@@ -301,7 +320,8 @@ class _HTMLMetadata(HTMLParser):
             text = _clean_text(" ".join(self._paragraph_parts))
             if len(text) >= 45 and text not in self.paragraphs:
                 self.paragraphs.append(text)
-                if self._heading_count == 1:
+                if (self._heading_count == 1 and not self._chrome()
+                        and self._scope()[:len(self._heading_scope)] == self._heading_scope):
                     self.article_paragraphs.append(text)
             self._in_paragraph = False
             self._paragraph_parts = []
@@ -313,6 +333,10 @@ class _HTMLMetadata(HTMLParser):
                 self.links.append((self._anchor_href, text[:240]))
             self._anchor_href = None
             self._anchor_text = []
+        for index in range(len(self._containers) - 1, -1, -1):
+            if self._containers[index][0] == tag:
+                del self._containers[index:]
+                break
 
     def handle_data(self, data: str):
         value = " ".join(data.split())
@@ -322,16 +346,16 @@ class _HTMLMetadata(HTMLParser):
             self._jsonld_parts.append(data)
         if self._skip_depth:
             return
-        if (not self._heading_count and not self._in_title and not self._anchor_href
+        if (not self._heading_count and not self._in_title and not self._anchor_href and not self._chrome()
                 and re.fullmatch(r"\d{1,2}\s+de\s+[A-Za-zçÇ]+\s+de\s+\d{4}", value)):
             parsed_date = _date_from_text(value)
             if parsed_date:
-                self._pre_heading_dates.append(parsed_date)
+                self._pre_heading_dates.append((parsed_date, self._date_scope()))
         if self._in_title:
             self.title_parts.append(value)
         if self._anchor_href:
             self._anchor_text.append(value)
-        if self._in_paragraph:
+        if self._in_paragraph and not self._chrome():
             self._paragraph_parts.append(value)
 
     def _read_jsonld_dates(self, raw: str):
@@ -373,7 +397,9 @@ class _HTMLMetadata(HTMLParser):
         if explicit:
             return explicit
         if self._heading_count == 1 and len(self._pre_heading_dates) == 1:
-            return self._pre_heading_dates[0]
+            value, scope = self._pre_heading_dates[0]
+            if scope == self._heading_date_scope:
+                return value
         return None
 
 

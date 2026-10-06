@@ -1,4 +1,6 @@
 import sqlite3
+import json
+import os
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -31,6 +33,38 @@ class Owner:
 
 
 class ConnectionWorkerTests(unittest.TestCase):
+    def test_long_research_preserves_lease_persistence_and_ack(self):
+        from test_thunder_os_research import base_artifact
+        service = ThunderService(self.repo, approved_catalog={
+            'version': 'fixture', 'status': 'validado', 'capabilities': ['cap-1'], 'proofs': ['proof-1']})
+        clock = [datetime.now(timezone.utc) + timedelta(seconds=1)]
+        class SimulatedDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return clock[0] if tz is not None else clock[0].replace(tzinfo=None)
+        def collect(job):
+            clock[0] += timedelta(seconds=90)
+            return {}
+        def transport_factory(job, evidence, cancelled):
+            def transport(job, timeout):
+                self.assertEqual(240, timeout)
+                clock[0] += timedelta(seconds=239)
+                self.assertFalse(cancelled())
+                return json.dumps({'artifact': base_artifact(), 'evidence': [{'source': 'https://acme.example/company'}]})
+            return transport
+        item = service.request_work({'objective': 'Pesquisar Acme', 'context': {
+            'capability': 'research', 'account_id': 'acme.example'}}, 'ygor', 'long-research')
+        with patch.dict(os.environ, {'THUNDER_EXTERNAL_EFFECTS_ENABLED': 'false', 'THUNDER_OS_EXTERNAL_EFFECTS_ENABLED': 'false'}), \
+                patch('thunder_os.db.datetime', SimulatedDatetime):
+            consumer = ContinuousConsumer(service, evidence_loader=collect,
+                transport_factory=transport_factory, clock=lambda: clock[0])
+            result = consumer.run_once()
+        self.assertEqual('succeeded', result['status'])
+        self.assertEqual('succeeded', self.repo.get_work(item.id).status.value)
+        self.assertEqual('validated', self.repo.get_state('research', 'acme.example')['status'])
+        self.assertEqual('done', self.repo.outbox()[0]['state'])
+        self.assertEqual(1, self.repo.get_state('agent_attempt', item.id)['max_attempts'])
+
     def setUp(self):
         self.scratch = tempfile.TemporaryDirectory()
         self.addCleanup(self.scratch.cleanup)

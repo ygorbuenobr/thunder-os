@@ -29,7 +29,7 @@ from .knowledge import KnowledgeStore
 from .service import ThunderService
 from .models import ContractError, WorkStatus
 from .research import COVERAGE_STATUSES, SOURCE_AREAS
-from .research_producer import PublicResearchProducer, ResearchCollectionError
+from .research_producer import MAX_COLLECTION_SECONDS, PublicResearchProducer, ResearchCollectionError
 
 
 def utcnow():
@@ -337,7 +337,9 @@ class EligibleRepository:
 
 
 class GuardedRunner:
-    timeout_seconds = 120
+    # AgentWorker leases the complete collection + inference interval, plus its
+    # own persistence margin. Per-capability HTTP/process deadlines stay below.
+    timeout_seconds = MAX_COLLECTION_SECONDS + text_deadline('research')
     max_attempts = 1
 
     def __init__(self, owner):
