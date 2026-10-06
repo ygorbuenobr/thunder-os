@@ -551,7 +551,7 @@ def research_request_from_brain(brain: str, account_id: str) -> ResearchRequest:
     # context. They are not public evidence and may contain CRM/contact history.
     content = re.split(r"(?im)^##\s+Hist[oó]rico operacional\s*$", content, maxsplit=1)[0]
     name = re.search(r"(?m)^#\s+(.+?)\s*$", content).group(1).split("|", 1)[0].strip()
-    sector_match = re.search(r"(?im)^\s*-\s*(?:Setor|Segmento|Indústria|Industria)(?:\s*/\s*porte)?\s*:\s*([^\n]+)", content)
+    sector_match = re.search(r"(?im)^\s*-\s*(?:Setor|Segmento|Indústria|Industria)(?:\s*/\s*porte(?:\s*/\s*faturamento\s*\(fonte\))?)?\s*:\s*([^\n]+)", content)
     sector = sector_match.group(1).split(". ", 1)[0].strip() if sector_match else ""
     if not sector:
         industry = re.search(r"(?i)\bind[uú]stria\s+brasileira\s+de\s+([^,.;]+)", content)
@@ -1103,7 +1103,7 @@ class PublicResearchProducer:
             self._record_rss("decision_maker", decision_url, planned=rows["decision_maker"], facts=facts,
                              company_name=request.decision_maker_name or request.company_name,
                              observed_at=today, match_company=True)
-        for area in ("decision_maker", "other_public_source"):
+        for area in ("decision_maker", "other_public_source", "sector"):
             for url in direct[area][:self.max_pages_per_area]:
                 self._record_page(area, url, planned=rows[area], facts=facts, observed_at=today)
         for area, url in (("google_ads", google_ads), ("meta_ads", meta_ads)):

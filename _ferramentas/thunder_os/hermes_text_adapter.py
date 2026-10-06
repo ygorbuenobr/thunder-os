@@ -314,9 +314,46 @@ def validate_research_output_provenance(output: Mapping[str, Any], trusted_conte
             raise AgentRunnerError("committee profile URL must match a supplied source")
 
 
+def reconcile_source_gaps(output: dict[str, Any]) -> None:
+    """Complete mechanical coverage gaps only after trusted provenance succeeds.
+
+    Missing source access never manufactures evidence or upgrades a recommendation.
+    Conservatively block unsupported hypotheses; the unchanged artifact validator
+    remains responsible for all classifications, duplicate IDs and approach gates.
+    """
+    artifact = output.get("artifact")
+    if not isinstance(artifact, dict):
+        return
+    gaps, coverage = artifact.get("research_gaps"), artifact.get("source_coverage")
+    if not isinstance(gaps, list) or not isinstance(coverage, list):
+        return
+    if any(not isinstance(gap, Mapping) or not isinstance(gap.get("description"), str)
+           or not isinstance(gap.get("gap_id"), str)
+           or not re.fullmatch(r"G\d+", gap["gap_id"]) for gap in gaps):
+        return
+    next_id = max((int(gap["gap_id"][1:]) for gap in gaps), default=0) + 1
+    for row in coverage:
+        if row.get("status") not in {"planned", "attempted", "not_accessible", "not_provided"}:
+            continue
+        area, details = row.get("area"), row.get("details")
+        if (not isinstance(area, str) or area not in SOURCE_AREAS
+                or not isinstance(details, str) or not details.strip()):
+            continue  # malformed coverage is still rejected by the validator
+        if any(gap.get("topic") == "source_access" and
+               (area.casefold() in gap["description"].casefold()
+                or details.casefold() in gap["description"].casefold()) for gap in gaps):
+            continue
+        gaps.append({"gap_id": f"G{next_id}", "topic": "source_access",
+                     "description": f"{area}: {details}", "severity": "medium",
+                     "blocks_hypothesis": True,
+                     "refuting_question": "Qual fonte pública permitida pode esclarecer esta lacuna?"})
+        next_id += 1
+
+
 def finalize_research_output(output: dict[str, Any], trusted_context: Mapping[str, Any]) -> str:
     validate_research_output_provenance(output, trusted_context)
     reconcile_source_limitations(output)
+    reconcile_source_gaps(output)
     return json.dumps(output, ensure_ascii=False)
 
 

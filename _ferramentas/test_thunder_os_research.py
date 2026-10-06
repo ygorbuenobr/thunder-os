@@ -107,6 +107,32 @@ class ResearchContractTests(unittest.TestCase):
             finalize_research_output(invented, context)
         self.assertEqual(before, invented)
 
+    def test_missing_source_gaps_are_derived_after_provenance_without_changing_claims(self):
+        artifact = base_artifact()
+        artifact["recommendation"] = "pesquisar mais"
+        context = {"research_evidence": copy.deepcopy(artifact["facts"]),
+                   "source_coverage": copy.deepcopy(artifact["source_coverage"]),
+                   "research_account": copy.deepcopy(artifact["account"])}
+        artifact["research_gaps"] = []
+        with self.assertRaisesRegex(ResearchError, "incomplete source coverage"):
+            validate_artifact(artifact, {"cap-1"}, {"proof-1"})
+        output = {"artifact": artifact, "evidence": [{"source": f["source"]} for f in artifact["facts"]]}
+        before = copy.deepcopy(artifact)
+        final = json.loads(finalize_research_output(copy.deepcopy(output), context))["artifact"]
+        self.assertEqual({k:v for k,v in before.items() if k != "research_gaps"},
+                         {k:v for k,v in final.items() if k != "research_gaps"})
+        self.assertEqual(3, len(final["research_gaps"]))
+        self.assertTrue(all(g["blocks_hypothesis"] for g in final["research_gaps"]))
+        validate_artifact(final, {"cap-1"}, {"proof-1"})
+        second = json.loads(finalize_research_output({**output, "artifact": copy.deepcopy(final)}, context))
+        self.assertEqual(final, second["artifact"])
+        forged = copy.deepcopy(output)
+        forged["artifact"]["source_coverage"][0]["details"] = "invented search completion"
+        snapshot = copy.deepcopy(forged)
+        with self.assertRaises(AgentRunnerError):
+            finalize_research_output(forged, context)
+        self.assertEqual(snapshot, forged)
+
     def test_model_instruction_matches_required_gap_join(self):
         prompt = research_instructions({})
         self.assertIn("Every string in missing and committee_gaps MUST exactly equal a research_gaps.description string", prompt)

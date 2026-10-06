@@ -183,6 +183,24 @@ class PublicResearchProducerTests(unittest.TestCase):
             clock=lambda: __import__("datetime").datetime.now().astimezone(),
             sleeper=lambda _: None, min_host_interval=0)
 
+    def test_explicit_sector_sources_and_sourced_label_are_used(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            account = Path(root) / "contas" / "fixture"
+            account.mkdir(parents=True)
+            account.joinpath("ficha.md").write_text(
+                "# Acme\n- Site: https://acme.example/\n"
+                "- Setor / porte / faturamento (fonte): Distribuição B2B. Fonte pública.\n"
+                "## Momento do setor\nhttps://industry.example/market-report\n")
+            request = research_request_from_brain(root, "acme.example")
+            self.assertEqual("Distribuição B2B", request.sector)
+            fetcher = FakeFetcher()
+            packet = self.producer(fetcher).collect(request)
+            self.assertIn("https://industry.example/market-report", fetcher.requests)
+            self.assertTrue(any(f["source"] == "https://industry.example/market-report"
+                                and f["source_area"] == "sector" for f in packet["collected_evidence"]))
+            self.assertLessEqual(packet["producer"]["request_count"], 24)
+
     def test_plans_and_collects_public_company_sector_social_and_decision_evidence(self):
         fetcher = FakeFetcher()
         packet = self.producer(fetcher).collect(self.request)
