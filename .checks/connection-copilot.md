@@ -1,5 +1,16 @@
 # Thunder OS Connection Copilot
 
+## Verified panel/monitor cutover - 2026-10-06 16:02 UTC
+
+- Production panel/monitor `current` is `4149da10987b57553bcda8872b6babe4bf274093`, PID 517762. Canonical pause and integrity were read back after restart. Agent remains unchanged at `d562788c59853980d9a6091df7069393611f69de`, PID 3478505, paused. No agent release switch, permission expansion or outbound send was performed.
+- Exact code gate: 263 application tests and 15 script tests passed; source boundary 134 paths. Independent review accepted code and the narrowed panel-only cutover. A unique heading with an empty article body no longer borrows unrelated page text.
+- Exact candidate passed local and VPS manifest/dependency verification. CLI invocation of the relocated checker initially looked for the dependency contract at the wrong relative location; the explicit `check_bundle(candidate, dependencies.json, exact_sha)` invocation passed before promotion.
+- Recovery directory: `/opt/thunder-os/staging/connection-copilot/recovery-4149da1/`. Fresh snapshot, isolated restore, and old/new/old panel HTTP200 rehearsal passed. Pre-cutover snapshot SHA256 `f4c6d2a8fe25a523c1c1bb7b8a0230811c44b2bf5ff0cdf50e71e389b6b120c9`. `cutover-receipt.json` confirms activation. Code rollback restores the previous current symlink and panel only; timers resume only after successful health, pause and integrity checks. No whole-production DB restore is automatic.
+- At 16:02:04 UTC, root, connections API and HubSpot/SEQD status endpoints returned HTTP200. HubSpot read verified/write enabled; SEQD read verified/send enabled. Those are existing capabilities, not performed effects. ConnectSafely remains configured=false/enqueue=false; writer permissions and 67 historical quarantined records were not changed.
+- Controlled live intake completed at 16:02:45 UTC with Result=success, exit 0, observed=5, jobs_ensured=0. Readback: integrity ok, paused=true, 199 needs_identity, 11 needs_fit, zero connection research requests. Both connection timers active. This proves corrected intake, not C12 qualified research.
+- Scoped branch was pushed at code SHA 4149da1. Automatic approval review rejected updating main because it requires explicit owner authorization; main remains pending approval. Do not silently retry that operation.
+- Remaining acceptance: isolated agent startup/recovery on the exact candidate, evidenced identity/fit for eligible connections, controlled model/persistence/panel journey for new and historical connections (C12), then bounded research activation. Global unpause remains closed. Existing limits remain five dossiers/day and 100 historical profiles/day. No automatic social effects.
+
 ## Authorized activation plan - 2026-10-06
 
 Ygor explicitly requested analysis, plan, fixes and production activation with the authorized providers. Continue this existing checklist under IATech/tlc-implement. Source is Thunder OS only; automatic research remains bounded to 5 dossiers/day and historical intake to 100 profiles/day. External social actions remain explicit operator actions, not automatic research effects.
