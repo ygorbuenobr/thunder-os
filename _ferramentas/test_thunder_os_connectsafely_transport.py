@@ -58,6 +58,18 @@ class TransportTests(unittest.TestCase):
         with self.assertRaises(ConnectSafelyError):
             self.transport('GET','/linkedin/conversations/urn%3Ali%3Amsg_conversation%3ATHREAD/messages',{'accountId':'a'*24,'count':10,'nextCursor':'123'},None)
         self.assertEqual(len(self.created),before)
+    def test_relationship_is_get_only_exact_account_and_no_query(self):
+        self.raw=b'{}';route='/linkedin/relationship/'+'a'*24+'/fixture-person'
+        self.transport('GET',route,{},None)
+        before=len(self.created)
+        for method,path,query,body in [('POST',route,{},{}),('GET',route,{'accountId':'a'*24},None),
+                                      ('GET',route.replace('a'*24,'b'*24),{},None),
+                                      ('GET','/linkedin/relationship/fixture-person',{},None),
+                                      ('GET',route+'/extra',{},None)]:
+            with self.assertRaisesRegex(ConnectSafelyError,'invalid_route'):
+                self.transport(method,path,query,body)
+        self.assertEqual(before,len(self.created))
+
     def test_pinned_host_tls_and_no_proxy(self):
         with patch.dict(os.environ,{'HTTPS_PROXY':'http://bad.invalid'},clear=True):self.assertEqual(self.call(),(200,[]))
         self.assertEqual(self.created[0][0],('api.connectsafely.ai',443));self.assertEqual(self.created[0][1]['timeout'],15)

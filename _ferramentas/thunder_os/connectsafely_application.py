@@ -286,8 +286,61 @@ class ConnectSafelyApplication:
             raise ConnectSafelyError('invalid_reconciliation')
         preview = self._preview(body['preview_id'])
         self._check_mode(preview)
+        if preview['plan']['action']=='invite':
+            return self._reconcile_invitation_job(preview, body, actor)
         result = self._console(preview['plan']['action']).reconcile(body, actor=actor)
         return {**result, 'simulation':self.simulation}
+
+    def _reconcile_invitation_job(self, preview, body, actor):
+        from .approvals import _step_hash
+        jobs=[j for j in self.repo.list_state('connectsafely_job') if j['preview_id']==preview['id']]
+        if len(jobs)!=1:raise ConnectSafelyError('job_authority_invalid')
+        job=jobs[0];review=job.get('review',{})
+        approval=self.repo.get_state('connectsafely_queue_approval',job['id'])
+        attempt=self.repo.get_state('connectsafely_attempt',preview.get('effect_key',''))
+        console=self._console('invite')
+        if (job.get('state') not in {'needs_reconciliation','done'} or not job.get('dispatch_started')
+                or job.get('actor')!='ygor' or job.get('simulation') is not self.simulation
+                or not approval or approval.get('actor')!='ygor' or approval.get('review')!=review
+                or approval.get('simulation') is not self.simulation
+                or job.get('execution_scope')!=self.execution_scope or approval.get('execution_scope')!=self.execution_scope
+                or not attempt or attempt.get('preview_id')!=preview['id']
+                or attempt.get('attempt_token')!=preview.get('attempt_token')
+                or attempt.get('attempt_token')!=job.get('result',{}).get('attempt_token')
+                or attempt.get('plan')!=preview['plan'] or payload_hash(preview['plan'])!=preview.get('effect_key')
+                or type(review.get('expected_version')) is not int
+                or review.get('review_hash')!=preview['review_hash']
+                or review['review_hash']!=payload_hash({'plan':preview['plan'],'version':review['expected_version']})
+                or not approval.get('approved_at',float('inf'))<=attempt.get('attempted_at',0)<approval.get('expires_at',0)
+                or attempt.get('approval_hash')!=_step_hash(console._step(preview['plan'],preview['id'],review['expected_version']))):
+            raise ConnectSafelyError('job_authority_invalid')
+        def reconciliation_guard():
+            current=self.repo.get_state('connectsafely_job',job['id'])
+            current_approval=self.repo.get_state('connectsafely_queue_approval',job['id'])
+            if (not current or current['version']!=job['version'] or current.get('state')!=job['state']
+                    or current.get('review')!=review or current_approval!=approval):
+                raise RepositoryConflict('attempt_changed')
+            return True
+        result=console.reconcile(body,actor=actor,reconciliation_guard=reconciliation_guard)
+        with self.repo.transaction():
+            current=self.repo.get_state('connectsafely_job',job['id'])
+            current_attempt=self.repo.get_state('connectsafely_attempt',preview['effect_key'])
+            if (not current or current['version']!=job['version'] or current.get('review')!=review
+                    or current_attempt.get('attempt_token')!=attempt['attempt_token']
+                    or result.get('attempt_token')!=attempt['attempt_token']):
+                raise RepositoryConflict('attempt_changed')
+            if current['state']=='done':return {**current['result'],'simulation':self.simulation}
+            if result.get('status')=='sent':
+                if (current_attempt.get('status')!='sent' or current_attempt.get('receipt_ref')!=result.get('receipt_ref')):
+                    raise RepositoryConflict('attempt_changed')
+                audit_id=payload_hash({'job_id':job['id'],'attempt_token':attempt['attempt_token']})
+                self.repo.append_state('connectsafely_reconciliation',audit_id,{
+                    'job_id':job['id'],'preview_id':preview['id'],'effect_key':preview['effect_key'],
+                    'attempt_token':attempt['attempt_token'],'approval_hash':attempt['approval_hash'],
+                    'actor':actor,'at':self.clock(),'result':result})
+            self.repo.put_state('connectsafely_job',job['id'],{
+                **current,'state':'done' if result.get('status')=='sent' else 'needs_reconciliation','result':result})
+        return {**result,'simulation':self.simulation}
 
     def recover(self, body, actor):
         self._actor(actor)

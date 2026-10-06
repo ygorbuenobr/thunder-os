@@ -37,6 +37,8 @@ class ConnectSafelyHTTPS:
                 return
             if path=='/linkedin/account/'+self.account_id+'/quota':
                 require(not query,'invalid_route');return
+            if re.fullmatch(r'/linkedin/relationship/'+re.escape(self.account_id)+r'/[A-Za-z0-9_-]{1,100}',path):
+                require(query=={},'invalid_route');return
             if path=='/linkedin/profile':
                 from .connection_intake import canonical_profile_slug, ConnectionIntakeError
                 profile_id=query.get('profileId')

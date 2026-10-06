@@ -156,15 +156,23 @@ class ConnectSafelyClient:
             for raw in rows:
                 if kind=='connections':
                     item=select(raw,{k:str for k in ('firstName','lastName','vanityName','headline','connectedDate','profileUrl')})
-                    require(public_id(item.get('vanityName')),'provider_schema_invalid');identity=item['vanityName']
+                    from .connection_intake import canonical_profile_slug, profile_key
+                    try:identity=canonical_profile_slug(item.get('vanityName'))
+                    except ValueError:raise ConnectSafelyError('provider_schema_invalid') from None
+                    require(profile_key(item.get('profileUrl'))=='https://www.linkedin.com/in/'+identity,'recipient_identity_mismatch')
                 else:
-                    item=select(raw,{k:str for k in ('id','invitationId','invitationUrn','memberId','memberUrn','invitationType','sentAt')})
+                    item=select(raw,{k:str for k in ('id','invitationId','invitationUrn','memberId','memberUrn','invitationType','customMessage')})
                     require(item.get('invitationType')=='SENT' and isinstance(item.get('invitationUrn'),str) and re.fullmatch(r'urn:li:invitation:[A-Za-z0-9_-]{1,128}',item['invitationUrn']),'provider_schema_invalid')
                     item['profile']=select(raw.get('profile'),{k:str for k in ('firstName','lastName','headline','profileUrl','publicIdentifier')})
-                    require(public_id(item['profile'].get('publicIdentifier')),'provider_schema_invalid');identity=item['invitationUrn']
+                    from .connection_intake import canonical_profile_slug, profile_key
+                    try:slug=canonical_profile_slug(item['profile'].get('publicIdentifier'))
+                    except ValueError:raise ConnectSafelyError('provider_schema_invalid') from None
+                    require(profile_key(item['profile'].get('profileUrl'))=='https://www.linkedin.com/in/'+slug,'recipient_identity_mismatch')
+                    stamp=raw.get('sentAt')
+                    require(type(stamp) in (str,int,float) and (len(stamp)<=100 if isinstance(stamp,str) else math.isfinite(stamp)),'provider_schema_invalid')
+                    item['sentAt']=stamp;identity=item['invitationUrn']
                 require(identity not in seen,'pagination_unverified');seen.add(identity);output.append(item)
             if data['endOfList']:
-                require(not rows,'pagination_unverified')
                 return {'account_id':self.account_id,kind:output,'complete':True,'next_start_index':None}
             require(next_index>start_index,'pagination_unverified');start_index=next_index
         return {'account_id':self.account_id,kind:output,'complete':False,'next_start_index':start_index}
@@ -174,6 +182,66 @@ class ConnectSafelyClient:
 
     def sent_invitations(self,*,max_pages=3,start_index=0):
         return self._directory('invitations',max_pages=max_pages,start_index=start_index)
+
+    def relationship(self,plan):
+        """Account-scoped GET observation; never proof this attempt was sent/accepted."""
+        self._plan(plan)
+        path='/linkedin/relationship/'+self.account_id+'/'+quote(plan['recipient_public_id'],safe='')
+        data=self._call('GET',path)
+        require(isinstance(data,dict) and data.get('accountId')==self.account_id,'account_identity_mismatch')
+        require(data.get('profileUrn')==plan['recipient_profile_urn'],'recipient_identity_mismatch')
+        states={'NOT_CONNECTED':(False,False,False),'CONNECTED':(True,False,False),
+                'INVITATION_SENT':(False,True,False),'INVITATION_RECEIVED':(False,False,True)}
+        keys=('connected','invitationSent','invitationReceived')
+        require(data.get('status') in states and all(type(data.get(k)) is bool for k in keys)
+                and tuple(data[k] for k in keys)==states[data['status']],'provider_schema_invalid')
+        return {'account_id':self.account_id,'recipient_public_id':plan['recipient_public_id'],
+                'recipient_profile_urn':plan['recipient_profile_urn'],'relationship_status':data['status'],
+                'observed_at':self.clock()}
+
+    @staticmethod
+    def _invitation_time(value):
+        # Human labels ("Sent today") and timestamps without a timezone cannot
+        # locate an invitation in the dispatched attempt's finite time window.
+        if type(value) in (int,float):
+            return ConnectSafelyClient._seconds(value)
+        if isinstance(value,str):
+            try:
+                parsed=datetime.fromisoformat(value.replace('Z','+00:00'))
+                if parsed.tzinfo is not None:return parsed.timestamp()
+            except (ValueError,OverflowError):pass
+        return 0
+
+    def _reconcile_invitation(self,plan,attempted_at):
+        result={'status':'uncertain','error_code':'invite_receipt_unavailable'}
+        try:
+            self.verify_identity()
+            observation=self.relationship(plan)
+            result['invitation_observation']=observation
+            if observation['relationship_status']!='INVITATION_SENT':return result
+            page=self.sent_invitations(max_pages=3)
+            if not page['complete']:
+                return {**result,'error_code':'history_incomplete'}
+            matches=[row for row in page['invitations']
+                     if row['profile'].get('publicIdentifier')==plan['recipient_public_id']]
+            if len(matches)!=1:return result
+            row=matches[0];identity=row.get('invitationId');stamp=self._invitation_time(row.get('sentAt'))
+            if (not isinstance(identity,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',identity)
+                    or row.get('id')!=identity or row.get('invitationUrn')!='urn:li:invitation:'+identity
+                    or row.get('memberUrn')!=plan['recipient_profile_urn']
+                    or row.get('memberId')!=plan['recipient_profile_urn'].removeprefix('urn:li:fsd_profile:')
+                    or not attempted_at<=stamp<=min(self.clock()+5,attempted_at+120)
+                    or ('customMessage' in row and row['customMessage']!=plan['content'])
+                    or (plan['content'] and 'customMessage' not in row)):
+                return result
+            observation={**observation,'invitation_id':identity,'invitation_urn':row['invitationUrn'],
+                         'sent_at':stamp,'complete_history':True}
+            return {'status':'sent','receipt_ref':'connectsafely:'+row['invitationUrn'],
+                    'confirmation_kind':'observed_outbound','write_attribution_confirmed':False,
+                    'invitation_observation':observation}
+        except (ConnectSafelyError,ValueError):
+            # Keep a valid relationship observation even if the receipt page fails.
+            return result
 
     def inbox(self,*,limit=10,max_threads=3):
         require(type(max_threads) is int and 1<=max_threads<=3,'invalid_limit')
@@ -344,7 +412,7 @@ class ConnectSafelyClient:
     def reconcile(self,plan,attempted_at):
         self._plan(plan)
         require(type(attempted_at) in (int,float) and math.isfinite(attempted_at) and 0<attempted_at<=self.clock(),'invalid_attempt_time')
-        if plan['action']=='invite':return {'status':'uncertain','error_code':'invite_receipt_unavailable'}
+        if plan['action']=='invite':return self._reconcile_invitation(plan,attempted_at)
         # Resolve only an observation; never change the approved plan or hash.
         self.verify_identity()
         resolved=self._call('GET','/linkedin/conversations/exists/'+quote(plan['recipient_public_id'],safe=''),{'accountId':self.account_id})

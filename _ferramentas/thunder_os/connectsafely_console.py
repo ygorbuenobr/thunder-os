@@ -1,5 +1,6 @@
 """Offline copilot console; explicit client and canonical ledger, no activation."""
 import json
+import math
 import re
 import time
 from datetime import datetime,timedelta,timezone
@@ -112,12 +113,24 @@ class ConnectSafelyConsole:
 
     @staticmethod
     def _result(result):
+        extra={}
+        observation=result.get('invitation_observation') if isinstance(result,dict) else None
+        if isinstance(observation,dict):
+            fields={'account_id':str,'recipient_public_id':str,'recipient_profile_urn':str,
+                    'relationship_status':str,'observed_at':(int,float),'invitation_id':str,
+                    'invitation_urn':str,'sent_at':(int,float),'complete_history':bool}
+            required={'account_id','recipient_public_id','recipient_profile_urn','relationship_status','observed_at'}
+            if (required<=set(observation)<=set(fields)
+                    and observation['relationship_status'] in {'NOT_CONNECTED','INVITATION_SENT','INVITATION_RECEIVED','CONNECTED'}
+                    and all((type(v) in fields[k] if isinstance(fields[k],tuple) else type(v) is fields[k])
+                            and (len(v)<=512 if isinstance(v,str) else math.isfinite(v)) for k,v in observation.items())):
+                extra={'invitation_observation':dict(observation)}
         if isinstance(result,dict) and result.get('status')=='sent' and isinstance(result.get('receipt_ref'),str) and re.fullmatch(r'[A-Za-z0-9_:(),/.=-]{1,512}',result['receipt_ref']):
             return {'status':'sent','receipt_ref':result['receipt_ref'],'retry_write':False,
                     'confirmation_kind':result.get('confirmation_kind') if result.get('confirmation_kind') in {'provider_receipt','observed_outbound'} else 'unclassified',
-                    'write_attribution_confirmed':result.get('write_attribution_confirmed') is True and result.get('confirmation_kind')=='provider_receipt'}
-        if isinstance(result,dict) and result.get('status')=='blocked':return {'status':'blocked','retry_write':False,'error_code':_error(result.get('error_code'),'provider_denied')}
-        return {'status':'uncertain','retry_write':False,'error_code':_error(result.get('error_code') if isinstance(result,dict) else None,'requires_reconciliation')}
+                    'write_attribution_confirmed':result.get('write_attribution_confirmed') is True and result.get('confirmation_kind')=='provider_receipt',**extra}
+        if isinstance(result,dict) and result.get('status')=='blocked':return {'status':'blocked','retry_write':False,'error_code':_error(result.get('error_code'),'provider_denied'),**extra}
+        return {'status':'uncertain','retry_write':False,'error_code':_error(result.get('error_code') if isinstance(result,dict) else None,'requires_reconciliation'),**extra}
 
     def execute(self,body,actor=None,*,dispatch_guard=None):
         self._actor(actor)
@@ -243,13 +256,34 @@ class ConnectSafelyConsole:
             self._event(effect,stored,'recoverable_not_dispatched')
             return {'status':'recoverable_not_dispatched','requires_new_approval':True,'retry_write':False,'attempt_version':stored['version']}
 
-    def reconcile(self,body,actor=None):
+    def reconcile(self,body,actor=None,*,reconciliation_guard=None):
         self._actor(actor)
         if not isinstance(body,dict) or set(body)!={'preview_id'}:raise ConnectSafelyError('invalid_reconciliation')
         preview=self.read_preview(body['preview_id'],actor);attempt=preview['result']
         if not attempt or not attempt.get('canonical_owned') or attempt.get('phase')!='dispatch_started':raise ConnectSafelyError('no_owned_dispatched_attempt')
+        if (attempt.get('preview_id')!=preview['id'] or attempt.get('attempt_token')!=preview.get('attempt_token')
+                or attempt.get('plan')!=preview['plan'] or payload_hash(preview['plan'])!=preview.get('effect_key')):
+            raise RepositoryConflict('attempt_changed')
+        if attempt.get('status')=='sent':return attempt
         try:
             self._identity();result=self._result(self._reconcile(attempt['plan'],attempt['attempted_at']))
-            if result['status']=='sent':self.ledger.finish(preview['effect_key'],'sent',result['receipt_ref'])
         except Exception:result=self._result(None)
-        return self._store(preview['effect_key'],result,attempt_token=attempt.get('attempt_token'))
+        # No provider reads hold the local write lock. Recheck the exact attempt
+        # after IO, before allowing an observed receipt to finish its owned touch.
+        with self.repo.transaction():
+            current=self.repo.get_state('connectsafely_attempt',preview['effect_key'])
+            current_preview=self.repo.get_state('connectsafely_preview',preview['id'])
+            if (not current or not current_preview or current['version']!=attempt['version']
+                    or current.get('attempt_token')!=attempt['attempt_token']
+                    or current_preview['version']!=preview['version']
+                    or current_preview.get('attempt_token')!=attempt['attempt_token']):
+                raise RepositoryConflict('attempt_changed')
+            if reconciliation_guard is not None and reconciliation_guard() is not True:
+                raise RepositoryConflict('attempt_changed')
+            if result['status']=='sent':
+                if attempt['plan']['action']=='invite':
+                    step=self._canonical_step(self._step(attempt['plan'],preview['id'],1),attempt['plan'])
+                    self.ledger.reconcile_invitation(preview['effect_key'],attempt['canonical_touch_id'],
+                        attempt['canonical_ref'],step,result['receipt_ref'])
+                else:self.ledger.finish(preview['effect_key'],'sent',result['receipt_ref'])
+            return self._store(preview['effect_key'],result,attempt_token=attempt['attempt_token'])

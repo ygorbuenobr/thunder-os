@@ -73,14 +73,16 @@ def build_panel_composition(repository, *, config_path, config_sha256):
     if not isinstance(scope, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', scope):
         raise ValueError('individual_execution_scope_required')
     try:
-        return runtime_build(cfg, repository)
+        composition = runtime_build(cfg, repository)
     except ValueError as exc:
         if str(exc) != 'approved_current_evidence_required':
             raise
         # Expired/unapproved evidence disables this adapter, not the whole panel.
         from .connectsafely_application import ConnectSafelyApplication
         from .connectsafely_composition import ConnectSafelyComposition
-        return ConnectSafelyComposition(ConnectSafelyApplication(repository))
+        composition = ConnectSafelyComposition(ConnectSafelyApplication(repository))
+    composition.application.direct_target_resolution = not live['social_enabled']
+    return composition
 
 
 def direct_ledger_readiness(connect,identity):
@@ -241,6 +243,15 @@ def build(repository,cfg):
     from .connectsafely_targets import resolve_target
     # Approved local resolution remains available; explicit read endpoint uses the
     # independent read-only observer, never the effects transport.
-    composition.application.resolve_target=lambda body:resolve_target(body,account_id=account,public_id=public,
-        load_evidence=lambda:evidence(live['author_evidence']))
+    if not social_enabled:
+        def resolve_direct_target(body):
+            action = body.get('action') if isinstance(body, dict) else None
+            if action not in ('dm', 'invite') or not action_ready(action).get('ready'):
+                return {'resolved':False,'status':'blocked','read_only':True,
+                        'actions_available':False,'error_code':'target_evidence_unavailable'}
+            return read_targets(body)
+        composition.application.resolve_target = resolve_direct_target
+    else:
+        composition.application.resolve_target=lambda body:resolve_target(body,account_id=account,public_id=public,
+            load_evidence=lambda:evidence(live['author_evidence']))
     return composition

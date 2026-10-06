@@ -962,6 +962,9 @@ ThunderConnectSafelyMonitor.mount($('connectsafely-monitor'),{api:(...args)=>{
       if(typeof p.simulation!=='boolean')review.appendChild(text('p','Não foi possível confirmar a origem desta revisão. A aprovação está bloqueada.'));
       else if(p.simulation===true)review.appendChild(text('p','Resultado de teste; não comprova uma ação no LinkedIn.'));
       else if(result?.status==='sent'&&result.write_attribution_confirmed===true&&result.receipt_ref){review.appendChild(text('p','Ação confirmada no LinkedIn.'));if(pendingAttempt===p.id)pendingAttempt=null;}
+      else if(p.plan.action==='invite'&&result?.status==='sent'&&result.confirmation_kind==='observed_outbound'&&result.receipt_ref){review.appendChild(text('p','Convite enviado observado no histórico do LinkedIn. O aceite ainda não está confirmado.'));if(p.job?.state==='done'&&pendingAttempt===p.id)pendingAttempt=null;}
+      else if(p.plan.action==='invite'&&result?.invitation_observation?.relationship_status==='INVITATION_SENT')review.appendChild(text('p','Há um convite pendente para este perfil. Ainda não foi possível vinculá-lo com segurança a esta tentativa; não reenvie.'));
+      else if(p.plan.action==='invite'&&result?.invitation_observation?.relationship_status==='CONNECTED')review.appendChild(text('p','O perfil aparece conectado. Isso não confirma o resultado desta tentativa de convite.'));
       else if(result)review.appendChild(text('p','Resultado ainda não confirmado. Confira o histórico; não repita a ação por dúvida.'));
       info(review,['Referência: '+p.id,'Versão: '+p.version,'Hash revisado: '+(p.review_hash||'indisponível'),'Estado registrado: '+String(state),result?.receipt_ref?'Confirmação: '+result.receipt_ref:'',p.plan.recipient_profile_urn?'Perfil: '+p.plan.recipient_profile_urn:'',p.plan.parent_comment_urn?'Comentário: '+p.plan.parent_comment_urn:'']);
       buttons();

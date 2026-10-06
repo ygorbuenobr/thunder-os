@@ -107,7 +107,7 @@ class ClientTests(unittest.TestCase):
         plan={**PLAN,'action':'invite','content':'','conversation_urn':None}
         self.post=(200,dict(success=True,accountId=ACCOUNT,profileUrn=RECIPIENT))
         result=self.client.send(plan,before_dispatch=lambda:True);self.assertEqual(result['status'],'uncertain');self.assertNotIn('receipt_ref',result)
-        self.calls=[];self.assertEqual(self.client.reconcile(plan,NOW)['status'],'uncertain');self.assertEqual(self.calls,[])
+        self.calls=[];self.assertEqual(self.client.reconcile(plan,NOW)['status'],'uncertain');self.assertTrue(all(c[0]=='GET' for c in self.calls))
     def test_reconcile_exact_participants_content_time_no_post(self):
         result=self.client.reconcile(PLAN,NOW);self.assertEqual(result['status'],'sent');self.assertFalse(result['write_attribution_confirmed']);self.assertEqual(result['confirmation_kind'],'observed_outbound')
         self.assertTrue(all(c[0]=='GET' for c in self.calls))
@@ -172,5 +172,96 @@ class ClientTests(unittest.TestCase):
         for updates in [{'cookies':'SECRET'},{'messaging_channel':'auto'},{'recipient_profile_urn':None},{'content':'\ud800'},{'conversation_urn':'urn:li:salesNav_thread:x'}]:
             with self.assertRaises(ConnectSafelyError):self.client.send({**PLAN,**updates},before_dispatch=lambda:True)
         self.assertEqual(self.calls,[])
+
+class InvitationReconciliationTests(unittest.TestCase):
+    def setUp(self):
+        self.calls=[]
+        self.plan={**PLAN,'action':'invite','content':'','conversation_urn':None}
+        self.relation=dict(accountId=ACCOUNT,profileUrn=RECIPIENT,status='INVITATION_SENT',
+                           connected=False,invitationSent=True,invitationReceived=False)
+        self.row=dict(id='123',invitationId='123',invitationUrn='urn:li:invitation:123',
+                      memberId='RECIPIENT',memberUrn=RECIPIENT,invitationType='SENT',sentAt=NOW,
+                      profile=dict(publicIdentifier='fixture-person',profileUrl='https://www.linkedin.com/in/fixture-person'))
+        self.rows=[self.row];self.complete=True;self.http=200;self.page_account=ACCOUNT
+        self.client=ConnectSafelyClient(ACCOUNT,'ygorbuenobr',request=self.request,clock=lambda:NOW+30,self_profile_id=OWNER)
+    def request(self,method,path,query,body):
+        self.calls.append((method,path,query,body));self.assertEqual('GET',method)
+        if path.endswith('/accounts'):return 200,[ROW]
+        if '/relationship/' in path:return 200,self.relation
+        self.assertEqual('/linkedin/invitations/sent',path)
+        rows=copy.deepcopy(self.rows)
+        if not self.complete:
+            for i,row in enumerate(rows):
+                identity=str(1000+query['startIndex']+i)
+                row.update(id=identity,invitationId=identity,invitationUrn='urn:li:invitation:'+identity)
+        return self.http,dict(success=True,accountId=self.page_account,invitations=rows,count=len(rows),
+                             startIndex=query['startIndex'],nextStartIndex=query['startIndex']+len(rows),endOfList=self.complete)
+    def test_precise_unique_receipt_is_observed_sent_not_accepted_or_attributed(self):
+        for stamp in (NOW,NOW*1000,'2027-01-15T08:00:00+00:00'):
+            self.row['sentAt']=stamp
+            result=self.client.reconcile(self.plan,NOW)
+            self.assertEqual('sent',result['status']);self.assertEqual('observed_outbound',result['confirmation_kind'])
+            self.assertFalse(result['write_attribution_confirmed'])
+            self.assertEqual('connectsafely:urn:li:invitation:123',result['receipt_ref'])
+            self.assertEqual('INVITATION_SENT',result['invitation_observation']['relationship_status'])
+            self.assertNotIn('accepted',result)
+        self.assertTrue(all(x[0]=='GET' for x in self.calls))
+    def test_old_future_relative_missing_timezone_and_nonfinite_time_never_confirm(self):
+        for stamp in (NOW-1,NOW+121,'Sent today','Sent 3 minutes ago','2027-01-15T08:00:00',None,True,float('nan')):
+            with self.subTest(stamp=stamp):
+                self.row['sentAt']=stamp
+                self.assertEqual('uncertain',self.client.reconcile(self.plan,NOW)['status'])
+    def test_wrong_account_target_id_urn_and_note_never_confirm(self):
+        baseline=copy.deepcopy(self.row)
+        for field,value in [('memberUrn','urn:li:fsd_profile:OTHER'),('memberId','OTHER'),
+                            ('id','other'),('invitationId','other'),('invitationUrn','urn:li:invitation:other'),
+                            ('customMessage','Different content'),('invitationType','RECEIVED')]:
+            self.row.clear();self.row.update(copy.deepcopy(baseline));self.row[field]=value
+            self.assertEqual('uncertain',self.client.reconcile(self.plan,NOW)['status'])
+        self.row.clear();self.row.update(baseline)
+        self.page_account='b'*24
+        self.assertEqual('uncertain',self.client.reconcile(self.plan,NOW)['status'])
+        self.page_account=ACCOUNT
+        for field,value in [('accountId','b'*24),('profileUrn','urn:li:fsd_profile:OTHER'),('invitationSent',1)]:
+            old=self.relation[field];self.relation[field]=value
+            self.assertEqual('uncertain',self.client.reconcile(self.plan,NOW)['status']);self.relation[field]=old
+        self.row['profile']['publicIdentifier']='different-person'
+        self.row['profile']['profileUrl']='https://www.linkedin.com/in/different-person'
+        self.assertEqual('uncertain',self.client.reconcile(self.plan,NOW)['status'])
+    def test_note_requires_exact_observed_content(self):
+        plan={**self.plan,'content':'Approved fixture note'}
+        self.assertEqual('uncertain',self.client.reconcile(plan,NOW)['status'])
+        self.row['customMessage']=plan['content']
+        self.assertEqual('sent',self.client.reconcile(plan,NOW)['status'])
+    def test_partial_pages_duplicate_receipts_and_denial_stay_uncertain(self):
+        self.complete=False
+        result=self.client.reconcile(self.plan,NOW)
+        self.assertEqual('history_incomplete',result['error_code'])
+        self.assertEqual(3,sum(x[1].endswith('/invitations/sent') for x in self.calls))
+        self.complete=True;self.rows=[self.row,copy.deepcopy(self.row)]
+        self.assertEqual('uncertain',self.client.reconcile(self.plan,NOW)['status'])
+        self.rows=[self.row,{**self.row,'id':'456','invitationId':'456','invitationUrn':'urn:li:invitation:456'}]
+        self.assertEqual('uncertain',self.client.reconcile(self.plan,NOW)['status'])
+        self.rows=[self.row]
+        for status in (401,403,429,500):
+            self.http=status;self.calls=[]
+            result=self.client.reconcile(self.plan,NOW)
+            self.assertEqual('uncertain',result['status'])
+            self.assertEqual('INVITATION_SENT',result['invitation_observation']['relationship_status'])
+            self.assertEqual(1,sum(x[1].endswith('/invitations/sent') for x in self.calls))
+    def test_accepted_later_is_only_relationship_observation(self):
+        for status,flags in [('CONNECTED',(True,False,False)),('INVITATION_RECEIVED',(False,False,True)),('NOT_CONNECTED',(False,False,False))]:
+            self.calls=[];self.relation.update(status=status,**dict(zip(('connected','invitationSent','invitationReceived'),flags)))
+            result=self.client.reconcile(self.plan,NOW)
+            self.assertEqual('uncertain',result['status']);self.assertNotIn('receipt_ref',result)
+            self.assertEqual(status,result['invitation_observation']['relationship_status'])
+            self.assertFalse(any(x[1].endswith('/invitations/sent') for x in self.calls))
+    def test_directory_accepts_valid_unicode_profiles_without_weakening_binding(self):
+        other=copy.deepcopy(self.row);other.update(id='456',invitationId='456',invitationUrn='urn:li:invitation:456')
+        other['profile'].update(publicIdentifier='joão.silva',profileUrl='https://www.linkedin.com/in/jo%C3%A3o.silva')
+        self.rows=[other,self.row]
+        self.assertEqual('sent',self.client.reconcile(self.plan,NOW)['status'])
+        other['profile']['profileUrl']='https://www.linkedin.com/in/wrong'
+        self.assertEqual('uncertain',self.client.reconcile(self.plan,NOW)['status'])
 
 if __name__=='__main__':unittest.main()
