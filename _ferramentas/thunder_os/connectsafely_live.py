@@ -72,7 +72,15 @@ def build_panel_composition(repository, *, config_path, config_sha256):
     scope = live.get('execution_scope')
     if not isinstance(scope, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', scope):
         raise ValueError('individual_execution_scope_required')
-    return runtime_build(cfg, repository)
+    try:
+        return runtime_build(cfg, repository)
+    except ValueError as exc:
+        if str(exc) != 'approved_current_evidence_required':
+            raise
+        # Expired/unapproved evidence disables this adapter, not the whole panel.
+        from .connectsafely_application import ConnectSafelyApplication
+        from .connectsafely_composition import ConnectSafelyComposition
+        return ConnectSafelyComposition(ConnectSafelyApplication(repository))
 
 
 def direct_ledger_readiness(connect,identity):
@@ -147,9 +155,16 @@ def build(repository,cfg):
         raise ValueError('individual_execution_scope_required')
     account=live['account_id'];public=live['public_id'];owner=live['self_profile_id']
     token=credential(live['api_credential_file']);dsn=credential(live['database_credential_file'])
+    session_read_write = live.get('database_session_read_write', False)
+    if type(session_read_write) is not bool:
+        raise ValueError('explicit_database_session_mode_required')
     def connect():
         import psycopg2
-        return psycopg2.connect(dsn(),connect_timeout=5)
+        kwargs = {'connect_timeout': 5}
+        if session_read_write:
+            # Connection-local opt-in; preserve the panel's global PGOPTIONS guard.
+            kwargs['options'] = '-c default_transaction_read_only=off'
+        return psycopg2.connect(dsn(), **kwargs)
     @contextmanager
     def database():
         con=connect()

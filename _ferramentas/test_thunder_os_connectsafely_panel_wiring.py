@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 from urllib.parse import urlsplit
 
 import painel_servidor as panel
@@ -77,6 +77,44 @@ class PanelWiringTests(unittest.TestCase):
         with patch('thunder_os.connectsafely_read_targets.build_read_resolver', return_value=None):
             panel.configure_connectsafely_server(server, self.repo)
         return server.thunder_connectsafely_app
+
+    def test_database_session_opt_in_is_connection_local(self):
+        for flag in (None, False, True):
+            self.repo = Repository(self.root / f'session-{flag}.db')
+            self.cfg['repository'] = str(self.repo.path)
+            if flag is None: self.cfg['live'].pop('database_session_read_write', None)
+            else: self.cfg['live']['database_session_read_write'] = flag
+            driver = SimpleNamespace(connect=Mock(return_value=object()))
+            with patch.dict('sys.modules', psycopg2=driver), patch.dict(os.environ, PGOPTIONS='-c default_transaction_read_only=on'), \
+                    patch('thunder_os.connectsafely_live.credential', return_value=lambda:'synthetic-dsn'), \
+                    patch('thunder_os.legacy_writer_exclusion.verify_legacy_exclusion'), \
+                    patch('thunder_os.connectsafely_live.direct_ledger_readiness', side_effect=lambda connect,identity: {'ready':bool(connect())}):
+                self.assertTrue(self.configure().action_readiness('dm')['ready'])
+                expected = {'connect_timeout':5}
+                if flag is True: expected['options']='-c default_transaction_read_only=off'
+                driver.connect.assert_called_once_with('synthetic-dsn', **expected)
+                self.assertEqual('-c default_transaction_read_only=on', os.environ['PGOPTIONS'])
+        self.cfg['live']['database_session_read_write'] = 'true'
+        with self.assertRaisesRegex(ValueError, 'explicit_database_session_mode_required'):
+            self.configure()
+
+    def test_expiry_blocks_actions_at_boundary_and_restart_stays_disconnected(self):
+        from thunder_os.connectsafely_console import ConnectSafelyError
+        with patch('thunder_os.legacy_writer_exclusion.verify_legacy_exclusion'), \
+                patch('thunder_os.connectsafely_live.direct_ledger_readiness', return_value={'ready':True}), \
+                patch('thunder_os.connectsafely_live.time.time', return_value=4102444799) as clock:
+            app = self.configure()
+            for action in ('dm', 'invite'): self.assertTrue(app.action_readiness(action)['ready'])
+            for action in ('comment','reply','react_post'): self.assertFalse(app.action_readiness(action)['ready'])
+            clock.return_value = 4102444800
+            for action in ('dm', 'invite'):
+                self.assertFalse(app.action_readiness(action)['ready'])
+                with self.assertRaises(ConnectSafelyError): app._enabled(action)
+            self.assertFalse(app.status('ygor')['enqueue_enabled'])
+            restarted = self.configure()
+            self.assertIsNone(restarted.provider)
+            self.assertFalse(restarted.status('ygor')['enqueue_enabled'])
+            self.assertEqual([], self.repo.list_state('connectsafely_job'))
 
     def test_unconfigured_startup_is_disconnected(self):
         server = SimpleNamespace()
