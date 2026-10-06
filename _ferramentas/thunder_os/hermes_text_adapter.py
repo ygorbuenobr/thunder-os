@@ -390,6 +390,13 @@ def normalize_evidence_chains(output: dict[str, Any], trusted_context: Mapping[s
                 for fid in chain.get("fact_ids", [])]
         if set(refs) != set(expected):
             raise AgentRunnerError("evidence chains must exactly cover trusted fact IDs")
+        for chain in chains:
+            if not isinstance(chain, dict) or set(chain) != fields | {"fact_ids"}:
+                raise AgentRunnerError("four model-authored evidence chain fields required")
+            values = [chain[key] for key in fields]
+            if (any(not isinstance(value, str) or len(value.strip()) < 24 for value in values)
+                    or len({value.strip() for value in values}) != len(fields)):
+                raise AgentRunnerError("substantive distinct model-authored reasoning required")
     else:
         raise AgentRunnerError("evidence chains required")
 

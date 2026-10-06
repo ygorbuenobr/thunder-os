@@ -121,6 +121,12 @@ class ResearchContractTests(unittest.TestCase):
             self.assertEqual(original["artifact"]["evidence_chains"][chain["fact_ids"][0]],
                              {k:v for k,v in chain.items() if k != "fact_ids"})
         validate_artifact(result, {"cap-1"}, {"proof-1"})
+        legacy = {**copy.deepcopy(output), "artifact": copy.deepcopy(result)}
+        for chain in legacy["artifact"]["evidence_chains"]:
+            for key in ("implication", "alternative", "value_hypothesis", "refuting_question"):
+                chain[key] = "F1"
+        with self.assertRaisesRegex(AgentRunnerError, "substantive distinct"):
+            finalize_research_output(legacy, context)
         for change in ("missing", "extra", "placeholder", "repeated", "forged"):
             bad = copy.deepcopy(original)
             chains = bad["artifact"]["evidence_chains"]
