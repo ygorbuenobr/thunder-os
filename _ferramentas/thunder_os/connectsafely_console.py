@@ -7,7 +7,7 @@ from datetime import datetime,timedelta,timezone
 from uuid import uuid4
 from .approvals import ApprovalService,ApprovalError
 from .touch_ledger import TouchBlocked
-from .connectsafely_client import ConnectSafelyError as ProviderError
+from .connectsafely_client import ConnectSafelyError as ProviderError, canonical_recipient_id
 from .db import RepositoryConflict
 from .models import payload_hash
 from .connectsafely_coordination import CoordinationError
@@ -59,7 +59,8 @@ class ConnectSafelyConsole:
         if (plan['account_id']!=self.account_id or plan['account_public_id']!=self.account_public_id
             or plan['action'] not in {'dm','invite'} or plan['channel']!='linkedin' or plan['messaging_channel']!='linkedin_inbox'):
             raise ConnectSafelyError('unsupported_scope')
-        if not isinstance(plan['recipient_public_id'],str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,150}',plan['recipient_public_id']):raise ConnectSafelyError('invalid_recipient')
+        try:plan['recipient_public_id']=canonical_recipient_id(plan['recipient_public_id'])
+        except ProviderError:raise ConnectSafelyError('invalid_recipient') from None
         if not isinstance(plan['recipient_profile_urn'],str) or not re.fullmatch(r'urn:li:(?:fsd_profile|fs_miniProfile|member):[A-Za-z0-9_-]{1,200}',plan['recipient_profile_urn']):raise ConnectSafelyError('invalid_recipient_urn')
         if plan['conversation_urn'] is not None and (not isinstance(plan['conversation_urn'],str) or not re.fullmatch(r'urn:li:[A-Za-z0-9_:(),-]{1,400}',plan['conversation_urn'])):raise ConnectSafelyError('invalid_conversation')
         if plan['action']=='invite' and plan['conversation_urn'] is not None:raise ConnectSafelyError('invite_has_no_thread')

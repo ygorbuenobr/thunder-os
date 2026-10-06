@@ -8,7 +8,8 @@ from datetime import datetime
 import math
 import re
 import time
-from urllib.parse import quote
+import unicodedata
+from urllib.parse import quote, unquote
 
 
 class ConnectSafelyError(ValueError):
@@ -30,6 +31,28 @@ def urn(value):
 
 def public_id(value):
     return isinstance(value, str) and bool(re.fullmatch(r'[A-Za-z0-9_-]{1,100}', value))
+
+
+
+def canonical_recipient_id(value):
+    """Decode URL input once; keep one canonical recipient for review and ledger."""
+    from .connection_intake import canonical_profile_slug, ConnectionIntakeError
+    require(isinstance(value, str), 'invalid_recipient')
+    try:
+        slug=canonical_profile_slug(unquote(value, errors='strict'))
+        # The shared ledger uses NFC + lower(). Reject Unicode aliases that
+        # would change there; never silently merge two provider identities.
+        require(unicodedata.normalize('NFC',slug)==slug and slug.lower()==slug,'invalid_recipient')
+        return slug
+    except (ConnectionIntakeError, UnicodeError):
+        raise ConnectSafelyError('invalid_recipient') from None
+
+
+def recipient_id(value):
+    try:
+        return canonical_recipient_id(value) == value
+    except ConnectSafelyError:
+        return False
 
 
 def select(row, fields):
@@ -361,7 +384,7 @@ class ConnectSafelyClient:
         require(isinstance(plan,dict) and not set(plan)-keys and keys-{'conversation_urn'}<=set(plan),'invalid_plan')
         require(plan['account_id']==self.account_id and plan['account_public_id']==self.expected_public_id,'account_identity_mismatch')
         require(plan['channel']=='linkedin' and plan['messaging_channel']=='linkedin_inbox' and plan['action'] in ('dm','invite'),'unsupported_channel')
-        require(public_id(plan['recipient_public_id']) and urn(plan['recipient_profile_urn']) and plan['recipient_profile_urn'].startswith('urn:li:fsd_profile:'),'invalid_recipient')
+        require(recipient_id(plan['recipient_public_id']) and urn(plan['recipient_profile_urn']) and plan['recipient_profile_urn'].startswith('urn:li:fsd_profile:'),'invalid_recipient')
         require(plan['recipient_public_id']!=self.expected_public_id,'invalid_recipient')
         content=plan['content'];require(isinstance(content,str) and '\x00' not in content and not any(0xD800<=ord(c)<=0xDFFF for c in content),'invalid_content')
         require((len(content)<=300 if plan['action']=='invite' else bool(content.strip()) and len(content)<=8000),'invalid_content')

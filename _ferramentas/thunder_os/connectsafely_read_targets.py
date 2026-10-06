@@ -5,12 +5,12 @@ import time
 from pathlib import Path
 from uuid import uuid4
 from urllib.parse import urlsplit
-from .connectsafely_client import ConnectSafelyClient,ConnectSafelyError,require
+from .connectsafely_client import ConnectSafelyClient,ConnectSafelyError,require,canonical_recipient_id,recipient_id
 from .connectsafely_transport import ConnectSafelyHTTPS
 from .models import payload_hash
 
 PROFILE_ID=r'[A-Za-z0-9_.\-\u2019]{1,150}'
-PROFILE=re.compile(r'https://www\.linkedin\.com/in/('+PROFILE_ID+r')/?')
+PROFILE=re.compile(r'https://www\.linkedin\.com/in/([^/]{1,100})/?')
 POST=re.compile(r'https://www\.linkedin\.com/(?:feed/update/urn:li:activity:[0-9]{1,30}/?|posts/[A-Za-z0-9_%.-]{1,500})')
 URN=re.compile(r'urn:li:activity:[0-9]{1,30}')
 PERSON=re.compile(r'urn:li:fsd_profile:[A-Za-z0-9_-]{1,200}')
@@ -20,14 +20,17 @@ def normalize_target_url(value,*,profile=False):
     require(isinstance(value,str) and 0<len(value)<=2048 and all(ord(c)>32 for c in value),'invalid_target_request')
     try:parts=urlsplit(value)
     except ValueError:raise ConnectSafelyError('invalid_target_request') from None
-    require(parts.scheme=='https' and parts.netloc in ('linkedin.com','www.linkedin.com'),'invalid_target_request')
+    require(parts.scheme=='https' and parts.netloc in (('linkedin.com','www.linkedin.com','br.linkedin.com') if profile else ('linkedin.com','www.linkedin.com')),'invalid_target_request')
     # Tracking query/fragment never participate in identity. No userinfo, port,
     # encoded hostname or arbitrary redirects are admitted by the netloc match.
     path=parts.path.rstrip('/')
     normalized='https://www.linkedin.com'+path
     if profile:
-        require(PROFILE.fullmatch(normalized),'invalid_target_request')
-        return normalized+'/'
+        match=re.fullmatch(r'/in/([^/]+)/?',parts.path)
+        require(match is not None,'invalid_target_request')
+        try:slug=canonical_recipient_id(match.group(1))
+        except ConnectSafelyError:raise ConnectSafelyError('invalid_target_request') from None
+        return 'https://www.linkedin.com/in/'+slug+'/'
     require(POST.fullmatch(normalized),'invalid_target_request')
     return normalized+'/' if path.startswith('/feed/update/') else normalized
 
@@ -36,7 +39,7 @@ class TargetReadHTTPS(ConnectSafelyHTTPS):
         require(isinstance(query,dict),'invalid_route')
         if method=='GET' and path=='/linkedin/accounts':return super()._route(method,path,query,body)
         if method=='GET' and path=='/linkedin/profile':
-            require(body is None and set(query)=={'accountId','profileId'} and query['accountId']==self.account_id and isinstance(query['profileId'],str) and re.fullmatch(PROFILE_ID,query['profileId']),'invalid_route');return
+            require(body is None and set(query)=={'accountId','profileId'} and query['accountId']==self.account_id and recipient_id(query['profileId']),'invalid_route');return
         require(method=='POST' and query=={} and isinstance(body,dict) and body.get('accountId')==self.account_id and isinstance(body.get('postUrl'),str) and POST.fullmatch(body['postUrl']),'invalid_route')
         if path=='/linkedin/posts/scrape':
             require(set(body)=={'accountId','postUrl','useCache','forceRefresh','maxProxyRetries'} and body['useCache'] is True and body['forceRefresh'] is False and type(body['maxProxyRetries']) is int and body['maxProxyRetries']==0,'invalid_route');return
@@ -58,7 +61,7 @@ class ReadTargetResolver:
         return {'reservations':{k:v for k,v in reservations.items() if v>now-86400},'blocked_until':row.get('blocked_until',0)}
     def _profile(self,url):
         match=PROFILE.fullmatch(url) if isinstance(url,str) else None;require(match is not None,'profile_target_unverified')
-        public=match.group(1);c=self.client
+        public=match.group(1);require(recipient_id(public),'profile_target_unverified');c=self.client
         with self.repo.transaction():
             quota=self._quota();require(quota['blocked_until']<=self.clock(),'profile_quota_exhausted')
             profiles=quota['reservations'];require(public in profiles or len(profiles)<120,'profile_quota_exhausted')

@@ -37,8 +37,17 @@ class ConnectSafelyHTTPS:
                 return
             if path=='/linkedin/account/'+self.account_id+'/quota':
                 require(not query,'invalid_route');return
-            if re.fullmatch(r'/linkedin/relationship/'+re.escape(self.account_id)+r'/[A-Za-z0-9_-]{1,100}',path):
-                require(query=={},'invalid_route');return
+            relationship_prefix='/linkedin/relationship/'+self.account_id+'/'
+            exists_prefix='/linkedin/conversations/exists/'
+            if path.startswith(relationship_prefix) or path.startswith(exists_prefix):
+                from .connectsafely_client import recipient_id
+                prefix=relationship_prefix if path.startswith(relationship_prefix) else exists_prefix
+                encoded=path[len(prefix):]
+                try:decoded=unquote(encoded,errors='strict')
+                except UnicodeError:raise ConnectSafelyError('invalid_route') from None
+                require(recipient_id(decoded) and quote(decoded,safe='')==encoded,'invalid_route')
+                require(query==({} if prefix==relationship_prefix else {'accountId':self.account_id}),'invalid_route')
+                return
             if path=='/linkedin/profile':
                 from .connection_intake import canonical_profile_slug, ConnectionIntakeError
                 profile_id=query.get('profileId')
@@ -53,7 +62,6 @@ class ConnectSafelyHTTPS:
                 if 'nextCursor' in query:
                     from .connectsafely_account_inbox import cursor_valid
                     require(cursor_valid(query['nextCursor']),'invalid_route')
-            elif re.fullmatch(r'/linkedin/conversations/exists/[A-Za-z0-9_-]{1,100}',path):allowed={'accountId'}
             elif re.fullmatch(r'/linkedin/conversations/[A-Za-z0-9_%.,()=-]+/messages',path):
                 encoded=path.split('/')[3];decoded=unquote(encoded)
                 require(urn(decoded) and quote(decoded,safe='')==encoded,'invalid_route')
