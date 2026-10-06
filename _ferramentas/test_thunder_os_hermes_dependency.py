@@ -24,6 +24,7 @@ class DependencyIdentityTests(unittest.TestCase):
         self.manifest.write_text(json.dumps({'upstream_sha':'abc','files':[{**self.identity(self.code),'path':'module.py'}]}))
         self.lock = self.base / 'lock.json'
         self.lock.write_text(json.dumps({'schema_version':1,'upstream_sha':'abc','dependency_path':str(self.root),'dependency_manifest':self.identity(self.manifest),'interpreter_path':str(self.python),'interpreter_realpath':str(self.binary),'interpreter_binary':self.identity(self.binary),'pyvenv_config':self.identity(self.cfg),'startup_files':[self.identity(self.hook)]}))
+        self.lock.chmod(0o600)
         p=patch.object(subject,'LOCK_PATH',self.lock); p.start(); self.addCleanup(p.stop)
     def identity(self,p):
         raw=p.read_bytes(); return {'path':str(p),'size':len(raw),'sha256':hashlib.sha256(raw).hexdigest()}
@@ -40,4 +41,9 @@ class DependencyIdentityTests(unittest.TestCase):
     def test_source_symlink(self): self.code.unlink(); self.code.symlink_to(self.binary); self.assert_blocked()
     def test_wrong_interpreter(self):
         with self.assertRaisesRegex(RuntimeError,'^hermes_dependency_identity_mismatch$'): subject.verify_dependency(self.root, self.binary)
+    def test_world_readable_or_symlink_lock_is_rejected(self):
+        self.lock.chmod(0o644); self.assert_blocked()
+        self.lock.chmod(0o600)
+        link = self.base / 'lock-link.json'; link.symlink_to(self.lock)
+        with patch.object(subject, 'LOCK_PATH', link): self.assert_blocked()
 if __name__ == '__main__': unittest.main()

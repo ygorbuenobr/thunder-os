@@ -88,6 +88,14 @@ Single coordinated build across source, runtime and panel. Do not hand off mid-s
 
 ## Evidence so far (2026-10-05)
 
+### Current operational checkpoint
+
+- The VPS web and agent symlinks now resolve to the verified `993e0fca3f902c567895e8a35e47d8b0b20a3cb6` release. The web service returned HTTP 200 locally. The agent is active but its canonical control state is `paused=true`; an active process is not evidence of a completed research turn.
+- The read-only ConnectSafely live and historical timers are enabled. The first production historical batch advanced exactly 100 profiles: 93 `needs_identity`, 7 `needs_fit`, 0 research jobs. The 10 baseline history rows were reclassified by the `993e0fc` correction; no dossier can be claimed from this batch.
+- The exact original 41-card manifest has SHA-256 `2802b624bc7614f972d73dced86340e9c9df06659105f76d1b9b9e37b777859e`. A fresh full GET-only audit and canonical-lock apply produced 8 superseded cards and 33 inconclusive cards, preserving history. Diego's superseded card is not proof the suggested text was sent. Receipt: `/opt/thunder-os/staging/connection-copilot/legacy-41-apply-993e0fc.json`, SHA-256 `982a303700a2be88ad6067801c62fbc7608654b26f4dc1dd63dc09156fe052f5`.
+- Isolated Hermes auth preflight initially failed because the pinned read-only dependency root had 92 unlisted Python cache files. A new clean root `/opt/hermes-agent-ro-thunder-os-09544f73e610` contains the same 14,745 manifest files with matching hashes and no cache files. An external staged lock changing only its root paths passed dependency verification and read-only authentication preflight (`hermes-auth-store`, `gpt-5.6-terra`); no model turn was executed. The unit/lock change is under independent review and not yet active.
+- C12 remains open: no qualified dossier and no observed new-plus-historical end-to-end panel journey. The 33 inconclusive old cards remain pending without positive provider evidence. Do not unpause the agent or claim complete activation from tests, timers, or HTTP health alone.
+
 - VPS effective web release `7bc74b02a7aef6f00f2fab097163b7d662462b35` and agent release `a235b97241c9b2e5a08b66a78c709f94d300a2dd` remain active; neither was modified. New source is local only.
 - Read-only ConnectSafely GET `/linkedin/accounts` and `/linkedin/connections` returned HTTP 200 with expected pagination keys for the configured account. No profile or message content was printed.
 - `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.scratch/dependencies:_ferramentas python3 -m unittest discover -s _ferramentas -p 'test_*.py' -q` passed 211 tests after the latest local changes. These are mock/temporary-DB checks, not a VPS journey.

@@ -21,6 +21,7 @@ ALLOWED_FILES = {
     "scripts/test_connection_units.py",
     "runtime/dependencies.json",
     "runtime/systemd/thunder-os-agent-pythonpath.conf",
+    "runtime/systemd/thunder-os-agent-hermes-ro.conf",
     "runtime/systemd/thunder-os-agent-pythonpath-v1.md",
     "runtime/systemd/thunder-os-connections-live.service",
     "runtime/systemd/thunder-os-connections-live.timer",

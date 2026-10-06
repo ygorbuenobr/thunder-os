@@ -90,6 +90,18 @@ class RuntimeBundleTest(unittest.TestCase):
             self.build()
         self.assertFalse(self.output.exists())
 
+    def test_hermes_dropin_is_hashed_in_candidate(self) -> None:
+        name = "runtime/systemd/thunder-os-agent-hermes-ro.conf"
+        source = self.write_repo_file(name, "[Service]\nReadOnlyPaths=/etc/thunder-os\n")
+        self.run_git("add", name)
+        self.run_git("commit", "-qm", "fixture agent drop-in")
+        manifest = self.build()
+        self.assertEqual(
+            manifest["files"][name]["sha256"],
+            hashlib.sha256(source.read_bytes()).hexdigest(),
+        )
+        self.assertEqual((self.output / name).read_bytes(), source.read_bytes())
+
     def test_dirty_tree_refused_including_untracked_file(self) -> None:
         self.write_repo_file("_ferramentas/thunder_os/new.py", "# uncommitted\n")
         with self.assertRaisesRegex(BundleError, "dirty"):

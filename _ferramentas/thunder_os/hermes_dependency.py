@@ -7,10 +7,13 @@ No authentication material is inspected.
 from __future__ import annotations
 import hashlib
 import json
+import os
 from pathlib import Path
+import stat
 import sys
 
-LOCK_PATH = Path(__file__).resolve().parents[1] / 'hermes_ro' / 'runtime-lock.json'
+LOCK_PATH = Path('/etc/thunder-os/hermes-ro-runtime-lock-v2.json')
+PRODUCTION_LOCK_PATH = LOCK_PATH
 
 
 def _identity(record):
@@ -30,6 +33,16 @@ def _identity(record):
 def verify_dependency(root, python=None):
     """Validate release lock before importing Hermes; errors contain no paths/data."""
     try:
+        lock_info = LOCK_PATH.lstat()
+        required_owner = 0 if LOCK_PATH == PRODUCTION_LOCK_PATH else os.geteuid()
+        if (not stat.S_ISREG(lock_info.st_mode) or lock_info.st_mode & 0o077
+                or lock_info.st_uid != required_owner):
+            raise ValueError()
+        if LOCK_PATH == PRODUCTION_LOCK_PATH:
+            parent_info = LOCK_PATH.parent.lstat()
+            if (not stat.S_ISDIR(parent_info.st_mode) or parent_info.st_uid != 0
+                    or parent_info.st_mode & 0o022):
+                raise ValueError()
         lock = json.loads(LOCK_PATH.read_text())
         selected = Path(root)
         if (lock['schema_version'] != 1 or not selected.is_absolute()

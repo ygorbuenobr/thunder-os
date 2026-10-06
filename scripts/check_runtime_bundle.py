@@ -45,6 +45,7 @@ def source_path(name: str) -> bool:
         return True
     if name in {
         "runtime/systemd/thunder-os-agent-pythonpath.conf",
+        "runtime/systemd/thunder-os-agent-hermes-ro.conf",
         "runtime/systemd/thunder-os-connections-live.service",
         "runtime/systemd/thunder-os-connections-live.timer",
         "runtime/systemd/thunder-os-connections-backfill.service",

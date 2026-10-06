@@ -49,6 +49,13 @@ def read_unit(name: str) -> configparser.ConfigParser:
 
 
 class ConnectionUnitTests(unittest.TestCase):
+    def test_agent_uses_clean_pinned_hermes_dependency(self) -> None:
+        dropin = read_unit("thunder-os-agent-hermes-ro.conf")
+        self.assertIn("--hermes-root /opt/hermes-agent-ro-thunder-os-09544f73e610",
+                      dropin["Service"]["ExecStart"])
+        self.assertEqual("/opt/hermes-agent-ro-thunder-os-09544f73e610 /etc/thunder-os",
+                         dropin["Service"]["ReadOnlyPaths"])
+
     def test_agent_candidate_import_uses_both_pythonpath_entries(self) -> None:
         contract_text = (UNITS / "thunder-os-agent-pythonpath-v1.md").read_text(encoding="utf-8")
         dropin_text = (UNITS / "thunder-os-agent-pythonpath.conf").read_text(encoding="utf-8")
