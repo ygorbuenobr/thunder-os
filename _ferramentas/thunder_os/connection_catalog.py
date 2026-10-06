@@ -72,7 +72,7 @@ def load_connection_catalog(brain: str | Path) -> tuple[dict[str, str], dict[str
             continue
         relative = path.relative_to(root).as_posix()
         provenance = f"brain:{relative}#sha256:{sha256(raw).hexdigest()}"
-        sector = re.search(r"(?im)^\s*-\s*(?:Setor|Segmento|Ind[uú]stria)(?:\s*/\s*porte)?\s*:\s*([^\n]+)", content)
+        sector = re.search(r"(?im)^\s*-\s*(?:Setor|Segmento|Ind[uú]stria)(?:\s*/\s*porte(?:\s*/\s*faturamento\s*\(fonte\))?)?\s*:\s*([^\n]+)", content)
         if sector and FIT_SECTOR.search(sector.group(1)):
             fit[domain] = provenance
         for heading in ("Decisores", "Decisor", "Decisora", "Decisor e solicitante"):
