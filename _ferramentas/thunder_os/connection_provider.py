@@ -183,7 +183,7 @@ class ConnectionProvider:
             _require(type(row) is dict, "connection_row_invalid")
             vanity = row.get("vanityName")
             _require(isinstance(vanity, str) and 1 <= len(vanity) <= 100
-                     and all(char.isalnum() or char in "._-" for char in vanity),
+                     and all(char.isalnum() or char in "._-\u2019" for char in vanity),
                      "connection_row_invalid")
             try:
                 key = profile_key(row.get("profileUrl"))

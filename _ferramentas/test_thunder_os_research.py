@@ -1,7 +1,11 @@
+import copy
+import json
 import unittest
 from datetime import date, timedelta
 
 from thunder_os.research import NO_EVIDENCE_VALUE_HYPOTHESIS, ResearchError, validate_artifact
+from thunder_os.agents import AgentRunnerError
+from thunder_os.hermes_text_adapter import finalize_research_output, reconcile_source_limitations, research_instructions
 
 
 def base_artifact():
@@ -79,6 +83,53 @@ def base_artifact():
 
 
 class ResearchContractTests(unittest.TestCase):
+    def test_adapter_validates_provenance_before_reconciling_limitations(self):
+        artifact = base_artifact()
+        facts = artifact["facts"]
+        context = {
+            "research_evidence": [
+                {key: fact[key] for key in ("fact_id", "source", "statement", "observed_at", "published_at", "source_area")}
+                for fact in facts
+            ],
+            "source_coverage": copy.deepcopy(artifact["source_coverage"]),
+            "research_account": copy.deepcopy(artifact["account"]),
+        }
+        artifact["limitations"] = [artifact["limitations"][0]] * 2
+        output = {"artifact": artifact, "evidence": [{"source": fact["source"]} for fact in facts]}
+        final = json.loads(finalize_research_output(copy.deepcopy(output), context))
+        self.assertEqual(2, len(final["artifact"]["limitations"]))
+        self.assertEqual(2, len(set(final["artifact"]["limitations"])))
+
+        invented = copy.deepcopy(output)
+        invented["artifact"]["source_coverage"][0]["details"] = "Busca verificada sem registro de origem"
+        before = copy.deepcopy(invented)
+        with self.assertRaisesRegex(AgentRunnerError, "must match its trusted search record"):
+            finalize_research_output(invented, context)
+        self.assertEqual(before, invented)
+
+    def test_model_instruction_matches_required_gap_join(self):
+        prompt = research_instructions({})
+        self.assertIn("Every string in missing and committee_gaps MUST exactly equal a research_gaps.description string", prompt)
+        self.assertIn("copy its details string verbatim into limitations", prompt)
+        artifact = base_artifact()
+        artifact["missing"] = ["lacuna parafraseada"]
+        with self.assertRaisesRegex(ResearchError, "research gaps must classify every missing"):
+            validate_artifact(artifact, {"cap-1"}, {"proof-1"})
+
+    def test_inaccessible_source_limitations_are_unique_and_exact(self):
+        artifact = base_artifact()
+        details = next(row["details"] for row in artifact["source_coverage"]
+                       if row["status"] == "not_accessible")
+        artifact["limitations"] = [details, details]
+        before = {key: value for key, value in artifact.items() if key != "limitations"}
+        output = {"artifact": artifact}
+        reconcile_source_limitations(output)
+        self.assertEqual(before, {key: value for key, value in artifact.items() if key != "limitations"})
+        self.assertEqual(len(artifact["limitations"]), len(set(artifact["limitations"])))
+        self.assertEqual({row["details"] for row in artifact["source_coverage"]
+                          if row["status"] == "not_accessible"}, set(artifact["limitations"]))
+        validate_artifact(artifact, {"cap-1"}, {"proof-1"})
+
     def test_strong_dossier_preserves_facts_inferences_and_approved_fit(self):
         artifact = validate_artifact(base_artifact(), {"cap-1"}, {"proof-1"})
         self.assertEqual("abordar", artifact.recommendation)

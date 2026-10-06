@@ -137,6 +137,12 @@ class ConnectionIntakeTests(unittest.TestCase):
         self.assertEqual([0], calls)
 
     def test_conflicting_identity_and_untrusted_urls_fail_closed(self):
+        self.assertEqual("https://www.linkedin.com/in/d’angelo",
+                         profile_key("https://linkedin.com/in/d%E2%80%99angelo/"))
+        self.assertNotEqual(profile_key("https://linkedin.com/in/d’angelo"),
+                            profile_key("https://linkedin.com/in/dangelo"))
+        self.assertEqual(profile_key(profile_key("https://linkedin.com/in/d’angelo")),
+                         profile_key("https://linkedin.com/in/d’angelo"))
         self.assertEqual("https://www.linkedin.com/in/joão-silva",
                          profile_key("https://linkedin.com/in/jo%C3%A3o-silva/"))
         self.assertNotEqual(profile_key("https://linkedin.com/in/straße"),
@@ -151,7 +157,8 @@ class ConnectionIntakeTests(unittest.TestCase):
                 "https://www.linkedin.com/in/same?trk=other": "b.example",
             })
         for value in ("http://linkedin.com/in/a", "https://evil.example/in/a", "https://linkedin.com/company/a",
-                      "https://[linkedin.com/in/alice", "https://linkedin.com/in/a%2Fb"):
+                      "https://[linkedin.com/in/alice", "https://linkedin.com/in/a%2Fb",
+                      "https://linkedin.com/in/d%E2%80%9Cangelo"):
             with self.assertRaisesRegex(ConnectionIntakeError, "connection_profile_invalid"):
                 profile_key(value)
 

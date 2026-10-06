@@ -160,6 +160,8 @@ def research_instructions(trusted_context: Mapping[str, Any]) -> str:
         "An empty or planned area is a visible gap; not_found is only valid when the source returned a verified empty result. "
         "For each planned, attempted, inaccessible or unprovided area, add a source_access research_gap whose description "
         "includes the exact area key and explains whether more searching is possible or why access was unavailable. "
+        "For every source_coverage row with status not_accessible, copy its details string verbatim into limitations; "
+        "do not paraphrase, shorten or omit it. "
         "Do not recommend abordar unless at least two current source records, two distinct public URLs, an account-bound source, "
         "and a recent dated intent/indicator support the hypothesis, the counter-signal assessment permits it, and no gap "
         "marked blocks_hypothesis is unresolved. Decision-maker identification/tenure and explicit buying intent are not "
@@ -171,8 +173,10 @@ def research_instructions(trusted_context: Mapping[str, Any]) -> str:
         "[{\"source\": \"internal:trusted_research_evidence_missing\"}]. "
         "State whether no counter-signal was found only when trusted checked coverage supports that statement. "
         "Copy trusted_context.research_account name, domain and sector exactly into account. For unknown other account fields use Não verificado, "
-        "describe decision-maker, tenure, source-access and other important information gaps in research_gaps, missing and committee_gaps, "
-        "and omit unverified committee members. Do not invent facts "
+        "describe decision-maker, tenure, source-access and other important information gaps in research_gaps, missing and committee_gaps. "
+        "Every string in missing and committee_gaps MUST exactly equal a research_gaps.description string; "
+        "reuse the description verbatim, including accents and punctuation, rather than paraphrasing it. "
+        "Omit unverified committee members. Do not invent facts "
         "to fill required fields: an empty facts array is valid with recommendation pesquisar mais. alternative_hypothesis must give a nonempty "
         "alternative explanation without presuming purchase. The current validator rejects comprar, contratar and adquirir "
         "even when negated; avoid those words. Use only canonical approved capability_ids and proof_ids with matching "
@@ -190,6 +194,29 @@ def research_instructions(trusted_context: Mapping[str, Any]) -> str:
         "Envelope evidence is a nonempty array of source objects referencing supplied evidence only. Schema: "
         + json.dumps(research_response_schema(trusted_context), ensure_ascii=False, sort_keys=True)
     )
+
+
+def reconcile_source_limitations(output: dict[str, Any]) -> None:
+    """Copy trusted inaccessible-source details without changing research claims."""
+    artifact = output.get("artifact")
+    if not isinstance(artifact, dict):
+        return
+    limitations = artifact.get("limitations")
+    coverage = artifact.get("source_coverage")
+    if not isinstance(limitations, list) or not isinstance(coverage, list):
+        return
+    if any(not isinstance(value, str) or not value.strip() for value in limitations):
+        return
+    details = []
+    for row in coverage:
+        if not isinstance(row, Mapping):
+            return
+        if row.get("status") == "not_accessible":
+            value = row.get("details")
+            if not isinstance(value, str) or not value.strip():
+                return
+            details.append(value)
+    artifact["limitations"] = list(dict.fromkeys([*limitations, *details]))
 
 
 def validate_research_output_provenance(output: Mapping[str, Any], trusted_context: Mapping[str, Any]) -> None:
@@ -285,6 +312,12 @@ def validate_research_output_provenance(output: Mapping[str, Any], trusted_conte
             raise AgentRunnerError("committee evidence must cite supplied decision-maker sources")
         if member.get("evidence") not in {source_by_id[ref] for ref in refs}:
             raise AgentRunnerError("committee profile URL must match a supplied source")
+
+
+def finalize_research_output(output: dict[str, Any], trusted_context: Mapping[str, Any]) -> str:
+    validate_research_output_provenance(output, trusted_context)
+    reconcile_source_limitations(output)
+    return json.dumps(output, ensure_ascii=False)
 
 
 def _field(value: Any, key: str, default: Any = None) -> Any:
@@ -385,7 +418,7 @@ class HermesTextAdapter:
                     raise AgentRunnerError("research result must be JSON") from exc
                 if not isinstance(parsed, Mapping):
                     raise AgentRunnerError("research result must be an object")
-                validate_research_output_provenance(parsed, context)
+                result = finalize_research_output(parsed, context)
             return result
         finally:
             if stream is not None and hasattr(stream, "close"):

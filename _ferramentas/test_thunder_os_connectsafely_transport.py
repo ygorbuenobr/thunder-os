@@ -3,8 +3,24 @@ import unittest
 from unittest.mock import patch
 from thunder_os.connectsafely_transport import ConnectSafelyHTTPS,MAX_RESPONSE
 from thunder_os.connectsafely_client import ConnectSafelyError
+from thunder_os.connectsafely_read_targets import TargetReadHTTPS, normalize_target_url
 
 class TransportTests(unittest.TestCase):
+    def test_target_selection_accepts_only_confirmed_curly_apostrophe(self):
+        self.assertEqual('https://www.linkedin.com/in/d\u2019angelo/',
+                         normalize_target_url('https://linkedin.com/in/d\u2019angelo', profile=True))
+        for slug in ('d\u201cangelo', 'd%2Fangelo', '../other'):
+            with self.assertRaisesRegex(ConnectSafelyError, 'invalid_target_request'):
+                normalize_target_url('https://linkedin.com/in/' + slug, profile=True)
+        target = TargetReadHTTPS('a'*24, lambda: 'synthetic-token-only', connection_factory=self.factory)
+        self.raw = b'{}'
+        target('GET', '/linkedin/profile', {'accountId': 'a'*24, 'profileId': 'd\u2019angelo'}, None)
+        self.assertIn('profileId=d%E2%80%99angelo', self.calls[-1][0][1])
+        before = len(self.created)
+        with self.assertRaisesRegex(ConnectSafelyError, 'invalid_route'):
+            target('GET', '/linkedin/profile', {'accountId': 'a'*24, 'profileId': 'd\u201cangelo'}, None)
+        self.assertEqual(before, len(self.created))
+
     def setUp(self):
         self.calls=[];self.closed=0;self.status=200;self.raw=b'[]';self.created=[]
         self.transport=ConnectSafelyHTTPS('a'*24,lambda:'synthetic-token-only',connection_factory=self.factory)
@@ -63,6 +79,9 @@ class TransportTests(unittest.TestCase):
         self.transport('GET','/linkedin/profile',
                        {'accountId':'a'*24,'profileId':'person-one'},None)
         self.assertIn('profileId=person-one',self.calls[-1][0][1])
+        self.transport('GET','/linkedin/profile',
+                       {'accountId':'a'*24,'profileId':'d’angelo'},None)
+        self.assertIn('profileId=d%E2%80%99angelo',self.calls[-1][0][1])
         before=len(self.created)
         for query in ({'accountId':'b'*24,'profileId':'person-one'},
                       {'accountId':'a'*24,'profileId':'../other'},

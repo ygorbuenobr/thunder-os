@@ -9,7 +9,8 @@ from .connectsafely_client import ConnectSafelyClient,ConnectSafelyError,require
 from .connectsafely_transport import ConnectSafelyHTTPS
 from .models import payload_hash
 
-PROFILE=re.compile(r'https://www\.linkedin\.com/in/([A-Za-z0-9_.-]{1,150})/?')
+PROFILE_ID=r'[A-Za-z0-9_.\-\u2019]{1,150}'
+PROFILE=re.compile(r'https://www\.linkedin\.com/in/('+PROFILE_ID+r')/?')
 POST=re.compile(r'https://www\.linkedin\.com/(?:feed/update/urn:li:activity:[0-9]{1,30}/?|posts/[A-Za-z0-9_%.-]{1,500})')
 URN=re.compile(r'urn:li:activity:[0-9]{1,30}')
 PERSON=re.compile(r'urn:li:fsd_profile:[A-Za-z0-9_-]{1,200}')
@@ -35,7 +36,7 @@ class TargetReadHTTPS(ConnectSafelyHTTPS):
         require(isinstance(query,dict),'invalid_route')
         if method=='GET' and path=='/linkedin/accounts':return super()._route(method,path,query,body)
         if method=='GET' and path=='/linkedin/profile':
-            require(body is None and set(query)=={'accountId','profileId'} and query['accountId']==self.account_id and isinstance(query['profileId'],str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,150}',query['profileId']),'invalid_route');return
+            require(body is None and set(query)=={'accountId','profileId'} and query['accountId']==self.account_id and isinstance(query['profileId'],str) and re.fullmatch(PROFILE_ID,query['profileId']),'invalid_route');return
         require(method=='POST' and query=={} and isinstance(body,dict) and body.get('accountId')==self.account_id and isinstance(body.get('postUrl'),str) and POST.fullmatch(body['postUrl']),'invalid_route')
         if path=='/linkedin/posts/scrape':
             require(set(body)=={'accountId','postUrl','useCache','forceRefresh','maxProxyRetries'} and body['useCache'] is True and body['forceRefresh'] is False and type(body['maxProxyRetries']) is int and body['maxProxyRetries']==0,'invalid_route');return
@@ -143,7 +144,7 @@ class ReadTargetResolver:
             rows=observed.get('comments');require(isinstance(rows,list) and len(rows)<=10,'provider_schema_invalid');seen=set()
             for row in rows:
                 require(isinstance(row,dict) and isinstance(row.get('commentId'),str) and COMMENT.fullmatch(row['commentId']) and row['commentId'] not in seen,'comment_target_unverified');seen.add(row['commentId'])
-                urn=row.get('commenterUrn');public=row.get('publicIdentifier');require(isinstance(urn,str) and PERSON.fullmatch(urn) and isinstance(public,str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,150}',public),'comment_target_unverified')
+                urn=row.get('commenterUrn');public=row.get('publicIdentifier');require(isinstance(urn,str) and PERSON.fullmatch(urn) and isinstance(public,str) and re.fullmatch(PROFILE_ID,public),'comment_target_unverified')
                 comments.append({'id':row['commentId'],'text':_text(row.get('commentText'),8000),'author_label':_text(row.get('authorName',public))})
                 value['proofs'].append({**proof,'parent_comment_urn':row['commentId'],'parent_public_id':public,'parent_profile_urn':urn})
             page=observed.get('pagination');require(isinstance(page,dict) and type(page.get('hasNextPage')) is bool,'provider_schema_invalid');complete=page['hasNextPage'] is False

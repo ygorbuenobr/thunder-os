@@ -186,6 +186,16 @@ class ConnectionProviderTests(unittest.TestCase):
         self.assertEqual("https://www.linkedin.com/in/joão-silva",
                          result["connections"][0]["profileUrl"])
 
+    def test_provider_confirmed_curly_apostrophe_stays_distinct(self):
+        person = row(1)
+        person["vanityName"] = "d’angelo"
+        person["profileUrl"] = "https://www.linkedin.com/in/d%E2%80%99angelo/"
+        result = self.provider(FakeTransport([(200, page(0, [person], end=True))])).fetch_page(0)
+        self.assertEqual("https://www.linkedin.com/in/d’angelo",
+                         result["connections"][0]["profileUrl"])
+        self.assertNotEqual("https://www.linkedin.com/in/d'angelo",
+                            result["connections"][0]["profileUrl"])
+
     def test_unicode_identifier_cannot_escape_profile_path(self):
         invalid = row(1)
         invalid["vanityName"] = "joão/silva"
