@@ -92,6 +92,12 @@ def research_response_schema(trusted_context: Mapping[str, Any]) -> dict[str, An
         return {"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False}
     def array(item):
         return {"type": "array", "items": item}
+    supplied = trusted_context.get("research_evidence", [])
+    fact_ids = [row.get("fact_id") for row in supplied]
+    if any(not isinstance(fid, str) or not re.fullmatch(r"F\d+", fid) for fid in fact_ids) or len(set(fact_ids)) != len(fact_ids):
+        raise AgentRunnerError("unique trusted fact IDs required")
+    reasoning_text = {"type": "string", "minLength": 24, "pattern": r"\S"}
+    chain_fields = {key: reasoning_text for key in ("implication", "alternative", "value_hypothesis", "refuting_question")}
     artifact = obj({
         "account": obj({key: text for key in ("name", "domain", "sector", "size", "business_model", "location", "digital_presence")}),
         "facts": array(obj({"fact_id": {"type": "string", "pattern": r"^F\d+$"}, "statement": text,
@@ -113,8 +119,7 @@ def research_response_schema(trusted_context: Mapping[str, Any]) -> dict[str, An
             "status": {"enum": sorted(COVERAGE_STATUSES)}, "query": text,
             "checked_at": nullable_date, "planned_urls": texts, "attempted_urls": texts,
             "discovered_urls": texts, "source_urls": texts, "fact_ids": texts, "details": text})),
-        "evidence_chains": array(obj({"fact_ids": texts, "implication": text, "alternative": text,
-            "value_hypothesis": text, "refuting_question": text})),
+        "evidence_chains": obj({fid: obj(chain_fields) for fid in fact_ids}),
         "inferences": texts, "opportunity_hypothesis": text, "alternative_hypothesis": text,
         "assessment": obj({key: {"enum": sorted(RATINGS)} for key in ("fit", "moment", "data_quality", "risk")}),
         "committee": array(obj({"person": text, "role": {"enum": ["decision_maker", "influencer", "champion", "user"]},
@@ -149,10 +154,19 @@ def research_instructions(trusted_context: Mapping[str, Any]) -> str:
         "Classify each fact as explicit_intent, indicator, counter_signal, or context without upgrading implication to intent. "
         "Vacancies, expansion, hiring, and advertising are indicators, never explicit buying intent by themselves. "
         "Separate fact references into explicit_intent, indicators, and counter_signals arrays; they must agree with fact classifications. "
+        "evidence_chains MUST be an object with exactly these required keys: "
+        + json.dumps([row["fact_id"] for row in trusted_context.get("research_evidence", [])]) + ". "
+        "For each key, write four substantive fields: implication, alternative, value_hypothesis, refuting_question. "
+        "Do not put fact_ids inside this object: the key binds the reasoning to its exact fact. "
+        "A context-only or sector fact still needs its own bounded analysis: explain its limited account relevance, "
+        "a competing explanation or counter-signal, a conditional value hypothesis and a specific question to test it. "
+        "Do not substitute the ID, a field label, a placeholder or a repeated sentence for reasoning. "
+        "Do not assume a sector trend applies to the account or that attendance at an event proves buying intent. "
+        "Before returning, check that every required key is present and its analysis refers to that fact. "
         "Add an evidence chain for every fact with implication, a plausible alternative, a bounded value hypothesis, "
         "and a question that could disprove the hypothesis. No invented pain, budget, ROI, authority, intent, career history, or tenure. "
         "opportunity_hypothesis must exactly match a value_hypothesis in an evidence chain. If facts are empty, use exactly "
-        "'No account-specific value hypothesis can be supported from the supplied evidence.' and keep evidence_chains/inferences empty. "
+        "'No account-specific value hypothesis can be supported from the supplied evidence.' and return evidence_chains as {} and inferences as []. "
         "Decision-maker role_since is a date only when publicly verified; otherwise null and tenure_status publicly_unavailable "
         "or unverified, with the gap stated. A missing/undated source or unavailable ad library stays a visible limitation. "
         "Include source_coverage once for every schema area, copying each supplied coverage field exactly except fact_ids, "
@@ -177,7 +191,7 @@ def research_instructions(trusted_context: Mapping[str, Any]) -> str:
         "Every string in missing and committee_gaps MUST exactly equal a research_gaps.description string; "
         "reuse the description verbatim, including accents and punctuation, rather than paraphrasing it. "
         "Omit unverified committee members. Do not invent facts "
-        "to fill required fields: an empty facts array is valid with recommendation pesquisar mais. alternative_hypothesis must give a nonempty "
+        "to fill required fields: an empty facts array is valid ONLY when trusted research_evidence is empty, with recommendation pesquisar mais. alternative_hypothesis must give a nonempty "
         "alternative explanation without presuming purchase. The current validator rejects comprar, contratar and adquirir "
         "even when negated; avoid those words. Use only canonical approved capability_ids and proof_ids with matching "
         "trusted descriptions. The literal enums below come exclusively from trusted_context capability/proof map keys. "
@@ -350,8 +364,39 @@ def reconcile_source_gaps(output: dict[str, Any]) -> None:
         next_id += 1
 
 
+def normalize_evidence_chains(output: dict[str, Any], trusted_context: Mapping[str, Any]) -> None:
+    """Bind model-authored reasoning to required IDs; never generate reasoning text."""
+    artifact = output["artifact"]
+    expected = [row["fact_id"] for row in trusted_context["research_evidence"]]
+    chains = artifact.get("evidence_chains")
+    fields = {"implication", "alternative", "value_hypothesis", "refuting_question"}
+    if isinstance(chains, dict):
+        if set(chains) != set(expected):
+            raise AgentRunnerError("evidence chain keys must exactly cover trusted fact IDs")
+        normalized = []
+        for fid in expected:
+            chain = chains[fid]
+            if not isinstance(chain, dict) or set(chain) != fields:
+                raise AgentRunnerError("four model-authored evidence chain fields required")
+            values = list(chain.values())
+            if (any(not isinstance(value, str) or len(value.strip()) < 24
+                    or value.strip().lower() in {"not applicable", "não verificado", "to be determined"}
+                    for value in values) or len({value.strip() for value in values}) != len(fields)):
+                raise AgentRunnerError("substantive distinct model-authored reasoning required")
+            normalized.append({"fact_ids": [fid], **chain})
+        artifact["evidence_chains"] = normalized
+    elif isinstance(chains, list):
+        refs = [fid for chain in chains if isinstance(chain, dict)
+                for fid in chain.get("fact_ids", [])]
+        if set(refs) != set(expected):
+            raise AgentRunnerError("evidence chains must exactly cover trusted fact IDs")
+    else:
+        raise AgentRunnerError("evidence chains required")
+
+
 def finalize_research_output(output: dict[str, Any], trusted_context: Mapping[str, Any]) -> str:
     validate_research_output_provenance(output, trusted_context)
+    normalize_evidence_chains(output, trusted_context)
     reconcile_source_limitations(output)
     reconcile_source_gaps(output)
     return json.dumps(output, ensure_ascii=False)
