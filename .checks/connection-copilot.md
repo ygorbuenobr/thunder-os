@@ -10,6 +10,35 @@
 - Validação local: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.scratch/dependencies:_ferramentas python3 -m unittest discover -s _ferramentas -p 'test_*.py' -q` passou 238 testes. `python3 scripts/check_source_boundary.py` aceitou 132 arquivos rastreados no índice; `git diff --cached --check` limpo. Revisão independente inicial rejeitou promoção por nome e starvation; a segunda identificou retry após 429 e janela de crash. A reserva `in_flight` pré-GET e commit conjunto do resultado/bloqueio corrigiram o segundo ponto. A re-revisão final aceitou o gate de código para commit/build, mas não verificou ativação de monitor nem liberou o worker.
 - No clone, o GET real de dois perfis retornou sem erro, `candidates=0`, checkpoint inalterado, nenhum job/request, integridade `ok`. Uma observação sintética posterior no mesmo clone produziu duas candidatas sem `account_id` e sem novos jobs/requests. Isso demonstra o contrato, não a identidade empresarial dessas pessoas reais.
 
+### Ativação controlada cf5f4e3
+
+- Commit de código `cf5f4e3b599fcef446e8c77fb4b286568906c902` enviado a `ygorbuenobr/thunder-os/main`. Bundle local e release VPS de 93 arquivos passaram verificação de hashes e dependência. Painel isolado contra o clone respondeu HTTP 200.
+- Antes da troca: snapshot SQLite consistente em `/opt/thunder-os/staging/connection-copilot/recovery-pre-cf5f4e3/state.db` (modo 0600, SHA-256 `10ad467e034417d287fa95d0c922b0d6bdf305d7131353333856fc8477e6ede2`, `integrity_check=ok`). Config e unidades também foram preservadas no diretório 0700. Forward/rollback de symlink e restore de banco foram ensaiados em diretório temporário; não houve rollback real de serviço nem restauração de produção.
+- Timers foram parados durante a janela. `/opt/thunder-os/current` passou de `d562788c59853980d9a6091df7069393611f69de` para `cf5f4e3b599fcef446e8c77fb4b286568906c902`; `/opt/thunder-os/agent-current` permaneceu em `d562788`. Apenas `painel-thunder.service` foi reiniciado: active, PID 232118, cwd na nova release, HTTP local 200. Nenhum serviço Hermes/GTM/Cockpit/HunterV2 foi reiniciado.
+- Execução manual da unidade live: `Result=success`, `observed=1`, `company_resolution.checked=2`, `candidates=0`, `jobs_ensured=0`; banco íntegro. Execução manual da unidade backfill: `Result=success`, `observed=100`, `company_resolution.checked=2`, `candidates=0`, `jobs_ensured=0`; checkpoint real agora dia 2026-10-06, `processed_today=100`, índice 204, `complete=false`. Perfil contabilizado: 196 `needs_identity`, 8 `needs_fit`, 0 requests de pesquisa. `agent_control.paused=true`.
+- Timers live e backfill voltaram ativos. O timer live disparou sozinho às 09:40 -03: `Result=success`, `observed=0`, `company_resolution.checked=2`, `jobs_ensured=0`. Readback final: painel HTTP 200, quatro serviços/timers consultados ativos, produção íntegra, checkpoint de backfill ainda em índice 204, 196 `needs_identity`, 8 `needs_fit`, 0 research requests e `agent_control.paused=true`. Worker **não** foi despausado. Como o GET de perfil não dá domínio/ID empresarial na amostra, candidata por nome não é promoção canônica. O painel continua exigindo confirmação da empresa para esses casos.
+
+Rollback do código (sem restaurar banco automaticamente): parar os dois timers; sob `flock -n /run/lock/thunder-os-deploy.lock`, trocar atomicamente `/opt/thunder-os/current` de volta para a release `d562788c59853980d9a6091df7069393611f69de`; reiniciar somente `painel-thunder.service`; conferir PID/cwd, HTTP 200, banco íntegro e `agent_control.paused=true`; religar timers somente após validar a jornada anterior. O banco novo usa estados adicionais que o release antigo ignora. Restaurar o snapshot é uma decisão separada: apagaria qualquer escrita legítima no painel depois da captura e exige reconciliação antes.
+
+Comandos manuais de rollback do código (rodar apenas se necessário):
+
+```bash
+ssh minha-vps 'systemctl stop thunder-os-connections-live.timer thunder-os-connections-backfill.timer'
+ssh minha-vps 'flock -n /run/lock/thunder-os-deploy.lock python3 -' <<'PY'
+import os
+from pathlib import Path
+current = Path('/opt/thunder-os/current')
+assert current.resolve().name == 'cf5f4e3b599fcef446e8c77fb4b286568906c902'
+next_link = current.with_name('current.rollback.next')
+assert not next_link.exists() and not next_link.is_symlink()
+next_link.symlink_to('/opt/thunder-os/releases/d562788c59853980d9a6091df7069393611f69de')
+os.replace(next_link, current)
+PY
+ssh minha-vps 'systemctl restart painel-thunder.service && systemctl is-active painel-thunder.service && curl -fsS -o /dev/null http://127.0.0.1:8790/'
+```
+
+Após isso, validar checkpoint/integridade e iniciar apenas os timers cujas leituras com o release anterior forem saudáveis. O backfill anterior falhou à meia-noite; não o reativar cegamente após um rollback.
+
 Sources:
 
 - User-approved Thunder OS connection, research and queue plan in this task - binding behavior and rollout order.
