@@ -387,7 +387,7 @@ class _HTMLMetadata(HTMLParser):
             values.append(self.title)
         if self.description:
             values.append(self.description)
-        paragraphs = self.article_paragraphs if self._heading_count == 1 and self.article_paragraphs else self.paragraphs
+        paragraphs = self.article_paragraphs if self._heading_count == 1 else self.paragraphs
         values.extend(paragraphs[:4])
         return list(dict.fromkeys(_clean_text(value) for value in values if _clean_text(value)))
 

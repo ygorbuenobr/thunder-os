@@ -85,6 +85,16 @@ class FakeFetcher:
 
 
 class PublicResearchProducerTests(unittest.TestCase):
+    def test_empty_article_does_not_fall_back_to_unrelated_paragraphs(self):
+        for body in ('', '<p>Too short.</p>'):
+            page = _HTMLMetadata()
+            page.feed('<article><h1>Empty article</h1>' + body + '</article>'
+                      '<div><p>Unrelated marketing statement that must not become article evidence.</p></div>')
+            self.assertEqual([], page.statements)
+        generic = _HTMLMetadata()
+        generic.feed('<main><p>Company information without an article heading remains useful public evidence.</p></main>')
+        self.assertEqual(1, len(generic.statements))
+
     def test_header_date_and_footer_text_do_not_become_article_evidence(self):
         page = _HTMLMetadata()
         page.feed('<header><span>06 de Outubro de 2026</span></header>'
