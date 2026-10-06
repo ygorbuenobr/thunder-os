@@ -37,6 +37,14 @@ class ConnectSafelyHTTPS:
                 return
             if path=='/linkedin/account/'+self.account_id+'/quota':
                 require(not query,'invalid_route');return
+            if path=='/linkedin/profile':
+                from .connection_intake import canonical_profile_slug, ConnectionIntakeError
+                profile_id=query.get('profileId')
+                try: valid=canonical_profile_slug(profile_id)==profile_id
+                except ConnectionIntakeError: valid=False
+                require(set(query)=={'accountId','profileId'} and query.get('accountId')==self.account_id
+                        and valid,'invalid_route')
+                return
             allowed={'accountId','count'}
             if path=='/linkedin/conversations':
                 allowed.add('nextCursor')

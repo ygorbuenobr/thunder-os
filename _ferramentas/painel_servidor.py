@@ -36,6 +36,7 @@ from thunder_os.integration_views import IntegrationViews
 from thunder_os.connectsafely_console import ConnectSafelyError as ConnectSafelyConsoleError
 from thunder_os.connectsafely_client import ConnectSafelyError as ConnectSafelyProviderError
 from thunder_os.connection_backfill import BACKFILL_CHECKPOINT
+from thunder_os.connection_company import resolution_kind
 from thunder_os.connection_ledger import LIVE_CHECKPOINT, profile_kind
 from thunder_os.connection_intake import ConnectionIntakeError, profile_key
 from thunder_os.connection_work import WORK_LINK_KIND, canonical_connection_request, CONNECTION_ACTOR
@@ -247,6 +248,14 @@ def connection_panel_projection(service, *, view='actions', offset=0, limit=100)
                           else 'Sem ação proposta nesta consulta.')
             elif source_status == 'needs_identity' or account is None:
                 stage, detail = 'needs_identity', 'Empresa ainda não identificada com evidência.'
+                candidate = repository.get_state(resolution_kind(connectsafely_id), row['profile'])
+                if (candidate and candidate.get('status') == 'candidate'
+                        and candidate.get('profile') == row['profile']
+                        and candidate.get('connectsafely_account_id') == connectsafely_id
+                        and isinstance(candidate.get('company_name'), str)
+                        and 0 < len(candidate['company_name']) <= 200):
+                    detail = ('Perfil sugere ' + candidate['company_name']
+                              + '; confirme a empresa e o domínio antes de pesquisar.')
             elif source_status == 'needs_fit':
                 stage, detail = 'needs_fit', 'Encaixe ainda não comprovado para iniciar pesquisa.'
             elif source_status in {'research', 'qualified_waiting_budget'}:

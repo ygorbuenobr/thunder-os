@@ -15,6 +15,12 @@ FIT_SECTOR = re.compile(r"\b(?:ind[uú]stri\w*|distribui[cç][aã]o|distribuidor
 DOMAIN = re.compile(r"[a-z0-9][a-z0-9.-]*\.[a-z]{2,}\Z")
 
 
+def company_name_key(value: str) -> str:
+    if not isinstance(value, str) or not 1 <= len(value) <= 200 or any(ord(c) < 32 for c in value):
+        raise ConnectionIntakeError("company_name_invalid")
+    return " ".join(value.split()).lower()
+
+
 def _section(content: str, heading: str) -> str:
     match = re.search(rf"(?ims)^##\s+{re.escape(heading)}\s*$\n(.*?)(?=^##\s+|\Z)", content)
     return match.group(1) if match else ""
@@ -80,3 +86,42 @@ def load_connection_catalog(brain: str | Path) -> tuple[dict[str, str], dict[str
                     raise ConnectionIntakeError("connection_account_ambiguous")
                 mapping[key] = domain
     return mapping, fit
+
+
+def load_company_catalog(brain: str | Path) -> dict[str, tuple[str, str]]:
+    """Index only unique, explicit account titles with a validated site.
+
+    A name match is evidence for research triage, never an outreach identity.
+    """
+    root = Path(brain).resolve()
+    accounts = root / "contas"
+    if not accounts.is_dir() or accounts.is_symlink():
+        raise ConnectionIntakeError("account_catalog_unavailable")
+    result: dict[str, tuple[str, str]] = {}
+    ambiguous: set[str] = set()
+    for path in sorted(accounts.glob("*/ficha.md")):
+        if path.is_symlink() or path.parent.is_symlink() or not path.resolve().is_relative_to(root):
+            continue
+        try:
+            raw = path.read_bytes()
+            if len(raw) > 100_000:
+                continue
+            content = raw.decode("utf-8")
+        except (OSError, UnicodeError):
+            continue
+        domain = _account_domain(content)
+        title = re.search(r"(?m)^#\s+([^\n]+)$", content)
+        if domain is None or title is None:
+            continue
+        try:
+            name = company_name_key(title.group(1))
+        except ConnectionIntakeError:
+            continue
+        if not name or "|" in name:
+            continue
+        ref = f"brain:{path.relative_to(root).as_posix()}#sha256:{sha256(raw).hexdigest()}"
+        if name in result:
+            ambiguous.add(name)
+        else:
+            result[name] = (domain, ref)
+    return {name: item for name, item in result.items() if name not in ambiguous}

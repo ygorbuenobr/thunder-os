@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import painel_servidor
 from thunder_os.connection_ledger import LIVE_CHECKPOINT, profile_kind, research_request_kind
+from thunder_os.connection_company import resolution_kind
 from thunder_os.connection_work import WORK_LINK_KIND, enqueue_connection_research
 from thunder_os.db import Repository
 from thunder_os.models import ContractError
@@ -139,6 +140,22 @@ class ConnectionPanelTests(unittest.TestCase):
         item = next(item for group in stale_copy["accounts"] for item in group["connections"]
                     if item["profile"].endswith("approach"))
         self.assertEqual("dossier_review", item["stage"])
+
+    def test_company_candidate_is_visible_but_not_approval_ready(self):
+        self.profile("identity", "needs_identity")
+        profile = "https://www.linkedin.com/in/identity"
+        self.repo.put_state(resolution_kind(ACCOUNT), profile, {
+            "profile": profile, "connectsafely_account_id": ACCOUNT,
+            "status": "candidate", "company_name": "alpha logistics",
+            "candidate_domain": "alpha.example", "catalog_ref": "fixture:source",
+        })
+        status, body = self.route()
+        self.assertEqual(200, status)
+        item = body["accounts"][0]["connections"][0]
+        self.assertEqual("needs_identity", item["stage"])
+        self.assertIn("alpha logistics", item["detail"])
+        self.assertIn("confirme", item["detail"])
+        self.assertIsNone(item["account_id"])
 
     def test_same_domain_requires_exact_successful_profile_work(self):
         for slug in ("finished", "pending", "stale-result"):

@@ -58,6 +58,18 @@ class TransportTests(unittest.TestCase):
         for method,path,query,body in [('POST','/linkedin/conversations/sync',{},{}),('GET','https://evil.invalid',{},None),('GET','/linkedin/accounts',{'q':'b'*24},None),('POST','/linkedin/conversations/send',{},dict(accountId='a'*24,messagingChannel='auto'))]:
             with self.assertRaisesRegex(ConnectSafelyError,'route'):self.transport(method,path,query,body)
         self.assertEqual(self.created,[])
+    def test_profile_lookup_is_get_only_and_account_bound(self):
+        self.raw=b'{}'
+        self.transport('GET','/linkedin/profile',
+                       {'accountId':'a'*24,'profileId':'person-one'},None)
+        self.assertIn('profileId=person-one',self.calls[-1][0][1])
+        before=len(self.created)
+        for query in ({'accountId':'b'*24,'profileId':'person-one'},
+                      {'accountId':'a'*24,'profileId':'../other'},
+                      {'accountId':'a'*24,'profileId':'person-one','forceRefresh':True}):
+            with self.assertRaisesRegex(ConnectSafelyError,'invalid_route'):
+                self.transport('GET','/linkedin/profile',query,None)
+        self.assertEqual(before,len(self.created))
     def test_custom_ca_rejected_and_exception_sanitized(self):
         with patch.dict(os.environ,{'SSL_CERT_FILE':'not-read'}):
             with self.assertRaisesRegex(ConnectSafelyError,'tls_configuration'):self.call()

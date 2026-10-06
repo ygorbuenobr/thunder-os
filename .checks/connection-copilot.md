@@ -1,5 +1,15 @@
 # Thunder OS Connection Copilot
 
+## Checkpoint 2026-10-06: backfill e identidade
+
+- Falha de 00:00 -03 no backfill de produção: `connection_row_invalid`. A resposta atual do ConnectSafely não a reproduziu; um replay completo com a release ativa em clone processou 100 perfis. Causa exata da resposta transitória permanece desconhecida.
+- Clone consistente: `/opt/thunder-os/staging/connection-copilot/clone-backfill-20261006.db`, cópia por SQLite backup, modo 0600, integridade `ok`. No clone, uma linha artificial com `connectedDate=null` reproduziu `connection_row_invalid` e deixou o checkpoint inalterado. O código candidato relê só essa página uma vez, sem retry de timeout ou 429; falha persistente continua bloqueando.
+- Ensaio do código candidato em staging VPS, com primeira página artificial inválida e páginas seguintes reais: 100 perfis processados no clone, checkpoint de 2026-10-06 índice 203 para 2026-10-07 índice 303, integridade `ok`, nenhum job criado. O checkpoint de produção permaneceu 2026-10-05, 100 perfis, índice 100, integridade `ok`.
+- O GET `/linkedin/profile` da conta ativa retornou 200 e mostrou `currentCompany` e `experience[].companyName` como strings; não forneceu domínio/ID empresarial verificável na amostra. O código novo registra apenas candidata com fonte e exibe "confirmar empresa" no painel. Nome homônimo ou parecido **não** vira `account_id`, request, job ou aprovação. Confirmação canônica continua via perfil exato em ficha autorizada.
+- Consulta de perfis limitada a 2 por rodada e 100 reservas por dia/conta. Falha por perfil fica registrada para não repetir no mesmo dia; 429 bloqueia novas consultas da conta até o dia seguinte. Há no máximo uma releitura de linha inválida por processo, preservando a margem do timeout dos timers. A ativação do worker continua bloqueada, pois não há dossiê qualificado e jornada de ponta a ponta observados.
+- Validação local: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.scratch/dependencies:_ferramentas python3 -m unittest discover -s _ferramentas -p 'test_*.py' -q` passou 238 testes. `python3 scripts/check_source_boundary.py` aceitou 132 arquivos rastreados no índice; `git diff --cached --check` limpo. Revisão independente inicial rejeitou promoção por nome e starvation; a segunda identificou retry após 429 e janela de crash. A reserva `in_flight` pré-GET e commit conjunto do resultado/bloqueio corrigiram o segundo ponto. A re-revisão final aceitou o gate de código para commit/build, mas não verificou ativação de monitor nem liberou o worker.
+- No clone, o GET real de dois perfis retornou sem erro, `candidates=0`, checkpoint inalterado, nenhum job/request, integridade `ok`. Uma observação sintética posterior no mesmo clone produziu duas candidatas sem `account_id` e sem novos jobs/requests. Isso demonstra o contrato, não a identidade empresarial dessas pessoas reais.
+
 Sources:
 
 - User-approved Thunder OS connection, research and queue plan in this task - binding behavior and rollout order.

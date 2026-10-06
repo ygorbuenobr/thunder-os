@@ -13,7 +13,8 @@ from typing import Callable, Mapping, Any
 from zoneinfo import ZoneInfo
 
 from .connection_backfill import record_backfill_batch
-from .connection_catalog import load_connection_catalog
+from .connection_catalog import load_connection_catalog, load_company_catalog
+from .connection_company import observe_pending_companies
 from .connection_intake import ConnectionIntakeError
 from .connection_ledger import LIVE_CHECKPOINT, record_live_poll, research_request_kind
 from .connection_provider import ConnectionProvider, ConnectionProviderError
@@ -89,6 +90,7 @@ def _provider(config: Mapping[str, Any]) -> ConnectionProvider:
 
 def run_once(config: Mapping[str, Any], *, brain: Path, mode: str,
              fetch_page: Callable[[int], Mapping[str, Any]],
+             fetch_profile_company: Callable[[str], tuple[str | None, str | None]] | None = None,
              now: datetime | None = None) -> dict[str, Any]:
     if mode not in {"live", "backfill"} or not brain.is_dir() or brain.is_symlink():
         raise ConnectionRuntimeError("connection_runtime_invalid")
@@ -98,6 +100,7 @@ def run_once(config: Mapping[str, Any], *, brain: Path, mode: str,
     repository = Repository(config["repository"])
     mapping, fit = load_connection_catalog(brain)
     account_id = config["account_id"]
+    company_catalog = load_company_catalog(brain)
     if mode == "live":
         checkpoint = repository.get_state(LIVE_CHECKPOINT, account_id)
         activation_at = datetime.fromisoformat(checkpoint["activation_at"]) if checkpoint else now
@@ -106,17 +109,25 @@ def run_once(config: Mapping[str, Any], *, brain: Path, mode: str,
             activation_at=activation_at, observed_at=now,
             account_by_profile=mapping, fit_evidence_by_account=fit, contacted=set(),
         )
+        jobs = _enqueue_pending(repository, account_id, now)
+        company = (observe_pending_companies(repository, account_id, company_catalog,
+                                             fetch_profile_company, now)
+                   if fetch_profile_company else None)
         return {"mode": mode, "observed": len(decisions), "research": sum(
             row["status"] == "research" for row in decisions),
-            "jobs_ensured": _enqueue_pending(repository, account_id, now)}
+            "jobs_ensured": jobs, "company_resolution": company}
     result = record_backfill_batch(
         repository, fetch_page, account_id=account_id,
         today=now.astimezone(ZoneInfo("America/Sao_Paulo")).date(),
         account_by_profile=mapping, fit_evidence_by_account=fit,
     )
+    jobs = _enqueue_pending(repository, account_id, now)
+    company = (observe_pending_companies(repository, account_id, company_catalog,
+                                         fetch_profile_company, now)
+               if fetch_profile_company else None)
     return {"mode": mode, "observed": result["processed"],
             "research": result["research"], "complete": result["complete"],
-            "jobs_ensured": _enqueue_pending(repository, account_id, now)}
+            "jobs_ensured": jobs, "company_resolution": company}
 
 
 def _enqueue_pending(repository: Repository, account_id: str, now: datetime) -> int:
@@ -153,7 +164,9 @@ def main() -> int:
     try:
         config = load_config(args.config)
         provider = _provider(config)
-        result = run_once(config, brain=args.brain, mode=args.mode, fetch_page=provider.fetch_page)
+        result = run_once(config, brain=args.brain, mode=args.mode,
+                          fetch_page=provider.fetch_page,
+                          fetch_profile_company=provider.fetch_profile_company)
     except (ConnectionRuntimeError, ConnectionProviderError, ConnectionIntakeError) as exc:
         print(json.dumps({"status": "blocked", "error_code": str(exc)}), file=sys.stderr)
         return 1

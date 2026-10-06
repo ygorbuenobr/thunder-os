@@ -78,6 +78,7 @@ class ConnectionProvider:
         self.public_id = public_id
         self.transport = transport
         self.timeout_seconds = timeout_seconds
+        self._row_retry_used = False
 
     def _get(self, path: str, query: Mapping[str, str | int]) -> object:
         try:
@@ -109,10 +110,52 @@ class ConnectionProvider:
                  and sum(row.get("publicId") == self.public_id for row in accounts) == 1,
                  "account_identity_mismatch")
 
+    def fetch_profile_company(self, profile: str) -> tuple[str | None, str | None]:
+        """Return only company labels from an account-bound profile read."""
+        try:
+            key = profile_key(profile)
+        except ConnectionIntakeError:
+            raise ConnectionProviderError("connection_profile_invalid") from None
+        slug = key.rsplit("/", 1)[-1]
+        self._verify_identity()
+        payload = self._get("/linkedin/profile", {"accountId": self.account_id,
+                                                  "profileId": slug})
+        _require(type(payload) is dict and payload.get("success") is True
+                 and payload.get("accountId") == self.account_id
+                 and payload.get("profileId") == slug
+                 and type(payload.get("profile")) is dict,
+                 "profile_identity_invalid")
+        detail = payload["profile"]
+        _require(detail.get("publicIdentifier") == slug, "profile_identity_invalid")
+        current = detail.get("currentCompany")
+        experience = detail.get("experience")
+        if current is not None:
+            _require(isinstance(current, str) and 0 < len(current) <= 200
+                     and not any(ord(char) < 32 for char in current), "profile_company_invalid")
+        _require(experience is None or type(experience) is list, "profile_company_invalid")
+        first = experience[0] if experience else None
+        _require(first is None or type(first) is dict, "profile_company_invalid")
+        previous = first.get("companyName") if first else None
+        if previous is not None:
+            _require(isinstance(previous, str) and 0 < len(previous) <= 200
+                     and not any(ord(char) < 32 for char in previous), "profile_company_invalid")
+        return current, previous
+
     def fetch_page(self, start_index: int) -> dict[str, object]:
         """Return one validated page; a partial nonterminal page is incomplete."""
         _require(type(start_index) is int and 0 <= start_index <= 1_000_000,
                  "invalid_pagination")
+        try:
+            return self._fetch_page_once(start_index)
+        except ConnectionProviderError as exc:
+            if str(exc) != "connection_row_invalid" or self._row_retry_used:
+                raise
+            self._row_retry_used = True
+            # A malformed provider row can be transient. Re-read the same page
+            # once; never advance the caller's checkpoint from the bad page.
+            return self._fetch_page_once(start_index)
+
+    def _fetch_page_once(self, start_index: int) -> dict[str, object]:
         self._verify_identity()
         payload = self._get("/linkedin/connections", {
             "accountId": self.account_id, "startIndex": start_index,

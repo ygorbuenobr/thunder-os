@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from thunder_os.connection_catalog import load_connection_catalog
+from thunder_os.connection_catalog import load_connection_catalog, load_company_catalog
 from thunder_os.connection_intake import ConnectionIntakeError
 
 
@@ -64,6 +64,17 @@ class ConnectionCatalogTests(unittest.TestCase):
         (self.brain / "contas" / "linked").symlink_to(self.brain)
         self.ficha("invalid", "valid.example:bad", "https://linkedin.com/in/invalid")
         self.assertEqual(({}, {}), load_connection_catalog(self.brain))
+
+    def test_company_name_requires_unique_ficha_and_validated_site(self):
+        self.ficha("alpha", "alpha.example", "https://linkedin.com/in/alpha")
+        path = self.brain / "contas" / "alpha" / "ficha.md"
+        path.write_text(path.read_text().replace("# Fixture", "# Alpha Logistics"))
+        catalog = load_company_catalog(self.brain)
+        self.assertEqual("alpha.example", catalog["alpha logistics"][0])
+        self.ficha("duplicate", "other.example", "https://linkedin.com/in/other")
+        path = self.brain / "contas" / "duplicate" / "ficha.md"
+        path.write_text(path.read_text().replace("# Fixture", "# Alpha Logistics"))
+        self.assertNotIn("alpha logistics", load_company_catalog(self.brain))
 
 
 if __name__ == "__main__":

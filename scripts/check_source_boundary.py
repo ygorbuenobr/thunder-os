@@ -47,6 +47,7 @@ ALLOWED_TESTS = {
     "test_thunder_os_connection_provider.py",
     "test_thunder_os_connection_backfill.py",
     "test_thunder_os_connection_catalog.py",
+    "test_thunder_os_connection_company.py",
     "test_thunder_os_connection_runtime.py",
     "test_thunder_os_connection_worker.py",
     "test_thunder_os_connection_panel.py",

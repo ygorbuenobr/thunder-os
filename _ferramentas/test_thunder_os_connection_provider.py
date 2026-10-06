@@ -77,7 +77,8 @@ class ConnectionProviderTests(unittest.TestCase):
         result = self.provider(fake).fetch_page(0)
         self.assertEqual(["2026-10-05T00:00:00-03:00", "2026-09-29T00:00:00-03:00"],
                          [item["connectedDate"] for item in result["connections"]])
-        invalid = FakeTransport([(200, page(0, [row(1, "Connected on Smarch 5, 2026")], end=True))])
+        bad_page = (200, page(0, [row(1, "Connected on Smarch 5, 2026")], end=True))
+        invalid = FakeTransport([bad_page, bad_page])
         with self.assertRaisesRegex(ConnectionProviderError, "connection_row_invalid"):
             self.provider(invalid).fetch_page(0)
 
@@ -119,9 +120,62 @@ class ConnectionProviderTests(unittest.TestCase):
     def test_profile_url_must_match_vanity_name(self):
         invalid = row(1)
         invalid["profileUrl"] = "https://www.linkedin.com/in/someone-else/"
-        fake = FakeTransport([(200, page(0, [invalid]))])
+        bad_page = (200, page(0, [invalid]))
+        fake = FakeTransport([bad_page, bad_page])
         with self.assertRaisesRegex(ConnectionProviderError, "connection_row_invalid"):
             self.provider(fake).fetch_page(0)
+
+    def test_transient_invalid_row_is_revalidated_at_same_cursor(self):
+        invalid = row(1)
+        invalid["connectedDate"] = None
+        fake = FakeTransport([(200, page(0, [invalid], end=True)),
+                              (200, page(0, [row(1)], end=True))])
+        result = self.provider(fake).fetch_page(0)
+        self.assertEqual(1, result["count"])
+        self.assertEqual([0, 0], [call[2]["startIndex"] for call in fake.calls
+                                  if call[1] == "/linkedin/connections"])
+
+    def test_persistent_invalid_row_fails_after_one_revalidation(self):
+        invalid = row(1)
+        invalid["connectedDate"] = None
+        fake = FakeTransport([(200, page(0, [invalid], end=True)),
+                              (200, page(0, [invalid], end=True))])
+        with self.assertRaisesRegex(ConnectionProviderError, "connection_row_invalid"):
+            self.provider(fake).fetch_page(0)
+        self.assertEqual(2, sum(call[1] == "/linkedin/connections" for call in fake.calls))
+
+    def test_only_one_row_revalidation_per_provider_run(self):
+        bad = row(1)
+        bad["connectedDate"] = None
+        good0 = (200, page(0, [row(1)]))
+        bad0 = (200, page(0, [bad]))
+        bad1 = (200, page(1, [bad], end=True))
+        fake = FakeTransport([bad0, good0, bad1])
+        provider = self.provider(fake)
+        self.assertEqual(1, provider.fetch_page(0)["count"])
+        with self.assertRaisesRegex(ConnectionProviderError, "connection_row_invalid"):
+            provider.fetch_page(1)
+        self.assertEqual([0, 0, 1], [call[2]["startIndex"] for call in fake.calls
+                                     if call[1] == "/linkedin/connections"])
+
+    def test_profile_company_is_bound_to_exact_account_and_profile(self):
+        class ProfileTransport(FakeTransport):
+            def __call__(self, method, path, query, body, *, timeout):
+                if path == "/linkedin/profile":
+                    self.calls.append((method, path, query, body, timeout))
+                    payload = {"success": True, "accountId": ACCOUNT,
+                               "profileId": "person-1", "profile": {
+                                   "publicIdentifier": "person-1",
+                                   "currentCompany": "Alpha Logistics",
+                                   "experience": [{"companyName": "Alpha Logistics"}],
+                               }}
+                    return 200, json.dumps(payload).encode()
+                return super().__call__(method, path, query, body, timeout=timeout)
+        fake = ProfileTransport()
+        result = self.provider(fake).fetch_profile_company("https://linkedin.com/in/person-1")
+        self.assertEqual(("Alpha Logistics", "Alpha Logistics"), result)
+        self.assertEqual({"accountId": ACCOUNT, "profileId": "person-1"}, fake.calls[-1][2])
+        self.assertTrue(all(call[0] == "GET" and call[3] is None for call in fake.calls))
 
     def test_accented_public_identifier_is_preserved_and_matched(self):
         accented = row(1)
@@ -136,7 +190,8 @@ class ConnectionProviderTests(unittest.TestCase):
         invalid = row(1)
         invalid["vanityName"] = "joão/silva"
         invalid["profileUrl"] = "https://www.linkedin.com/in/jo%C3%A3o%2Fsilva/"
-        fake = FakeTransport([(200, page(0, [invalid], end=True))])
+        bad_page = (200, page(0, [invalid], end=True))
+        fake = FakeTransport([bad_page, bad_page])
         with self.assertRaisesRegex(ConnectionProviderError, "connection_row_invalid"):
             self.provider(fake).fetch_page(0)
 
@@ -144,7 +199,8 @@ class ConnectionProviderTests(unittest.TestCase):
         different = row(1)
         different["vanityName"] = "straße"
         different["profileUrl"] = "https://www.linkedin.com/in/strasse/"
-        fake = FakeTransport([(200, page(0, [different], end=True))])
+        bad_page = (200, page(0, [different], end=True))
+        fake = FakeTransport([bad_page, bad_page])
         with self.assertRaisesRegex(ConnectionProviderError, "connection_row_invalid"):
             self.provider(fake).fetch_page(0)
 

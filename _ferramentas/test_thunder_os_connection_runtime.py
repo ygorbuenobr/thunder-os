@@ -120,6 +120,34 @@ class ConnectionRuntimeTests(unittest.TestCase):
         self.assertEqual(2, tomorrow["jobs_ensured"])
         self.assertEqual(7, len(Repository(self.database).list_work()))
 
+    def test_company_candidate_never_creates_research_without_exact_profile_link(self):
+        fiche = self.brain / "contas" / "fixture" / "ficha.md"
+        fiche.write_text("# Alpha Logistics\n- Site: https://fixture.example\n"
+                         "- Setor: Distribuição B2B\n", encoding="utf-8")
+        unknown = "https://www.linkedin.com/in/new-person"
+        row = {"profileUrl": unknown, "connectedDate": "Conexão feita em 5 de outubro de 2026"}
+        first = datetime(2026, 10, 5, 12, tzinfo=timezone.utc)
+        run_once(self.config, brain=self.brain, mode="live", fetch_page=self.pages([]), now=first)
+        second = run_once(self.config, brain=self.brain, mode="live",
+                          fetch_page=self.pages([row]),
+                          fetch_profile_company=lambda _: ("Alpha Logistics", "Alpha Logistics"),
+                          now=first.replace(hour=13))
+        self.assertEqual(0, second["research"])
+        self.assertEqual(0, second["jobs_ensured"])
+        self.assertEqual({"checked": 1, "candidates": 1, "error": None},
+                         second["company_resolution"])
+        self.assertEqual("needs_identity", Repository(self.database).get_state(
+            profile_kind(ACCOUNT), unknown)["status"])
+        third = run_once(self.config, brain=self.brain, mode="live",
+                         fetch_page=self.pages([row]),
+                         fetch_profile_company=lambda _: self.fail("profile refetched"),
+                         now=first.replace(hour=14))
+        self.assertEqual(0, third["jobs_ensured"])
+        repo = Repository(self.database)
+        self.assertNotIn("account_id", repo.get_state(profile_kind(ACCOUNT), unknown))
+        self.assertEqual(0, len(repo.list_work()))
+        self.assertEqual([], repo.effects())
+
 
 if __name__ == "__main__":
     unittest.main()
