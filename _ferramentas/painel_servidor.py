@@ -1695,16 +1695,23 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def configure_connectsafely_server(server, repository, factory=None):
-    """Attach one explicit application; never discover credentials or providers.
+    """Attach an injected composition or the explicitly pinned panel config.
 
-    Operational activation requires an audited factory supplied by the caller.
-    The returned composition must also supply worker_options() to the worker;
-    attaching HTTP routes alone neither starts a worker nor authorizes effects.
+    Without either input the application stays disconnected. Panel configuration
+    requires an individual scope, so only the confirmed job can be dispatched.
+    No queue consumer, credential discovery or provider call runs at startup.
     """
     from thunder_os.connectsafely_application import ConnectSafelyApplication
     from thunder_os.connectsafely_composition import ConnectSafelyComposition
     if factory is not None and not callable(factory):
         raise ValueError('explicit_connectsafely_factory_required')
+    if factory is None:
+        config_path = os.environ.get('THUNDER_OS_CONNECTSAFELY_CONFIG', '')
+        config_sha256 = os.environ.get('THUNDER_OS_CONNECTSAFELY_CONFIG_SHA256', '')
+        if config_path or config_sha256:
+            from thunder_os.connectsafely_live import build_panel_composition
+            factory = lambda repo: build_panel_composition(
+                repo, config_path=config_path, config_sha256=config_sha256)
     composition = (factory(repository) if factory is not None
                    else ConnectSafelyComposition(ConnectSafelyApplication(repository)))
     if (type(composition) is not ConnectSafelyComposition

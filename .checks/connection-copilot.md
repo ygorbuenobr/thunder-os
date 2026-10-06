@@ -1,5 +1,18 @@
 # Thunder OS Connection Copilot
 
+## Authorized activation plan - 2026-10-06
+
+Ygor explicitly requested analysis, plan, fixes and production activation with the authorized providers. Continue this existing checklist under IATech/tlc-implement. Source is Thunder OS only; automatic research remains bounded to 5 dossiers/day and historical intake to 100 profiles/day. External social actions remain explicit operator actions, not automatic research effects.
+
+1. Repair public collection: follow at most two same-site newsroom articles inside existing request/time budgets, bind visible publication dates to a unique article heading, and prefer article paragraphs over menu text. Select at most twelve diverse records for the model while retaining the complete collected packet in the execution evidence. Proof: collector regression tests for newsroom discovery, ambiguous dates, repeated menu text and bounded source selection; real official-site collection.
+2. Run the exact candidate on isolated state through the real configured text model; verify source-bound qualified dossier, persistence and panel projection. Retain failure/insufficient outcomes honestly. Proof: bounded canary receipt and SQLite readback, no outbound send.
+3. Build one revision-bound runtime bundle, verify fresh snapshot and rehearse code rollback. Activate panel/monitor first, check public HTTP/provider read paths; then activate a controlled research canary before admitting daily work. C12 is an acceptance check after controlled activation, not a reason to require active-runtime proof before the first controlled activation.
+4. Verify operator provider capabilities, worker health and persisted results, perform independent final review, synchronize GitHub/main and record exact deployed revisions and rollback. No automatic messaging, invitations, reactions or comments are introduced.
+
+Landing addition: retain complete public collection in the task evidence but send a bounded diverse subset to the model. Rejected alternative: repeatedly enlarging model deadlines while serializing redundant navigation statements. Existing identity, provenance, budget, approval and external-effect controls remain effective.
+
+Measured deadline adjustment: the isolated real bootstrap/auth check took 22.55 seconds; two bounded research runs exceeded the original 120-second process deadline even after reducing the evidence packet. Research now has one 240-second total attempt and explicit low reasoning effort on the existing configured model, with copy unchanged at 120 seconds. This is a finite capability budget, not retry/fallback. The attempt receipt records the actual deadline. New tests assert the exact budgets, unchanged model, empty tools and zero SDK retries. The staged 240-second run remains an acceptance observation, not evidence of production activation.
+
 ## Checkpoint 2026-10-06: auditoria de 120 perfis solicitada
 
 - Destino observado: VPS `srv1433640`, release ativa do painel/monitor `cf5f4e3b599fcef446e8c77fb4b286568906c902`, banco canonico `/root/.hermes/profiles/ygor-personal/painel-dados/painel.db`. Nenhuma release, servico ou configuracao foi trocada.

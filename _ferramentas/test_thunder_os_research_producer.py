@@ -14,6 +14,8 @@ from thunder_os.research_producer import (
     _PinnedHTTPSConnection,
     _resolve_addresses,
     research_request_from_brain,
+    _HTMLMetadata,
+    select_model_evidence,
 )
 from thunder_os.research import SOURCE_AREAS
 
@@ -83,6 +85,54 @@ class FakeFetcher:
 
 
 class PublicResearchProducerTests(unittest.TestCase):
+    def test_article_date_and_text_are_not_taken_from_navigation_or_sidebar(self):
+        page = _HTMLMetadata()
+        page.feed('<nav><p>Long navigation paragraph advertising the complete product catalogue.</p></nav>'
+                  '<small><strong>04 de Setembro de 2026</strong></small><h1>New partner program</h1>'
+                  '<p>The company launched a partner training program for its distribution network.</p>'
+                  '<aside>15 de Julho de 2026</aside>')
+        self.assertEqual('2026-09-04', page.page_date)
+        self.assertTrue(any('partner training' in value for value in page.statements))
+        self.assertFalse(any('navigation' in value for value in page.statements))
+        for html in ('<small>04 de Setembro de 2026</small><small>15 de Julho de 2026</small><h1>Article</h1>',
+                     '<h1>Article</h1><footer>04 de Setembro de 2026</footer>',
+                     '<small>04 de Setembro de 2026</small><h1>First</h1><h1>Second</h1>'):
+            ambiguous = _HTMLMetadata(); ambiguous.feed(html)
+            self.assertIsNone(ambiguous.page_date)
+
+    def test_model_selection_is_bounded_and_preserves_source_diversity(self):
+        facts = [{'source': 'https://acme.example/about', 'source_area': 'company_site',
+                  'statement': f'Company statement {i}', 'published_at': None} for i in range(40)]
+        facts += [{'source': 'https://acme.example/news/event', 'source_area': 'company_news',
+                   'statement': 'The company launched a new distribution program.', 'published_at': TODAY}]
+        selected = select_model_evidence(facts)
+        self.assertEqual(12, len(selected))
+        self.assertEqual(41, len(facts))
+        self.assertEqual(2, len({row['source'] for row in selected}))
+        self.assertIn(facts[-1], selected)
+
+    def test_newsroom_discovers_two_articles_with_complete_collection_retained(self):
+        class NewsFetcher(FakeFetcher):
+            def fetch(self, url):
+                if url == 'https://acme.example/news':
+                    self.requests.append(url)
+                    html = '<h1>Newsroom</h1>' + ''.join(f'<a href="/news/article-{i}">News {i}</a>' for i in range(5))
+                    return FetchResponse(200, url, {'content-type': 'text/html'}, html.encode(), date.today())
+                if '/news/article-' in url:
+                    self.requests.append(url)
+                    html = '<small>04 de Setembro de 2026</small><h1>Distribution expansion</h1><p>Acme announced a new partner training program across its distribution network.</p>'
+                    return FetchResponse(200, url, {'content-type': 'text/html'}, html.encode(), date.today())
+                return super().fetch(url)
+        fetcher = NewsFetcher()
+        packet = self.producer(fetcher).collect(self.request)
+        articles = {url for url in fetcher.requests if '/news/article-' in url}
+        self.assertEqual(2, len(articles))
+        self.assertLessEqual(len(packet['research_evidence']), 12)
+        self.assertGreaterEqual(len(packet['collected_evidence']), len(packet['research_evidence']))
+        self.assertTrue(any(row['published_at'] == '2026-09-04' and row['source'] in articles
+                            for row in packet['research_evidence']))
+        self.assertLessEqual(packet['producer']['request_count'], 24)
+
     def setUp(self):
         self.request = ResearchRequest(
             "acme.example", "Acme", "https://acme.example/", "autopeças",

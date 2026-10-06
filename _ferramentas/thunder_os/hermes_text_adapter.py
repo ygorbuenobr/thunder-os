@@ -324,6 +324,10 @@ def _field(value: Any, key: str, default: Any = None) -> Any:
     return value.get(key, default) if isinstance(value, Mapping) else getattr(value, key, default)
 
 
+def text_deadline(job_type: str) -> int:
+    return 240 if job_type == "research" else 120
+
+
 class HermesTextAdapter:
     """One Codex Responses request, tools=[], store=False; no auth implementation.
 
@@ -383,7 +387,8 @@ class HermesTextAdapter:
         completed = False
         try:
             stream = client.responses.create(model=model, instructions=instructions,
-                input=[{"role": "user", "content": prompt}], tools=[], store=False, stream=True, timeout=timeout)
+                input=[{"role": "user", "content": prompt}], tools=[], store=False,
+                reasoning={"effort": "low"}, stream=True, timeout=timeout)
             for event in stream:
                 kind = _field(event, "type", "")
                 if "function_call" in kind or "tool_call" in kind:

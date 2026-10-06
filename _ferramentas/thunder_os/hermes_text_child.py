@@ -15,7 +15,7 @@ from pathlib import Path
 import sys
 
 from .agents import AgentJob, AgentRunnerError
-from .hermes_text_adapter import HermesTextAdapter, LIMIT, load_catalog_context
+from .hermes_text_adapter import HermesTextAdapter, LIMIT, load_catalog_context, text_deadline
 
 
 def install_hermes_origin_guard(root):
@@ -179,10 +179,10 @@ def main(argv=None):
         with open(os.devnull, "w") as quiet, redirect_stdout(quiet):
             adapter = configured_adapter(brain=args.brain.resolve(strict=True), evidence=args.evidence.resolve(strict=True),
                 hermes_root=args.hermes_root.resolve(strict=True), profile=args.profile.resolve(strict=True), mode=args.mode)
-            # Parent enforces the hard 120-second process-group deadline including
+            # Parent enforces the capability's hard process-group deadline including
             # config/auth work. The HTTP request also has this timeout, no retries.
             stage = "inference"
-            result = adapter(AgentJob(**data), 120)
+            result = adapter(AgentJob(**data), text_deadline(data['type']))
         stage = "schema"
         output = json.loads(result)
         if args.mode == "trial" and data["type"] == "research" and output.get("artifact", {}).get("recommendation") != "pesquisar mais":

@@ -51,6 +51,30 @@ def credential(path):
     return read
 
 
+def build_panel_composition(repository, *, config_path, config_sha256):
+    """Load the reviewed runtime contract without permitting executable plugins.
+
+    The same config digest is bound to the canonical repository by runtime.build.
+    Changing that binding remains an explicit operational reconciliation.
+    """
+    from .connectsafely_runtime import load_config, build as runtime_build
+    if (not isinstance(config_sha256, str)
+            or not re.fullmatch(r'[0-9a-f]{64}', config_sha256)):
+        raise ValueError('reviewed_config_digest_required')
+    cfg = load_config(explicit_path(config_path))
+    if cfg['_digest'] != config_sha256:
+        raise ValueError('panel_config_artifact_mismatch')
+    if cfg.get('mode') != 'live' or cfg.get('factory') != 'builtin-connectsafely-v1':
+        raise ValueError('panel_builtin_live_factory_required')
+    live = cfg.get('live')
+    if not isinstance(live, dict) or type(live.get('social_enabled')) is not bool:
+        raise ValueError('explicit_social_mode_required')
+    scope = live.get('execution_scope')
+    if not isinstance(scope, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', scope):
+        raise ValueError('individual_execution_scope_required')
+    return runtime_build(cfg, repository)
+
+
 def direct_ledger_readiness(connect,identity):
     """Metadata/SELECT only against the exact runtime role; never test-write."""
     con=None
@@ -166,7 +190,7 @@ def build(repository,cfg):
         if len(matches)!=1:raise ValueError('author_evidence_ambiguous')
         return matches[0]
     def action_ready(action=None):
-        if not social_enabled and (os.environ.get('THUNDER_EXTERNAL_EFFECTS_ENABLED','').lower()!='true'
+        if (os.environ.get('THUNDER_EXTERNAL_EFFECTS_ENABLED','').lower()!='true'
                 or os.environ.get('THUNDER_OS_COPILOT_MODE','')!='human_approval'):
             return {'ready':False,'blocker':'individual_execution_gates_disabled'}
         if action not in (None,'dm','invite','react_post','comment','reply'):
@@ -176,7 +200,7 @@ def build(repository,cfg):
         try:
             from .legacy_writer_exclusion import verify_legacy_exclusion
             excluded=live.get('excluded_writers',[])
-            if not social_enabled and not excluded:raise ValueError('direct_writer_exclusions_required')
+            if direct_action and not excluded:raise ValueError('direct_writer_exclusions_required')
             for writer in excluded:
                 verify_legacy_exclusion(writer['path'],expected_sha256=writer['sha256'])
             current=evidence(live['account_and_quota_evidence'])
