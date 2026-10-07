@@ -37,6 +37,21 @@ class ConnectionCatalogTests(unittest.TestCase):
         self.assertEqual("retail.example", mapping["https://www.linkedin.com/in/person-one"])
         self.assertEqual({}, fit)
 
+    def test_sourced_sector_label_preserves_fit_and_identity_gates(self):
+        self.ficha("distribution", "distribution.example", "https://linkedin.com/in/distribution")
+        self.ficha("retail", "retail.example", "https://linkedin.com/in/retail", sector="Varejo B2C")
+        self.ficha("manufacturer", "manufacturer.example", "https://linkedin.com/in/manufacturer", sector="Fabricante de componentes")
+        for name in ("distribution", "retail", "manufacturer"):
+            path = self.brain / "contas" / name / "ficha.md"
+            path.write_text(path.read_text().replace("- Setor:", "- Setor / porte / faturamento (fonte):"))
+        mapping, fit = load_connection_catalog(self.brain)
+        self.assertEqual(3, len(mapping))
+        self.assertEqual({"distribution.example"}, set(fit))
+        self.assertTrue(fit["distribution.example"].startswith("brain:contas/distribution/ficha.md#sha256:"))
+        path = self.brain / "contas" / "distribution" / "ficha.md"
+        path.write_text(path.read_text().replace("- Setor / porte / faturamento (fonte):", "- Observações:"))
+        self.assertEqual({}, load_connection_catalog(self.brain)[1])
+
     def test_conflicting_profile_fails_closed(self):
         profile = "https://linkedin.com/in/same-person"
         self.ficha("first", "first.example", profile)

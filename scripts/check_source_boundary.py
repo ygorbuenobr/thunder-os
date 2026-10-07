@@ -32,6 +32,7 @@ ALLOWED_FILES = {
     "_ferramentas/painel_modelo.html",
 }
 ALLOWED_TESTS = {
+    "test_thunder_os_connectsafely_unicode.py",
     "test_thunder_os_connectsafely_panel_wiring.py",
     "test_thunder_os_text_budget.py",
     "test_thunder_os_models.py",
