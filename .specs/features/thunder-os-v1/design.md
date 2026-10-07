@@ -405,3 +405,34 @@ source commit in brain
 | TOS-08 | Reply Coordinator | correlation, correction, suppression |
 | TOS-09 | Learning path | evidence, experiment, human promotion |
 | TOS-10 | Repository + Release | auth, concurrency, restart, rollback |
+
+## Comparison Catalog: Component, Function and Proof
+
+This catalog documents the meaningful system functions for comparison with other GTM architectures. It intentionally does not list every private helper; private helpers inherit the component contract and are validated through the listed tests.
+
+| Capability | Primary implementation | Public or operational entrypoint | Guardrail | Verification |
+| --- | --- | --- | --- | --- |
+| Daily work and work-state lifecycle | `service.py`, `models.py`, `db.py` | `ThunderService`, `/api/os/v1/today`, `/api/os/v1/work` | Versioned state and idempotency key; only service writes workflow | `test_thunder_os_models.py`, `test_thunder_os_db_integracao.py` |
+| Account context and knowledge | `knowledge.py` | `KnowledgeStore.load_*`, account context route | Safe paths, source hash and validated fact promotion | `test_thunder_os_knowledge.py` |
+| Account-first research | `research.py`, `research_producer.py` | `PublicResearchProducer`, `/api/os/v1/research` | Bounded collection, provenance, freshness, counter-signal and alternative hypothesis | `test_thunder_os_research.py`, `test_thunder_os_research_producer.py` |
+| Cadence and approval | `cadence.py`, `approvals.py` | `CadenceEngine`, `ApprovalService`, cadence routes | Exact target/channel/content/order/interval hash; pause recheck | `test_thunder_os_cadence.py`, `test_thunder_os_approvals.py` |
+| Agent work | `agent_gateway.py`, `agent_consumer.py`, `continuous_consumer.py`, `hermes_text_*` | validated CLI/envelope and consumer process | Agents return evidence or drafts only; no independent approval or receipt | `test_thunder_os_hermes_auth_ro.py`, `test_thunder_os_text_budget.py` |
+| Connection intake | `connection_intake.py`, `connection_ledger.py`, `connection_backfill.py` | `connection_runtime --mode live|backfill` | Account-bound identity, complete-page check, cursor atomicity and daily budget | `test_thunder_os_connection_intake.py`, `test_thunder_os_connection_ledger.py`, `test_thunder_os_connection_backfill.py` |
+| Company/identity resolution | `connection_catalog.py`, `connection_company.py`, `connection_provider.py` | read-only provider profile lookup and candidate resolution | Exact profile mapping; names never create a canonical account by themselves | `test_thunder_os_connection_catalog.py`, `test_thunder_os_connection_company.py`, `test_thunder_os_connection_provider.py` |
+| Provider reconciliation | `connection_reconcile*.py` | reconciliation CLI and panel review | Positive, channel-specific provider evidence only; no inference from a local attempt | `test_thunder_os_connection_reconcile*.py` |
+| External effects | `worker.py`, `touch_ledger.py`, `providers/` | worker CLI and reviewed effect routes | Reserve once, then receipt/readback or `uncertain`; no automatic retry | approval/cadence tests plus provider-specific tests |
+| ConnectSafely capability boundary | `connectsafely_*.py` | read/runtime/monitor and integration routes | Read does not grant write; capability must bind operation, account, target and hash | `test_thunder_os_connectsafely_client.py`, `test_thunder_os_connectsafely_transport.py`, `test_thunder_os_connectsafely_panel_wiring.py` |
+| CRM/email adapters | `hubspot_*.py`, `seqd_*.py`, `integration_hubspot.py` | preview, execute and reconcile routes | Provider-specific authorization and readback; no cross-channel authority | adapter and panel integration tests |
+| Learning | `learning.py` | learning route and experiment operations | Evidence only proposes; human approves a bounded experiment or rule change | `test_thunder_os_learning.py` |
+| Release integrity | bundle scripts, `ops.py`, runtime units | build/check bundle and systemd units | Clean source, immutable manifest, pinned external dependency, snapshot and rollback rehearsal | `test_thunder_os_hermes_dependency.py`, bundle/source-boundary checks |
+
+### Release comparison procedure
+
+A source commit, a running process and a release directory are distinct facts. To compare an operational release with GitHub without assuming which is newer:
+
+1. Record the active unit, its effective `WorkingDirectory`, `ExecStart`, effects gate and active release path.
+2. Read the release manifest and compare each source-owned file hash against the target Git commit.
+3. Compare the manifest's pinned external dependency hash against the dependency used by the active service.
+4. Run the source suite with that exact dependency in an isolated environment. Do not use the operational brain as source code.
+5. Classify every divergence as `release-only`, `source-only`, `shared-dependency`, `configuration`, or `unresolved`; a timestamp alone is not a classification.
+6. Only a new immutable release, rehearsed rollback and production readback can change the active runtime.
