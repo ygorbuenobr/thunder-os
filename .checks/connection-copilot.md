@@ -1,5 +1,9 @@
 # Thunder OS Connection Copilot
 
+### Landing: sector-neutral research eligibility — 2026-10-07
+
+Ygor confirmed that prospecting is not restricted to industry or distribution. An exact profile-to-account link, validated site field and explicit, non-placeholder sector in the account fiche may admit bounded **research** regardless of sector (including manufacturers and retail). This remains a research triage signal, not approval to approach or send. Missing identity or sector stays visible as pending work. Proof: connection-catalog tests for manufacturer, retail, missing/placeholder sector and unchanged identity isolation; connection runtime tests for request creation without external effects. Rejected alternative: rewriting a fiche to say "industry" merely to satisfy the old keyword filter.
+
 ## Current verified checkpoint — 2026-10-06, manual activation and local proposal
 
 Last production verification: panel/monitor8788517, manual direct DM/invite approval expires2026-10-07T14:30:34-03:00; agent-currentd562788 remains paused. The form and invitation-reconciliation corrections below are local/unpublished and do not describe the active release. Historical Cobra research succeeded with12facts/12chains, persistedv1 and active-panel display `research / insufficient / pesquisar mais`. This is a legitimate technical outcome, not a failed pipeline or a requirement that every lead qualify. C12's original explicit positive-qualified-dossier criterion remains unchanged and unproved for both the historical qualified branch and a new connection. Main4487d10 remains unchanged; later corrections/checkpoints are isolated on codex/connection-catalog-format. Older dated checkpoints below are historical observations, not the current runtime.

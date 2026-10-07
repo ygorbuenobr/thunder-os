@@ -31,11 +31,11 @@ class ConnectionCatalogTests(unittest.TestCase):
         self.assertTrue(fit["account.example"].startswith("brain:contas/account-one/ficha.md#sha256:"))
         self.assertNotIn("Credencial", repr((mapping, fit)))
 
-    def test_unrelated_profile_and_nonfit_sector_are_not_promoted(self):
+    def test_sector_does_not_exclude_research_candidate(self):
         self.ficha("retail", "retail.example", "https://linkedin.com/in/person-one", sector="Varejo B2C")
         mapping, fit = load_connection_catalog(self.brain)
         self.assertEqual("retail.example", mapping["https://www.linkedin.com/in/person-one"])
-        self.assertEqual({}, fit)
+        self.assertIn("retail.example", fit)
 
     def test_sourced_sector_label_preserves_fit_and_identity_gates(self):
         self.ficha("distribution", "distribution.example", "https://linkedin.com/in/distribution")
@@ -46,11 +46,31 @@ class ConnectionCatalogTests(unittest.TestCase):
             path.write_text(path.read_text().replace("- Setor:", "- Setor / porte / faturamento (fonte):"))
         mapping, fit = load_connection_catalog(self.brain)
         self.assertEqual(3, len(mapping))
-        self.assertEqual({"distribution.example"}, set(fit))
+        self.assertEqual({"distribution.example", "retail.example", "manufacturer.example"}, set(fit))
         self.assertTrue(fit["distribution.example"].startswith("brain:contas/distribution/ficha.md#sha256:"))
         path = self.brain / "contas" / "distribution" / "ficha.md"
         path.write_text(path.read_text().replace("- Setor / porte / faturamento (fonte):", "- Observações:"))
-        self.assertEqual({}, load_connection_catalog(self.brain)[1])
+        self.assertEqual({"retail.example", "manufacturer.example"},
+                         set(load_connection_catalog(self.brain)[1]))
+
+    def test_missing_or_placeholder_sector_stays_pending(self):
+        for name, sector in (("missing", ""), ("unknown", "Não verificado"),
+                             ("pending", "A confirmar"), ("na", "N/A"),
+                             ("undefined", "A definir"),
+                             ("qualified", "Não verificado (pendente)"),
+                             ("bracketed", "[A definir]"),
+                             ("parenthesized", "(Não verificado)")):
+            self.ficha(name, f"{name}.example", f"https://linkedin.com/in/{name}", sector=sector)
+        mapping, fit = load_connection_catalog(self.brain)
+        self.assertEqual(8, len(mapping))
+        self.assertEqual({}, fit)
+
+    def test_unknown_revenue_after_explicit_sector_does_not_block_research(self):
+        self.ficha("manufacturer", "manufacturer.example", "https://linkedin.com/in/manufacturer",
+                   sector="fabricante de componentes. Faturamento local não verificado.")
+        mapping, fit = load_connection_catalog(self.brain)
+        self.assertEqual("manufacturer.example", mapping["https://www.linkedin.com/in/manufacturer"])
+        self.assertIn("manufacturer.example", fit)
 
     def test_conflicting_profile_fails_closed(self):
         profile = "https://linkedin.com/in/same-person"

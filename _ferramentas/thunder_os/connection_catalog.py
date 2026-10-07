@@ -11,7 +11,10 @@ from .connection_intake import ConnectionIntakeError, profile_key
 
 
 LINK = re.compile(r"https://(?:www\.)?linkedin\.com/in/[^\s|)\]]+", re.I)
-FIT_SECTOR = re.compile(r"\b(?:ind[uú]stri\w*|distribui[cç][aã]o|distribuidor\w*)\b", re.I)
+UNKNOWN_SECTOR = re.compile(
+    r"(?<!\w)(?:n[aã]o (?:verificado|informado|identificado)|a (?:confirmar|definir)|pendente|desconhecido|n/?a|sem informa[cç][aã]o)(?!\w)",
+    re.I,
+)
 DOMAIN = re.compile(r"[a-z0-9][a-z0-9.-]*\.[a-z]{2,}\Z")
 
 
@@ -48,7 +51,7 @@ def _account_domain(content: str) -> str | None:
 def load_connection_catalog(brain: str | Path) -> tuple[dict[str, str], dict[str, str]]:
     """Return exact profile mapping and *candidate* fit evidence refs.
 
-    A sector signal only permits bounded research; it is not a validated fit,
+    An explicit sector permits bounded research regardless of industry; it is not a validated fit,
     verified revenue, intent, or permission to create an approval card.
     """
     root = Path(brain).resolve()
@@ -72,9 +75,11 @@ def load_connection_catalog(brain: str | Path) -> tuple[dict[str, str], dict[str
             continue
         relative = path.relative_to(root).as_posix()
         provenance = f"brain:{relative}#sha256:{sha256(raw).hexdigest()}"
-        sector = re.search(r"(?im)^\s*-\s*(?:Setor|Segmento|Ind[uú]stria)(?:\s*/\s*porte(?:\s*/\s*faturamento\s*\(fonte\))?)?\s*:\s*([^\n]+)", content)
-        if sector and FIT_SECTOR.search(sector.group(1)):
-            fit[domain] = provenance
+        sector = re.search(r"(?im)^[ \t]*-[ \t]*(?:Setor|Segmento|Ind[uú]stria)(?:[ \t]*/[ \t]*porte(?:[ \t]*/[ \t]*faturamento[ \t]*\(fonte\))?)?[ \t]*:[ \t]*([^\n]+)", content)
+        if sector:
+            sector_claim = sector.group(1).split(".", 1)[0]
+            if sector_claim.strip(" [](){}\"'.,;:!?-–—\t") and not UNKNOWN_SECTOR.search(sector_claim):
+                fit[domain] = provenance
         for heading in ("Decisores", "Decisor", "Decisora", "Decisor e solicitante"):
             for match in LINK.finditer(_section(content, heading)):
                 try:

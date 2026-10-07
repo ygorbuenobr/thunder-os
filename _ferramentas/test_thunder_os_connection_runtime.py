@@ -54,6 +54,25 @@ class ConnectionRuntimeTests(unittest.TestCase):
         self.assertEqual("agent_job", repo.outbox()[0]["kind"])
         self.assertEqual([], repo.effects())
 
+    def test_placeholder_sector_does_not_enqueue_research(self):
+        fiche = self.brain / "contas" / "fixture" / "ficha.md"
+        row = {"profileUrl": PROFILE, "connectedDate": "Conexão feita em 5 de outubro de 2026"}
+        first = datetime(2026, 10, 5, 12, tzinfo=timezone.utc)
+        run_once(self.config, brain=self.brain, mode="live", fetch_page=self.pages([]), now=first)
+        for sector in ("A definir", "Não verificado (pendente)",
+                       "[A definir]", "(Não verificado)"):
+            fiche.write_text("# Fixture\n- Site: https://fixture.example\n"
+                             f"- Setor: {sector}\n\n## Decisores\n| Fixture | {PROFILE} |\n",
+                             encoding="utf-8")
+            result = run_once(self.config, brain=self.brain, mode="live",
+                              fetch_page=self.pages([row]), now=first.replace(hour=13))
+            repo = Repository(self.database)
+            self.assertEqual(0, result["jobs_ensured"])
+            self.assertEqual("needs_fit", repo.get_state(profile_kind(ACCOUNT), PROFILE)["status"])
+            self.assertIsNone(repo.get_state(research_request_kind(ACCOUNT), PROFILE))
+            self.assertEqual([], repo.list_work())
+            self.assertEqual([], repo.effects())
+
     def test_protected_config_rejects_world_readable_or_symlinked_credential(self):
         credential = self.root / "credential"
         credential.write_text("synthetic-token-not-used", encoding="utf-8")
