@@ -11,9 +11,11 @@ WorkingDirectory=/opt/thunder-os/current
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=PYTHONPATH=/opt/thunder-os/current/_ferramentas
 Environment=THUNDER_EXTERNAL_EFFECTS_ENABLED=false
-ExecStart=/usr/bin/flock --exclusive --nonblock --conflict-exit-code 75 /var/lib/thunder-os-inbound-monitor/connections-intake.lock /usr/bin/python3 -m thunder_os.connection_runtime --config /var/lib/thunder-os-inbound-monitor/config.json --brain /root/.hermes/profiles/ygor-personal/brain --mode backfill
+# Wait through the live service timeout (300s), stop grace (30s), and margin.
+# Bound execution separately to the original 900s, with 30s shutdown grace.
+ExecStart=/usr/bin/flock --exclusive --timeout 360 --conflict-exit-code 75 /var/lib/thunder-os-inbound-monitor/connections-intake.lock /usr/bin/timeout --signal=TERM --kill-after=30s 900s /usr/bin/python3 -m thunder_os.connection_runtime --config /var/lib/thunder-os-inbound-monitor/config.json --brain /root/.hermes/profiles/ygor-personal/brain --mode backfill
 Restart=no
-TimeoutStartSec=900s
+TimeoutStartSec=1290s
 TimeoutStopSec=30s
 UMask=0077
 NoNewPrivileges=true

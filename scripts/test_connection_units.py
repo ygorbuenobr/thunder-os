@@ -155,8 +155,10 @@ class ConnectionUnitTests(unittest.TestCase):
                 self.assertEqual("0077", service["UMask"])
                 command = shlex.split(service["ExecStart"])
                 self.assertEqual(
-                    ["/usr/bin/flock", "--exclusive", "--nonblock",
+                    ["/usr/bin/flock", "--exclusive",
+                     *(["--nonblock"] if mode == "live" else ["--timeout", "360"]),
                      "--conflict-exit-code", "75", LOCK,
+                     *([] if mode == "live" else ["/usr/bin/timeout", "--signal=TERM", "--kill-after=30s", "900s"]),
                      "/usr/bin/python3", "-m", "thunder_os.connection_runtime",
                      "--config", CONFIG, "--brain", BRAIN, "--mode", mode],
                     command,
@@ -166,10 +168,50 @@ class ConnectionUnitTests(unittest.TestCase):
                 self.assertNotIn("ExecStartPost", service)
                 self.assertNotIn("EnvironmentFile", service)
                 self.assertNotIn("THUNDER_EXTERNAL_EFFECTS_ENABLED=true", service["ExecStart"])
-        self.assertEqual(commands["live"][5], commands["backfill"][5])
+        self.assertEqual(commands["live"][5], commands["backfill"][6])
+
+    @unittest.skipUnless(Path("/usr/bin/flock").exists(), "Linux flock required")
+    def test_lock_contention_waits_once_and_timeout_never_runs_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            lock = str(Path(scratch) / "intake.lock")
+            marker = Path(scratch) / "executions"
+            payload = [sys.executable, "-c",
+                       "from pathlib import Path; p=Path(__import__('sys').argv[1]); "
+                       "p.open('a').write('once\\n')", str(marker)]
+            holder = subprocess.Popen(
+                [sys.executable, "-c",
+                 "import fcntl,sys; f=open(sys.argv[1],'w'); "
+                 "fcntl.flock(f,fcntl.LOCK_EX); print('locked',flush=True); sys.stdin.read()", lock],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+            try:
+                self.assertEqual("locked", holder.stdout.readline().strip())
+                for flags in (["--nonblock"], ["--timeout", "0.1"]):
+                    failed = subprocess.run(
+                        ["/usr/bin/flock", "--exclusive", *flags,
+                         "--conflict-exit-code", "75", lock, *payload], timeout=5)
+                    self.assertEqual(75, failed.returncode)
+                    self.assertFalse(marker.exists())
+                waiting = subprocess.Popen(
+                    ["/usr/bin/flock", "--exclusive", "--timeout", "2",
+                     "--conflict-exit-code", "75", lock, *payload])
+                try:
+                    with self.assertRaises(subprocess.TimeoutExpired):
+                        waiting.wait(timeout=0.1)
+                    self.assertFalse(marker.exists())
+                    holder.communicate(timeout=5)
+                    self.assertEqual(0, waiting.wait(timeout=5))
+                    self.assertEqual("once\n", marker.read_text())
+                finally:
+                    if waiting.poll() is None:
+                        waiting.kill()
+                        waiting.wait()
+            finally:
+                if holder.poll() is None:
+                    holder.communicate(timeout=5)
+                holder.stdout.close()
 
     def test_services_protect_source_config_and_brain(self) -> None:
-        for mode, timeout in (("live", "300s"), ("backfill", "900s")):
+        for mode, timeout in (("live", "300s"), ("backfill", "1290s")):
             with self.subTest(mode=mode):
                 raw = (UNITS / f"thunder-os-connections-{mode}.service").read_text(encoding="utf-8")
                 service = read_unit(f"thunder-os-connections-{mode}.service")["Service"]
