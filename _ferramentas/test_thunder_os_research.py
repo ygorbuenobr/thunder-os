@@ -5,7 +5,7 @@ from datetime import date, timedelta
 
 from thunder_os.research import NO_EVIDENCE_VALUE_HYPOTHESIS, ResearchError, validate_artifact
 from thunder_os.agents import AgentRunnerError
-from thunder_os.hermes_text_adapter import finalize_research_output, reconcile_source_limitations, research_instructions
+from thunder_os.hermes_text_adapter import finalize_research_output, reconcile_source_limitations, research_instructions, research_response_schema
 
 
 def base_artifact():
@@ -83,6 +83,62 @@ def base_artifact():
 
 
 class ResearchContractTests(unittest.TestCase):
+    def test_twelve_fact_chain_omission_and_keyed_model_analysis(self):
+        # Reproduce the observed failure shape; raw runtime model output was not retained.
+        artifact = base_artifact()
+        for number in range(6, 13):
+            fact = {**artifact["facts"][0], "fact_id": f"F{number}",
+                    "statement": f"Registro público sintético independente {number}"}
+            artifact["facts"].append(fact)
+            artifact["source_coverage"][0]["fact_ids"].append(fact["fact_id"])
+        context = {"research_evidence": copy.deepcopy(artifact["facts"]),
+                   "source_coverage": copy.deepcopy(artifact["source_coverage"]),
+                   "research_account": copy.deepcopy(artifact["account"])}
+        output = {"artifact": artifact, "evidence": [{"source": f["source"]} for f in artifact["facts"]]}
+        with self.assertRaisesRegex(ResearchError, "every fact requires an evidence chain"):
+            validate_artifact(artifact, {"cap-1"}, {"proof-1"})
+        with self.assertRaisesRegex(AgentRunnerError, "exactly cover trusted fact IDs"):
+            finalize_research_output(copy.deepcopy(output), context)
+        expected = [f"F{i}" for i in range(1, 13)]
+        chain_schema = research_response_schema(context)["properties"]["artifact"]["properties"]["evidence_chains"]
+        self.assertEqual(expected, chain_schema["required"])
+        self.assertFalse(chain_schema["additionalProperties"])
+        artifact["evidence_chains"] = {fid: {
+            "implication": f"O registro {fid} permite testar a relevância do contexto para a operação.",
+            "alternative": "O evento pode refletir rotina institucional já atendida pela equipe atual.",
+            "value_hypothesis": "Uma análise comercial só teria valor se houver uma lacuna operacional confirmada.",
+            "refuting_question": f"Qual evidência operacional demonstraria que {fid} não exige qualquer mudança?",
+        } for fid in expected}
+        artifact["inferences"] = [artifact["evidence_chains"]["F1"]["implication"]]
+        artifact["opportunity_hypothesis"] = artifact["evidence_chains"]["F1"]["value_hypothesis"]
+        original = copy.deepcopy(output)
+        result = json.loads(finalize_research_output(copy.deepcopy(output), context))["artifact"]
+        self.assertEqual(original["artifact"]["facts"], result["facts"])
+        self.assertEqual(original["artifact"]["source_coverage"], result["source_coverage"])
+        self.assertEqual(original["artifact"]["recommendation"], result["recommendation"])
+        self.assertEqual(expected, [c["fact_ids"][0] for c in result["evidence_chains"]])
+        for chain in result["evidence_chains"]:
+            self.assertEqual(original["artifact"]["evidence_chains"][chain["fact_ids"][0]],
+                             {k:v for k,v in chain.items() if k != "fact_ids"})
+        validate_artifact(result, {"cap-1"}, {"proof-1"})
+        legacy = {**copy.deepcopy(output), "artifact": copy.deepcopy(result)}
+        for chain in legacy["artifact"]["evidence_chains"]:
+            for key in ("implication", "alternative", "value_hypothesis", "refuting_question"):
+                chain[key] = "F1"
+        with self.assertRaisesRegex(AgentRunnerError, "substantive distinct"):
+            finalize_research_output(legacy, context)
+        for change in ("missing", "extra", "placeholder", "repeated", "forged"):
+            bad = copy.deepcopy(original)
+            chains = bad["artifact"]["evidence_chains"]
+            if change == "missing": del chains["F12"]
+            if change == "extra": chains["F99"] = chains["F1"]
+            if change == "placeholder": chains["F1"]["implication"] = "F1"
+            if change == "repeated": chains["F1"]["alternative"] = chains["F1"]["implication"]
+            if change == "forged": bad["artifact"]["facts"][0]["statement"] = "Invented"
+            snapshot = copy.deepcopy(bad)
+            with self.assertRaises(AgentRunnerError): finalize_research_output(bad, context)
+            self.assertEqual(snapshot, bad)
+
     def test_adapter_validates_provenance_before_reconciling_limitations(self):
         artifact = base_artifact()
         facts = artifact["facts"]
@@ -106,6 +162,32 @@ class ResearchContractTests(unittest.TestCase):
         with self.assertRaisesRegex(AgentRunnerError, "must match its trusted search record"):
             finalize_research_output(invented, context)
         self.assertEqual(before, invented)
+
+    def test_missing_source_gaps_are_derived_after_provenance_without_changing_claims(self):
+        artifact = base_artifact()
+        artifact["recommendation"] = "pesquisar mais"
+        context = {"research_evidence": copy.deepcopy(artifact["facts"]),
+                   "source_coverage": copy.deepcopy(artifact["source_coverage"]),
+                   "research_account": copy.deepcopy(artifact["account"])}
+        artifact["research_gaps"] = []
+        with self.assertRaisesRegex(ResearchError, "incomplete source coverage"):
+            validate_artifact(artifact, {"cap-1"}, {"proof-1"})
+        output = {"artifact": artifact, "evidence": [{"source": f["source"]} for f in artifact["facts"]]}
+        before = copy.deepcopy(artifact)
+        final = json.loads(finalize_research_output(copy.deepcopy(output), context))["artifact"]
+        self.assertEqual({k:v for k,v in before.items() if k != "research_gaps"},
+                         {k:v for k,v in final.items() if k != "research_gaps"})
+        self.assertEqual(3, len(final["research_gaps"]))
+        self.assertTrue(all(g["blocks_hypothesis"] for g in final["research_gaps"]))
+        validate_artifact(final, {"cap-1"}, {"proof-1"})
+        second = json.loads(finalize_research_output({**output, "artifact": copy.deepcopy(final)}, context))
+        self.assertEqual(final, second["artifact"])
+        forged = copy.deepcopy(output)
+        forged["artifact"]["source_coverage"][0]["details"] = "invented search completion"
+        snapshot = copy.deepcopy(forged)
+        with self.assertRaises(AgentRunnerError):
+            finalize_research_output(forged, context)
+        self.assertEqual(snapshot, forged)
 
     def test_model_instruction_matches_required_gap_join(self):
         prompt = research_instructions({})

@@ -1443,8 +1443,11 @@ class Handler(BaseHTTPRequestHandler):
             if actor != 'ygor':
                 raise AuthorizationError('Somente Ygor pode consultar esta integração.')
             app = getattr(self.server, 'thunder_connectsafely_app', None)
-            resolver = getattr(self.server, 'thunder_connectsafely_read_resolver', None)
-            if resolver is None:resolver = getattr(app, 'resolve_target', None) if app is not None else None
+            if getattr(app, 'direct_target_resolution', False):
+                resolver = getattr(app, 'resolve_target', None)
+            else:
+                resolver = getattr(self.server, 'thunder_connectsafely_read_resolver', None)
+                if resolver is None:resolver = getattr(app, 'resolve_target', None) if app is not None else None
             if not callable(resolver):
                 return self.responder(200, {'resolved':False,'status':'blocked','read_only':True,
                     'actions_available':False,'error_code':'target_evidence_unavailable'})

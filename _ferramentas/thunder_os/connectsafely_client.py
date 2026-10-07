@@ -8,7 +8,8 @@ from datetime import datetime
 import math
 import re
 import time
-from urllib.parse import quote
+import unicodedata
+from urllib.parse import quote, unquote
 
 
 class ConnectSafelyError(ValueError):
@@ -30,6 +31,28 @@ def urn(value):
 
 def public_id(value):
     return isinstance(value, str) and bool(re.fullmatch(r'[A-Za-z0-9_-]{1,100}', value))
+
+
+
+def canonical_recipient_id(value):
+    """Decode URL input once; keep one canonical recipient for review and ledger."""
+    from .connection_intake import canonical_profile_slug, ConnectionIntakeError
+    require(isinstance(value, str), 'invalid_recipient')
+    try:
+        slug=canonical_profile_slug(unquote(value, errors='strict'))
+        # The shared ledger uses NFC + lower(). Reject Unicode aliases that
+        # would change there; never silently merge two provider identities.
+        require(unicodedata.normalize('NFC',slug)==slug and slug.lower()==slug,'invalid_recipient')
+        return slug
+    except (ConnectionIntakeError, UnicodeError):
+        raise ConnectSafelyError('invalid_recipient') from None
+
+
+def recipient_id(value):
+    try:
+        return canonical_recipient_id(value) == value
+    except ConnectSafelyError:
+        return False
 
 
 def select(row, fields):
@@ -156,15 +179,23 @@ class ConnectSafelyClient:
             for raw in rows:
                 if kind=='connections':
                     item=select(raw,{k:str for k in ('firstName','lastName','vanityName','headline','connectedDate','profileUrl')})
-                    require(public_id(item.get('vanityName')),'provider_schema_invalid');identity=item['vanityName']
+                    from .connection_intake import canonical_profile_slug, profile_key
+                    try:identity=canonical_profile_slug(item.get('vanityName'))
+                    except ValueError:raise ConnectSafelyError('provider_schema_invalid') from None
+                    require(profile_key(item.get('profileUrl'))=='https://www.linkedin.com/in/'+identity,'recipient_identity_mismatch')
                 else:
-                    item=select(raw,{k:str for k in ('id','invitationId','invitationUrn','memberId','memberUrn','invitationType','sentAt')})
+                    item=select(raw,{k:str for k in ('id','invitationId','invitationUrn','memberId','memberUrn','invitationType','customMessage')})
                     require(item.get('invitationType')=='SENT' and isinstance(item.get('invitationUrn'),str) and re.fullmatch(r'urn:li:invitation:[A-Za-z0-9_-]{1,128}',item['invitationUrn']),'provider_schema_invalid')
                     item['profile']=select(raw.get('profile'),{k:str for k in ('firstName','lastName','headline','profileUrl','publicIdentifier')})
-                    require(public_id(item['profile'].get('publicIdentifier')),'provider_schema_invalid');identity=item['invitationUrn']
+                    from .connection_intake import canonical_profile_slug, profile_key
+                    try:slug=canonical_profile_slug(item['profile'].get('publicIdentifier'))
+                    except ValueError:raise ConnectSafelyError('provider_schema_invalid') from None
+                    require(profile_key(item['profile'].get('profileUrl'))=='https://www.linkedin.com/in/'+slug,'recipient_identity_mismatch')
+                    stamp=raw.get('sentAt')
+                    require(type(stamp) in (str,int,float) and (len(stamp)<=100 if isinstance(stamp,str) else math.isfinite(stamp)),'provider_schema_invalid')
+                    item['sentAt']=stamp;identity=item['invitationUrn']
                 require(identity not in seen,'pagination_unverified');seen.add(identity);output.append(item)
             if data['endOfList']:
-                require(not rows,'pagination_unverified')
                 return {'account_id':self.account_id,kind:output,'complete':True,'next_start_index':None}
             require(next_index>start_index,'pagination_unverified');start_index=next_index
         return {'account_id':self.account_id,kind:output,'complete':False,'next_start_index':start_index}
@@ -174,6 +205,66 @@ class ConnectSafelyClient:
 
     def sent_invitations(self,*,max_pages=3,start_index=0):
         return self._directory('invitations',max_pages=max_pages,start_index=start_index)
+
+    def relationship(self,plan):
+        """Account-scoped GET observation; never proof this attempt was sent/accepted."""
+        self._plan(plan)
+        path='/linkedin/relationship/'+self.account_id+'/'+quote(plan['recipient_public_id'],safe='')
+        data=self._call('GET',path)
+        require(isinstance(data,dict) and data.get('accountId')==self.account_id,'account_identity_mismatch')
+        require(data.get('profileUrn')==plan['recipient_profile_urn'],'recipient_identity_mismatch')
+        states={'NOT_CONNECTED':(False,False,False),'CONNECTED':(True,False,False),
+                'INVITATION_SENT':(False,True,False),'INVITATION_RECEIVED':(False,False,True)}
+        keys=('connected','invitationSent','invitationReceived')
+        require(data.get('status') in states and all(type(data.get(k)) is bool for k in keys)
+                and tuple(data[k] for k in keys)==states[data['status']],'provider_schema_invalid')
+        return {'account_id':self.account_id,'recipient_public_id':plan['recipient_public_id'],
+                'recipient_profile_urn':plan['recipient_profile_urn'],'relationship_status':data['status'],
+                'observed_at':self.clock()}
+
+    @staticmethod
+    def _invitation_time(value):
+        # Human labels ("Sent today") and timestamps without a timezone cannot
+        # locate an invitation in the dispatched attempt's finite time window.
+        if type(value) in (int,float):
+            return ConnectSafelyClient._seconds(value)
+        if isinstance(value,str):
+            try:
+                parsed=datetime.fromisoformat(value.replace('Z','+00:00'))
+                if parsed.tzinfo is not None:return parsed.timestamp()
+            except (ValueError,OverflowError):pass
+        return 0
+
+    def _reconcile_invitation(self,plan,attempted_at):
+        result={'status':'uncertain','error_code':'invite_receipt_unavailable'}
+        try:
+            self.verify_identity()
+            observation=self.relationship(plan)
+            result['invitation_observation']=observation
+            if observation['relationship_status']!='INVITATION_SENT':return result
+            page=self.sent_invitations(max_pages=3)
+            if not page['complete']:
+                return {**result,'error_code':'history_incomplete'}
+            matches=[row for row in page['invitations']
+                     if row['profile'].get('publicIdentifier')==plan['recipient_public_id']]
+            if len(matches)!=1:return result
+            row=matches[0];identity=row.get('invitationId');stamp=self._invitation_time(row.get('sentAt'))
+            if (not isinstance(identity,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',identity)
+                    or row.get('id')!=identity or row.get('invitationUrn')!='urn:li:invitation:'+identity
+                    or row.get('memberUrn')!=plan['recipient_profile_urn']
+                    or row.get('memberId')!=plan['recipient_profile_urn'].removeprefix('urn:li:fsd_profile:')
+                    or not attempted_at<=stamp<=min(self.clock()+5,attempted_at+120)
+                    or ('customMessage' in row and row['customMessage']!=plan['content'])
+                    or (plan['content'] and 'customMessage' not in row)):
+                return result
+            observation={**observation,'invitation_id':identity,'invitation_urn':row['invitationUrn'],
+                         'sent_at':stamp,'complete_history':True}
+            return {'status':'sent','receipt_ref':'connectsafely:'+row['invitationUrn'],
+                    'confirmation_kind':'observed_outbound','write_attribution_confirmed':False,
+                    'invitation_observation':observation}
+        except (ConnectSafelyError,ValueError):
+            # Keep a valid relationship observation even if the receipt page fails.
+            return result
 
     def inbox(self,*,limit=10,max_threads=3):
         require(type(max_threads) is int and 1<=max_threads<=3,'invalid_limit')
@@ -293,7 +384,7 @@ class ConnectSafelyClient:
         require(isinstance(plan,dict) and not set(plan)-keys and keys-{'conversation_urn'}<=set(plan),'invalid_plan')
         require(plan['account_id']==self.account_id and plan['account_public_id']==self.expected_public_id,'account_identity_mismatch')
         require(plan['channel']=='linkedin' and plan['messaging_channel']=='linkedin_inbox' and plan['action'] in ('dm','invite'),'unsupported_channel')
-        require(public_id(plan['recipient_public_id']) and urn(plan['recipient_profile_urn']) and plan['recipient_profile_urn'].startswith('urn:li:fsd_profile:'),'invalid_recipient')
+        require(recipient_id(plan['recipient_public_id']) and urn(plan['recipient_profile_urn']) and plan['recipient_profile_urn'].startswith('urn:li:fsd_profile:'),'invalid_recipient')
         require(plan['recipient_public_id']!=self.expected_public_id,'invalid_recipient')
         content=plan['content'];require(isinstance(content,str) and '\x00' not in content and not any(0xD800<=ord(c)<=0xDFFF for c in content),'invalid_content')
         require((len(content)<=300 if plan['action']=='invite' else bool(content.strip()) and len(content)<=8000),'invalid_content')
@@ -344,7 +435,7 @@ class ConnectSafelyClient:
     def reconcile(self,plan,attempted_at):
         self._plan(plan)
         require(type(attempted_at) in (int,float) and math.isfinite(attempted_at) and 0<attempted_at<=self.clock(),'invalid_attempt_time')
-        if plan['action']=='invite':return {'status':'uncertain','error_code':'invite_receipt_unavailable'}
+        if plan['action']=='invite':return self._reconcile_invitation(plan,attempted_at)
         # Resolve only an observation; never change the approved plan or hash.
         self.verify_identity()
         resolved=self._call('GET','/linkedin/conversations/exists/'+quote(plan['recipient_public_id'],safe=''),{'accountId':self.account_id})
