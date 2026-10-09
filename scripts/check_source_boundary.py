@@ -19,6 +19,7 @@ ALLOWED_FILES = {
     "scripts/check_runtime_bundle.py",
     "scripts/test_runtime_bundle.py",
     "scripts/test_connection_units.py",
+    "scripts/provision_claude_social.py",
     "runtime/dependencies.json",
     "runtime/systemd/thunder-os-agent-pythonpath.conf",
     "runtime/systemd/thunder-os-agent-hermes-ro.conf",
@@ -32,6 +33,7 @@ ALLOWED_FILES = {
     "_ferramentas/painel_modelo.html",
 }
 ALLOWED_TESTS = {
+    "test_thunder_os_connectsafely_quarantine_resolution.py",
     "test_thunder_os_connectsafely_unicode.py",
     "test_thunder_os_connectsafely_panel_wiring.py",
     "test_thunder_os_text_budget.py",

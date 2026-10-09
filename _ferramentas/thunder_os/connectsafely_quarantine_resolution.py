@@ -13,6 +13,9 @@ def plan_resolution(rows, mappings, *, expected_history_hash):
     Caller supplies the exact immutable history rows. Account bindings require a
     separate approved source before any SQL narrowing can become operational.
     """
+    from .connectsafely_quarantine_resolution_evidence import ReviewedReconciliation, plan_reconciliation
+    if type(mappings) is ReviewedReconciliation:
+        return plan_reconciliation(rows, mappings, expected_history_hash=expected_history_hash)
     require(type(mappings) is ReviewedMappings, 'social_mapping_review_invalid')
     actual = digest(encoded(rows))
     require(actual == expected_history_hash, 'social_resolution_history_changed')
@@ -80,6 +83,7 @@ def install_resolution_sqlite(con,mappings,*,history_manifest_hash,reviewed_prop
     from .connectsafely_backfill import verify_backfill
     from .connectsafely_coordination import expected_definitions
     require(type(con) is sqlite3.Connection and not con.in_transaction,'social_resolution_transaction_invalid')
+    require(type(mappings) is ReviewedMappings, 'social_resolution_requires_postgresql')
     try:
         con.execute('BEGIN IMMEDIATE')
         verify_backfill(con,history_manifest_hash,allow_quarantine=True)

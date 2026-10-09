@@ -37,8 +37,10 @@ def verify_schema(con, *, resolved=False):
     if resolved:
         from .connectsafely_quarantine_resolution_postgres import resolution_function_sources
         sources.update(resolution_function_sources())
-    require(len(functions)==len(sources)==7,'social_schema_changed')
+    require(len(functions)==len(sources) and {row[0] for row in functions}==set(sources),'social_schema_changed')
     arities={'guard_touch':0,'claim_touch':0,'immutable_row':0,'guard_attempt':0,'issue':8,'consume':8,'retire':3}
+    if resolved:
+        arities.update(person_key=1,is_blocked=4,claude_assert_writer=0,claude_reserve=6,claude_complete=4,claude_readback=1)
     for name,body,definer,config,owner_name,nargs in functions:
         require(name in sources and body==sources[name] and definer and owner_name==OWNER and nargs==arities[name]
                 and config and [v.replace(' ','') for v in config]==['search_path=pg_catalog,thunder_social_coordination'],'social_schema_changed')
@@ -47,17 +49,17 @@ def verify_schema(con, *, resolved=False):
       (SCHEMA,'attempts','thunder_social_attempt_monotonic',27,'guard_attempt'),
       (SCHEMA,'history','thunder_social_history_immutable',27,'immutable_row'),(SCHEMA,'backfill','thunder_social_backfill_immutable',27,'immutable_row'),(SCHEMA,'quarantine','thunder_social_quarantine_immutable',27,'immutable_row')}
     if resolved:
-        expected_triggers |= {(SCHEMA,'resolution','thunder_social_resolution_immutable',27,'immutable_row'),(SCHEMA,'resolution_evidence','thunder_social_resolution_evidence_immutable',27,'immutable_row')}
+        expected_triggers |= {(SCHEMA,'resolution','thunder_social_resolution_immutable',27,'immutable_row'),(SCHEMA,'resolution_evidence','thunder_social_resolution_evidence_immutable',27,'immutable_row'),(SCHEMA,'scoped_exception','thunder_social_scoped_exception_immutable',27,'immutable_row')}
     triggers=con.execute("SELECT n.nspname,c.relname,t.tgname,t.tgtype,p.proname,t.tgenabled,pn.nspname FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_proc p ON p.oid=t.tgfoid JOIN pg_namespace pn ON pn.oid=p.pronamespace WHERE NOT t.tgisinternal AND (n.nspname=? OR t.tgname IN ('thunder_social_guard','thunder_social_claim'))",(SCHEMA,)).fetchall()
     require(len(triggers)==len(expected_triggers) and {tuple(row[:5]) for row in triggers}==expected_triggers
             and all(row[5]=='A' and row[6]==SCHEMA for row in triggers),'social_schema_changed')
-    for name in ('writers','claims','attempts','audit','history','backfill','quarantine') + (('resolution','resolution_evidence') if resolved else ()):
+    for name in ('writers','claims','attempts','audit','history','backfill','quarantine') + (('resolution','resolution_evidence','scoped_exception') if resolved else ()):
         meta=con.execute("SELECT r.rolname,c.relkind,c.relrowsecurity FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_roles r ON r.oid=c.relowner WHERE n.nspname=? AND c.relname=?",(SCHEMA,name)).fetchone()
         require(meta==(OWNER,'r',False),'social_schema_changed')
     # Unconditional unique indexes, valid and immediate, enforce cross-writer claims.
     indexes=con.execute("SELECT c.relname,i.indisunique,i.indisvalid,i.indimmediate,pg_get_expr(i.indpred,i.indrelid),ARRAY(SELECT a.attname FROM unnest(i.indkey) WITH ORDINALITY k(num,ord) JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=k.num ORDER BY k.ord) FROM pg_index i JOIN pg_class c ON c.oid=i.indrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=?",(SCHEMA,)).fetchall()
     required={('claims',('family','post_urn')),('claims',('touch_id',)),('attempts',('effect_key','attempt_token')),('writers',('writer_id',)),('quarantine',('touch_id',)),('history',('touch_id',)),('backfill',('manifest_hash',))}
-    if resolved:required |= {('resolution',('touch_id',)),('resolution_evidence',('proposal_sha256',))}
+    if resolved:required |= {('resolution',('touch_id',)),('resolution_evidence',('proposal_sha256',)),('scoped_exception',('touch_id',))}
     proven={(table,tuple(cols)) for table,unique,valid,immediate,predicate,cols in indexes if unique and valid and immediate and predicate is None}
     require(required<=proven,'social_schema_changed')
     active=[r for r in indexes if r[0]=='attempts' and tuple(r[5])==('effect_key',) and all(r[1:4])]
