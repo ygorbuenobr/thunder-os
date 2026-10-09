@@ -31,12 +31,14 @@ class ThunderService:
     }
 
     def __init__(self, repository: Repository, ledger: TouchLedger | None = None, hubspot: Any = None, *,
-                 knowledge_store: KnowledgeStore | None = None, approved_catalog: Mapping[str, Any] | None = None):
+                 knowledge_store: KnowledgeStore | None = None, approved_catalog: Mapping[str, Any] | None = None,
+                 shared_preparation: Any = None):
         self.repository = repository
         self.ledger = ledger
         self.hubspot = hubspot
         self.knowledge_store = knowledge_store
         self._approved_catalog = dict(approved_catalog) if approved_catalog is not None else None
+        self.shared_preparation = shared_preparation
 
     def canonical_catalog(self) -> dict[str, Any]:
         try:
@@ -248,11 +250,14 @@ class ThunderService:
         updated = transition(item, expected_version, target)
         next_action = f"revisar dependência: {failure}" if failure else "resultado disponível"
         updated = replace(updated, actor=actor, result=dict(result), next_action=next_action)
-        return self.repository.save_with_event(
-            updated,
-            expected_version,
-            "work_needs_human" if failure else "work_succeeded",
-        )
+        with self.repository.transaction():
+            saved = self.repository.save_with_event(
+                updated, expected_version,
+                "work_needs_human" if failure else "work_succeeded",
+            )
+            if self.shared_preparation is not None and item.context.get("shared_operation"):
+                self.shared_preparation.enqueue_handoff(saved)
+            return saved
 
     def _item(self, item_id: str) -> WorkItem:
         item = self.repository.get_work(item_id)
@@ -260,7 +265,7 @@ class ThunderService:
             raise ContractError("work item not found")
         return item
 
-    def submit_research(self, data: Mapping[str, Any], actor: str) -> dict[str, Any]:
+    def submit_research(self, data: Mapping[str, Any], actor: str, *, shared_work_id: str | None = None) -> dict[str, Any]:
         dossier = data.get("dossier")
         if set(data) != {"dossier"} or not isinstance(dossier, Mapping):
             raise ContractError("invalid research command; client approval catalogs are forbidden")
@@ -272,11 +277,18 @@ class ThunderService:
         # A fresh collection timestamp or an empty fact list must never imply that
         # research is ready. validate_artifact already applies the full evidence gate.
         status = "validated" if artifact.recommendation == "abordar" else "insufficient"
+        context_ref = {}
+        if shared_work_id is not None:
+            if self.shared_preparation is None: raise ContractError("shared context not configured")
+            item = self._item(shared_work_id)
+            self.shared_preparation.check_current(item)
+            if item.context.get("account_id") != account_id: raise ContractError("shared research identity mismatch")
+            context_ref = {"shared_work_id": item.id, "shared_context_hash": item.context["shared_context_hash"]}
         stored = self.repository.put_state(
             "research", account_id,
             {**asdict(artifact), "actor": actor, "status": status,
              "knowledge_source": "thunder/catalog.json", "catalog_hash": catalog["content_hash"],
-             "catalog_version": catalog["version"]},
+             "catalog_version": catalog["version"], **context_ref},
         )
         self.repository.append_state(
             "research_history", f"{account_id}:v{stored['version']}",

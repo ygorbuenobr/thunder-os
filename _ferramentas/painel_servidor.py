@@ -15,7 +15,9 @@ import subprocess
 import sys
 import time
 import threading
+from collections.abc import Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import MappingProxyType
 from urllib.parse import urlsplit, unquote, parse_qs
 from zoneinfo import ZoneInfo
 
@@ -1295,10 +1297,52 @@ class Handler(BaseHTTPRequestHandler):
                 raise Erro('Credencial própria do Hermes ausente ou inválida', 401)
         return actor
 
+    def thunder_shared_api(self, rota):
+        adapters = getattr(self.server, 'thunder_shared_adapters', None)
+        if adapters is None:
+            raise Erro('Preparação compartilhada não configurada', 503)
+        base = '/api/os/v1/shared'
+        work = re.fullmatch(re.escape(base) + r'/work/(work-[a-f0-9]{32})', rota.path)
+        if rota.path == base + '/context':
+            if self.command != 'GET':
+                raise Erro('Contexto permite somente GET', 405)
+            actor = self.thunder_proxy_actor()
+            try:
+                params = parse_qs(rota.query, keep_blank_values=True,
+                    strict_parsing=True, max_num_fields=1, errors='strict')
+            except ValueError:
+                raise Erro('Consulta de contexto inválida') from None
+            if set(params) != {'account'} or len(params['account']) != 1:
+                raise Erro('Consulta de contexto inválida')
+            method, arguments = 'get_context', {'account': params['account'][0]}
+        elif rota.path == base + '/preparations':
+            if self.command != 'POST':
+                raise Erro('Preparação permite somente POST', 405)
+            if rota.query:
+                raise Erro('Preparação não aceita parâmetros')
+            actor = self.thunder_actor()
+            method, arguments = 'request_preparation', self.corpo()
+        elif work:
+            if self.command != 'GET':
+                raise Erro('Resultado permite somente GET', 405)
+            if rota.query:
+                raise Erro('Resultado não aceita parâmetros')
+            actor = self.thunder_proxy_actor()
+            method, arguments = 'get_work', {'work_id': work.group(1)}
+        else:
+            raise Erro('Rota compartilhada não encontrada', 404)
+        adapter = adapters.get(actor)
+        if adapter is None:
+            raise Erro('Principal compartilhado não autorizado', 403)
+        result = adapter.call(method, arguments)
+        return self.responder(result['status'], result['body'])
+
     def thunder_api(self, rota):
         service = getattr(self.server, 'thunder_service', None)
         if service is None:
             raise Erro('Thunder OS indisponível', 503)
+        if rota.path == '/api/os/v1/shared' or rota.path.startswith('/api/os/v1/shared/'):
+            return self.thunder_shared_api(rota)
         if self.command == 'GET' and rota.path == '/api/os/v1/connections':
             actor = self.thunder_proxy_actor()
             if actor != 'ygor':
@@ -1729,7 +1773,49 @@ def configure_connectsafely_server(server, repository, factory=None):
     return composition
 
 
-def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
+def configure_shared_server(server, service, factory=None):
+    """Mount trusted, explicit bindings on the existing server; no auth or grants.
+
+    The normal CLI leaves these routes unavailable. A composition caller must
+    supply verified history/context and principals resolved outside model input.
+    Existing proxy, actor allowlist, Hermes credential and nonce guards still apply.
+    """
+    from thunder_os.shared_preparation import (
+        ACTORS, LocalOSAdapter, SharedAuthorizationError, SharedPreparation,
+        SharedPrincipal, authorize,
+    )
+    server.thunder_shared_adapters = None
+    if factory is None:
+        return
+    if not callable(factory):
+        raise ValueError('explicit_shared_factory_required')
+    composition = factory(service)
+    if not isinstance(composition, tuple) or len(composition) != 2:
+        raise ValueError('invalid_shared_composition')
+    core, principals = composition
+    if (not isinstance(core, SharedPreparation) or core.service is not service
+            or core.repository is not service.repository or service.shared_preparation is not core
+            or not isinstance(principals, Mapping) or not principals):
+        raise ValueError('invalid_shared_composition')
+    adapters = {}
+    for actor, principal in principals.items():
+        if (not isinstance(actor, str) or actor not in ACTORS
+                or not isinstance(principal, SharedPrincipal) or principal.actor != actor
+                or not isinstance(principal.scopes, frozenset) or not principal.scopes
+                or principal.scopes - {'read', 'prepare'}
+                or not isinstance(principal.channel, str) or not isinstance(principal.profile, str)):
+            raise ValueError('invalid_shared_principal_binding')
+        try:
+            for scope in principal.scopes:
+                authorize(principal, scope)
+        except SharedAuthorizationError:
+            raise ValueError('invalid_shared_principal_binding') from None
+        adapters[actor] = LocalOSAdapter(core, principal_resolver=lambda _, value=principal: value,
+            actor=actor, channel=principal.channel, profile=principal.profile)
+    server.thunder_shared_adapters = MappingProxyType(adapters)
+
+
+def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None, shared_factory=None):
     args = sys.argv[1:] if args is None else args
     try:
         if not args or args[0] not in ('importar', 'exportar', 'upsert', 'servir'):
@@ -1773,6 +1859,7 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
                 from thunder_os.connectsafely_runtime import ExistingRepository
                 repository = ExistingRepository(banco.arquivo)
             servidor.thunder_service = ThunderService(repository, ledger, knowledge_store=KnowledgeStore(RAIZ if runtime is None else runtime['panel_root']))
+            configure_shared_server(servidor, servidor.thunder_service, shared_factory)
             configure_connectsafely_server(servidor, servidor.thunder_service.repository, connectsafely_factory)
             seqd_read = os.environ.get('THUNDER_OS_SEQD_READ_ENABLED', '') == 'true'
             seqd_send = external_effects_enabled() and os.environ.get('THUNDER_OS_SEQD_SEND_ENABLED', '') == 'true'

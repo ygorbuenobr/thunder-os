@@ -11,6 +11,7 @@ ALLOWED_FILES = {
     ".gitignore",
     ".checks/thunder-os-source.md",
     ".checks/connection-copilot.md",
+    ".checks/shared-prospecting.md",
     ".specs/features/thunder-os-v1/spec.md",
     ".specs/features/thunder-os-v1/context.md",
     ".specs/features/thunder-os-v1/design.md",
@@ -33,6 +34,8 @@ ALLOWED_FILES = {
     "_ferramentas/painel_modelo.html",
 }
 ALLOWED_TESTS = {
+    "test_thunder_os_shared_preparation.py",
+    "test_thunder_os_shared_http.py",
     "test_thunder_os_connectsafely_quarantine_resolution.py",
     "test_thunder_os_connectsafely_unicode.py",
     "test_thunder_os_connectsafely_panel_wiring.py",

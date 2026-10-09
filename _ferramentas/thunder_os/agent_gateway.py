@@ -31,6 +31,12 @@ class AgentGateway:
         self.service = service
         self.brain_root = Path(brain_root).resolve()
 
+    def ingest_shared(self, envelope: Mapping[str, Any], principal: Any) -> WorkItem:
+        """Trusted route injection only; legacy envelopes never gain shared authority."""
+        if self.service.shared_preparation is None:
+            raise EnvelopeError("shared preparation not configured")
+        return self.service.shared_preparation.prepare(principal, envelope)
+
     def ingest(self, envelope: Mapping[str, Any]) -> WorkItem:
         if not isinstance(envelope, Mapping):
             raise EnvelopeError("malformed envelope")

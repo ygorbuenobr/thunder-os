@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import tempfile
 from typing import Any, Mapping
 
 
@@ -64,6 +65,63 @@ class KnowledgeStore:
             validated,
             None if validated else "not_validated",
         )
+
+    def read_bounded(self, relative: str, *, max_bytes: int = 100_000) -> KnowledgeSnapshot:
+        """Read an explicitly selected document; never traverse session stores."""
+        path = self._path(relative)
+        try:
+            with path.open("rb") as stream:
+                raw = stream.read(max_bytes + 1)
+            if len(raw) > max_bytes:
+                raise KnowledgeError("knowledge exceeds projection bound")
+            content = raw.decode("utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise KnowledgeError("selected knowledge missing or unreadable") from exc
+        validated = re.search(r"(?m)^status:\s*validado\s*$", content) is not None
+        return KnowledgeSnapshot(relative, content, self._hash(content), validated,
+                                 None if validated else "not_validated")
+
+    def write_selected_handoff(self, relative: str, payload: Mapping[str, Any]) -> str:
+        """Immutable atomic local write/readback; no Git transport or promotion."""
+        if not re.fullmatch(r"_entrada/(dotin|hermes|claude|codex)/shared-(work-[a-f0-9]{32}|learning-[a-f0-9]{64}|decision-[a-f0-9]{64})\.json", relative):
+            raise KnowledgeError("invalid selected handoff path")
+        lexical = self.root / relative
+        # Check lexical components before resolve erases an internal symlink.
+        parents = (self.root / "_entrada", lexical.parent)
+        for parent in parents:
+            if parent.is_symlink():
+                raise KnowledgeError("unsafe handoff parent")
+            parent.mkdir(exist_ok=True)
+        target = self._path(relative, must_exist=False)
+        raw = json.dumps(dict(payload), ensure_ascii=False, sort_keys=True,
+                         separators=(",", ":")).encode("utf-8")
+        if len(raw) > 1_000_000:
+            raise KnowledgeError("handoff too large")
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as stream:
+                temporary = Path(stream.name)
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+            try:
+                os.link(temporary, target)
+            except FileExistsError:
+                pass  # Readback below decides exact replay versus collision.
+            safe = self._path(relative)
+            with safe.open("rb") as stream:
+                actual = stream.read(1_000_001)
+            if actual != raw:
+                raise KnowledgeConflict("handoff hash conflict")
+            directory = os.open(target.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+        return hashlib.sha256(raw).hexdigest()
 
     def promote_validated_facts(
         self,
