@@ -16,6 +16,7 @@ import sys
 
 from .agents import AgentJob, AgentRunnerError
 from .hermes_text_adapter import HermesTextAdapter, LIMIT, load_catalog_context, text_deadline
+from .shared_preparation import selected_transport_context
 
 
 def install_hermes_origin_guard(root):
@@ -123,6 +124,7 @@ def configured_adapter(*, brain: Path, evidence: Path, hermes_root: Path, profil
         else:
             context["operation_constraint"] = "Internal research or draft only. Never authorize or execute any external effect."
         context["style_rules"] = bundle.get("style_rules", {})
+        context.update(selected_transport_context(job, bundle))
         context["angle_ids"] = bundle.get("angle_ids", [])
         return context
 

@@ -7,7 +7,9 @@ or paid queries. HTTP/envelope context is data, never an executable command.
 Without an explicitly injected runner no job is leased or executed. Completion
 validates the domain artifact, persists it and updates the original work item in
 one fenced transaction with the outbox acknowledgement. A crash before that
-transaction may repeat computation, but cannot publish a partial result.
+transaction may repeat legacy computation, but cannot publish a partial result.
+Opt-in shared jobs additionally reserve one dispatch and cache its parsed output
+before completion; interrupted inference requires reconciliation without retry.
 """
 from __future__ import annotations
 
@@ -19,6 +21,7 @@ from .agents import AgentJob, AgentResult, AgentRunner
 from .db import RepositoryConflict
 from .models import ContractError, WorkStatus
 from .service import ThunderService
+from .shared_preparation import SharedBlocked
 from .validation_diagnostics import validation_diagnostic
 
 
@@ -51,6 +54,10 @@ class AgentWorker:
             "approved_proofs": catalog["proofs"],
             "catalog_hash": catalog["content_hash"],
         }
+        if item.context.get("shared_operation"):
+            if self.service.shared_preparation is None:
+                raise SharedBlocked("shared_preparation_not_configured")
+            payload["shared_commercial_context"] = self.service.shared_preparation.check_current(item)
         if kind == "research":
             existing = self.repository.get_state("research", str(item.context.get("account_id", "")))
             payload["expected_research_version"] = existing["version"] if existing else 0
@@ -59,6 +66,8 @@ class AgentWorker:
             if not isinstance(account, str) or not account:
                 raise ContractError("copy requires canonical account_id")
             payload["validated_research"] = self.service.current_research(account)
+            if item.context.get("shared_operation") and payload["validated_research"].get("shared_context_hash") != item.context["shared_context_hash"]:
+                raise SharedBlocked("research_context_changed")
         return AgentJob(item.id, kind, payload)
 
     def _failure(self, item: Any, code: str, validation_error: Mapping[str, str] | None = None) -> None:
@@ -93,9 +102,14 @@ class AgentWorker:
             if item.status == WorkStatus.REQUESTED:
                 item = self.service.claim(item.id, item.version, self.actor)
             job = self._job(item)
-            result = self.runner.run(job)
+            if item.context.get("shared_operation"):
+                result = self.service.shared_preparation.generate_once(job, self.runner, lease_owner=entry["lease_owner"])
+            else:
+                result = self.runner.run(job)
         except RepositoryConflict:
             return {"status": "lease_lost", "item_id": item.id}
+        except SharedBlocked as exc:
+            result = AgentResult("needs_human", error_code=exc.code)
         except (ValueError, TypeError, KeyError):
             result = AgentResult("needs_human", error_code="invalid_agent_context")
         except Exception:
@@ -110,6 +124,12 @@ class AgentWorker:
                 if result.status != "succeeded" or not result.output:
                     self._failure(current, result.error_code or "agent_failed")
                     return {"status": "needs_human", "item_id": item.id}
+                if item.context.get("shared_operation"):
+                    try:
+                        self.service.shared_preparation.check_current(current)
+                    except SharedBlocked as exc:
+                        self._failure(current, exc.code)
+                        return {"status": "needs_human", "item_id": item.id}
                 if self.service.canonical_catalog()["content_hash"] != job.payload["catalog_hash"]:
                     raise ContractError("canonical catalog changed during execution")
                 output = result.output
@@ -127,7 +147,8 @@ class AgentWorker:
                     current_version = existing["version"] if existing else 0
                     if current_version != job.payload["expected_research_version"]:
                         raise ContractError("research changed during agent execution")
-                    artifact = self.service.submit_research({"dossier": output["artifact"]}, self.actor)
+                    artifact = self.service.submit_research({"dossier": output["artifact"]}, self.actor,
+                        shared_work_id=item.id if item.context.get("shared_operation") else None)
                 else:
                     # Re-read at completion as evidence may change while running.
                     research = self.service.current_research(str(job.payload["account_id"]))

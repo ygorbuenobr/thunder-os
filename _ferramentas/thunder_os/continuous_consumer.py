@@ -23,6 +23,7 @@ from .agents import AgentResult, AgentRunner
 from .connection_backfill import DAILY_RESEARCH_LIMIT
 from .connection_intake import PROVIDER_CALENDAR
 from .connection_work import CONNECTION_ACTOR, WORK_LINK_KIND, canonical_connection_request
+from .shared_preparation import SharedBlocked
 from .db import Repository, RepositoryConflict
 from .hermes_text_adapter import LIMIT, bounded_process_transport, load_catalog_context, text_deadline
 from .knowledge import KnowledgeStore
@@ -168,6 +169,12 @@ class TrustedEvidence:
             if not isinstance(angle_ids, list) or not angle_ids or any(not isinstance(v, str) or not v.strip() for v in angle_ids):
                 raise InternalExecutionError('trusted_copy_angles_missing')
             style_rules = {}
+            if 'shared_commercial_context' in job.payload:
+                style_rules = {relative: document['content']
+                    for relative, document in job.payload['shared_commercial_context']['documents'].items()
+                    if relative in {'eu/estilo-e-regras.md', 'eu/aprendizados.md'}}
+                return {'account_id': domain, 'research_evidence': evidence, 'angle_ids': angle_ids,
+                        'style_rules': style_rules}
             for relative in ('eu/estilo-e-regras.md', 'eu/aprendizados.md'):
                 source = (self.brain / relative).resolve()
                 if not source.is_relative_to(self.brain):
@@ -246,6 +253,12 @@ class TrustedEvidence:
             if not isinstance(result['angle_ids'], list) or not result['angle_ids'] or any(not isinstance(v, str) or not v.strip() for v in result['angle_ids']):
                 raise InternalExecutionError('trusted_copy_angles_missing')
             result['style_rules'] = {}
+            if 'shared_commercial_context' in job.payload:
+                # Shared jobs receive only operator-selected style excerpts.
+                result['style_rules'] = {relative: document['content']
+                    for relative, document in job.payload['shared_commercial_context']['documents'].items()
+                    if relative in {'eu/estilo-e-regras.md', 'eu/aprendizados.md'}}
+                return result
             for relative in ('eu/estilo-e-regras.md', 'eu/aprendizados.md'):
                 source = (self.brain / relative).resolve()
                 if not source.is_relative_to(self.brain):
@@ -282,13 +295,22 @@ class EligibleRepository:
                     created = datetime.fromisoformat(original['created_at'])
                     item = self.repository.get_work(row['entity_id'])
                     context = original.get('context', {})
+                    shared = self.owner.service.shared_preparation
+                    shared_claim = bool(context.get('shared_operation') and shared is not None
+                                        and item is not None and shared.trusted_link(item))
                     if (created < datetime.fromisoformat(cutoff)
                             or item is None or original.get('id') != item.id
-                            or original.get('actor') != item.actor
+                            or (original.get('actor') != item.actor and not shared_claim)
                             or original.get('logical_owner') != item.logical_owner
                             or context != item.context):
                         continue
-                    if original['actor'] == CONNECTION_ACTOR:
+                    if context.get('shared_operation'):
+                        if not shared_claim:
+                            continue
+                        # A valid linked job with stale context/history must be
+                        # leased so the worker records its explicit needs_human
+                        # result, rather than silently stranding the request.
+                    elif original['actor'] == CONNECTION_ACTOR:
                         if (original['logical_owner'] != CONNECTION_ACTOR
                                 or context.get('capability') != 'research'):
                             continue
@@ -345,6 +367,21 @@ class GuardedRunner:
     def __init__(self, owner):
         self.owner = owner
 
+    def _current_block(self, job):
+        reason = self.owner.job_block(job.id)
+        if reason or 'shared_commercial_context' not in job.payload:
+            return reason
+        shared = self.owner.service.shared_preparation
+        if shared is None:
+            return 'shared_preparation_not_configured'
+        try:
+            shared.check_current(self.owner.repository.get_work(job.id))
+        except SharedBlocked as exc:
+            return exc.code
+        except Exception:
+            return 'shared_context_unavailable'
+        return None
+
     def run(self, job):
         owner, repo = self.owner, self.owner.repository
         deadline = text_deadline(job.type)
@@ -357,6 +394,8 @@ class GuardedRunner:
             return AgentResult('needs_human', error_code=reason)
         try:
             evidence = owner.evidence_loader(job)
+            if 'shared_commercial_context' in job.payload:
+                evidence = {**evidence, 'shared_commercial_context': job.payload['shared_commercial_context']}
         except Exception as exc:
             code = exc.code if isinstance(exc, InternalExecutionError) else 'trusted_evidence_invalid'
             owner.usage(job.id, 'needs_human', code)
@@ -364,8 +403,9 @@ class GuardedRunner:
         # Fail before marking/spending; recheck gates atomically with attempt claim.
         try:
             with repo.transaction():
-                reason = owner.job_block(job.id)
+                reason = self._current_block(job)
                 if reason:
+                    owner.usage(job.id, 'needs_human', reason)
                     return AgentResult('needs_human', error_code=reason)
                 repo.append_state('agent_attempt', job.id, {'started_at': owner.clock().isoformat(),
                     'status': 'consumed', 'max_attempts': 1, 'timeout_seconds': deadline, 'external_effects_enabled': False})
@@ -374,7 +414,9 @@ class GuardedRunner:
             return AgentResult('needs_human', error_code='interrupted_attempt')
         try:
             transport = owner.transport_factory(job, evidence, lambda: bool(owner.job_block(job.id)))
-            result = AgentRunner(transport, timeout_seconds=deadline, max_attempts=1).run(job)
+            reason = self._current_block(job)
+            result = (AgentResult('needs_human', error_code=reason) if reason else
+                      AgentRunner(transport, timeout_seconds=deadline, max_attempts=1).run(job))
         except InternalExecutionError as exc:
             result = AgentResult('needs_human', error_code=exc.code)
         except InterruptedError:
@@ -415,7 +457,8 @@ class ContinuousConsumer:
                     **{k: v for k, v in control.items() if k not in {'id', 'version', 'updated_at'}},
                     'activation_at': self.clock().isoformat(), 'enabled': False, 'paused': True})
         self.worker_service = GatedService(EligibleRepository(self.repository, self),
-            knowledge_store=service.knowledge_store, approved_catalog=service._approved_catalog)
+            knowledge_store=service.knowledge_store, approved_catalog=service._approved_catalog,
+            shared_preparation=service.shared_preparation)
         self.worker = AgentWorker(self.worker_service, runner=GuardedRunner(self), actor='hermes', clock=clock)
 
     def block_reason(self):
