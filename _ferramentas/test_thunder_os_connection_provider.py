@@ -124,6 +124,8 @@ class ConnectionProviderTests(unittest.TestCase):
         fake = FakeTransport([bad_page, bad_page])
         with self.assertRaisesRegex(ConnectionProviderError, "connection_row_invalid"):
             self.provider(fake).fetch_page(0)
+        self.assertEqual([0, 0], [call[2]["startIndex"] for call in fake.calls
+                                  if call[1] == "/linkedin/connections"])
 
     def test_transient_invalid_row_is_revalidated_at_same_cursor(self):
         invalid = row(1)

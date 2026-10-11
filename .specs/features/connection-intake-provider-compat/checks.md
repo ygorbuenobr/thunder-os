@@ -5,13 +5,13 @@ Plan: `.specs/features/connection-intake-provider-compat/plan.md`
 
 ## Intent
 
-6 checks in 2 slices · 0 one-way doors · 0 open
+8 checks in 2 slices · 0 one-way doors · 0 open
 
 ## Checks
 
 ### S1 - Complete live observation reaches the activation boundary · 3 files · ~24 KB · ~8k
 
-**C1** - With the default bound, a contiguous GET-only window whose first older row is on page 6 returns all 60 rows and stops after cursor 50 (CONN-01, AC 1, 3)
+**C1** - With the default bound, a contiguous window whose first older row is on page 6 returns all 60 rows and stops after cursor 50 (CONN-01, AC 1)
 Proof: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=_ferramentas python3 -m unittest -v -k test_default_window_reaches_sixth_page_boundary test_thunder_os_connection_intake`
 Status: complete
 
@@ -22,6 +22,10 @@ Status: complete
 **C3** - Provider pagination keeps the configured account, returned contiguous cursor and GET-without-body transport contract (CONN-01, AC 3)
 Proof: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=_ferramentas python3 -m unittest -v -k test_full_page_stays_open test_thunder_os_connection_provider`
 Proof: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=_ferramentas python3 -m unittest -v -k test_pagination_uses_returned_cursor_and_terminal_empty_page test_thunder_os_connection_provider`
+Status: complete
+
+**C7** - The scheduled live entry point projects a sixth-page success as `status=ok` and a 20-page incomplete window as `status=blocked` with `connection_window_incomplete` (CONN-01, AC 1, 2)
+Proof: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=_ferramentas:/opt/thunder-os/current/_ferramentas python3 -m unittest -v -k test_main_projects_live_success_and_incomplete_error test_thunder_os_connection_runtime`
 Status: complete
 
 ### S2 - Provider-confirmed safe Unicode vanity reaches canonical identity · 2 files · ~20 KB · ~7k
@@ -38,6 +42,10 @@ Status: complete
 Proof: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=_ferramentas python3 -m unittest -v -k test_unsafe_unicode_vanity_characters_remain_invalid test_thunder_os_connection_provider`
 Status: complete
 
+**C8** - The scheduled backfill entry point projects an accepted terminal page as `status=ok` and an invalid provider row as `status=blocked` with `connection_row_invalid` (CONN-02, AC 4, 5)
+Proof: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=_ferramentas:/opt/thunder-os/current/_ferramentas python3 -m unittest -v -k test_main_projects_backfill_success_and_row_error test_thunder_os_connection_runtime`
+Status: complete
+
 ## Coverage
 
 | Set (size) | Member -> proof | Unproven |
@@ -46,9 +54,9 @@ Status: complete
 | provider transport invariants (4) | GET C3 · no body C3 · configured account C3 · contiguous returned cursor C3 | - |
 | symbol identity outcomes (3) | exact `U+2234` C4 · mismatched spelling C5 · idempotent round trip C4 | - |
 | unsafe slug classes (4) | path separator C6 · whitespace C6 · control C6 · unsupported punctuation C6 | - |
-| scheduled consumers (2) | live default through `record_live_poll` C2 · backfill provider validation C4, C6 | - |
-| `thunder-os-connections-live` outcomes (2) | complete JSON path C1 · `connection_window_incomplete` C2 | - |
-| `thunder-os-connections-backfill` outcomes (2) | accepted provider row C4 · `connection_row_invalid` C5, C6 | - |
+| scheduled consumers (2) | live entry point C7 · backfill entry point C8 | - |
+| `thunder-os-connections-live` outcomes (2) | `status=ok` C7 · `status=blocked`, `connection_window_incomplete` C7 | - |
+| `thunder-os-connections-backfill` outcomes (2) | `status=ok` C8 · `status=blocked`, `connection_row_invalid` C8 | - |
 
 - Claims naming an error, transport shape or bound: C1-C6 - every proof asserts at that boundary.
 - No check claims more cases than its named proof exercises.
@@ -71,7 +79,7 @@ Evidence:
 - `_ferramentas/thunder_os/connection_ledger.py`: `record_live_poll` forwards the default page bound before entering its transaction.
 - Closest repository analogues are the existing connection intake/provider/ledger tests, which assert decision outcomes at their owning module boundary.
 
-Cost: 6 focused proofs across 3 test files. Without these rows, the sixth-page and symbol cases are not exercised by the existing suite.
+Cost: 8 focused checks across 4 test files. Without these rows, the sixth-page, symbol and scheduled-entry-point cases are not exercised by the existing suite.
 
 ## Swept
 
@@ -83,7 +91,7 @@ Cost: 6 focused proofs across 3 test files. Without these rows, the sixth-page a
 - data lifecycle: C2 - incomplete observations persist no checkpoint, profile or research-request state
 - dependency failure: existing - provider status, timeout and schema failure behavior is unchanged and covered by the pre-existing focused suite
 - state transitions: C2 - no state transition occurs before complete coverage
-- observability: existing - static error codes and scheduled JSON output shapes remain unchanged
+- observability: C7, C8
 
 ## Handoff
 
