@@ -207,6 +207,8 @@ class ConnectionProviderTests(unittest.TestCase):
         self.assertEqual("https://www.linkedin.com/in/person∴proof", canonical)
         self.assertEqual(canonical, profile_key(canonical))
         self.assertNotEqual(profile_key("https://linkedin.com/in/personproof"), canonical)
+        self.assertNotEqual(profile_key("https://linkedin.com/in/straße"),
+                            profile_key("https://linkedin.com/in/strasse"))
 
     def test_unsafe_unicode_vanity_characters_remain_invalid(self):
         unsafe = (

@@ -11,7 +11,7 @@ Plan: `.specs/features/connection-intake-provider-compat/plan.md`
 
 ### S1 - Complete live observation reaches the activation boundary · 3 files · ~24 KB · ~8k
 
-**C1** - With the default bound, a contiguous window whose first older row is on page 6 returns all 60 rows and stops after cursor 50 (CONN-01, AC 1)
+**C1** - With the default bound, contiguous windows whose first older row is on page 6 or page 20 return 60 or 200 rows and stop at cursor 50 or 190 (CONN-01, AC 1)
 Proof: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=_ferramentas python3 -m unittest -v -k test_default_window_reaches_sixth_page_boundary test_thunder_os_connection_intake`
 Status: complete
 
@@ -30,7 +30,7 @@ Status: complete
 
 ### S2 - Provider-confirmed safe Unicode vanity reaches canonical identity · 2 files · ~20 KB · ~7k
 
-**C4** - An exact `U+2234` vanity/decoded-URL pair is accepted, preserved and idempotent without folding to a spelling that omits the symbol (CONN-02, AC 4, 6)
+**C4** - An exact `U+2234` vanity/decoded-URL pair is accepted, preserved and idempotent, while `straße` and `strasse` remain distinct (CONN-02, AC 4, 6)
 Proof: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=_ferramentas python3 -m unittest -v -k test_provider_confirmed_mathematical_symbol_is_preserved test_thunder_os_connection_provider`
 Status: complete
 
@@ -50,9 +50,9 @@ Status: complete
 
 | Set (size) | Member -> proof | Unproven |
 | --- | --- | --- |
-| default page-bound edges (2) | boundary crossed on page 6 C1 · still incomplete after page 20 C2 | - |
+| default page-bound edges (3) | boundary crossed on page 6 C1 · boundary crossed on page 20 C1 · still incomplete after page 20 C2 | - |
 | provider transport invariants (4) | GET C3 · no body C3 · configured account C3 · contiguous returned cursor C3 | - |
-| symbol identity outcomes (3) | exact `U+2234` C4 · mismatched spelling C5 · idempotent round trip C4 | - |
+| symbol identity outcomes (4) | exact `U+2234` C4 · mismatched vanity/URL C5 · idempotent round trip C4 · distinct Unicode spelling C4 | - |
 | unsafe slug classes (4) | path separator C6 · whitespace C6 · control C6 · unsupported punctuation C6 | - |
 | scheduled consumers (2) | live entry point C7 · backfill entry point C8 | - |
 | `thunder-os-connections-live` outcomes (2) | `status=ok` C7 · `status=blocked`, `connection_window_incomplete` C7 | - |
