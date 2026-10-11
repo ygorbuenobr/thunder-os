@@ -182,14 +182,12 @@ class ConnectionProvider:
         for row in rows:
             _require(type(row) is dict, "connection_row_invalid")
             vanity = row.get("vanityName")
-            _require(isinstance(vanity, str) and 1 <= len(vanity) <= 100
-                     and all(char.isalnum() or char in "._-\u2019" for char in vanity),
-                     "connection_row_invalid")
             try:
                 key = profile_key(row.get("profileUrl"))
+                canonical_vanity = canonical_profile_slug(vanity)
             except ConnectionIntakeError:
                 raise ConnectionProviderError("connection_row_invalid") from None
-            _require(key == "https://www.linkedin.com/in/" + canonical_profile_slug(vanity)
+            _require(key == "https://www.linkedin.com/in/" + canonical_vanity
                      and key not in seen, "connection_row_invalid")
             seen.add(key)
             clean = {"vanityName": vanity, "profileUrl": key,

@@ -132,6 +132,29 @@ class ConnectionLedgerTests(unittest.TestCase):
         self.assertEqual(before_profiles, self.repo.list_state(profile_kind("cs-a")))
         self.assertEqual(before_requests, self.repo.list_state(research_request_kind("cs-a")))
 
+    def test_default_twenty_page_incomplete_window_is_atomic(self):
+        self.poll(page([]))
+        before_checkpoint = self.repo.get_state(LIVE_CHECKPOINT, "cs-a")
+        before_profiles = self.repo.list_state(profile_kind("cs-a"))
+        before_requests = self.repo.list_state(research_request_kind("cs-a"))
+        seen_cursors = []
+
+        def fetch(cursor):
+            seen_cursors.append(cursor)
+            return page([connection(f"fresh-{cursor}", 6)], end=False,
+                        cursor=cursor, next_cursor=cursor + 1)
+
+        with self.assertRaisesRegex(ConnectionIntakeError, "connection_window_incomplete"):
+            record_live_poll(
+                self.repo, fetch, account_id="cs-a", activation_at=ACTIVATION,
+                observed_at=SECOND_POLL, account_by_profile={},
+                fit_evidence_by_account={}, contacted=set(),
+            )
+        self.assertEqual(list(range(20)), seen_cursors)
+        self.assertEqual(before_checkpoint, self.repo.get_state(LIVE_CHECKPOINT, "cs-a"))
+        self.assertEqual(before_profiles, self.repo.list_state(profile_kind("cs-a")))
+        self.assertEqual(before_requests, self.repo.list_state(research_request_kind("cs-a")))
+
     def test_repeated_poll_is_idempotent(self):
         self.poll(page([]))
         row = connection("Alice", 6)
