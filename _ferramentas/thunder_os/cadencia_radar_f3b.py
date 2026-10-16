@@ -212,13 +212,15 @@ def simulate(snapshot, today, catalog_markdown, *, mode=MODO_SIMULACAO):
         if domain in by_domain and normalized != by_domain[domain]:
             blocked.add(domain)
         by_domain[domain] = normalized
-    rows = []
+    rows, partial_risks = [], []
     for source in sorted(batches):
         for row in batches[source]['rows']:
             try:
                 domain = identity(row.get('company'),row.get('domain'))
             except ValueError as exc:
                 reject(str(exc),source=source)
+                if str(row.get('catalog_id','')).startswith('E12-'):
+                    partial_risks.append((source, row))
                 continue
             rows.append((source, domain, row))
     for domain, aliases in domains.items():
@@ -229,6 +231,24 @@ def simulate(snapshot, today, catalog_markdown, *, mode=MODO_SIMULACAO):
             blocked.update(matches)
     for domain in sorted(blocked):
         reject('conflicting_company_identity_or_checks',domain)
+    # Resolve partial E12 identities only after all valid name/domain associations
+    # are known. Discarding a malformed observation must never clear its risk.
+    for source, row in partial_risks:
+        targets = set()
+        try:
+            targets.add(canonical_domain(row.get('domain')))
+        except ValueError:
+            pass
+        try:
+            targets.update(names.get(name_key(row.get('company')), set()))
+        except ValueError:
+            pass
+        if not targets:
+            reject('risk_E12_unresolved_identity_blocks_batch', source=source)
+            return report
+        blocked.update(targets)
+        for domain in sorted(targets):
+            reject('risk_E12_partial_identity', domain, source)
     signals = {}
     for source, domain, row in rows:
         try:

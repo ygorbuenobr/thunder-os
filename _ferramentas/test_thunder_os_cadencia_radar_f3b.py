@@ -160,6 +160,45 @@ class RadarTests(unittest.TestCase):
             self.assertFalse(r['candidates'])
             self.assertIn('risk',str(r['rejected']))
 
+    def test_partial_risk_identity(self):
+        for broken in ({'company':''}, {'domain':'invalid domain'}):
+            for risk_first in (False,True):
+                with self.subTest(broken=broken,risk_first=risk_first):
+                    f=fixture()
+                    risk=signal('E12-risco'); risk.update(broken)
+                    rows=[risk,signal()] if risk_first else [signal(),risk]
+                    f['sources']['google_news']['rows']=rows
+                    before=copy.deepcopy(f)
+                    with patch.object(socket,'socket',side_effect=AssertionError('no network')):
+                        r=self.run_radar(f)
+                    self.assertFalse(r['candidates'])
+                    self.assertIn('risk_E12_partial_identity',str(r['rejected']))
+                    self.assertEqual(f,before)
+                    self.assertEqual(r['external_effects'],0)
+        # Existing control: complete identity but missing publication remains blocked.
+        f=self.one(); risk=signal('E12-risco'); del risk['published_on']
+        f['sources']['google_news']['rows']=[risk]
+        self.assertFalse(self.run_radar(f)['candidates'])
+
+    def test_unresolved_risk_identity(self):
+        for company in ('','Unresolvable company'):
+            f=self.one(); risk=signal('E12-risco')
+            risk.update(company=company,domain='invalid domain')
+            f['sources']['google_news']['rows']=[risk]
+            r=self.run_radar(f)
+            self.assertFalse(r['candidates'])
+            self.assertIn('risk_E12_unresolved_identity_blocks_batch',str(r['rejected']))
+
+    def test_partial_risk_keeps_unrelated_account(self):
+        f=self.one()
+        account=copy.deepcopy(f['accounts'][0]); account.update(name='Other Fixture',domain='other.example')
+        f['accounts'].append(account)
+        other=signal(); other.update(company='Other Fixture',domain='other.example')
+        f['sources']['connectsafely_search_jobs']['rows'].append(other)
+        risk=signal('E12-risco'); risk['company']=''
+        f['sources']['google_news']['rows']=[risk]
+        self.assertEqual([c['domain'] for c in self.run_radar(f)['candidates']],['other.example'])
+
     def test_identity(self):
         f=self.one()
         item=signal(); item.update(domain='WWW.FIXTURE.EXAMPLE',event_key='job2')
