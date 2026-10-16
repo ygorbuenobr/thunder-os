@@ -33,6 +33,7 @@ ALLOWED_FILES = {
     "_ferramentas/painel_modelo.html",
 }
 ALLOWED_TESTS = {
+    "test_thunder_os_cadencia_radar_f3b.py",
     "test_thunder_os_cadencia_hermes_f3.py",
     "test_thunder_os_cadencia_hubspot_f1.py",
     "test_thunder_os_connectsafely_quarantine_resolution.py",
