@@ -13,11 +13,12 @@ PORTAL_ID = "51412240"
 OWNER_ID = "92901049"
 GROUP = {"name": "cadencia_thunder", "label": "Cadência Thunder", "displayOrder": -1}
 MULTILINE = (
-    "cad_email_1", "cad_email_1_assunto", "cad_email_2", "cad_email_3",
+    "cad_email_1", "cad_email_2", "cad_email_3",
     "cad_email_4", "cad_email_4b", "cad_li_0", "cad_li_1", "cad_li_2",
-    "cad_li_3", "cad_tese", "cad_fato_fonte",
+    "cad_li_3", "cad_wa_1", "cad_tese", "cad_fato_fonte",
 )
-TEXT = ("cad_linkedin_url", "cad_teste_id")
+TEXT = ("cad_email_1_assunto", "cad_teste_id")
+REUSED_LINKEDIN_PROPERTY = "linkedin_url"
 CHOICES = {
     "cad_braco": ("A", "B"),
     "cad_email_4_versao": ("A", "B"),
@@ -117,7 +118,7 @@ def sequence_blueprint():
         (0, "email", "E-mail 1", "cad_email_1"),
         (1, "task", "LinkedIn: convite", "cad_li_0"),
         (3, "email", "E-mail 2", "cad_email_2"),
-        (4, "task", "WhatsApp 1", None),
+        (4, "task", "WhatsApp 1", "cad_wa_1"),
         (5, "task", "LinkedIn: msg 1", "cad_li_1"),
         (8, "email", "E-mail 3", "cad_email_3"),
         (10, "task", "LinkedIn: msg 2", "cad_li_2"),
@@ -138,9 +139,9 @@ def sequence_blueprint():
         previous = day
     return {"name": "Cadência Thunder v1", "timezone": "America/Sao_Paulo",
             "business_days_only": True, "steps": steps, "status": "design_only",
+            "linkedin_property": REUSED_LINKEDIN_PROPERTY,
             "unimplemented_dependencies": ["F3: aceite/reagendamento/parada",
-                "D10: seleção A/B e verificação de atualização do token antes do D13",
-                "WhatsApp: texto aprovado no D0 sem propriedade definida na seção 4"]}
+                "D10: seleção A/B e verificação de atualização do token antes do D13"]}
 
 
 def list_sequences_fixture(fixture, *, modo_simulacao=True):

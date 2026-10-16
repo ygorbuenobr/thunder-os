@@ -28,12 +28,12 @@ class F1SimulationTests(unittest.TestCase):
 
     def test_exact_section_4_contract(self):
         props = {p["name"]: p for p in f1.properties()}
-        expected_multiline = {"cad_email_1", "cad_email_1_assunto", "cad_email_2", "cad_email_3", "cad_email_4",
+        expected_multiline = {"cad_email_1", "cad_wa_1", "cad_email_2", "cad_email_3", "cad_email_4",
                               "cad_email_4b", "cad_li_0", "cad_li_1", "cad_li_2", "cad_li_3", "cad_tese", "cad_fato_fonte"}
-        self.assertEqual(set(props), expected_multiline | {"cad_braco", "cad_email_4_versao", "cad_status", "cad_linkedin_url", "cad_teste_id"})
+        self.assertEqual(set(props), expected_multiline | {"cad_braco", "cad_email_4_versao", "cad_status", "cad_email_1_assunto", "cad_teste_id"})
         for name in expected_multiline:
             self.assertEqual((props[name]["type"], props[name]["fieldType"]), ("string", "textarea"))
-        for name in ("cad_linkedin_url", "cad_teste_id"):
+        for name in ("cad_email_1_assunto", "cad_teste_id"):
             self.assertEqual((props[name]["type"], props[name]["fieldType"]), ("string", "text"))
         for name, values in {"cad_braco": ["A", "B"], "cad_email_4_versao": ["A", "B"],
                              "cad_status": ["rascunho", "aprovado", "em_cadencia", "respondeu", "encerrado", "incerto"]}.items():
@@ -155,7 +155,11 @@ class F1SimulationTests(unittest.TestCase):
         self.assertEqual([s["thread"] for s in emails], ["new"] + ["reply_to_email_1"] * 3)
         self.assertEqual([s["title"] for s in bp["steps"] if s["kind"] == "task"],
                          ["LinkedIn: convite", "WhatsApp 1", "LinkedIn: msg 1", "LinkedIn: msg 2", "LinkedIn: msg 3"])
-        self.assertEqual(len(bp["unimplemented_dependencies"]), 3)
+        self.assertEqual(len(bp["unimplemented_dependencies"]), 2)
+        self.assertEqual(bp["linkedin_property"], "linkedin_url")
+        self.assertEqual(bp["steps"][3]["body_token"], "{{ contact.cad_wa_1 }}")
+        self.assertNotIn("cad_linkedin_url", {p["name"] for p in f1.properties()})
+        self.assertNotIn("linkedin_url", {p["name"] for p in f1.properties()})
 
     def test_no_network_and_no_credential_imports(self):
         tree = ast.parse(inspect.getsource(f1))
