@@ -43,6 +43,116 @@ class F3Tests(unittest.TestCase):
     def actions(self, report, kind):
         return [a for a in report['intentions'] if a['kind'] == kind]
 
+    def duplicate(self, f, url='http://linkedin.com/in/fixture-one/?trk=public_profile#about'):
+        second = copy.deepcopy(f['contacts'][0])
+        second.update(id='c2', linkedin_url=url)
+        f['contacts'].append(second)
+        f['tasks'].append({**f['tasks'][0], 'id': 't2', 'contact_id': 'c2'})
+        return second
+
+    def test_duplicate_identity_stop_propagation(self):
+        for reason in ('human', 'opt_out', 'suppressed'):
+            for reverse in (False, True):
+                for other_owner in (False, True):
+                    with self.subTest(reason=reason, reverse=reverse, other_owner=other_owner):
+                        f = fixture()
+                        c = self.duplicate(f)
+                        if reason == 'suppressed':
+                            c['suppressed'] = True
+                        else:
+                            c['reply'] = {'id': 'r1', 'channel': 'email', 'kind': reason, 'text': 'STOP'}
+                        if other_owner:
+                            c['owner_id'] = 'other-owner'
+                        if reverse:
+                            f['contacts'].reverse()
+                            f['tasks'].reverse()
+                        before = copy.deepcopy(f)
+                        with patch.object(socket, 'socket', side_effect=AssertionError('network forbidden')):
+                            r = self.run_fixture(f)
+                        self.assertEqual(f, before)
+                        self.assertFalse(self.actions(r, 'would_send'))
+                        self.assertFalse(self.actions(r, 'would_reserve_touch'))
+                        self.assertEqual(r['external_effects'], 0)
+                        if reason == 'opt_out' and not other_owner:
+                            self.assertTrue(self.actions(r, 'would_suppress'))
+
+        # Exact duplicate URL reproduces the original P2 independently of aliases.
+        for reason in ('human', 'opt_out', 'suppressed'):
+            f = fixture()
+            c = self.duplicate(f, f['contacts'][0]['linkedin_url'])
+            if reason == 'suppressed':
+                c['suppressed'] = True
+            else:
+                c['reply'] = {'id': 'r1', 'channel': 'linkedin', 'kind': reason, 'text': 'STOP'}
+            self.assertFalse(self.actions(self.run_fixture(f), 'would_send'))
+
+    def test_profile_alias_dedupe(self):
+        canonical = 'https://www.linkedin.com/in/fixture-one'
+        aliases = [canonical + '?trk=public_profile', canonical + '/#about',
+                   'http://linkedin.com/in/fixture-one',
+                   'https://linkedin.com/in/fixture-one/',
+                   'HTTP://WWW.LINKEDIN.COM/in/FIXTURE-ONE/?trk=x#about',
+                   'https://www.linkedin.com/in/fixture%2Done']
+        for alias in aliases:
+            with self.subTest(alias=alias):
+                f = fixture()
+                self.duplicate(f, alias)
+                sends = self.actions(self.run_fixture(f), 'would_send')
+                self.assertEqual(len(sends), 1)
+                self.assertEqual(sends[0]['effect_key'], f'fixture-test:{canonical}:invite:invite')
+                f['contacts'] = [f['contacts'][1]]
+                f['tasks'] = [f['tasks'][1]]
+                self.assertEqual(self.actions(self.run_fixture(f), 'would_send')[0]['effect_key'], sends[0]['effect_key'])
+
+    def test_invalid_profiles(self):
+        invalid = [None, '', 'https://www.linkedin.com/in/',
+                   'https://www.linkedin.com/in/name/extra',
+                   'https://www.linkedin.com.evil.test/in/name',
+                   'https://user@www.linkedin.com/in/name',
+                   'https://www.linkedin.com:444/in/name',
+                   'ftp://www.linkedin.com/in/name', '//www.linkedin.com/in/name',
+                   'https://www.linkedin.com/company/name',
+                   'https://www.linkedin.com/in/name%2Fother',
+                   'https://www.linkedin.com/in/name%ZZ',
+                   'https://www.linkedin.com/in/na\tme',
+                   'https://www.linkedin.com/in/name\\other']
+        for url in invalid:
+            with self.subTest(url=url):
+                f = fixture()
+                f['contacts'][0]['linkedin_url'] = url
+                r = self.run_fixture(f)
+                self.assertFalse(self.actions(r, 'would_send'))
+                self.assertFalse(self.actions(r, 'would_reserve_touch'))
+
+    def test_identity_conflicts(self):
+        for field in ('owner_id', 'linkedin_member_id', 'email', 'start_date'):
+            with self.subTest(field=field):
+                f = fixture()
+                f['contacts'][0].update(email='one@example.invalid', linkedin_member_id='member1')
+                c = self.duplicate(f)
+                c[field] = 'conflicting-value'
+                self.assertFalse(self.actions(self.run_fixture(f), 'would_send'))
+        f = fixture()
+        f['contacts'][0]['email'] = 'one@example.invalid'
+        self.duplicate(f, 'https://www.linkedin.com/in/fixture-two')
+        self.assertFalse(self.actions(self.run_fixture(f), 'would_send'))
+
+    def test_distinct_profiles_remain_distinct(self):
+        f = fixture()
+        self.duplicate(f, 'http://linkedin.com/in/fixture-two?trk=x')
+        sends = self.actions(self.run_fixture(f), 'would_send')
+        self.assertEqual(len(sends), 2)
+        self.assertNotEqual(sends[0]['effect_key'], sends[1]['effect_key'])
+        f['contacts'][0]['suppressed'] = True
+        sends = self.actions(self.run_fixture(f), 'would_send')
+        self.assertEqual([a['contact_id'] for a in sends], ['c2'])
+
+    def test_alias_ledger_block(self):
+        f = fixture()
+        c = self.duplicate(f)
+        c['ledger']['invite'] = 'sent'
+        self.assertFalse(self.actions(self.run_fixture(f), 'would_send'))
+
     def test_simulation_boundary(self):
         f = fixture()
         before = copy.deepcopy(f)
