@@ -6,6 +6,8 @@ from pathlib import PurePosixPath
 
 
 ALLOWED_FILES = {
+    ".checks/panel-pending-discard.md",
+    "scripts/test_panel_discard.cjs",
     ".specs/features/thunder-os-v1/campaign-execution-confirmation.md",
     "scripts/test_campaign_confirmation_offline.py",
     "scripts/test_campaign_confirmation_panel.cjs",
@@ -45,6 +47,7 @@ ALLOWED_FILES = {
     "_ferramentas/painel_modelo.html",
 }
 ALLOWED_TESTS = {
+    "test_thunder_os_panel_discard.py",
     "test_thunder_os_campaign_registry.py",
     "test_thunder_os_operation_campaign.py",
     "test_thunder_os_migrated_operations.py",

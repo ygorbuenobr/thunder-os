@@ -691,6 +691,36 @@ class Banco:
                     pass
         self.evento('aprovacao', conta=dados.get('conta', ''), texto='aprovado no painel: ' + str(dados.get('titulo', id)), ref=ref)
 
+    @staticmethod
+    def motivo_descarte(dados):
+        if dados.get('fila_ref') or dados.get('_fila_pendente'):
+            return 'Item já encaminhado ou com aprovação em recuperação; confira a fila.'
+        if any(dados.get(k) for k in ('needs_reconciliation', 'reconciliation_required',
+                'uncertain', 'receipt_ref', 'effect_id', 'job_id', 'dispatch_started_at')):
+            return 'Item com execução ou reconciliação pendente; confira o resultado antes de decidir.'
+        if dados.get('status', 'pendente') != 'pendente':
+            return 'Somente cartões pendentes sem encaminhamento podem ser descartados.'
+        return ''
+
+    def descartar_pendente(self, id, actor):
+        if actor != 'ygor':
+            raise Erro('Somente Ygor pode descartar cartões.', 403)
+        id = identificador(id)
+        with self.lock('_log/.painel.lock'), self.conexao() as con:
+            con.execute('BEGIN IMMEDIATE')
+            dados = self.ler(con, 'itens', id)
+            if dados is None:
+                raise Erro('Item não encontrado', 404)
+            if dados.get('status') == 'descartado' and dados.get('_descarte'):
+                return dict(dados, id=id)
+            motivo = self.motivo_descarte(dados)
+            if motivo:
+                raise Erro(motivo, 409)
+            quando = agora().isoformat(timespec='seconds')
+            dados.update(status='descartado', decisao={'acao': 'descartar', 'quando': quando},
+                         _descarte={'ator': actor, 'quando': quando, 'origem': 'painel'})
+            return self.gravar(con, 'itens', id, dados)
+
     def salvar(self, nome, campos, id=None, criar=False, importar=False, upsert=False):
         self.colecao(nome)
         objeto(campos)
@@ -701,6 +731,8 @@ class Banco:
             campos = {k: v for k, v in campos.items() if not k.startswith('_') and k != 'fila_ref'}
         with self.lock('_log/.painel.lock'), self.conexao() as con:
             anterior = self.ler(con, nome, id)
+            if nome == 'itens' and anterior and anterior.get('_descarte'):
+                raise Erro('Cartão descartado é terminal; crie outro cartão para uma nova decisão.', 409)
             if criar and anterior:
                 raise Erro('id já existe')
             if not criar and not importar and not upsert and anterior is None:
@@ -764,6 +796,7 @@ class Banco:
         nomes = self.nomes_angulos()
         saida = self.listar('itens')
         for item in saida:
+            item['descarte_bloqueio'] = self.motivo_descarte(item)
             angulo = str(item.get('angulo') or '')
             if angulo:
                 item['angulo_nome'] = nomes.get(angulo.casefold(), angulo)
@@ -1335,6 +1368,17 @@ class Handler(BaseHTTPRequestHandler):
                 service, view=view, offset=int(raw_offset), limit=int(raw_limit)))
         if rota.query:
             raise Erro('Rota Thunder OS inválida', 405)
+        if self.command == 'GET' and rota.path == '/api/os/v1/panel-capabilities':
+            actor = self.thunder_proxy_actor()
+            blocked = (actor != 'ygor' or not external_effects_enabled() or restricted_mode()
+                       or os.environ.get('THUNDER_OS_COPILOT_MODE', '') == 'human_approval')
+            return self.responder(200, {'legacy_mutations': not blocked,
+                'reason': 'Este modo exige revisão e confirmação pelo fluxo de cada canal.' if blocked else ''})
+        if self.command == 'GET' and rota.path == '/api/os/v1/items':
+            actor = self.thunder_proxy_actor()
+            if actor != 'ygor':
+                raise Erro('Somente Ygor pode consultar estes cartões.', 403)
+            return self.responder(200, self.server.banco.listar_itens())
         if self.command == 'GET' and rota.path == '/api/os/v1/session':
             actor = self.thunder_proxy_actor()
             nonce = secrets.token_urlsafe(32)
@@ -1435,6 +1479,11 @@ class Handler(BaseHTTPRequestHandler):
             raise Erro('Rota Thunder OS inválida', 405)
         actor = self.thunder_actor()
         body = self.corpo()
+        discard = re.fullmatch(r'/api/os/v1/items/([A-Za-z0-9_-]{1,100})/discard', rota.path)
+        if discard:
+            if body:
+                raise Erro('Descarte não aceita alterações de conteúdo.')
+            return self.responder(200, self.server.banco.descartar_pendente(discard.group(1), actor))
         if restricted_mode() and (
                 rota.path in {'/api/os/v1/likes','/api/os/v1/control/reconcile'}
                 or re.fullmatch(r'/api/os/v1/cadences/[^/]+/dispatch',rota.path)

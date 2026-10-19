@@ -1744,6 +1744,7 @@ function renderRespostas(){
   contagemAbas.respostas=respostas.length; atualizarAbas();
   $('respostas-estado').textContent=respostas.length?`${respostas.length} aguardando retorno`:'Nenhuma resposta nesta consulta';
   if(foco?.startsWith('etiqueta-')) $(foco)?.focus();
+  applyPanelCapabilities();
 }
 function atualizarRelogios(agora = new Date()){
   $('respostas').querySelectorAll('.relogio[data-data]').forEach(el=>{
@@ -1822,7 +1823,7 @@ async function abrirConta(slug,pessoa,acionador){
   try{
     const d=await apiServidor('/api/conta/'+encodeURIComponent(slug||'')+'?pessoa_chave='+encodeURIComponent(pessoa||''));
     if(pedido!==contaPedido) return;
-    $('conta-titulo').textContent=d.nome||'Histórico da pessoa'; $('conta-conteudo').innerHTML=contaHTML(d);
+    $('conta-titulo').textContent=d.nome||'Histórico da pessoa'; $('conta-conteudo').innerHTML=contaHTML(d);applyPanelCapabilities();
   }catch(e){
     if(pedido!==contaPedido) return;
     $('conta-conteudo').textContent='Não consegui carregar a ficha. Tente novamente.'; $('conta-tentar').hidden=false;
@@ -2009,12 +2010,50 @@ function render(){
   const res = itens.filter(i => !ABERTOS.includes(i.status||'pendente')).sort((a,b)=>String(b.atualizado||'').localeCompare(String(a.atualizado||''))).slice(0,20);
   $('resolvidos').hidden = !res.length;
   $('resolvidos-lista').innerHTML = res.map(i=>`<li><span class="chip st-${esc(i.status)}">${esc(ST[i.status]||i.status)}</span><b>${esc(i.pessoa||i.titulo||'')}</b><span class="sub" style="color:var(--muted)">${esc(TIPO[i.tipo]||'')} · ${quando(i.atualizado||i.criado)}</span></li>`).join('');
+  applyPanelCapabilities();
 }
 
 function msg(id, t, erro){
   for(const e of [$('msg-'+id),$('msg-hoje-'+id)]) if(e){e.textContent=t;e.className='msg'+(erro?' erro':'');}
 }
 const item = id => itens.find(i=>i.id===id);
+
+/* PANEL_DISCARD_BEGIN */
+async function discardAndRead(api,id){
+  await api('/api/os/v1/items/'+encodeURIComponent(id)+'/discard','POST',{});
+  let rows;
+  try{rows=await api('/api/os/v1/items');}catch(e){throw new Error('Descarte solicitado, mas a leitura de confirmação falhou. Atualize o painel para conferir.');}
+  if(!Array.isArray(rows)||!rows.some(row=>row.id===id&&row.status==='descartado'))throw new Error('Descarte ainda não confirmado na leitura do servidor. Atualize para conferir.');
+  return rows;
+}
+const legacyBlockedSelectors=['[data-a="aprovar"]','[data-today-a="aprovar"]','[data-a="opcao"]','[data-today-a="opcao"]','[data-a="variante"]','[data-a="falar"]','[data-a="refazer"]','[data-a="perguntar"]','[data-a="whatsapp"]','[data-a="whatsapp-feito"]','[data-a="feito"]','[data-a="reuniao"]','[data-classificacao]','[data-sugestao]','#pedido button[type="submit"]'];
+/* PANEL_DISCARD_END */
+let legacyCapabilities={legacy_mutations:false,reason:'Disponibilidade das alterações ainda não confirmada. Atualize o painel.'};
+function explainBlocked(button,reason){
+  button.disabled=true;button.title=reason;button.setAttribute('aria-label',button.textContent.trim()+'. '+reason);
+  if(!button.nextElementSibling?.classList.contains('action-block-reason')){const note=document.createElement('small');note.className='action-block-reason';note.textContent=reason;button.after(note);}
+}
+function applyPanelCapabilities(){
+  if(MODO!=='servidor')return;
+  if(!legacyCapabilities.legacy_mutations)document.querySelectorAll(legacyBlockedSelectors.join(',')).forEach(b=>{
+    const a=b.dataset.a||b.dataset.todayA;
+    const reasons={aprovar:'Aprovação deste cartão indisponível. Revise a campanha no fluxo do canal em Hoje.',opcao:'Esta decisão não pode ser registrada por este cartão neste modo.',variante:'Salvar outra versão deste cartão está indisponível.',falar:'Perguntas e reescrita deste cartão indisponíveis. Faça um pedido em Hoje.',refazer:'Reescrita deste cartão indisponível. Faça um pedido em Hoje.',perguntar:'Perguntas deste cartão indisponíveis. Faça um pedido em Hoje.',whatsapp:'Abertura do WhatsApp e registro manual indisponíveis neste modo.','whatsapp-feito':'Registro manual de envio indisponível neste modo.',feito:'Registro manual indisponível neste modo.',reuniao:'Registro de reunião por este cartão indisponível neste modo.'};
+    const reason=reasons[a]||(b.dataset.classificacao?'Salvar classificação está indisponível neste modo.':b.dataset.sugestao?'Registrar decisão de aprendizado está indisponível neste modo.':b.closest('#pedido')?'Use Pedir pesquisa ou preparo na aba Hoje.':legacyCapabilities.reason);
+    explainBlocked(b,reason);
+  });
+  document.querySelectorAll('[data-a="descartar"],[data-today-a="descartar"]').forEach(b=>{
+    const card=b.closest('[data-id],[data-today-id]'),it=item(card?.dataset.id||card?.dataset.todayId);
+    if(it?.descarte_bloqueio)explainBlocked(b,it.descarte_bloqueio);
+  });
+}
+async function descartar(it,b){
+  b.disabled=true;
+  try{
+    if(MODO==='servidor'){itens=await discardAndRead(apiServidor,it.id);render();}
+    else await salvar(it.id,{status:'descartado',decisao:{acao:'descartar',quando:agoraISO()}});
+  }catch(e){msg(it.id,e.message||'Descarte não confirmado. Atualize para conferir.',true);}
+  finally{b.disabled=false;applyPanelCapabilities();}
+}
 
 async function salvar(id, campos){
   const { id: _x, ...resto } = campos;
@@ -2145,7 +2184,7 @@ caixa.addEventListener('input', ev => {
   sujo[t.dataset.id] = t.value; const c = $('car-'+t.dataset.id); if (c) c.textContent = t.value.length + ' caracteres';
 });
 caixa.addEventListener('click', async ev => {
-  const b = ev.target.closest('button[data-a]'); if (!b) return;
+  const b = ev.target.closest('button[data-a]'); if (!b || b.disabled) return;
   if (b.dataset.a === 'conta') return abrirConta(b.dataset.conta,b.dataset.pessoa,b);
   const card = b.closest('.card'); const it = item(card.dataset.id); if (!it) return;
   const a = b.dataset.a;
@@ -2177,7 +2216,7 @@ caixa.addEventListener('click', async ev => {
   if (a === 'falar') { const f = $('falar-'+it.id); f.hidden = !f.hidden; if (!f.hidden) $('fb-'+it.id).focus(); return; }
   if (a === 'refazer') { b.disabled = true; await refazer(it); b.disabled = false; return; }
   if (a === 'perguntar') { b.disabled = true; await perguntar(it); b.disabled = false; return; }
-  if (a === 'descartar') { try { await salvar(it.id, { status: 'descartado', decisao: { acao: 'descartar', quando: agoraISO() } }); } catch(e){ msg(it.id, 'Não consegui descartar. Tente de novo.', true); } return; }
+  if (a === 'descartar') { await descartar(it,b); return; }
   if (a === 'copiar') { try { await navigator.clipboard.writeText(it.texto||''); msg(it.id, 'Copiado.'); } catch(e){ const ta = $('txt-'+it.id); if (ta){ ta.removeAttribute('readonly'); ta.select(); } msg(it.id, 'Selecionei o texto: use Cmd+C.'); } return; }
   if (a === 'feito') { try { await salvar(it.id, { status: 'feito', nota: 'comentado pelo Ygor' }); } catch(e){} return; }
 });
@@ -2202,7 +2241,7 @@ $('sec-hoje').addEventListener('click',async ev=>{
     b.disabled=true;try{await escolher(it,opcao);}finally{b.disabled=false;}return;
   }
   if(a==='descartar'){
-    b.disabled=true;try{await salvar(it.id,{status:'descartado',decisao:{acao:'descartar',quando:agoraISO()}});}catch(e){card.querySelector('.msg').textContent='Não consegui descartar. Tente novamente.';}finally{b.disabled=false;}
+    await descartar(it,b);
   }
 });
 
@@ -2258,6 +2297,7 @@ $('os-pedido').addEventListener('submit', async ev => {
 let sugestaoAtual=null;
 function percentual(valor){return Number.isFinite(Number(valor))?(Number(valor)*100).toLocaleString('pt-BR',{maximumFractionDigits:1})+'%':'não disponível';}
 function renderSugestao(s){
+  applyPanelCapabilities();
   sugestaoAtual=s||null;$('aprendizado').hidden=!s;if(!s)return;
   $('aprendizado-hipotese').textContent=s.hypothesis;$('aprendizado-evidencia').textContent=s.evidence;
   const anterior=s.comparison||{};
@@ -2279,6 +2319,8 @@ $('aprendizado').addEventListener('click',async ev=>{
   try {
     if (MODO === 'servidor') {
       ({db,sample,apiServidor} = adaptadorServidor());
+      try{legacyCapabilities=await apiServidor('/api/os/v1/panel-capabilities');}catch(e){}
+      applyPanelCapabilities();
       $('sec-quentes').hidden=false; $('sec-respostas').hidden=false; $('sec-aceites').hidden=false;
       $('sec-mensagens').hidden=false; $('sec-comentarios').hidden=false; $('aprovar-topo').hidden=false; iniciarAbas();
       dono = true; mcp = null;

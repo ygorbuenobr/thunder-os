@@ -14,6 +14,7 @@ from thunder_os.connectsafely_application import ConnectSafelyApplication
 from thunder_os.connectsafely_composition import ConnectSafelyComposition
 from thunder_os.connectsafely_live import build_panel_composition
 from thunder_os.db import Repository, RepositoryConflict
+from thunder_os.campaign_registry import CampaignRegistry
 from thunder_os.service import AuthorizationError
 
 
@@ -260,6 +261,21 @@ class PanelWiringTests(unittest.TestCase):
         with patch.object(panel, 'restricted_mode', return_value=False):
             return handler.thunder_api(urlsplit('/api/os/v1/integrations/connectsafely/' + operation))
 
+    def campaign_review(self, app, preview):
+        """Supply explicit synthetic campaign authority without bypassing the gate."""
+        campaign_id = 'fixture-panel'
+        if self.repo.get_state('campaign_config', campaign_id) is None:
+            CampaignRegistry(self.repo).register({
+                'campaign_id': campaign_id, 'campaign_version': '1', 'rules_version': '1',
+                'run_id': 'fixture-run', 'platform': 'thunder_os',
+                'providers': {'linkedin': 'connectsafely'}, 'rules': 'Synthetic fixtures only',
+                'configuration': {'flow_version': '1', 'provider_accounts': {'linkedin': 'a' * 24}},
+            }, 'ygor', 0)
+        return {'preview_id': preview['id'], 'expected_version': preview['version'],
+                'review_hash': preview['review_hash'],
+                'execution_confirmation': app.campaign_review({
+                    'preview_id': preview['id'], 'campaign_id': campaign_id}, 'ygor')}
+
     def invitation_attempt(self):
         app=self.configure()
         for target,kwargs in [(app.direct,{'_identity':None})]:
@@ -273,7 +289,7 @@ class PanelWiringTests(unittest.TestCase):
               'recipient_public_id':'fixture-target-'+str(self.invite_number),
               'recipient_profile_urn':'urn:li:fsd_profile:TARGET'+str(self.invite_number),
               'channel':'linkedin','messaging_channel':'linkedin_inbox','content':''}
-        preview=app.prepare(plan,'ygor');review={'preview_id':preview['id'],'expected_version':preview['version'],'review_hash':preview['review_hash']}
+        preview=app.prepare(plan,'ygor');review=self.campaign_review(app,preview)
         job=app.enqueue(review,'ygor')
         def uncertain(plan,before_dispatch,execution_context):
             before_dispatch();return {'status':'uncertain','error_code':'provider_outcome_unknown'}
@@ -391,7 +407,7 @@ class PanelWiringTests(unittest.TestCase):
                 patch.object(app.direct, 'execute', side_effect=uncertain) as execute:
             first = self.route(app, 'preview', plan)[1]
             other = self.route(app, 'preview', {**plan, 'content': 'Other fixture'})[1]
-            review = lambda p: {'preview_id': p['id'], 'expected_version': p['version'], 'review_hash': p['review_hash']}
+            review = lambda p: self.campaign_review(app, p)
             other_job = app.enqueue(review(other), 'ygor')
             self.assertEqual(0, execute.call_count)
             with self.assertRaises(RepositoryConflict):
