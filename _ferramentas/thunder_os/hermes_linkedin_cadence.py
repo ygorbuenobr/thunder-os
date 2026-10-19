@@ -196,6 +196,16 @@ class HermesLinkedInCadence:
             return {"task_id": task_id, "status": "completed", "replayed": True,
                     "receipt_ref": prior.get("receipt_ref")}
         if prior and prior.get("status") == "uncertain":
+            if not prior.get("crm_uncertain_confirmed") and hasattr(self.tasks, "mark_uncertain"):
+                try:
+                    self.tasks.mark_uncertain(prior["contact_id"], prior["expected_contact_status"])
+                except Exception:
+                    self._record_alert(task_id, {**_clean_state(prior),
+                        "error_code": "hubspot_uncertain_status_pending"})
+                    return {"task_id": task_id, "status": "uncertain", "replayed": True,
+                            "error_code": "hubspot_uncertain_status_pending"}
+                prior = self.repository.put_state("linkedin_cadence_task", task_id, {
+                    **_clean_state(prior), "crm_uncertain_confirmed": True})
             if prior.get("marker") == "cad_li_0":
                 approval = self.repository.get_state("linkedin_cadence_approval", str(prior.get("approval_id", "")))
                 step = next((item for item in (approval or {}).get("steps", [])
@@ -265,16 +275,22 @@ class HermesLinkedInCadence:
         uncertain = bool(job and job.get("state") == "needs_reconciliation")
         status = "uncertain" if uncertain else "blocked"
         error = result.get("error_code", "connectsafely_not_confirmed")
-        self.repository.put_state("linkedin_cadence_task", task_id, {
+        uncertain_state = {
             "status": status, "task_id": task_id, "approval_id": approval["id"],
             "marker": step["marker"], "job_id": queued["job_id"], "error_code": error,
             "actor": "hermes (delegado)",
             "task_contract": _task_contract(task, step, self.clock),
-        })
+            "contact_id": task["contact_ids"][0],
+            "expected_contact_status": task.get("contact_status"),
+            "crm_uncertain_confirmed": False,
+        }
+        self.repository.put_state("linkedin_cadence_task", task_id, uncertain_state)
         self._record_alert(task_id, {
             "status": status, "approval_id": approval["id"], "marker": step["marker"],
             "job_id": queued["job_id"], "error_code": error,
         })
         if uncertain and hasattr(self.tasks, "mark_uncertain"):
             self.tasks.mark_uncertain(task["contact_ids"][0], task.get("contact_status"))
+            self.repository.put_state("linkedin_cadence_task", task_id, {
+                **uncertain_state, "crm_uncertain_confirmed": True})
         return {"task_id": task_id, "status": status, "error_code": error}

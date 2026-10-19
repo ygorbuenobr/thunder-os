@@ -37,9 +37,11 @@ class Provider:
     def __init__(self):
         self.relationship_status = "CONNECTED"
         self.reads = 0
+        self.after_relationship = None
 
     def relationship(self, _plan):
         self.reads += 1
+        if self.after_relationship:self.after_relationship()
         return {"relationship_status": self.relationship_status}
 
 
@@ -208,6 +210,13 @@ class HermesLinkedInCadenceTests(unittest.TestCase):
                     self.assertEqual(1 if observed == allowed else 0, console.executes)
                     temp.cleanup()
 
+    def test_reply_arriving_during_relationship_read_blocks_dispatch(self):
+        self.approve()
+        self.provider.after_relationship=lambda:self.tasks.task.update(contact_status="respondeu")
+        with self.assertRaisesRegex(CadenceBlocked,"cadence_status_blocked"):
+            self.runner.run_task("task-1")
+        self.assertEqual(0,self.console.executes);self.assertEqual([],self.tasks.completions)
+
     def test_confirmed_receipt_completes_task_and_audits_delegate(self):
         self.approve()
         result = self.runner.run_task("task-1")
@@ -250,6 +259,23 @@ class HermesLinkedInCadenceTests(unittest.TestCase):
         self.assertEqual("completed", first["status"]); self.assertTrue(second["replayed"])
         self.assertEqual(1, self.console.executes); self.assertEqual(1, len(self.tasks.completions))
         self.assertEqual(1, self.repo.get_state("delegation_usage", "hermes:2026-10-19")["count"])
+
+    def test_uncertain_crm_status_write_retries_without_provider_redelivery(self):
+        self.approve();self.console.outcome={"status":"uncertain","error_code":"provider_outcome_unknown","retry_write":False}
+        original=self.tasks.mark_uncertain;calls=[]
+        def flaky(contact_id,status):
+            calls.append((contact_id,status))
+            if len(calls)==1:raise RuntimeError("fixture crm unavailable")
+            return original(contact_id,status)
+        self.tasks.mark_uncertain=flaky
+        with self.assertRaisesRegex(RuntimeError,"fixture crm unavailable"):
+            self.runner.run_task("task-1")
+        self.assertEqual(1,self.console.executes)
+        replay=self.runner.run_task("task-1")
+        self.assertEqual("uncertain",replay["status"]);self.assertTrue(replay["replayed"])
+        self.assertEqual(1,self.console.executes);self.assertEqual(2,len(calls))
+        stored=self.repo.get_state("linkedin_cadence_task","task-1")
+        self.assertTrue(stored["crm_uncertain_confirmed"]);self.assertEqual("incerto",self.tasks.task["contact_status"])
 
 
 if __name__ == "__main__":

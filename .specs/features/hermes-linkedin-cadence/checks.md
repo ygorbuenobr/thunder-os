@@ -5,7 +5,7 @@ Plan: `.specs/features/hermes-linkedin-cadence/plan.md`
 
 ## Intent
 
-15 checks in 4 slices · 2 one-way doors · 0 open
+17 checks in 4 slices · 2 one-way doors · 0 open
 
 ## Checks
 
@@ -33,6 +33,10 @@ Status: complete
 Proof: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=_ferramentas:/root/.hermes/profiles/ygor-personal/brain/_ferramentas:/root/.hermes/profiles/ygor-personal/brain python3 -m unittest -v -k test_relationship_gate_matches_step_kind _ferramentas.test_thunder_os_hermes_linkedin_cadence`
 Status: complete
 
+**C16** - A reply/status change arriving during the relationship read is caught by the immediate second CRM read and causes zero dispatch (HLC-02, AC 5-6)
+Proof: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=_ferramentas:/root/.hermes/profiles/ygor-personal/brain/_ferramentas:/root/.hermes/profiles/ygor-personal/brain python3 -m unittest -v -k test_reply_arriving_during_relationship_read_blocks_dispatch _ferramentas.test_thunder_os_hermes_linkedin_cadence`
+Status: complete
+
 **C5** - Source boundary contains no LLM/model/prompt dependency and runtime accepts no generated copy field (HLC-02, AC 4)
 Proof: `python3 scripts/check_hermes_linkedin_determinism.py --check test_runtime_is_deterministic`
 Status: complete
@@ -53,6 +57,10 @@ Status: complete
 
 **C13** - An uncertain delegated invitation is reconciled under its unchanged D0 authority, never re-sent, and only then completes its exact HubSpot task (HLC-03, AC 8-9)
 Proof: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=_ferramentas:/root/.hermes/profiles/ygor-personal/brain/_ferramentas:/root/.hermes/profiles/ygor-personal/brain python3 -m unittest -v -k test_delegated_invite_reconciles_under_exact_d0_authority _ferramentas.test_thunder_os_connectsafely_panel_wiring`
+Status: complete
+
+**C17** - A failed HubSpot `incerto` write is retried on replay until readback confirms, while the provider job remains fenced from redelivery (HLC-03, AC 8-9)
+Proof: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=_ferramentas:/root/.hermes/profiles/ygor-personal/brain/_ferramentas:/root/.hermes/profiles/ygor-personal/brain python3 -m unittest -v -k test_uncertain_crm_status_write_retries_without_provider_redelivery _ferramentas.test_thunder_os_hermes_linkedin_cadence`
 Status: complete
 
 ### S4 - Bounded runtime configuration

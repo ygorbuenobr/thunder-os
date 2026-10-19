@@ -368,6 +368,7 @@ class PanelWiringTests(unittest.TestCase):
         self.repo.put_state('linkedin_cadence_task','task-1',{
             'status':'uncertain','task_id':'task-1','approval_id':cadence['id'],'marker':'cad_li_0',
             'job_id':job['job_id'],'error_code':'provider_outcome_unknown','actor':'hermes (delegado)',
+            'contact_id':'contact-1','expected_contact_status':'em_cadencia','crm_uncertain_confirmed':True,
             'task_contract':{**{key:task[key] for key in ('subject','body','contact_ids')},
                              'content':preview['plan']['content'],'sent_at':'2026-10-19T15:00:00+00:00'}})
         reconciled=HermesLinkedInCadence(self.repo,tasks,app,clock=app.clock).run_task('task-1')
