@@ -265,10 +265,12 @@ class HermesLinkedInCadenceTests(unittest.TestCase):
         original=self.tasks.mark_uncertain;calls=[]
         def flaky(contact_id,status):
             calls.append((contact_id,status))
-            if len(calls)==1:raise RuntimeError("fixture crm unavailable")
+            if len(calls)==1:
+                self.tasks.task["contact_status"]="incerto"
+                raise RuntimeError("fixture crm readback unavailable")
             return original(contact_id,status)
         self.tasks.mark_uncertain=flaky
-        with self.assertRaisesRegex(RuntimeError,"fixture crm unavailable"):
+        with self.assertRaisesRegex(RuntimeError,"fixture crm readback unavailable"):
             self.runner.run_task("task-1")
         self.assertEqual(1,self.console.executes)
         replay=self.runner.run_task("task-1")

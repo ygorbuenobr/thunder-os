@@ -59,7 +59,7 @@ Status: complete
 Proof: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=_ferramentas:/root/.hermes/profiles/ygor-personal/brain/_ferramentas:/root/.hermes/profiles/ygor-personal/brain python3 -m unittest -v -k test_delegated_invite_reconciles_under_exact_d0_authority _ferramentas.test_thunder_os_connectsafely_panel_wiring`
 Status: complete
 
-**C17** - A failed HubSpot `incerto` write is retried on replay until readback confirms, while the provider job remains fenced from redelivery (HLC-03, AC 8-9)
+**C17** - A failed HubSpot `incerto` write, including PATCH applied plus failed readback, converges idempotently on replay while the provider job remains fenced from redelivery (HLC-03, AC 8-9)
 Proof: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=_ferramentas:/root/.hermes/profiles/ygor-personal/brain/_ferramentas:/root/.hermes/profiles/ygor-personal/brain python3 -m unittest -v -k test_uncertain_crm_status_write_retries_without_provider_redelivery _ferramentas.test_thunder_os_hermes_linkedin_cadence`
 Status: complete
 

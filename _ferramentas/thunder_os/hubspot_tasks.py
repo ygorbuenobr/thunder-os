@@ -141,7 +141,10 @@ class HubSpotTasks:
     def mark_uncertain(self, contact_id, expected_status):
         if expected_status not in {"aprovado", "em_cadencia"}:
             raise HubSpotTaskError("hubspot_cadence_status_changed")
-        if self.contact(contact_id)["cad_status"] != expected_status:
+        current = self.contact(contact_id)["cad_status"]
+        if current == "incerto":
+            return {"id": contact_id, "cad_status": "incerto"}
+        if current != expected_status:
             raise HubSpotTaskError("hubspot_cadence_status_changed")
         self._call("PATCH", f"/crm/v3/objects/contacts/{quote(contact_id, safe='')}",
                    {"properties": {"cad_status": "incerto"}})

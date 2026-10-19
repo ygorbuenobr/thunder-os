@@ -9,12 +9,15 @@ from thunder_os.hubspot_tasks import HubSpotTaskError, HubSpotTasks
 class Transport:
     def __init__(self):
         self.calls=[];self.status="NOT_STARTED";self.subject="LinkedIn: msg 1";self.body="cad_li_1";self.cad_status="em_cadencia"
+        self.fail_contact_readback=False
     def __call__(self,method,path,body,headers,timeout):
         self.calls.append((method,path,body,headers,timeout))
         if path=="/account-info/v3/details":value={"portalId":51412240}
         elif method=="POST":value={"results":[{"id":"118775080824"}],"total":1}
         elif "/contacts/" in path:
             if method=="PATCH":self.cad_status=body["properties"]["cad_status"]
+            elif self.fail_contact_readback:
+                self.fail_contact_readback=False;raise OSError("fixture readback unavailable")
             value={"id":"255570819657","properties":{"cad_status":self.cad_status,
                   "hs_latest_sequence_enrolled":"316669709"}}
         elif method=="PATCH":
@@ -61,8 +64,25 @@ class HubSpotTasksTests(unittest.TestCase):
             port=HubSpotTasks("51412240","92901049","HUBSPOT_ACCESS_TOKEN",request=transport)
             self.assertEqual("em_cadencia",port.get("118775080824")["contact_status"])
             self.assertEqual("incerto",port.mark_uncertain("255570819657","em_cadencia")["cad_status"])
-            with self.assertRaisesRegex(HubSpotTaskError,"cadence_status_changed"):
+            self.assertEqual("incerto",port.mark_uncertain("255570819657","em_cadencia")["cad_status"])
+            transport.cad_status="respondeu"
+            with self.assertRaisesRegex(HubSpotTaskError,"cadence_status_changed"):port.mark_uncertain("255570819657","em_cadencia")
+        contact_patches=[call for call in transport.calls if call[0]=="PATCH" and "/contacts/" in call[1]]
+        self.assertEqual(1,len(contact_patches))
+
+    def test_uncertain_write_converges_when_patch_applies_but_readback_fails(self):
+        transport=Transport()
+        with patch.dict(os.environ,{"HUBSPOT_ACCESS_TOKEN":"fixture-token"},clear=False):
+            port=HubSpotTasks("51412240","92901049","HUBSPOT_ACCESS_TOKEN",request=transport)
+            original=transport.__call__
+            def fail_after_patch(method,path,body,headers,timeout):
+                result=original(method,path,body,headers,timeout)
+                if method=="PATCH" and "/contacts/" in path:transport.fail_contact_readback=True
+                return result
+            port.request=fail_after_patch
+            with self.assertRaisesRegex(HubSpotTaskError,"hubspot_request_uncertain"):
                 port.mark_uncertain("255570819657","em_cadencia")
+            self.assertEqual("incerto",port.mark_uncertain("255570819657","em_cadencia")["cad_status"])
         contact_patches=[call for call in transport.calls if call[0]=="PATCH" and "/contacts/" in call[1]]
         self.assertEqual(1,len(contact_patches))
 
