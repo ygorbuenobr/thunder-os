@@ -1,4 +1,7 @@
 import unittest
+import tempfile
+import json
+from pathlib import Path
 from unittest.mock import patch
 import mexico_supervisor as m
 
@@ -39,6 +42,20 @@ class SupervisionTests(unittest.TestCase):
                                      ('api.connectsafely.ai', '/linkedin/account/LOA/status', None)]:
                 with self.assertRaises(ValueError): m.fetch(host, path, 'unused', data)
             network.assert_not_called()
+
+    def test_mac_stale_blocked_and_fresh(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / 'observation.json'
+            cfg = {'mac_observation': str(p), 'campaign': 'test', 'loa_account_id': 'loa', 'batches': ['test']}
+            self.assertEqual(m.mac_coverage(cfg, 100)[1]['state'], 'UNAVAILABLE')
+            data = {'schema': 2, 'campaign': 'test', 'account_id': 'loa', 'batches': ['test'],
+                    'state': 'BLOCKED', 'error_code': 'http_429'}
+            p.write_text(json.dumps(data))
+            self.assertEqual(m.mac_coverage(cfg, 100)[1]['state'], 'BLOCKED')
+            data.update(state='OK', observed_at=100, invitations=[{'task_id': str(i), 'state': 'sent_pending'} for i in range(3)], receipt_references=[])
+            p.write_text(json.dumps(data))
+            self.assertEqual(m.mac_coverage(cfg, 200)[0], [])
+            self.assertEqual(m.mac_coverage(cfg, 1500)[1]['state'], 'UNAVAILABLE')
 
 
 if __name__ == '__main__': unittest.main()
