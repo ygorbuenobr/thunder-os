@@ -6,6 +6,9 @@ from pathlib import PurePosixPath
 
 
 ALLOWED_FILES = {
+    ".specs/features/thunder-os-v1/campaign-execution-confirmation.md",
+    "scripts/test_campaign_confirmation_offline.py",
+    "scripts/test_campaign_confirmation_panel.cjs",
     "AGENTS.md",
     "README.md",
     ".gitignore",
@@ -33,6 +36,8 @@ ALLOWED_FILES = {
     "_ferramentas/painel_modelo.html",
 }
 ALLOWED_TESTS = {
+    "test_thunder_os_campaign_confirmation.py",
+    "test_thunder_os_legacy_campaign_gate.py",
     "test_thunder_os_cadencia_radar_f3b.py",
     "test_thunder_os_cadencia_hermes_f3.py",
     "test_thunder_os_cadencia_hubspot_f1.py",

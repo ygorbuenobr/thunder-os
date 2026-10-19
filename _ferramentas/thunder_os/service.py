@@ -12,7 +12,8 @@ from uuid import uuid4
 
 from .db import Repository, RepositoryConflict
 from .models import ContractError, WorkItem, WorkStatus, as_payload, payload_hash, transition
-from .approvals import ApprovalService, _step_hash
+from .approvals import (ApprovalService, ApprovalError, _step_hash, execution_context,
+                        execution_request, confirm_execution, validate_execution)
 from .learning import LearningEngine
 from .research import validate_artifact, research_is_current
 from .knowledge import KnowledgeStore, KnowledgeError, validate_catalog
@@ -31,8 +32,10 @@ class ThunderService:
     }
 
     def __init__(self, repository: Repository, ledger: TouchLedger | None = None, hubspot: Any = None, *,
-                 knowledge_store: KnowledgeStore | None = None, approved_catalog: Mapping[str, Any] | None = None):
+                 knowledge_store: KnowledgeStore | None = None, approved_catalog: Mapping[str, Any] | None = None, campaign_context_loader=None):
         self.repository = repository
+        # Trusted composition reader, never a request/provider/model field.
+        self.campaign_context_loader = campaign_context_loader
         self.ledger = ledger
         self.hubspot = hubspot
         self.knowledge_store = knowledge_store
@@ -61,8 +64,61 @@ class ThunderService:
             "id": cadence["id"], "version": cadence["version"],
             "account_id": cadence["account_id"], "person_key": cadence["person_key"],
             "objective": cadence["objective"], "research_hash": cadence.get("research_hash"),
+            "execution_context": cadence.get("execution_context"),
             "steps": [ThunderService._approval_step(step) for step in cadence["steps"]],
         })
+
+    def _campaign_context(self, cadence):
+        context = execution_context(cadence.get("execution_context"))
+        if self.campaign_context_loader is None:
+            raise ApprovalError("campaign_context_loader_unconfigured")
+        try:
+            current = execution_context(self.campaign_context_loader(context["campaign_id"]))
+        except Exception as exc:
+            raise ApprovalError("campaign_context_unavailable") from exc
+        if current != context or current["platform"] != "thunder_os":
+            raise ApprovalError("campaign_context_changed")
+        return current
+
+    def campaign_execution_review(self, cadence, *, approval=None):
+        context = self._campaign_context(cadence)
+        if any(s["channel"] not in context["providers"] for s in cadence["steps"]):
+            raise ApprovalError("campaign_provider_mismatch")
+        hashes = {s["id"]: _step_hash(self._approval_step(s)) for s in cadence["steps"]}
+        if approval is not None:
+            approved = approval.get("step_hashes", {})
+            if not approved or any(hashes.get(k) != v for k, v in approved.items()):
+                raise ApprovalError("campaign_confirmation_scope_changed")
+            hashes = {k: hashes[k] for k in approved}
+            version = approval["cadence_version"]
+            if cadence["version"] != version + 1:
+                raise ApprovalError("campaign_confirmation_scope_changed")
+        else:
+            sent = {e["payload"].get("step", {}).get("id") for e in self.repository.effects()
+                    if e["payload"].get("cadence_id") == cadence["id"] and e["state"] == "sent"}
+            hashes = {k: v for k, v in hashes.items() if k not in sent}
+            version = cadence["version"]
+        control = self.repository.get_state("control", "global") or {}
+        return execution_request(context, cadence["id"], version, hashes, control.get("version", 0))
+
+    def campaign_review_view(self, cadence):
+        try:
+            request = self.campaign_execution_review(cadence)
+        except ApprovalError:
+            return {"execution_confirmation": None, "execution_question":
+                    "É no Chattie, Thunder OS ou Instantly? Identifique a campanha e suas regras antes de executar."}
+        context = request["context"]
+        question = (f"Confirma executar no Thunder OS a campanha {context['campaign_id']} "
+                    f"(versão {context['campaign_version']}, regras {context['rules_version']}), "
+                    f"somente o lote {cadence['id']} e os destinatários/textos exibidos?")
+        return {"execution_confirmation": request, "execution_question": question}
+
+    def validate_campaign_execution(self, cadence, approval, *, channel=None, provider=None):
+        expected = self.campaign_execution_review(cadence, approval=approval)
+        validate_execution(approval.get("execution_confirmation"), expected, datetime.now(timezone.utc))
+        if channel is not None and (not provider or expected["context"]["providers"].get(channel) != provider):
+            raise ApprovalError("campaign_provider_mismatch")
+        return expected
 
     def global_paused(self) -> bool:
         control = self.repository.get_state("control", "global")
@@ -287,8 +343,10 @@ class ThunderService:
 
     def create_cadence(self, data: Mapping[str, Any], actor: str) -> dict[str, Any]:
         required = {"id", "account_id", "person_key", "objective", "steps"}
-        if set(data) != required or not isinstance(data.get("steps"), list) or not data["steps"]:
+        if set(data) - (required | {"execution_context"}) or not required <= set(data) or not isinstance(data.get("steps"), list) or not data["steps"]:
             raise ContractError("invalid cadence")
+        if "execution_context" in data:
+            execution_context(data["execution_context"])
         research = self.current_research(str(data["account_id"]))
         expected_order = 1
         normalized = []
@@ -341,7 +399,7 @@ class ThunderService:
         fields = {"id", "recipient", "channel", "content", "order", "interval_hours", "subject"}
         return {key: value for key, value in step.items() if key in fields}
 
-    def approve_cadence(self, cadence_id: str, actor: str, *, expected_version: int, review_hash: str) -> dict[str, Any]:
+    def approve_cadence(self, cadence_id: str, actor: str, *, expected_version: int, review_hash: str, execution_confirmation=None) -> dict[str, Any]:
         if actor != "ygor":
             raise AuthorizationError("human authority required to approve a cadence")
         cadence = self.repository.get_state("cadence", cadence_id)
@@ -357,6 +415,8 @@ class ThunderService:
         now = datetime.now(timezone.utc)
         if self.global_paused():
             raise ContractError("global pause active")
+        request = self.campaign_execution_review(cadence)
+        confirmation = confirm_execution(execution_confirmation, request, actor, now + timedelta(days=14), now)
         sent_ids = {effect["payload"].get("step", {}).get("id") for effect in self.repository.effects()
                     if effect["payload"].get("cadence_id") == cadence_id and effect["state"] == "sent"}
         scoped_steps = [self._approval_step(step) for step in cadence["steps"] if step["id"] not in sent_ids]
@@ -381,7 +441,7 @@ class ThunderService:
             "actor": actor, "cadence_version": pack.cadence_version,
             "step_ids": list(pack.step_ids), "step_hashes": dict(pack.step_hashes),
             "expires_at": pack.expires_at.isoformat(), "status": pack.status,
-            "review_hash": review_hash,
+            "review_hash": review_hash, "execution_confirmation": confirmation,
         }
         cadence_payload = {k: v for k, v in cadence.items() if k not in {"id", "version", "updated_at"}}
         cadence_payload.update(status="approved", steps=[
@@ -406,6 +466,7 @@ class ThunderService:
                 "status": "ready_for_review", "review_reason": "autorização expirada",
             })
             raise ContractError("approval expired; review required")
+        self.validate_campaign_execution(cadence, approval)
         step = next((value for value in cadence["steps"] if value["id"] == step_id), None)
         if not step:
             raise ContractError("cadence step not found")
@@ -431,12 +492,14 @@ class ThunderService:
         audit_actor = self._authorize_effect_actor(actor, "followup", cadence, step, approval)
         job = self._enqueue_authorized_effect(
             effect_key, {"cadence_id": cadence_id, "step": step, "approval_hash": effect_key,
-                         "actor": audit_actor, **({"delegated_action": "followup"} if actor == "hermes" else {})},
+                         "actor": audit_actor, "execution_confirmation_hash": payload_hash(approval["execution_confirmation"]),
+                         **({"delegated_action": "followup"} if actor == "hermes" else {})},
             actor, "followup", f"{cadence_id}:{step_id}",
         )
         return {**job, "payload": job["payload"] if isinstance(job["payload"], dict) else __import__("json").loads(job["payload"])}
 
     def dispatch_like(self, data: Mapping[str, Any], actor: str) -> dict[str, Any]:
+        raise ApprovalError("campaign_confirmation_integration_required")
         if set(data) != {"id", "person_key", "post_url"} or not all(
             isinstance(data.get(field), str) and data[field].strip()
             for field in ("id", "person_key", "post_url")
@@ -699,6 +762,7 @@ class ThunderService:
         })
         if self.hubspot is None:
             return pending
+        raise ApprovalError("campaign_confirmation_integration_required")
         result = self.hubspot.mirror(data["hubspot_effect"])
         return self.repository.put_state("meeting", str(data["id"]), {
             **dict(data), "actor": audit_actor,
@@ -714,6 +778,8 @@ class ThunderService:
             raise ContractError("effect not found")
         if effect["state"] != "failed" or effect["error_code"] not in self.SAFE_RETRY_ERRORS:
             raise RepositoryConflict("effect is not safely retryable")
+        # A restart needs a new batch confirmation; old approval cannot authorize retry.
+        raise ApprovalError("campaign_restart_confirmation_required")
         if self.ledger:
             self.ledger.release_failed_for_retry(effect["effect_key"])
         return self.repository.retry_effect(effect_id)
@@ -786,6 +852,7 @@ class ThunderService:
         }
         values["cadences"] = [{
             **cadence, "review_hash": self.cadence_review_hash(cadence),
+            **self.campaign_review_view(cadence),
             "steps": [{**step,
                        "effective_due_at": (due.isoformat() if (due := effective_due(step, values["effects"], cadence["id"])) is not None else None),
                        **({"status": effect_by_step[(cadence["id"], step["id"])]["state"],

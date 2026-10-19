@@ -15,7 +15,7 @@ from .connectsafely_coordination import CoordinationError
 
 class ConnectSafelyError(ValueError):pass
 
-SAFE_CODES=frozenset({'social_attempt_invalid','social_backend_unsupported','social_backfill_review_required','social_capability_scope_invalid','social_capability_ttl_invalid','social_inventory_changed','social_inventory_incomplete','social_inventory_invalid','social_request_invalid','social_reservation_unverified','social_schema_changed','social_transaction_already_open','social_writer_artifact_changed','social_writer_artifact_invalid','social_writer_inventory_changed','social_writer_protocol_unverified','social_writer_unknown','social_attempt_fenced','social_inventory_unavailable','social_inventory_unverified','social_schema_unverified','social_capability_scope_mismatch','dispatch_guard_denied','reservation_not_safely_reusable','social_coordination_unverified','provider_unauthorized','provider_forbidden','provider_rate_limited','provider_rejected',
+SAFE_CODES=frozenset({'campaign_confirmation_integration_required','social_attempt_invalid','social_backend_unsupported','social_backfill_review_required','social_capability_scope_invalid','social_capability_ttl_invalid','social_inventory_changed','social_inventory_incomplete','social_inventory_invalid','social_request_invalid','social_reservation_unverified','social_schema_changed','social_transaction_already_open','social_writer_artifact_changed','social_writer_artifact_invalid','social_writer_inventory_changed','social_writer_protocol_unverified','social_writer_unknown','social_attempt_fenced','social_inventory_unavailable','social_inventory_unverified','social_schema_unverified','social_capability_scope_mismatch','dispatch_guard_denied','reservation_not_safely_reusable','social_coordination_unverified','provider_unauthorized','provider_forbidden','provider_rate_limited','provider_rejected',
     'provider_not_found','provider_outcome_unknown','provider_schema_invalid','quota_contract_unverified','quota_exhausted',
     'write_entitlement_unverified','account_identity_mismatch','account_identity_unverified','account_not_ready','recipient_identity_mismatch',
     'conversation_identity_mismatch','transport_unconfigured','invite_receipt_unavailable','receipt_unverified',
@@ -134,7 +134,9 @@ class ConnectSafelyConsole:
         return {'status':'uncertain','retry_write':False,'error_code':_error(result.get('error_code') if isinstance(result,dict) else None,'requires_reconciliation'),**extra}
 
     def execute(self,body,actor=None,*,dispatch_guard=None):
+        """Local candidate: execution blocked pending campaign integration; no activation."""
         self._actor(actor)
+        raise ConnectSafelyError('campaign_confirmation_integration_required')
         if self.writes_enabled is not True or self.ledger is None:raise ConnectSafelyError('writes_disabled_or_ledger_missing')
         if not isinstance(body,dict) or set(body)!={'preview_id','expected_version','review_hash'} or type(body.get('expected_version')) is not int:raise ConnectSafelyError('exact_review_required')
         self._identity()

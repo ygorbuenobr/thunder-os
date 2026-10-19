@@ -142,7 +142,9 @@ class SEQDConsole:
         return {'status':'uncertain','error_code':'requires_reconciliation','retry_write':False}
 
     def execute(self,body,actor,*,dispatch_guard=None,dispatch_expires_at=None):
+        """Local candidate: execution blocked pending campaign integration; no activation."""
         self._actor(actor)
+        raise SEQDError('campaign_confirmation_integration_required')
         from .email_canary import restricted_mode, EmailCanary
         if restricted_mode():
             guard=getattr(dispatch_guard,'__self__',None)

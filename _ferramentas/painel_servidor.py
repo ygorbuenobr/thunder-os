@@ -1548,10 +1548,11 @@ class Handler(BaseHTTPRequestHandler):
             r'/api/os/v1/cadences/([a-zA-Z0-9_-]{1,100})/(approve|dispatch)', rota.path)
         if match_cadence:
             cadence_id, action = match_cadence.groups()
-            if (action == 'approve' and set(body) == {'expected_version', 'review_hash'}
+            if (action == 'approve' and set(body) == {'expected_version', 'review_hash', 'execution_confirmation'}
                     and type(body['expected_version']) is int and isinstance(body['review_hash'], str)):
                 return self.responder(200, service.approve_cadence(
-                    cadence_id, actor, expected_version=body['expected_version'], review_hash=body['review_hash']))
+                    cadence_id, actor, expected_version=body['expected_version'], review_hash=body['review_hash'],
+                    execution_confirmation=body['execution_confirmation']))
             if action == 'dispatch' and set(body) == {'step_id'}:
                 return self.responder(202, service.dispatch_step(cadence_id, str(body['step_id']), actor))
             raise Erro('Comando de cadência inválido')

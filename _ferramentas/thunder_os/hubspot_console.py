@@ -93,7 +93,9 @@ class HubSpotConsole:
                 'write_enabled':self._write_allowed()})
 
     def execute(self,body,actor):
+        """Local candidate: execution blocked pending campaign integration; no activation."""
         self._actor(actor)
+        raise HubSpotContractError('campaign_confirmation_integration_required')
         if not self._write_allowed():raise HubSpotContractError('hubspot_writes_disabled_or_paused')
         if (not isinstance(body,dict) or set(body)!={'preview_id','expected_version','plan_hash','confirm'}
                 or body.get('confirm') is not True or type(body.get('expected_version')) is not int):

@@ -14,7 +14,7 @@ from threading import Event, Thread
 from contextlib import contextmanager
 from typing import Any, Mapping
 
-from .approvals import ApprovalPack, ApprovalService, _step_hash
+from .approvals import ApprovalPack, ApprovalService, ApprovalError, _step_hash
 from .cadence import effective_due
 from .service import ThunderService
 from .knowledge import KnowledgeStore
@@ -48,6 +48,8 @@ class EffectCoordinator:
         self, step: Mapping[str, Any], pack: ApprovalPack, now: datetime, *,
         suppressed: bool = False, has_reply: bool = False,
     ) -> EffectResult:
+        # Payload-only callers have no canonical campaign confirmation yet.
+        raise EffectBlocked("campaign_confirmation_integration_required")
         if suppressed:
             raise EffectBlocked("suppressed")
         if has_reply:
@@ -89,11 +91,12 @@ class EffectCoordinator:
 class WorkerRuntime:
     def __init__(
         self, repository: Repository, ledger: TouchLedger, adapters: Mapping[str, Any],
-        *, worker_id: str, health_path: Path, revision: str, knowledge_store=None, approved_catalog=None, connectsafely_app=None,
+        *, worker_id: str, health_path: Path, revision: str, knowledge_store=None, approved_catalog=None, connectsafely_app=None, campaign_context_loader=None, adapter_provider_ids=None,
     ):
         self.repository = repository
         self.connectsafely_app = connectsafely_app
-        self.authorization_service = ThunderService(repository, knowledge_store=knowledge_store, approved_catalog=approved_catalog)
+        self.authorization_service = ThunderService(repository, knowledge_store=knowledge_store, approved_catalog=approved_catalog, campaign_context_loader=campaign_context_loader)
+        self.adapter_provider_ids = dict(adapter_provider_ids or {})
         self.ledger = ledger
         self.adapters = dict(adapters)
         self.worker_id = worker_id
@@ -181,6 +184,13 @@ class WorkerRuntime:
             }
             if step["channel"] == "email":
                 effect["subject"] = step.get("subject")
+            # Re-read the same persisted authority after reservation, just before
+            # dispatch. Existing ledger still fences duplicate parallel effects.
+            gate_error = self._runtime_gate(payload, step, expected)
+            if gate_error:
+                # Reservation is retained: do not label this safely retryable.
+                finish("needs_reconciliation", None, gate_error)
+                return True
             with self._keep_lease(job):
                 result = adapter.send(effect)
             state = {"confirmed": "sent", "rejected": "failed", "uncertain": "uncertain", "not_configured": "failed"}.get(result.status, "uncertain")
@@ -220,6 +230,24 @@ class WorkerRuntime:
             stop.set()
             thread.join(timeout=1)
 
+    def _final_campaign_gate(self, payload, step):
+        # Re-read after all preflight I/O, including authority/control changes.
+        if self.authorization_service.global_paused():
+            return "global_pause"
+        cadence = self.repository.get_state("cadence", str(payload.get("cadence_id", "")))
+        approval = self.repository.get_state("approval", str(payload.get("cadence_id", "")))
+        if not cadence or cadence.get("status") != "approved" or not approval or approval.get("status") != "active":
+            return "approval_not_active"
+        if payload.get("execution_confirmation_hash") != payload_hash(approval.get("execution_confirmation")):
+            return "campaign_confirmation_scope_changed"
+        try:
+            self.authorization_service.validate_campaign_execution(
+                cadence, approval, channel=str(step.get("channel")),
+                provider=self.adapter_provider_ids.get(str(step.get("channel"))))
+        except ApprovalError as exc:
+            return str(exc)
+        return None
+
     def _runtime_gate(self, payload: Mapping[str, Any], step: Mapping[str, Any], expected: str) -> str | None:
         control = self.repository.get_state("control", "global")
         if control and control.get("paused"):
@@ -232,6 +260,7 @@ class WorkerRuntime:
                 return "delegation_disabled_or_out_of_scope"
         cadence_id = payload.get("cadence_id")
         if not cadence_id:
+            return "campaign_confirmation_integration_required"
             # Likes have a separate, immutable producer authorization. Neither
             # actor strings nor fake adapters are authority for orphan jobs.
             grant=self.repository.get_state("effect_authorization",expected)
@@ -254,6 +283,14 @@ class WorkerRuntime:
             return "cadence_not_approved"
         if not approval or approval.get("status") != "active":
             return "approval_not_active"
+        if payload.get("execution_confirmation_hash") != payload_hash(approval.get("execution_confirmation")):
+            return "campaign_confirmation_scope_changed"
+        try:
+            self.authorization_service.validate_campaign_execution(
+                cadence, approval, channel=str(step.get("channel")),
+                provider=self.adapter_provider_ids.get(str(step.get("channel"))))
+        except ApprovalError as exc:
+            return str(exc)
         if datetime.now(timezone.utc) >= datetime.fromisoformat(str(approval["expires_at"])):
             return "approval_expired"
         current = next((value for value in cadence.get("steps", []) if value.get("id") == step.get("id")), None)
@@ -285,7 +322,7 @@ class WorkerRuntime:
             self.ledger.preflight(expected, current, raise_blocked=True)
         except TouchBlocked as exc:
             return str(exc)
-        return None
+        return self._final_campaign_gate(payload, step)
 
     def run(self, poll_seconds: float = 0.1) -> None:
         self._health("ok")
