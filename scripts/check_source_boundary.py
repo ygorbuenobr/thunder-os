@@ -20,6 +20,8 @@ ALLOWED_FILES = {
     "scripts/test_runtime_bundle.py",
     "scripts/test_connection_units.py",
     "scripts/provision_claude_social.py",
+    "scripts/mexico_supervisor.py",
+    "scripts/test_mexico_supervisor.py",
     "runtime/dependencies.json",
     "runtime/systemd/thunder-os-agent-pythonpath.conf",
     "runtime/systemd/thunder-os-agent-hermes-ro.conf",
