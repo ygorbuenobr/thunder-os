@@ -33,3 +33,20 @@ const button = {disabled:false,dataset:{osApprove:'b',osVersion:'1',osReviewHash
   assert(sandbox.cadenciaHTML({...draft,execution_confirmation:confirmation,execution_question:'Confirmar?'}).includes('data-os-approve='),'approved batch must permit fresh resume confirmation');
   console.log('PASS: cancel, explicit payload, legacy blocked, resume confirmation UI source');
 })().catch(error=>{console.error(error);process.exitCode=1});
+
+(async()=>{
+  const start=html.indexOf('async function confirmCampaignOperation(');
+  const stop=html.indexOf('\n}',start)+2;
+  const calls=[];
+  const request={context:{platform:'thunder_os',campaign_id:'offline',campaign_version:'v1',rules_version:'r1',rules_hash:'a'.repeat(64),configuration_hash:'b'.repeat(64)},batch_id:'seqd:fixture',batch_version:1,scope_hash:'c'.repeat(64)};
+  const sandbox={window:{prompt:()=>null,confirm:()=>true,alert:()=>{}},api:async(...args)=>{calls.push(args);return request;}};
+  vm.createContext(sandbox);vm.runInContext(html.slice(start,stop),sandbox);
+  assert.equal(await sandbox.confirmCampaignOperation(sandbox.api,'/integration',{id:'fixture',version:1}),null);
+  assert.equal(calls.length,0);
+  sandbox.window.prompt=()=> 'offline';sandbox.window.confirm=q=>{assert(q.includes('Thunder OS'));assert(q.includes('Regras: r1'));return false;};
+  assert.equal(await sandbox.confirmCampaignOperation(sandbox.api,'/integration',{id:'fixture',version:1}),null);
+  sandbox.window.confirm=()=>true;
+  assert.equal(await sandbox.confirmCampaignOperation(sandbox.api,'/integration',{id:'fixture',version:1}),request);
+  assert(calls.every(c=>c[0].endsWith('/campaign-review')));
+  console.log('PASS: integration campaign review, cancel and exact confirmation (source harness)');
+})().catch(error=>{console.error(error);process.exitCode=1;});

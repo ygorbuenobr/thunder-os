@@ -49,3 +49,15 @@ Branch `codex/campaign-execution-confirmation` starts from local c570914, isolat
 | ConnectSafely/social, SEQD, HubSpot consoles | Execute blocked | Four negative console cases |
 | Orphan like / manual retry / meeting mirror | Blocked before external effect | Negative route tests; meeting may retain internal pending state |
 | External panels, direct SDK calls, other releases/jobs | Outside this candidate | No coverage claim |
+
+## Local migration of integration operations (subsequent candidate)
+
+ConnectSafely direct/social, SEQD and HubSpot now have `campaign-review` endpoints. A review binds the canonical campaign/platform/rules/configuration and control version to the exact server-held preview, provider/account and preview version. UI obtains that review and asks explicit confirmation before execute. Existing provider/content/nonce/canary checks remain required. SEQD binding is workspace ID plus mailbox ID; HubSpot has its own `hubspot` channel/portal binding, never an email alias.
+
+`OperationCampaign` reuses the approval helpers and existing state storage (`operation_approval`). It preserves preview content/hash. A persisted confirmation is immutable and expires with its preview; a new registry/control revision invalidates it. ConnectSafely queue approval carries the record, and the job carries its hash. Missing/invalid legacy authority is retained as `needs_reconciliation`; neither a new confirmation nor worker restart automatically reauthorizes it.
+
+The operation fence starts only after a durable attempt has committed. It verifies the attempt belongs to the reviewed preview and rechecks campaign/control before the provider boundary. Existing one-shot journals remain the crash/replay protection, including HubSpot's durable `attempted` marker. ConnectSafely commits a pessimistic `dispatch_started` marker before entering the fence, so an interruption cannot be interpreted as proof of zero dispatch. A rejection after this marker may conservatively require reconciliation even if no bytes left. Unknown outcomes never automatically retry. The fence is a SQLite serialization mechanism; it does not make external providers transactional.
+
+The prior blanket denial of these three console/application paths is superseded by this migration in source only. The main worker can process specifically confirmed ConnectSafely jobs without starving the core queue. Existing source-level guards still block orphan likes, manual retry, generic coordinator/fallback and meeting mirror; these are outside this migration. Canary retains its separate one-shot policy and token; campaign validation precedes consuming a canary claim, and the final canary callback runs exactly once.
+
+This migration remains a local candidate for isolated VPS qualification. It does not enable any configured integration, select a live campaign, provision production registry entries, or affect Chattie/Instantly external panels. Old approvals are intentionally incompatible and require review/reconciliation before new work is prepared.

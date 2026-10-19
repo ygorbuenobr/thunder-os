@@ -37,6 +37,8 @@ ALLOWED_FILES = {
 }
 ALLOWED_TESTS = {
     "test_thunder_os_campaign_registry.py",
+    "test_thunder_os_operation_campaign.py",
+    "test_thunder_os_migrated_operations.py",
     "test_thunder_os_campaign_confirmation.py",
     "test_thunder_os_legacy_campaign_gate.py",
     "test_thunder_os_cadencia_radar_f3b.py",

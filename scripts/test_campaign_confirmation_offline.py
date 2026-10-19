@@ -14,6 +14,8 @@ with tempfile.TemporaryDirectory(prefix='thunder-campaign-test-') as directory:
     result = subprocess.run([sys.executable, '-m', 'unittest',
         '_ferramentas/test_thunder_os_campaign_confirmation.py',
         '_ferramentas/test_thunder_os_campaign_registry.py',
+        '_ferramentas/test_thunder_os_operation_campaign.py',
+        '_ferramentas/test_thunder_os_migrated_operations.py',
         '_ferramentas/test_thunder_os_legacy_campaign_gate.py',
         '_ferramentas/test_thunder_os_approvals.py',
         '_ferramentas/test_thunder_os_db_integracao.py'], cwd=root, env=env)

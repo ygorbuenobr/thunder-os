@@ -10,6 +10,7 @@ from uuid import uuid4
 from .connectsafely_console import ConnectSafelyError, SAFE_CODES
 from .db import RepositoryConflict
 from .models import payload_hash
+from .approvals import ApprovalError
 
 
 class ConnectSafelyApplication:
@@ -165,14 +166,25 @@ class ConnectSafelyApplication:
     def _public_job(job):
         return {key:job[key] for key in ('id','preview_id','state','simulation','result','error_code') if key in job}
 
+    def campaign_review(self, body, actor):
+        self._actor(actor)
+        if not isinstance(body, dict) or set(body) != {'preview_id','campaign_id'}:
+            raise ConnectSafelyError('campaign_review_invalid')
+        preview = self._preview(body['preview_id'])
+        return self._console(preview['plan']['action']).campaign_review(body, actor)
+
     def enqueue(self, body, actor):
         self._actor(actor)
-        raise ConnectSafelyError("campaign_confirmation_integration_required")
-        if (not isinstance(body, dict) or set(body) != {'preview_id','expected_version','review_hash'}
+        if not isinstance(body, dict) or 'execution_confirmation' not in body:
+            raise ConnectSafelyError('campaign_confirmation_required')
+        if (not isinstance(body, dict) or set(body) != {'preview_id','expected_version','review_hash','execution_confirmation'}
                 or type(body.get('expected_version')) is not int):
             raise ConnectSafelyError('exact_review_required')
         with self.repo.transaction():
             preview = self._preview(body['preview_id'])
+            gate = self._console(preview['plan']['action']).campaign_gate()
+            try: campaign_record = gate.approve(body, actor)
+            except ApprovalError as exc: raise ConnectSafelyError(str(exc)) from None
             self._enabled(preview['plan']['action'])
             self._check_mode(preview)
             if preview['version'] != body['expected_version'] or preview['review_hash'] != body['review_hash']:
@@ -188,15 +200,23 @@ class ConnectSafelyApplication:
             if existing is None:
                 self.repo.append_state('connectsafely_queue_approval', key, {
                     'review':dict(body), 'actor':'ygor', 'simulation':self.simulation,
+                    'campaign_confirmation':campaign_record,
                     'expires_at':preview['expires_at'], 'execution_scope':self.execution_scope, 'approved_at':self.clock()})
                 existing = self.repo.append_state('connectsafely_job', key, {
                     'preview_id':preview['id'], 'review':dict(body), 'actor':'ygor',
+                    'campaign_confirmation_hash':payload_hash(campaign_record),
                     'state':'queued', 'simulation':self.simulation, 'execution_scope':self.execution_scope, 'created_at':self.clock()})
             return {'job_id':key, 'preview_id':preview['id'], 'state':existing['state'], 'simulation':self.simulation}
 
     def _job_authorized(self,job):
         self._check_mode(self._preview(job['preview_id']))
         approval = self.repo.get_state('connectsafely_queue_approval', job['id'])
+        record = (approval or {}).get('campaign_confirmation')
+        if not record or job.get('campaign_confirmation_hash') != payload_hash(record):
+            raise ConnectSafelyError('campaign_confirmation_required')
+        preview = self._preview(job['preview_id'])
+        try: self._console(preview['plan']['action']).campaign_gate().validate(record)
+        except ApprovalError as exc: raise ConnectSafelyError(str(exc)) from None
         if (not approval or approval.get('actor') != 'ygor'
                 or approval.get('review') != job.get('review')
                 or approval.get('simulation') is not self.simulation
@@ -214,8 +234,12 @@ class ConnectSafelyApplication:
             for job in jobs:
                 if job is None or (self.execution_scope is not None and job.get('execution_scope') != self.execution_scope):
                     continue
-                if self.execution_scope is not None:
-                    self._job_authorized(job)
+                if job['state'] == 'queued':
+                    try: self._job_authorized(job)
+                    except (ConnectSafelyError, ApprovalError):
+                        self.repo.put_state('connectsafely_job', job['id'], {
+                            **job, 'state':'needs_reconciliation', 'error_code':'campaign_confirmation_invalid'})
+                        continue
                 if job['state'] == 'running' and job['lease_until'] <= self.clock():
                     # Never redeliver a crashed worker's potentially dispatched action.
                     self.repo.put_state('connectsafely_job', job['id'], {
@@ -227,15 +251,14 @@ class ConnectSafelyApplication:
         return None
 
     def process_one(self, *, job_id=None):
-        raise ConnectSafelyError("campaign_confirmation_integration_required")
         if self.execution_scope is not None and job_id is None:
             return False
         try:
             selected=self.repo.get_state('connectsafely_job',self._id(job_id)) if job_id is not None else None
             if job_id is not None and selected is None:return False
             action=self._preview(selected['preview_id'])['plan']['action'] if selected else None
-            self._enabled(action)
             job = self._claim(job_id)
+            if job is not None: self._enabled(action)
         except ConnectSafelyError:
             return False
         if job is None:

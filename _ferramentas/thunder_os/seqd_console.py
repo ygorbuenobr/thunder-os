@@ -1,3 +1,5 @@
+from .operation_campaign import OperationCampaign
+from .approvals import ApprovalError
 """Ygor-only, server-held email previews and durable one-attempt journal.
 
 HTTP caller MUST verify the current confirm_nonce via its existing nonce gate.
@@ -141,10 +143,25 @@ class SEQDConsole:
             return {'status':'sent','receipt_ref':'gmail:'+result['provider_id'],'retry_write':False}
         return {'status':'uncertain','error_code':'requires_reconciliation','retry_write':False}
 
-    def execute(self,body,actor,*,dispatch_guard=None,dispatch_expires_at=None):
-        """Local candidate: execution blocked pending campaign integration; no activation."""
+    def campaign_gate(self):
+        return OperationCampaign(self.repo, 'seqd', 'seqd', WORKSPACE_ID + ":" + MAILBOX_ID, 'email', clock=self.clock)
+
+    def campaign_review(self, body, actor):
         self._actor(actor)
-        raise SEQDError('campaign_confirmation_integration_required')
+        if not isinstance(body, dict) or set(body) != {'preview_id', 'campaign_id'}:
+            raise SEQDError('campaign_review_invalid')
+        return self.campaign_gate().review(body['preview_id'], body['campaign_id'])
+
+    def execute(self,body,actor,*,dispatch_guard=None,dispatch_expires_at=None):
+        self._actor(actor)
+        if not isinstance(body, dict) or 'execution_confirmation' not in body:
+            raise SEQDError('campaign_confirmation_required')
+        gate = self.campaign_gate()
+        try:
+            campaign_record = gate.approve(body, actor)
+        except ApprovalError as exc:
+            raise SEQDError(str(exc)) from None
+        body = {k:v for k,v in body.items() if k != 'execution_confirmation'}
         from .email_canary import restricted_mode, EmailCanary
         if restricted_mode():
             guard=getattr(dispatch_guard,'__self__',None)
@@ -203,12 +220,15 @@ class SEQDConsole:
                     # Explicitly injected legacy fixture uses the same live checks.
                     self.ledger.preflight(effect,{'channel':'email','recipient':plan['to'],
                         'subject':plan['subject']},raise_blocked=True)
-                if dispatch_guard is not None and dispatch_guard(envelope) is not True:
-                    raise SEQDError('dispatch_authority_denied')
                 if not self._send_allowed():
                     raise SEQDError('seqd_sends_disabled_or_paused')
-                dispatch_started=True
-                result=self._result(self.port.send(envelope))
+                with gate.execution_guard(campaign_record, 'seqd_attempt', effect):
+                    if dispatch_guard is not None and dispatch_guard(envelope) is not True:
+                        raise SEQDError('dispatch_authority_denied')
+                    if not self._send_allowed():
+                        raise SEQDError('seqd_sends_disabled_or_paused')
+                    dispatch_started=True
+                    result=self._result(self.port.send(envelope))
                 self.ledger.finish(effect,'sent' if result['status']=='sent' else 'uncertain',result.get('receipt_ref'))
         except TouchBlocked:
             result=(self._result(None) if dispatch_started else

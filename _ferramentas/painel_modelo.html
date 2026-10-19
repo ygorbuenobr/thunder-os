@@ -706,6 +706,18 @@ $('detalhes-sistema').addEventListener('toggle',()=>{if($('detalhes-sistema').op
 
 <script id="dados" type="application/json">/*DADOS*/{}</script>
 <script>
+async function confirmCampaignOperation(api,base,preview){
+  const campaign_id=window.prompt('Qual campanha do Thunder OS autoriza esta operação? Informe o identificador da ficha cadastrada.');
+  if(!campaign_id||!campaign_id.trim())return null;
+  try{
+    const request=await api(base+'/campaign-review','POST',{preview_id:preview.id,campaign_id:campaign_id.trim()});
+    const c=request.context;
+    if(!c||request.batch_version!==preview.version||c.platform!=='thunder_os')return null;
+    const question='Confirmar esta operação no Thunder OS?\nCampanha: '+c.campaign_id+' / '+c.campaign_version+'\nRegras: '+c.rules_version+' / '+c.rules_hash+'\nConfiguração: '+c.configuration_hash+'\nOperação: '+request.batch_id+' / versão '+request.batch_version+'\nEscopo: '+request.scope_hash;
+    return window.confirm(question)?request:null;
+  }catch(_){window.alert('Não foi possível verificar a campanha e suas regras. Nenhuma execução foi solicitada.');return null;}
+}
+
 (function(){
 const D = JSON.parse(document.getElementById('dados').textContent || '{}');
 const E = D.eventos || [], C = D.contas || [], F = D.fila || [];
@@ -1049,7 +1061,7 @@ ThunderConnectSafelyMonitor.mount($('connectsafely-monitor'),{api:(...args)=>{
         const p=await api(base+'/preview','POST',plan);if(g===generation){render(p);status.textContent='Confira a conta, o alvo e o conteúdo. Nada foi colocado na fila.';}
       });
     });
-    q('execute').addEventListener('click',()=>{if(busy)return;if(!eligible()){preview=null;status.textContent='Esta revisão expirou ou está indisponível. Consulte o resultado antes de preparar outra.';buttons();return;}const accepted=preview,g=generation;submitted.add(accepted.id);pendingAttempt=accepted.id;preview=null;return task(async()=>{try{const queued=await api(base+'/execute','POST',{preview_id:accepted.id,expected_version:accepted.version,review_hash:accepted.review_hash});status.textContent=queued.simulation===true?'Ação simulada na fila. Nenhum envio real confirmado.':queued.state==='queued'?'Na fila. Aguardando confirmação do resultado.':'Confira o resultado desta revisão antes de qualquer nova ação.';}catch(e){status.textContent='A confirmação não chegou. Não repita a aprovação; consulte o resultado desta revisão.';}if(g===generation){try{await current(accepted.id);}catch(e){selected=accepted.id;preview=null;}}});});
+    q('execute').addEventListener('click',async()=>{if(busy)return;if(!eligible()){preview=null;status.textContent='Esta revisão expirou ou está indisponível. Consulte o resultado antes de preparar outra.';buttons();return;}const accepted=preview,g=generation;const execution_confirmation=await confirmCampaignOperation(api,base,accepted);if(!execution_confirmation||preview!==accepted||generation!==g)return;submitted.add(accepted.id);pendingAttempt=accepted.id;preview=null;return task(async()=>{try{const queued=await api(base+'/execute','POST',{preview_id:accepted.id,expected_version:accepted.version,review_hash:accepted.review_hash,execution_confirmation});status.textContent=queued.simulation===true?'Ação simulada na fila. Nenhum envio real confirmado.':queued.state==='queued'?'Na fila. Aguardando confirmação do resultado.':'Confira o resultado desta revisão antes de qualquer nova ação.';}catch(e){status.textContent='A confirmação não chegou. Não repita a aprovação; consulte o resultado desta revisão.';}if(g===generation){try{await current(accepted.id);}catch(e){selected=accepted.id;preview=null;}}});});
     q('refresh').addEventListener('click',()=>task(()=>current(selected)));
     q('recover').addEventListener('click',()=>{if(busy||preview?.result?.phase!=='not_dispatched'||!Number.isInteger(preview?.result?.version))return;const id=selected,version=preview.result.version;return task(async()=>{await api(base+'/recover','POST',{preview_id:id,expected_attempt_version:version});if(pendingAttempt===id)pendingAttempt=null;await current(id);status.textContent='A tentativa não foi enviada. Você pode preparar uma nova revisão; nenhuma ação foi solicitada.';});});
     q('reconcile').addEventListener('click',()=>task(async()=>{const id=selected;await api(base+'/reconcile','POST',{preview_id:id});await current(id);status.textContent='Resultado consultado. Nenhum novo envio foi solicitado.';}));
@@ -1121,9 +1133,9 @@ ThunderConnectSafely.mount($('connectsafely-console-form'),{api:(...args)=>{
     execute.addEventListener('click',async()=>{
       if(busy)return;
       if(!freshRead()||!freshPreview()||verified?.write_enabled!==true||preview.write_enabled!==true){discard();status.textContent='A revisão expirou ou a gravação está desativada. Confira o acesso e prepare uma nova prévia.';buttons();return;}
-      const accepted=preview,generation=revision;preview=null;reconciliation=null;busy=true;buttons();status.textContent='Registrando a decisão e conferindo o resultado no HubSpot…';
+      const accepted=preview,generation=revision;const execution_confirmation=await confirmCampaignOperation(api,'/api/os/v1/integrations/hubspot',accepted);if(!execution_confirmation||preview!==accepted||revision!==generation)return;preview=null;reconciliation=null;busy=true;buttons();status.textContent='Registrando a decisão e conferindo o resultado no HubSpot…';
       try{
-        const result=await api('/api/os/v1/integrations/hubspot/execute','POST',{preview_id:accepted.id,expected_version:accepted.version,plan_hash:accepted.plan.plan_hash,confirm:true});
+        const result=await api('/api/os/v1/integrations/hubspot/execute','POST',{preview_id:accepted.id,expected_version:accepted.version,plan_hash:accepted.plan.plan_hash,confirm:true,execution_confirmation});
         if(generation===revision&&result?.id===accepted.id&&Number.isInteger(result.version)&&result?.plan?.plan_hash===accepted.plan.plan_hash&&['pending_reconciliation','needs_human'].includes(result?.result?.status))reconciliation=result;
         status.textContent=result?.result?.status==='verified_state'?'Dados do contato conferidos no HubSpot. Nenhuma mensagem foi enviada.':'O resultado precisa ser conferido. Não repita a gravação enquanto houver dúvida.';
       }catch(error){
@@ -1205,8 +1217,8 @@ ThunderHubSpotContact.mount($('hubspot-contact-form'),{api:(...args)=>{
     });
     q('execute').addEventListener('click',async()=>{
       if(busy||pending||!fresh()||access?.send_enabled!==true||preview?.send_enabled!==true)return;
-      const accepted=preview;pending={id:accepted.id};preview=null;busy=true;buttons();status.textContent='Registrando sua aprovação e aguardando confirmação do envio…';
-      try{const value=await api(base+'/execute','POST',{preview_id:accepted.id,expected_version:accepted.version,content_hash:accepted.content_hash});status.textContent=outcome(value);}
+      const accepted=preview;const execution_confirmation=await confirmCampaignOperation(api,base,accepted);if(!execution_confirmation||preview!==accepted)return;pending={id:accepted.id};preview=null;busy=true;buttons();status.textContent='Registrando sua aprovação e aguardando confirmação do envio…';
+      try{const value=await api(base+'/execute','POST',{preview_id:accepted.id,expected_version:accepted.version,content_hash:accepted.content_hash,execution_confirmation});status.textContent=outcome(value);}
       catch(_){
         try{const value=await api(base+'/previews/'+encodeURIComponent(accepted.id));if(value.id===accepted.id&&value.content_hash===accepted.content_hash&&value.result)status.textContent=outcome(value);else status.textContent='A resposta não chegou. Confira o resultado antes de qualquer novo envio.';}
         catch(_){status.textContent='A resposta não chegou. Confira o resultado; não repita o envio.';}

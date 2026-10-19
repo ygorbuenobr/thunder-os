@@ -120,7 +120,7 @@ def execution_context(value: Any) -> dict[str, Any]:
             raise ApprovalError("campaign_hash_invalid")
     providers = value["providers"]
     if (not isinstance(providers, Mapping) or not providers
-            or not set(providers) <= {"linkedin", "email"}
+            or not set(providers) <= {"linkedin", "email", "hubspot"}
             or any(not isinstance(v, str) or not re.fullmatch(r"[a-z0-9_-]{1,64}", v)
                    for v in providers.values())):
         raise ApprovalError("campaign_providers_invalid")

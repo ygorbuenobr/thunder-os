@@ -347,13 +347,13 @@ class CampaignConfirmationTests(unittest.TestCase):
         self.assertEqual(self.repo.get_state('meeting','offline-meeting')['status'],'mirror_pending')
 
     def test_blocked_legacy_application_does_not_starve_confirmed_core(self):
-        app=Mock(); app.process_one.side_effect=AssertionError('legacy application called')
+        from thunder_os.connectsafely_console import ConnectSafelyError
+        app=Mock(); app.process_one.side_effect=ConnectSafelyError('campaign_confirmation_required')
         self.approve();self.queue();worker=self.worker();worker.connectsafely_app=app
         self.assertTrue(worker.process_one());self.adapter.send.assert_called_once()
-        app.process_one.assert_not_called()
+        app.process_one.assert_called_once()
         health=__import__('json').loads(worker.health_path.read_text())
-        self.assertEqual(health['blocked_integrations']['connectsafely'],
-                         'campaign_confirmation_integration_required')
+        self.assertIs(health['campaign_confirmation_required'], True)
 
     def test_added_recipient_is_not_covered_by_confirmation(self):
         self.approve()

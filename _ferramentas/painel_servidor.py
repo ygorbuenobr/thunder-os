@@ -1439,6 +1439,12 @@ class Handler(BaseHTTPRequestHandler):
             raise Erro('Copiloto: somente as integrações aprovadas individualmente podem executar.',503)
         if rota.path in {seqd_base+'/execute', '/api/os/v1/integrations/hubspot/execute'} and service.global_paused():
             raise Erro('Efeitos externos pausados globalmente.', 503)
+        campaign_review_route = re.fullmatch(r'/api/os/v1/integrations/(connectsafely|seqd|hubspot)/campaign-review', rota.path)
+        if campaign_review_route:
+            target = getattr(self.server, {'connectsafely':'thunder_connectsafely_app',
+                'seqd':'thunder_seqd_console','hubspot':'thunder_hubspot_console'}[campaign_review_route.group(1)], None)
+            if target is None: raise Erro('Integração não configurada', 503)
+            return self.responder(200, target.campaign_review(body, actor))
         if rota.path == connectsafely_base + '/resolve-target':
             if actor != 'ygor':
                 raise AuthorizationError('Somente Ygor pode consultar esta integração.')
@@ -1458,7 +1464,7 @@ class Handler(BaseHTTPRequestHandler):
             app = getattr(self.server, 'thunder_connectsafely_app', None)
             if app is None:
                 raise Erro('ConnectSafely não configurado', 503)
-            if rota.path.endswith('/execute') and (set(body) != {'preview_id', 'expected_version', 'review_hash'}
+            if rota.path.endswith('/execute') and (set(body) != {'preview_id', 'expected_version', 'review_hash', 'execution_confirmation'}
                     or type(body.get('expected_version')) is not int
                     or not isinstance(body.get('preview_id'), str)
                     or not isinstance(body.get('review_hash'), str)):
@@ -1479,12 +1485,13 @@ class Handler(BaseHTTPRequestHandler):
             if console is None:
                 raise Erro('E-mail não configurado', 503)
             if rota.path.endswith('/execute'):
-                if set(body) != {'preview_id', 'expected_version', 'content_hash'}:
+                if set(body) != {'preview_id', 'expected_version', 'content_hash', 'execution_confirmation'}:
                     raise Erro('Aprovação exige a versão e o conteúdo revisados', 400)
                 # thunder_actor consumed and verified this human nonce above.
                 body = {**body, 'confirm_nonce': self.headers.get('X-Thunder-Nonce', '')}
                 if restricted_mode():
-                    canary=EmailCanary(service.repository).claim(body,actor)
+                    console.campaign_gate().approve(body, actor)
+                    canary=EmailCanary(service.repository).claim({k:v for k,v in body.items() if k != 'execution_confirmation'},actor)
                     result=console.execute(body,actor,dispatch_guard=canary.before_dispatch,dispatch_expires_at=canary.policy['expires_at'])
                 else:
                     result = console.execute(body, actor)

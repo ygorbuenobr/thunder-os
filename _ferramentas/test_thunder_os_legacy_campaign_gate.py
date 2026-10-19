@@ -46,7 +46,7 @@ class LegacyCampaignGateTests(unittest.TestCase):
             for body in bodies:
                 with self.subTest(console=cls.__name__, body=body):
                     console = self.instance(cls)
-                    with self.assertRaisesRegex(error, '^campaign_confirmation_integration_required$'):
+                    with self.assertRaisesRegex(error, '^campaign_confirmation_required$'):
                         console.execute(body, actor='ygor')
                     self.assert_untouched(console)
 
@@ -64,9 +64,8 @@ class LegacyCampaignGateTests(unittest.TestCase):
         readiness = Mock()
         app = ConnectSafelyApplication(repo, direct_console=console,
             readiness=readiness, execution_enabled=True)
-        for call in (lambda: app.enqueue({}, 'ygor'),
-                     lambda: app.process_one(), lambda: app.process_one(job_id='existing-job')):
-            with self.assertRaisesRegex(ConnectSafelyError, '^campaign_confirmation_integration_required$'):
+        for call in (lambda: app.enqueue({}, 'ygor'),):
+            with self.assertRaisesRegex(ConnectSafelyError, '^campaign_confirmation_required$'):
                 call()
         repo.assert_not_called()
         self.assertEqual(repo.mock_calls, [])

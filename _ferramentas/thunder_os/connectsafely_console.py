@@ -1,3 +1,5 @@
+from .operation_campaign import OperationCampaign
+from .approvals import ApprovalError
 """Offline copilot console; explicit client and canonical ledger, no activation."""
 import json
 import math
@@ -133,10 +135,25 @@ class ConnectSafelyConsole:
         if isinstance(result,dict) and result.get('status')=='blocked':return {'status':'blocked','retry_write':False,'error_code':_error(result.get('error_code'),'provider_denied'),**extra}
         return {'status':'uncertain','retry_write':False,'error_code':_error(result.get('error_code') if isinstance(result,dict) else None,'requires_reconciliation'),**extra}
 
-    def execute(self,body,actor=None,*,dispatch_guard=None):
-        """Local candidate: execution blocked pending campaign integration; no activation."""
+    def campaign_gate(self):
+        return OperationCampaign(self.repo, 'connectsafely', 'connectsafely', self.account_id, 'linkedin', clock=self.clock)
+
+    def campaign_review(self, body, actor):
         self._actor(actor)
-        raise ConnectSafelyError('campaign_confirmation_integration_required')
+        if not isinstance(body, dict) or set(body) != {'preview_id', 'campaign_id'}:
+            raise ConnectSafelyError('campaign_review_invalid')
+        return self.campaign_gate().review(body['preview_id'], body['campaign_id'])
+
+    def execute(self,body,actor=None,*,dispatch_guard=None):
+        self._actor(actor)
+        if not isinstance(body, dict) or 'execution_confirmation' not in body:
+            raise ConnectSafelyError('campaign_confirmation_required')
+        gate = self.campaign_gate()
+        try:
+            campaign_record = gate.approve(body, actor)
+        except ApprovalError as exc:
+            raise ConnectSafelyError(str(exc)) from None
+        body = {k:v for k,v in body.items() if k != 'execution_confirmation'}
         if self.writes_enabled is not True or self.ledger is None:raise ConnectSafelyError('writes_disabled_or_ledger_missing')
         if not isinstance(body,dict) or set(body)!={'preview_id','expected_version','review_hash'} or type(body.get('expected_version')) is not int:raise ConnectSafelyError('exact_review_required')
         self._identity()
@@ -191,7 +208,7 @@ class ConnectSafelyConsole:
                         if (not current or current['version']!=claimed['version'] or current['state']!='attempted'
                             or current.get('effect_key')!=effect or current['review_hash']!=preview['review_hash']
                             or current['plan']!=plan or not attempt or attempt['status']!='uncertain'
-                            or attempt.get('attempt_token')!=token or attempt.get('phase')!='preflight'
+                            or attempt.get('attempt_token')!=token or attempt.get('phase')!='dispatch_started'
                             or attempt.get('approval_hash')!=authorization.effect_hash or not attempt.get('canonical_owned')):
                             raise ConnectSafelyError('current_approval_changed')
                         self._plan(current['plan'])
@@ -206,7 +223,14 @@ class ConnectSafelyConsole:
                         self._event(effect,started,'dispatch_started')
                     dispatched=True
                     return True
-                result=self._result(self._send(plan,before_dispatch,execution_context))
+                # Durable pessimistic send marker before the configuration fence.
+                # A crash or lost response cannot be mistaken for zero dispatch.
+                with self.repo.transaction():
+                    current=self.repo.get_state('connectsafely_attempt',effect)
+                    if current.get('attempt_token') != token: raise RepositoryConflict('attempt_changed')
+                    self.repo.put_state('connectsafely_attempt',effect,{**current,'phase':'dispatch_started'})
+                with gate.execution_guard(campaign_record, 'connectsafely_attempt', effect):
+                    result=self._result(self._send(plan,before_dispatch,execution_context))
                 if not dispatched:raise ConnectSafelyError('dispatch_callback_not_used')
                 stored=self.ledger.finish(effect,'sent' if result['status']=='sent' else 'uncertain',result.get('receipt_ref'))
                 if stored['status']=='sent':result={**result,'status':'sent','receipt_ref':stored['receipt_ref'],'retry_write':False}

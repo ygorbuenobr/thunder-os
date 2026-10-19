@@ -1,3 +1,5 @@
+from .operation_campaign import OperationCampaign
+from .approvals import ApprovalError
 """Human-reviewed CRM console; provider credential is a scoped systemd credential.
 
 No contact messages, deletion, schema changes or background dispatch. An exact
@@ -92,10 +94,25 @@ class HubSpotConsole:
                 'state':'review_required','expires_at':self.clock()+300,'created_by':actor,
                 'write_enabled':self._write_allowed()})
 
-    def execute(self,body,actor):
-        """Local candidate: execution blocked pending campaign integration; no activation."""
+    def campaign_gate(self):
+        return OperationCampaign(self.repo, 'hubspot', 'hubspot', PORTAL_ID, 'hubspot', clock=self.clock)
+
+    def campaign_review(self, body, actor):
         self._actor(actor)
-        raise HubSpotContractError('campaign_confirmation_integration_required')
+        if not isinstance(body, dict) or set(body) != {'preview_id', 'campaign_id'}:
+            raise HubSpotContractError('campaign_review_invalid')
+        return self.campaign_gate().review(body['preview_id'], body['campaign_id'])
+
+    def execute(self,body,actor):
+        self._actor(actor)
+        if not isinstance(body, dict) or 'execution_confirmation' not in body:
+            raise HubSpotContractError('campaign_confirmation_required')
+        gate = self.campaign_gate()
+        try:
+            campaign_record = gate.approve(body, actor)
+        except ApprovalError as exc:
+            raise HubSpotContractError(str(exc)) from None
+        body = {k:v for k,v in body.items() if k != 'execution_confirmation'}
         if not self._write_allowed():raise HubSpotContractError('hubspot_writes_disabled_or_paused')
         if (not isinstance(body,dict) or set(body)!={'preview_id','expected_version','plan_hash','confirm'}
                 or body.get('confirm') is not True or type(body.get('expected_version')) is not int):
@@ -113,12 +130,17 @@ class HubSpotConsole:
                         and current['plan']['plan_hash']==plan['plan_hash'])
         # Per-execution wrapper: do not mutate the shared transport across threads.
         port=self.port
+        self_repo=self.repo
         class GuardedTransport:
             def __getattr__(self,name):return getattr(port,name)
             def write(self,request):
                 if authorize(approved['plan']) is not True:
                     raise HubSpotContractError('hubspot_writes_disabled_or_paused')
-                return port.write(request)
+                effect,_ = HubSpotExecutor(self_repo, port)._keys(approved['plan'])
+                with gate.execution_guard(campaign_record, 'hubspot_attempt', effect):
+                    if authorize(approved['plan']) is not True:
+                        raise HubSpotContractError('hubspot_writes_disabled_or_paused')
+                    return port.write(request)
         try:
             result=HubSpotExecutor(self.repo,GuardedTransport(),authorize=authorize,human_review=authorize,enabled=True).execute(approved['plan'])
         except (HubSpotHTTPError,HubSpotContractError):

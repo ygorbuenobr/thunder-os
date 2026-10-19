@@ -14,6 +14,7 @@ from threading import Event, Thread
 from contextlib import contextmanager
 from typing import Any, Mapping
 
+from .connectsafely_console import ConnectSafelyError
 from .approvals import ApprovalPack, ApprovalService, ApprovalError, _step_hash
 from .cadence import effective_due
 from .service import ThunderService
@@ -118,8 +119,7 @@ class WorkerRuntime:
             "external_effects_enabled": True,
             "processed": self.processed, "heartbeat_at": datetime.now(timezone.utc).isoformat(),
             "readiness": state == "ok", "last_progress_at": self.last_progress_at,
-            "blocked_integrations": ({"connectsafely": "campaign_confirmation_integration_required"}
-                                     if self.connectsafely_app is not None else {}),
+            "campaign_confirmation_required": True,
             "capabilities": {channel: getattr(adapter, "capability", "injected") for channel, adapter in self.adapters.items()},
         }
         self.health_path.parent.mkdir(parents=True, exist_ok=True)
@@ -129,8 +129,16 @@ class WorkerRuntime:
         self._last_health = time.monotonic()
 
     def process_one(self) -> bool:
-        # Legacy application has no canonical campaign integration. Do not let
-        # its blocked queue starve the independently confirmed core outbox.
+        if self.connectsafely_app is not None:
+            try:
+                if self.connectsafely_app.process_one():
+                    self.processed += 1
+                    self.last_progress_at = datetime.now(timezone.utc).isoformat()
+                    self._health("ok")
+                    return True
+            except ConnectSafelyError:
+                # A retained legacy job cannot starve an independently approved batch.
+                pass
         job = self.repository.claim_effect(
             self.worker_id, datetime.now(timezone.utc), timedelta(seconds=30)
         )
