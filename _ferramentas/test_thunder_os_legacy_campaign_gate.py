@@ -5,6 +5,7 @@ All provider, repository and ledger boundaries are mocks; no production activati
 import unittest
 from unittest.mock import Mock
 
+from thunder_os.connectsafely_application import ConnectSafelyApplication
 from thunder_os.connectsafely_console import ConnectSafelyConsole, ConnectSafelyError
 from thunder_os.connectsafely_social_console import ConnectSafelySocialConsole
 from thunder_os.hubspot_console import HubSpotConsole
@@ -56,6 +57,23 @@ class LegacyCampaignGateTests(unittest.TestCase):
                 with self.assertRaisesRegex(error, '^human_authority_required$'):
                     console.execute({}, actor='hermes')
                 self.assert_untouched(console)
+
+    def test_application_queue_and_worker_block_before_any_dependency(self):
+        repo = Mock()
+        console = Mock(); console.repo = repo
+        readiness = Mock()
+        app = ConnectSafelyApplication(repo, direct_console=console,
+            readiness=readiness, execution_enabled=True)
+        for call in (lambda: app.enqueue({}, 'ygor'),
+                     lambda: app.process_one(), lambda: app.process_one(job_id='existing-job')):
+            with self.assertRaisesRegex(ConnectSafelyError, '^campaign_confirmation_integration_required$'):
+                call()
+        repo.assert_not_called()
+        self.assertEqual(repo.mock_calls, [])
+        self.assertEqual(console.mock_calls, [])
+        readiness.assert_not_called()
+        with self.assertRaisesRegex(ConnectSafelyError, '^human_authority_required$'):
+            app.enqueue({}, 'hermes')
 
     def test_social_inherits_the_same_execution_gate(self):
         self.assertIs(ConnectSafelySocialConsole.execute, ConnectSafelyConsole.execute)

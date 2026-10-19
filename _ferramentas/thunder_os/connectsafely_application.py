@@ -167,6 +167,7 @@ class ConnectSafelyApplication:
 
     def enqueue(self, body, actor):
         self._actor(actor)
+        raise ConnectSafelyError("campaign_confirmation_integration_required")
         if (not isinstance(body, dict) or set(body) != {'preview_id','expected_version','review_hash'}
                 or type(body.get('expected_version')) is not int):
             raise ConnectSafelyError('exact_review_required')
@@ -226,6 +227,7 @@ class ConnectSafelyApplication:
         return None
 
     def process_one(self, *, job_id=None):
+        raise ConnectSafelyError("campaign_confirmation_integration_required")
         if self.execution_scope is not None and job_id is None:
             return False
         try:
