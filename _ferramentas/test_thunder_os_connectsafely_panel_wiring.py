@@ -162,6 +162,34 @@ class PanelWiringTests(unittest.TestCase):
                          self.repo.get_state('connectsafely_runtime_config', 'active')['config_sha256'])
         self.assertFalse(app.process_one())
 
+    def test_linkedin_cadence_approval_route_persists_exact_human_package_without_provider_call(self):
+        app=self.configure();handler=object.__new__(panel.Handler)
+        steps=[]
+        for number,(marker,subject,action) in enumerate((
+            ('cad_li_0','LinkedIn: convite','invite'),('cad_li_1','LinkedIn: msg 1','dm'),
+            ('cad_li_2','LinkedIn: msg 2','dm'),('cad_li_3','LinkedIn: msg 3','dm'))):
+            steps.append({'marker':marker,'subject':subject,'plan':{
+                'account_id':'a'*24,'account_public_id':'fixture-owner','action':action,
+                'recipient_public_id':'fixture-target','recipient_profile_urn':'urn:li:fsd_profile:TARGET',
+                'channel':'linkedin','messaging_channel':'linkedin_inbox','content':'copy '+marker,
+                'conversation_urn':None if action=='invite' else 'urn:li:msg_conversation:(TARGET,OWNER)'}})
+        body={'id':'cadence-approval-1','hubspot_contact_id':'255570819657','cadence_id':'316669709',
+              'expires_at':'2099-01-01T00:00:00+00:00','steps':steps}
+        handler.server=SimpleNamespace(thunder_service=SimpleNamespace(repository=self.repo),thunder_connectsafely_app=app)
+        handler.command='POST';handler.thunder_actor=lambda:'ygor';handler.corpo=lambda:body
+        handler.responder=lambda status,result:(status,result)
+        status,result=handler.thunder_api(urlsplit('/api/os/v1/linkedin-cadence-approvals'))
+        self.assertEqual(201,status);self.assertEqual('ygor',result['approved_by'])
+        self.assertEqual([],self.repo.list_state('connectsafely_job'))
+        handler.thunder_actor=lambda:'hermes'
+        from thunder_os.hermes_linkedin_cadence import CadenceBlocked
+        with self.assertRaisesRegex(CadenceBlocked,'human_authority_required'):
+            handler.thunder_api(urlsplit('/api/os/v1/linkedin-cadence-approvals'))
+        handler.server.thunder_connectsafely_app=None;handler.thunder_actor=lambda:'ygor'
+        with self.assertRaises(panel.Erro) as failure:
+            handler.thunder_api(urlsplit('/api/os/v1/linkedin-cadence-approvals'))
+        self.assertEqual(503,failure.exception.status)
+
     def test_missing_or_wrong_pin_blocks_startup(self):
         self.config.write_text(json.dumps(self.cfg))
         for pin in ('', '0' * 64):

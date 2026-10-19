@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "mode": "live",
+  "execution_enabled": false,
+  "repository": "/var/lib/thunder-os/painel.db",
+  "source_revision": "replace-with-release-sha",
+  "poll_minutes": 30,
+  "max_tasks_per_run": 5,
+  "timezone": "America/Sao_Paulo",
+  "business_hours": {
+    "start": "08:00",
+    "end": "18:00",
+    "weekdays": [0, 1, 2, 3, 4]
+  },
+  "daily_cap": 30,
+  "kill_switch": "thunder_state:delegation/hermes.enabled",
+  "hubspot": {
+    "portal_id": "51412240",
+    "owner_id": "92901049",
+    "token_env": "HUBSPOT_ACCESS_TOKEN"
+  },
+  "connectsafely_config": "/etc/thunder-os/direct-runtime-20261006.json",
+  "connectsafely_identity": {
+    "account_id": "6abe5fc087213e2040fb9b1b",
+    "public_id": "ygorbuenobr"
+  }
+}

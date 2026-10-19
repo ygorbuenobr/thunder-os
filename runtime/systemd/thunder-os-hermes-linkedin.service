@@ -1,0 +1,16 @@
+[Unit]
+Description=Thunder OS deterministic Hermes LinkedIn cadence (one bounded run)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=thunder-os
+Group=thunder-os
+Environment=PYTHONPATH=/opt/thunder-os/current/_ferramentas
+Environment=THUNDER_EXTERNAL_EFFECTS_ENABLED=false
+ExecStart=/usr/bin/python3 -m thunder_os.hermes_linkedin_runtime --config /etc/thunder-os/hermes-linkedin-cadence.json --once
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/thunder-os

@@ -5,6 +5,7 @@ or provider selection happen here. Simulations are always labelled as such.
 """
 import re
 import time
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from .connectsafely_console import ConnectSafelyError, SAFE_CODES
@@ -126,6 +127,19 @@ class ConnectSafelyApplication:
             'account_id':preview['plan']['account_id'], 'execution_scope':self.execution_scope, 'created_at':self.clock()})
         return {**preview, 'simulation':self.simulation, 'job':None}
 
+    def prepare_delegated(self, body, authority):
+        """Prepare an exact D0-approved cadence effect without impersonating Ygor."""
+        from .hermes_linkedin_cadence import validate_delegated_plan
+        validate_delegated_plan(self.repo, authority, body, self.clock)
+        self._simulation_boundary()
+        preview = self._console(body.get('action')).prepare(body, actor='ygor')
+        self.repo.append_state('connectsafely_preview_origin', preview['id'], {
+            'simulation':self.simulation, 'review_hash':preview['review_hash'],
+            'account_id':preview['plan']['account_id'], 'execution_scope':self.execution_scope,
+            'created_at':self.clock(), 'executor':'hermes (delegado)',
+            'delegated_authority':dict(authority)})
+        return {**preview, 'simulation':self.simulation, 'job':None}
+
     def _preview(self, ident):
         preview = self.repo.get_state('connectsafely_preview', self._id(ident))
         if preview is None:
@@ -193,6 +207,50 @@ class ConnectSafelyApplication:
                     'state':'queued', 'simulation':self.simulation, 'execution_scope':self.execution_scope, 'created_at':self.clock()})
             return {'job_id':key, 'preview_id':preview['id'], 'state':existing['state'], 'simulation':self.simulation}
 
+    def enqueue_delegated(self, body, authority):
+        """Queue only a preview bound to the same current D0 authority."""
+        from .hermes_linkedin_cadence import validate_delegated_plan
+        if (not isinstance(body, dict) or set(body) != {'preview_id','expected_version','review_hash'}
+                or type(body.get('expected_version')) is not int):
+            raise ConnectSafelyError('exact_review_required')
+        with self.repo.transaction():
+            preview = self._preview(body['preview_id'])
+            self._enabled(preview['plan']['action'])
+            self._check_mode(preview)
+            origin = self.repo.get_state('connectsafely_preview_origin', preview['id'])
+            if (not origin or origin.get('executor') != 'hermes (delegado)'
+                    or origin.get('delegated_authority') != dict(authority)):
+                raise ConnectSafelyError('delegated_authority_changed')
+            current = validate_delegated_plan(self.repo, authority, preview['plan'], self.clock)
+            if preview['version'] != body['expected_version'] or preview['review_hash'] != body['review_hash']:
+                raise RepositoryConflict('preview_changed')
+            if preview['state'] != 'review_required' or preview['expires_at'] <= self.clock():
+                raise ConnectSafelyError('preview_expired_or_consumed')
+            expected = payload_hash({'plan':preview['plan'], 'version':preview['version']})
+            if expected != body['review_hash']:
+                raise RepositoryConflict('preview_changed')
+            key = payload_hash({'review':body, 'simulation':self.simulation,
+                                'authority_id':authority['id'], 'authority_version':authority['version']})
+            existing = self.repo.get_state('connectsafely_job', key)
+            if existing is None:
+                day = datetime.fromtimestamp(self.clock(), timezone.utc).date().isoformat()
+                self.repo.reserve_delegated_action('hermes', 'linkedin_cadence', day)
+                approval = {
+                    'review':dict(body), 'actor':'ygor', 'executor':'hermes (delegado)',
+                    'simulation':self.simulation, 'expires_at':preview['expires_at'],
+                    'execution_scope':self.execution_scope, 'approved_at':self.clock(),
+                    'delegated_authority':dict(authority),
+                    'delegation_version':self.repo.get_state('delegation','hermes')['version'],
+                    'cadence_approval_hash':current['review_hash'],
+                }
+                self.repo.append_state('connectsafely_queue_approval', key, approval)
+                existing = self.repo.append_state('connectsafely_job', key, {
+                    'preview_id':preview['id'], 'review':dict(body), 'actor':'hermes (delegado)',
+                    'state':'queued', 'simulation':self.simulation,
+                    'execution_scope':self.execution_scope, 'created_at':self.clock(),
+                    'delegated_authority':dict(authority)})
+            return {'job_id':key, 'preview_id':preview['id'], 'state':existing['state'], 'simulation':self.simulation}
+
     def _job_authorized(self,job):
         self._check_mode(self._preview(job['preview_id']))
         approval = self.repo.get_state('connectsafely_queue_approval', job['id'])
@@ -202,6 +260,21 @@ class ConnectSafelyApplication:
                 or approval.get('expires_at',0) <= self.clock()
                 or (self.execution_scope is not None and (job.get('execution_scope') != self.execution_scope
                     or approval.get('execution_scope') != self.execution_scope))):
+            raise ConnectSafelyError('job_authority_invalid')
+        if job.get('actor') == 'hermes (delegado)':
+            from .hermes_linkedin_cadence import validate_delegated_plan
+            authority = job.get('delegated_authority')
+            if (approval.get('executor') != 'hermes (delegado)'
+                    or approval.get('delegated_authority') != authority):
+                raise ConnectSafelyError('job_authority_invalid')
+            delegation = self.repo.get_state('delegation','hermes')
+            if not delegation or approval.get('delegation_version') != delegation.get('version'):
+                raise ConnectSafelyError('delegated_authority_changed')
+            preview = self._preview(job['preview_id'])
+            current = validate_delegated_plan(self.repo, authority, preview['plan'], self.clock)
+            if approval.get('cadence_approval_hash') != current.get('review_hash'):
+                raise ConnectSafelyError('delegated_authority_changed')
+        elif job.get('actor') != 'ygor' or approval.get('executor') is not None:
             raise ConnectSafelyError('job_authority_invalid')
 
     def _claim(self, job_id=None):
@@ -239,7 +312,7 @@ class ConnectSafelyApplication:
         if job is None:
             return False
         try:
-            if job.get('actor') != 'ygor' or job.get('simulation') is not self.simulation:
+            if job.get('actor') not in {'ygor','hermes (delegado)'} or job.get('simulation') is not self.simulation:
                 raise ConnectSafelyError('job_authority_invalid')
             self._job_authorized(job)
             preview = self._preview(job['preview_id'])

@@ -25,7 +25,7 @@ class AuthorizationError(ContractError):
 
 
 class ThunderService:
-    HERMES_SCOPES = {"followup", "like", "hubspot_write"}
+    HERMES_SCOPES = {"followup", "like", "hubspot_write", "linkedin_cadence"}
     SAFE_RETRY_ERRORS = {
         "provider_rejected", "email_rejected", "hubspot_rejected", "channel_not_configured",
     }

@@ -1534,6 +1534,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.responder(201, service.authorize_capabilities(body, actor))
         if rota.path == '/api/os/v1/delegations/hermes':
             return self.responder(200, service.configure_hermes_delegation(body, actor))
+        if rota.path == '/api/os/v1/linkedin-cadence-approvals':
+            app = getattr(self.server, 'thunder_connectsafely_app', None)
+            if app is None or app.direct is None:
+                raise Erro('ConnectSafely não configurado', 503)
+            from thunder_os.hermes_linkedin_cadence import HermesLinkedInCadence
+            result = HermesLinkedInCadence(service.repository, None, app).approve(body, actor)
+            return self.responder(201, result)
         if rota.path == '/api/os/v1/likes':
             return self.responder(202, service.dispatch_like(body, actor))
         if rota.path == '/api/os/v1/identities/resolve':
