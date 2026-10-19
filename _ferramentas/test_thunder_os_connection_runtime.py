@@ -1,12 +1,19 @@
 import json
+import io
 import os
+import sys
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+from zoneinfo import ZoneInfo
 
 from thunder_os.connection_ledger import profile_kind, research_request_kind
-from thunder_os.connection_runtime import ConnectionRuntimeError, load_config, run_once
+from thunder_os.connection_provider import ConnectionProviderError
+from thunder_os.connection_runtime import ConnectionRuntimeError, load_config, main, run_once
 from thunder_os.db import Repository
 
 
@@ -36,6 +43,72 @@ class ConnectionRuntimeTests(unittest.TestCase):
                     "startIndex": cursor, "count": len(batch), "connections": batch,
                     "endOfList": not batch, "nextStartIndex": None if not batch else cursor + len(batch)}
         return fetch
+
+    def run_main(self, mode, fetch_page):
+        provider = SimpleNamespace(fetch_page=fetch_page,
+                                   fetch_profile_company=lambda _: (None, None))
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = ["connection-runtime", "--config", str(self.root / "config.json"),
+                "--brain", str(self.brain), "--mode", mode]
+        with (mock.patch("thunder_os.connection_runtime.load_config", return_value=self.config),
+              mock.patch("thunder_os.connection_runtime._provider", return_value=provider),
+              mock.patch.object(sys, "argv", argv), redirect_stdout(stdout), redirect_stderr(stderr)):
+            code = main()
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def test_main_projects_live_success_and_incomplete_error(self):
+        success_cursors = []
+        today = datetime.now(timezone.utc).astimezone(ZoneInfo("America/Sao_Paulo")).date()
+        today_value = f"{today.isoformat()}T12:00:00-03:00"
+        older_value = f"{(today - timedelta(days=1)).isoformat()}T12:00:00-03:00"
+
+        def boundary(cursor):
+            success_cursors.append(cursor)
+            rows = [{"profileUrl": f"https://linkedin.com/in/live-{index}",
+                     "connectedDate": today_value}
+                    for index in range(cursor, cursor + 10)]
+            if cursor == 50:
+                rows[-1]["connectedDate"] = older_value
+            return {"success": True, "accountId": ACCOUNT, "sortBy": "recentlyAdded",
+                    "startIndex": cursor, "count": len(rows), "connections": rows,
+                    "endOfList": False, "nextStartIndex": cursor + len(rows)}
+
+        code, stdout, stderr = self.run_main("live", boundary)
+        self.assertEqual((0, ""), (code, stderr))
+        self.assertEqual("ok", json.loads(stdout)["status"])
+        self.assertEqual([0, 10, 20, 30, 40, 50], success_cursors)
+
+        incomplete_cursors = []
+
+        def incomplete(cursor):
+            incomplete_cursors.append(cursor)
+            row = {"profileUrl": f"https://linkedin.com/in/incomplete-{cursor}",
+                   "connectedDate": today_value}
+            return {"success": True, "accountId": ACCOUNT, "sortBy": "recentlyAdded",
+                    "startIndex": cursor, "count": 1, "connections": [row],
+                    "endOfList": False, "nextStartIndex": cursor + 1}
+
+        code, stdout, stderr = self.run_main("live", incomplete)
+        self.assertEqual((1, ""), (code, stdout))
+        self.assertEqual({"status": "blocked", "error_code": "connection_window_incomplete"},
+                         json.loads(stderr))
+        self.assertEqual(list(range(20)), incomplete_cursors)
+
+    def test_main_projects_backfill_success_and_row_error(self):
+        def invalid(_cursor):
+            raise ConnectionProviderError("connection_row_invalid")
+
+        code, stdout, stderr = self.run_main("backfill", invalid)
+        self.assertEqual((1, ""), (code, stdout))
+        self.assertEqual({"status": "blocked", "error_code": "connection_row_invalid"},
+                         json.loads(stderr))
+
+        code, stdout, stderr = self.run_main("backfill", self.pages([]))
+        self.assertEqual((0, ""), (code, stderr))
+        result = json.loads(stdout)
+        self.assertEqual(("ok", "backfill", True),
+                         (result["status"], result["mode"], result["complete"]))
 
     def test_live_read_to_research_request_with_no_effect_job(self):
         first = datetime(2026, 10, 5, 12, tzinfo=timezone.utc)

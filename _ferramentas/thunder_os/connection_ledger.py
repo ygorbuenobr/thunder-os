@@ -144,7 +144,7 @@ def record_live_poll(
     account_by_profile: Mapping[str, str],
     fit_evidence_by_account: Mapping[str, str],
     contacted: set[str],
-    max_pages: int = 5,
+    max_pages: int = 20,
 ) -> list[dict[str, str]]:
     """Store one complete live window and return decisions for newly seen profiles.
 

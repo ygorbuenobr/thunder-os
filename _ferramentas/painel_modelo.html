@@ -166,7 +166,20 @@ textarea:focus,input[type=text]:focus{border-color:var(--mostarda);outline:none}
 body[data-aba="hoje"] [data-painel]:not([data-painel~="hoje"]),
 body[data-aba="conversas"] [data-painel]:not([data-painel~="conversas"]),
 body[data-aba="aprovar"] [data-painel]:not([data-painel~="aprovar"]),
-body[data-aba="contas"] [data-painel]:not([data-painel~="contas"]){display:none}
+body[data-aba="contas"] [data-painel]:not([data-painel~="contas"]),
+body[data-aba="agentes"] [data-painel]:not([data-painel~="agentes"]){display:none}
+body[data-aba="agentes"] .detalhes-sistema{display:none}
+.agenttrail-head{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.agenttrail-hosts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:28px;margin-top:20px}
+.agenttrail-host{border-top:3px solid var(--mostarda);padding-top:14px;min-width:0}
+.agenttrail-host h3{margin:0;font:700 22px/1.2 var(--display)}
+.agenttrail-host p{color:var(--muted);margin:8px 0}
+.agenttrail-host ul{list-style:none;padding:0;margin:16px 0}
+.agenttrail-host li{border-top:1px solid var(--line);padding:12px 0;display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap}
+.agenttrail-host li strong{font-weight:700}
+.agenttrail-host .state{color:var(--muted);font-size:13px}
+.agenttrail-host a{color:var(--text);text-decoration:underline;text-underline-offset:3px}
+@media(max-width:760px){.agenttrail-hosts{grid-template-columns:1fr}}
 .hoje{max-width:760px;margin-inline:auto;display:grid;gap:18px}
 .hoje>header{margin:10px 0 2px}.hoje>header p{color:var(--muted);margin:4px 0 0}
 [data-prioridade="dia"]{border-left:4px solid var(--mostarda)}
@@ -253,7 +266,30 @@ button,.btn,select,input:not([type="hidden"]),summary {min-height:44px;}
   <button type="button" role="tab" data-aba="conversas" aria-selected="false">Conversas<span class="qt" id="qt-conversas"></span></button>
   <button type="button" role="tab" data-aba="aprovar" aria-selected="false">Para aprovar<span class="qt" id="qt-aprovar"></span></button>
   <button type="button" role="tab" data-aba="contas" aria-selected="false">Contas<span class="qt" id="qt-contas"></span></button>
+  <button type="button" role="tab" data-aba="agentes" aria-selected="false">Agentes</button>
 </nav>
+
+<main id="sec-agentes" data-painel="agentes" hidden>
+  <div class="agenttrail-head">
+    <div><h2>Atividade dos agentes</h2><p class="sub">Sessões observadas pelo Agenttrail Kitchen em cada host. Uma tarefa concluída não comprova publicação ou envio.</p></div>
+    <button class="btn" id="agenttrail-atualizar" type="button">Atualizar</button>
+  </div>
+  <p id="agenttrail-estado" class="sub" role="status" aria-live="polite">Aguardando consulta.</p>
+  <div class="agenttrail-hosts">
+    <section class="agenttrail-host" aria-labelledby="agenttrail-mac-titulo">
+      <h3 id="agenttrail-mac-titulo">Mac</h3>
+      <p id="agenttrail-mac-estado">Aguardando consulta.</p>
+      <ul id="agenttrail-mac-sessoes"></ul>
+      <a href="http://127.0.0.1:4780/" target="_blank" rel="noopener noreferrer">Abrir visualização no Mac ↗</a>
+    </section>
+    <section class="agenttrail-host" aria-labelledby="agenttrail-vps-titulo">
+      <h3 id="agenttrail-vps-titulo">VPS</h3>
+      <p id="agenttrail-vps-estado">Aguardando consulta.</p>
+      <ul id="agenttrail-vps-sessoes"></ul>
+      <a href="http://127.0.0.1:4791/" target="_blank" rel="noopener noreferrer">Abrir visualização da VPS neste Mac ↗</a>
+    </section>
+  </div>
+</main>
 
 <main class="hoje" id="sec-hoje" data-painel="hoje" hidden>
   <header><h2 style="font-size:26px;text-transform:none;letter-spacing:0;color:var(--text)">Hoje</h2><p>Um resumo curto para você começar pelo que importa.</p></header>
@@ -1617,17 +1653,57 @@ function atualizarAbas(){
   contagemAbas.hoje=contagemAbas.conversas+contagemAbas.aprovar;
   for(const a of ['hoje','conversas','aprovar','contas']){const e=$('qt-'+a);if(e)e.textContent=contagemAbas[a]?String(contagemAbas[a]):'';}
 }
+let agenttrailLendo=false;
+function desenharAgenttrailHost(host,dados){
+  const estado=$('agenttrail-'+host+'-estado'),lista=$('agenttrail-'+host+'-sessoes');
+  lista.replaceChildren();
+  if(dados?.status!=='available'){
+    estado.textContent='Observador indisponível ou sem atualização recente.';
+    return;
+  }
+  const sessoes=Array.isArray(dados.sessions)?dados.sessions:[];
+  const horario=new Date(Number(dados.observed_at)*1000);
+  estado.textContent=`${sessoes.length} ${sessoes.length===1?'sessão observada':'sessões observadas'} · ${Number.isNaN(horario.getTime())?'horário indisponível':horario.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}${dados.limited?' · descoberta parcial':''}`;
+  if(!sessoes.length){
+    const item=document.createElement('li');item.textContent='Nenhuma sessão recente para os projetos acompanhados.';lista.append(item);
+    return;
+  }
+  for(const sessao of sessoes){
+    const item=document.createElement('li'),descricao=document.createElement('span'),estadoSessao=document.createElement('span');
+    const titulo=document.createElement('strong');titulo.textContent=`${sessao.provider||'Agente'} · ${sessao.project||'Projeto'}`;
+    descricao.append(titulo);
+    const nomesEstado={working:'em atividade',complete:'concluída',waiting:'aguardando',idle:'inativa',blocked:'bloqueada',unknown:'estado desconhecido'};
+    estadoSessao.className='state';estadoSessao.textContent=nomesEstado[sessao.state]||'estado desconhecido';
+    item.append(descricao,estadoSessao);lista.append(item);
+  }
+}
+async function atualizarAgenttrail(){
+  if(agenttrailLendo||!apiServidor)return;
+  agenttrailLendo=true;$('agenttrail-estado').textContent='Consultando atividade local…';
+  try{
+    const dados=await apiServidor('/api/os/v1/agenttrail');
+    desenharAgenttrailHost('mac',dados.hosts?.mac);
+    desenharAgenttrailHost('vps',dados.hosts?.vps);
+    $('agenttrail-estado').textContent='Somente metadados resumidos. Hermes e MausBot não são detectados automaticamente pelo Agenttrail.';
+  }catch(e){$('agenttrail-estado').textContent='Não foi possível consultar a atividade. Tente atualizar.';}
+  finally{agenttrailLendo=false;}
+}
+$('agenttrail-atualizar').addEventListener('click',atualizarAgenttrail);
+setInterval(()=>{if(document.body.dataset.aba==='agentes')atualizarAgenttrail();},30000);
 function mostrarAba(aba,{registrar=true}={}){
-  if(!['hoje','conversas','aprovar','contas'].includes(aba)) aba='hoje';
+  if(!['hoje','conversas','aprovar','contas','agentes'].includes(aba)) aba='hoje';
   if(document.body)document.body.dataset.aba=aba;
+  $('sec-agentes').hidden=aba!=='agentes';
+  if(aba==='agentes')atualizarAgenttrail();
   $('abas').querySelectorAll('button').forEach(b=>{const ativa=b.dataset.aba===aba;b.setAttribute('aria-selected',String(ativa));b.tabIndex=ativa?0:-1;});
+  $('abas').querySelector('[aria-selected="true"]')?.scrollIntoView({block:'nearest',inline:'nearest'});
   try{localStorage.setItem('painel-aba',aba)}catch(e){}
   if(registrar&&location.hash!=='#'+aba)history.pushState(null,'','#'+aba);
 }
 function iniciarAbas(){
   $('abas').hidden=false;
   let aba='hoje';try{aba=localStorage.getItem('painel-aba')||aba}catch(e){}
-  const hash=location.hash.slice(1);if(['hoje','conversas','aprovar','contas'].includes(hash))aba=hash;
+  const hash=location.hash.slice(1);if(['hoje','conversas','aprovar','contas','agentes'].includes(hash))aba=hash;
   mostrarAba(aba,{registrar:false});
   if($('abas').dataset.iniciada)return;
   $('abas').dataset.iniciada='true';

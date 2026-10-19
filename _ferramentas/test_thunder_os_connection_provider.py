@@ -2,7 +2,7 @@ import json
 import unittest
 from datetime import datetime, timezone
 
-from thunder_os.connection_intake import collect_recent_connections
+from thunder_os.connection_intake import collect_recent_connections, profile_key
 from thunder_os.connection_provider import (
     ConnectionProvider, ConnectionProviderError, MAX_RESPONSE_BYTES,
 )
@@ -124,6 +124,8 @@ class ConnectionProviderTests(unittest.TestCase):
         fake = FakeTransport([bad_page, bad_page])
         with self.assertRaisesRegex(ConnectionProviderError, "connection_row_invalid"):
             self.provider(fake).fetch_page(0)
+        self.assertEqual([0, 0], [call[2]["startIndex"] for call in fake.calls
+                                  if call[1] == "/linkedin/connections"])
 
     def test_transient_invalid_row_is_revalidated_at_same_cursor(self):
         invalid = row(1)
@@ -195,6 +197,34 @@ class ConnectionProviderTests(unittest.TestCase):
                          result["connections"][0]["profileUrl"])
         self.assertNotEqual("https://www.linkedin.com/in/d'angelo",
                             result["connections"][0]["profileUrl"])
+
+    def test_provider_confirmed_mathematical_symbol_is_preserved(self):
+        person = row(1)
+        person["vanityName"] = "person∴proof"
+        person["profileUrl"] = "https://www.linkedin.com/in/person%E2%88%B4proof/"
+        result = self.provider(FakeTransport([(200, page(0, [person], end=True))])).fetch_page(0)
+        canonical = result["connections"][0]["profileUrl"]
+        self.assertEqual("https://www.linkedin.com/in/person∴proof", canonical)
+        self.assertEqual(canonical, profile_key(canonical))
+        self.assertNotEqual(profile_key("https://linkedin.com/in/personproof"), canonical)
+        self.assertNotEqual(profile_key("https://linkedin.com/in/straße"),
+                            profile_key("https://linkedin.com/in/strasse"))
+
+    def test_unsafe_unicode_vanity_characters_remain_invalid(self):
+        unsafe = (
+            ("joão/silva", "jo%C3%A3o%2Fsilva"),
+            ("joão silva", "jo%C3%A3o%20silva"),
+            ("joão\x00silva", "jo%C3%A3o%00silva"),
+            ("d“angelo", "d%E2%80%9Cangelo"),
+        )
+        for vanity, encoded in unsafe:
+            with self.subTest(vanity=repr(vanity)):
+                invalid = row(1)
+                invalid["vanityName"] = vanity
+                invalid["profileUrl"] = f"https://www.linkedin.com/in/{encoded}/"
+                bad_page = (200, page(0, [invalid], end=True))
+                with self.assertRaisesRegex(ConnectionProviderError, "connection_row_invalid"):
+                    self.provider(FakeTransport([bad_page, bad_page])).fetch_page(0)
 
     def test_unicode_identifier_cannot_escape_profile_path(self):
         invalid = row(1)

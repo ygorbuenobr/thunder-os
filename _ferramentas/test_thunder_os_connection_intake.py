@@ -98,6 +98,30 @@ class ConnectionIntakeTests(unittest.TestCase):
         self.assertEqual(2, len(rows))
         self.assertEqual([0], seen_cursors)
 
+    def test_default_window_reaches_sixth_page_boundary(self):
+        for boundary_cursor in (50, 190):
+            with self.subTest(boundary_cursor=boundary_cursor):
+                seen_cursors = []
+
+                def fetch(cursor):
+                    seen_cursors.append(cursor)
+                    batch = [
+                        {"profileUrl": f"https://linkedin.com/in/person-{index}",
+                         "connectedDate": "Conexão feita em 5 de outubro de 2026"}
+                        for index in range(cursor, cursor + 10)
+                    ]
+                    if cursor == boundary_cursor:
+                        batch[-1]["connectedDate"] = "Conexão feita em 4 de outubro de 2026"
+                    return {"connections": batch, "endOfList": False,
+                            "nextStartIndex": cursor + len(batch), "success": True,
+                            "accountId": "acct-1", "sortBy": "recentlyAdded",
+                            "startIndex": cursor, "count": len(batch)}
+
+                rows = collect_recent_connections(fetch, account_id="acct-1", activation_at=NOW)
+                expected_cursors = list(range(0, boundary_cursor + 1, 10))
+                self.assertEqual(boundary_cursor + 10, len(rows))
+                self.assertEqual(expected_cursors, seen_cursors)
+
     def test_partial_or_out_of_order_provider_window_fails_closed(self):
         def partial(cursor):
             return {"connections": [{"profileUrl": f"https://linkedin.com/in/p{cursor}",

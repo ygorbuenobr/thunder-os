@@ -46,6 +46,7 @@ RAIZ = Path(os.environ.get("THUNDER_BRAIN_ROOT", str(CODE_ROOT))).expanduser().r
 NONCE_TTL_SECONDS = 300
 NONCE_LIMIT = 1024
 NONCE_LOCK = threading.Lock()
+AGENTTRAIL_INGRESS_TOKEN = Path('/etc/thunder-os/agenttrail-ingress.token')
 LIMITE = 200 * 1024
 COLECOES = ('itens', 'regras', 'sugestoes')
 TZ = ZoneInfo('America/Sao_Paulo')
@@ -1295,10 +1296,27 @@ class Handler(BaseHTTPRequestHandler):
                 raise Erro('Credencial própria do Hermes ausente ou inválida', 401)
         return actor
 
+    def agenttrail_ingress_actor(self):
+        actor = self.thunder_proxy_actor()
+        try:
+            expected = AGENTTRAIL_INGRESS_TOKEN.read_text(encoding='ascii').strip()
+        except OSError:
+            expected = ''
+        supplied = self.headers.get('X-Thunder-Agenttrail-Ingress', '')
+        if not expected or not supplied or not secrets.compare_digest(expected, supplied):
+            raise Erro('Ingresso Agenttrail inválido', 401)
+        return actor
+
     def thunder_api(self, rota):
         service = getattr(self.server, 'thunder_service', None)
         if service is None:
             raise Erro('Thunder OS indisponível', 503)
+        if self.command == 'GET' and rota.path == '/api/os/v1/agenttrail' and not rota.query:
+            actor = self.agenttrail_ingress_actor()
+            if actor != 'ygor':
+                raise AuthorizationError('Somente Ygor pode consultar atividade dos agentes.')
+            from thunder_os.agenttrail_observer import panel_state
+            return self.responder(200, panel_state())
         if self.command == 'GET' and rota.path == '/api/os/v1/connections':
             actor = self.thunder_proxy_actor()
             if actor != 'ygor':

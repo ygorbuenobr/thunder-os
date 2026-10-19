@@ -11,6 +11,7 @@ from typing import Any, Callable, Mapping
 from urllib.parse import unquote, urlsplit
 from zoneinfo import ZoneInfo
 import re
+import unicodedata
 
 
 class ConnectionIntakeError(ValueError):
@@ -21,7 +22,9 @@ def canonical_profile_slug(value: str) -> str:
     if not isinstance(value, str):
         raise ConnectionIntakeError("connection_profile_invalid")
     slug = value
-    if not (1 <= len(slug) <= 100 and all(char.isalnum() or char in "._-\u2019" for char in slug)):
+    if not (1 <= len(slug) <= 100 and all(
+            char.isalnum() or char in "._-\u2019" or unicodedata.category(char) == "Sm"
+            for char in slug)):
         raise ConnectionIntakeError("connection_profile_invalid")
     return "".join(char.lower() if char.isascii() else char for char in slug)
 
@@ -77,7 +80,7 @@ def _connected_at(value: Any) -> datetime:
 def collect_recent_connections(
     fetch_page: Callable[[int], Mapping[str, Any]], *, account_id: str,
     activation_at: datetime,
-    max_pages: int = 5,
+    max_pages: int = 20,
 ) -> list[Mapping[str, Any]]:
     """Read the complete provider window back through the activation day.
 

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.thunder.os-agenttrail-tunnel</string>
+  <key>ProgramArguments</key><array>
+    <string>/usr/bin/ssh</string><string>-N</string>
+    <string>-o</string><string>BatchMode=yes</string>
+    <string>-o</string><string>ExitOnForwardFailure=yes</string>
+    <string>-o</string><string>ServerAliveInterval=30</string>
+    <string>-L</string><string>127.0.0.1:4791:127.0.0.1:4791</string>
+    <string>minha-vps</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>StandardOutPath</key><string>/Users/ygorbueno/Library/Logs/thunder-os-agenttrail-tunnel.log</string>
+  <key>StandardErrorPath</key><string>/Users/ygorbueno/Library/Logs/thunder-os-agenttrail-tunnel.error.log</string>
+</dict></plist>
