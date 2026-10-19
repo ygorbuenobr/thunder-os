@@ -82,17 +82,36 @@ class ConnectionPanelTests(unittest.TestCase):
         self.repo.append_state("research_history", f"{account}:v{stored['version']}", stored)
         return stored
 
-    def route(self, actor="ygor", method="GET", path="/api/os/v1/connections", body=None, banco=None):
+    def route(self, actor="ygor", method="GET", path="/api/os/v1/connections", body=None, banco=None,
+              agenttrail_ingress=None):
         handler = object.__new__(painel_servidor.Handler)
         handler.server = SimpleNamespace(thunder_service=self.service, banco=banco)
         handler.command = method
         handler.client_address = ("127.0.0.1", 1234)
         handler.headers = {"X-Authenticated-User": actor}
+        if agenttrail_ingress is not None:
+            handler.headers["X-Thunder-Agenttrail-Ingress"] = agenttrail_ingress
         handler.responder = lambda status, body: (status, body)
         if method != "GET":
             handler.thunder_actor = lambda: actor
             handler.corpo = lambda: {} if body is None else body
         return handler.thunder_api(urlsplit(path))
+
+    def test_agenttrail_is_read_only_and_ygor_only(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            painel_servidor, "AGENTTRAIL_INGRESS_TOKEN", Path(tmp) / "token"
+        ), patch("thunder_os.agenttrail_observer.panel_state", return_value={"hosts": {}}):
+            (Path(tmp) / "token").write_text("test-only-ingress")
+            self.assertEqual(self.route(path="/api/os/v1/agenttrail", agenttrail_ingress="test-only-ingress"),
+                             (200, {"hosts": {}}))
+            with self.assertRaises(painel_servidor.Erro):
+                self.route(path="/api/os/v1/agenttrail")
+            with self.assertRaises(painel_servidor.Erro):
+                self.route(path="/api/os/v1/agenttrail", agenttrail_ingress="forged")
+            with self.assertRaises(AuthorizationError):
+                self.route(actor="claude", path="/api/os/v1/agenttrail", agenttrail_ingress="test-only-ingress")
+            with self.assertRaises(painel_servidor.Erro):
+                self.route(path="/api/os/v1/agenttrail?extra=1", agenttrail_ingress="test-only-ingress")
 
     def test_states_and_approval_gate(self):
         self.profile("identity", "needs_identity")

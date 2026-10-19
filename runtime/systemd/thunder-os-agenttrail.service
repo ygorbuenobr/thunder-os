@@ -1,0 +1,21 @@
+[Unit]
+Description=Thunder OS Agenttrail Kitchen (local observer)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/projects/thunder-os
+ExecStart=/usr/bin/node /opt/thunder-os-agenttrail/bin/office.mjs --project /root/projects/thunder-os --port 4791 --no-open --state-dir /var/lib/thunder-os-agenttrail
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+InaccessiblePaths=/root/.ssh /root/.hermes /root/.config -/root/.aws /root/.gnupg
+ReadWritePaths=/var/lib/thunder-os-agenttrail
+PrivateTmp=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target
