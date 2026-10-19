@@ -13,6 +13,8 @@ with tempfile.TemporaryDirectory(prefix='thunder-campaign-test-') as directory:
                PYTHONPATH=os.pathsep.join((str(root / '_ferramentas'), directory)))
     result = subprocess.run([sys.executable, '-m', 'unittest',
         '_ferramentas/test_thunder_os_campaign_confirmation.py',
+        '_ferramentas/test_thunder_os_campaign_registry.py',
         '_ferramentas/test_thunder_os_legacy_campaign_gate.py',
-        '_ferramentas/test_thunder_os_approvals.py'], cwd=root, env=env)
+        '_ferramentas/test_thunder_os_approvals.py',
+        '_ferramentas/test_thunder_os_db_integracao.py'], cwd=root, env=env)
     raise SystemExit(result.returncode)

@@ -350,14 +350,46 @@ class Repository:
             result.update(payload=json.loads(row["payload"]), lease_owner=claim_owner, lease_until=lease_until)
             return result
 
+    @property
+    def dispatch_fence_active(self) -> bool:
+        return getattr(self._local, "dispatch_fence", None) is not None
+
+    @contextmanager
+    def effect_dispatch_fence(self, job_id, lease_owner):
+        """Linearize config/approval changes and one dispatch in this database.
+
+        BEGIN IMMEDIATE prevents any other writer/claimant until receipt or
+        uncertainty is durably recorded. A revocation waiting behind a dispatch
+        takes effect afterwards; it cannot undo an already-started remote call.
+        """
+        if not isinstance(lease_owner,str) or not lease_owner.strip():
+            raise RepositoryConflict("dispatch owner required")
+        if self.dispatch_fence_active:
+            raise RepositoryConflict("nested dispatch fence")
+        with self.transaction() as con:
+            row = con.execute(
+                "SELECT state,lease_owner,lease_until FROM thunder_effect_jobs WHERE id=?",
+                (job_id,),
+            ).fetchone()
+            now = datetime.now(timezone.utc).isoformat()
+            if (not row or row["state"] != "pending" or row["lease_owner"] != lease_owner
+                    or not row["lease_until"] or row["lease_until"] <= now):
+                raise RepositoryConflict("dispatch lease lost")
+            self._local.dispatch_fence = (job_id, lease_owner)
+            try:
+                yield
+            finally:
+                self._local.dispatch_fence = None
+
     def finish_effect(self, job_id: str, state: str, receipt_ref: str | None, error_code: str | None, *, lease_owner: str | None = None) -> None:
         if state not in {"sent", "failed", "uncertain", "needs_reconciliation"}:
             raise ValueError("invalid effect terminal state")
+        fenced = getattr(self._local, "dispatch_fence", None) == (job_id, lease_owner)
         with self.transaction() as con:
             changed = con.execute(
                 """UPDATE thunder_effect_jobs SET state=?,receipt_ref=?,error_code=?,lease_owner=NULL,
-                   lease_until=NULL,updated_at=? WHERE id=? AND state='pending' AND (lease_owner=? OR (lease_owner IS NULL AND ? IS NULL)) AND (lease_owner IS NULL OR lease_until>?)""",
-                (state, receipt_ref, error_code, datetime.now(timezone.utc).isoformat(), job_id, lease_owner, lease_owner, datetime.now(timezone.utc).isoformat()),
+                   lease_until=NULL,updated_at=? WHERE id=? AND state='pending' AND (lease_owner=? OR (lease_owner IS NULL AND ? IS NULL)) AND (lease_owner IS NULL OR lease_until>? OR ?)""",
+                (state, receipt_ref, error_code, datetime.now(timezone.utc).isoformat(), job_id, lease_owner, lease_owner, datetime.now(timezone.utc).isoformat(), fenced),
             ).rowcount
             if changed != 1:
                 raise RepositoryConflict("effect is not pending")

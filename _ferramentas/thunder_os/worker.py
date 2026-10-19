@@ -91,12 +91,13 @@ class EffectCoordinator:
 class WorkerRuntime:
     def __init__(
         self, repository: Repository, ledger: TouchLedger, adapters: Mapping[str, Any],
-        *, worker_id: str, health_path: Path, revision: str, knowledge_store=None, approved_catalog=None, connectsafely_app=None, campaign_context_loader=None, adapter_provider_ids=None,
+        *, worker_id: str, health_path: Path, revision: str, knowledge_store=None, approved_catalog=None, connectsafely_app=None, campaign_context_loader=None, adapter_provider_ids=None, adapter_account_ids=None,
     ):
         self.repository = repository
         self.connectsafely_app = connectsafely_app
         self.authorization_service = ThunderService(repository, knowledge_store=knowledge_store, approved_catalog=approved_catalog, campaign_context_loader=campaign_context_loader)
-        self.adapter_provider_ids = dict(adapter_provider_ids or {})
+        self.adapter_provider_ids = dict(adapter_provider_ids or {k:getattr(v,"provider_name",None) for k,v in adapters.items()})
+        self.adapter_account_ids = dict(adapter_account_ids or {k:getattr(v,"account_id",None) for k,v in adapters.items()})
         self.ledger = ledger
         self.adapters = dict(adapters)
         self.worker_id = worker_id
@@ -184,18 +185,23 @@ class WorkerRuntime:
             }
             if step["channel"] == "email":
                 effect["subject"] = step.get("subject")
-            # Re-read the same persisted authority after reservation, just before
-            # dispatch. Existing ledger still fences duplicate parallel effects.
-            gate_error = self._runtime_gate(payload, step, expected)
-            if gate_error:
-                # Reservation is retained: do not label this safely retryable.
-                finish("needs_reconciliation", None, gate_error)
-                return True
-            with self._keep_lease(job):
-                result = adapter.send(effect)
-            state = {"confirmed": "sent", "rejected": "failed", "uncertain": "uncertain", "not_configured": "failed"}.get(result.status, "uncertain")
-            stored = self.ledger.finish(expected, state, result.receipt_ref, result.error_code)
-            finish(stored["status"], stored.get("receipt_ref"), stored.get("error_code"))
+            # Same SQLite write transaction fences canonical campaign config,
+            # approvals, pause/revocation, job ownership and receipt persistence.
+            # Do not heartbeat from another connection while owning this fence.
+            with self.repository.effect_dispatch_fence(job["id"], job["lease_owner"]):
+                gate_error = self._runtime_gate(payload, step, expected)
+                if gate_error:
+                    finish("needs_reconciliation", None, gate_error)
+                    return True
+                try:
+                    result = adapter.send(effect)
+                    state = {"confirmed": "sent", "rejected": "failed", "uncertain": "uncertain", "not_configured": "failed"}.get(result.status, "uncertain")
+                    stored = self.ledger.finish(expected, state, result.receipt_ref, result.error_code)
+                    finish(stored["status"], stored.get("receipt_ref"), stored.get("error_code"))
+                except Exception:
+                    # Commit uncertainty inside the fence; never roll authority
+                    # back into a replayable job after a possible remote effect.
+                    finish("uncertain", None, "worker_execution_uncertain")
         except TouchBlocked as exc:
             finish("failed", None, str(exc))
         except RepositoryConflict:
@@ -244,6 +250,15 @@ class WorkerRuntime:
             self.authorization_service.validate_campaign_execution(
                 cadence, approval, channel=str(step.get("channel")),
                 provider=self.adapter_provider_ids.get(str(step.get("channel"))))
+            binding = self.authorization_service.campaign_registry.binding(cadence["execution_context"]["campaign_id"])
+            channel = str(step.get("channel"))
+            if (not self.adapter_account_ids.get(channel)
+                    or binding["provider_accounts"].get(channel) != self.adapter_account_ids[channel]):
+                return "campaign_account_mismatch"
+            adapter = self.adapters.get(channel)
+            if (getattr(adapter,"provider_name",None) != self.adapter_provider_ids.get(channel)
+                    or getattr(adapter,"account_id",None) != self.adapter_account_ids.get(channel)):
+                return "campaign_adapter_identity_unverified"
         except ApprovalError as exc:
             return str(exc)
         return None
@@ -320,7 +335,7 @@ class WorkerRuntime:
                 return "predecessor_not_confirmed"
         try:
             self.ledger.preflight(expected, current, raise_blocked=True)
-        except TouchBlocked as exc:
+        except (TouchBlocked, ApprovalError) as exc:
             return str(exc)
         return self._final_campaign_gate(payload, step)
 

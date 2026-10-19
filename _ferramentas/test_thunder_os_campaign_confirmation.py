@@ -3,10 +3,10 @@ import copy
 import tempfile
 import threading
 import unittest
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from thunder_os.approvals import (ApprovalError, ApprovalService, execution_request,
     confirm_execution, validate_execution)
@@ -52,10 +52,13 @@ class CampaignConfirmationTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.repo = Repository(Path(self.tmp.name)/'workflow.db')
-        self.canonical = context()
+        self.config = {k:v for k,v in context().items() if k not in {'rules_hash','configuration_hash'}}
+        self.config.update(rules='Synthetic rules only',configuration={
+            'flow_version':'offline-v1','provider_accounts':{'email':'offline-mailbox'}})
         self.ledger = Ledger()
-        self.service = ThunderService(self.repo, self.ledger,
-            campaign_context_loader=lambda campaign: copy.deepcopy(self.canonical))
+        self.service = ThunderService(self.repo, self.ledger)
+        self.registry_row = self.service.configure_campaign(self.config,'ygor',expected_version=0)
+        self.canonical = self.registry_row['context']
         self.research = {'version': 1, 'facts': [], 'account': {}, 'knowledge_source': 'synthetic'}
         self.repo.put_state('research', 'synthetic.invalid', self.research)
         self.service.current_research = lambda _: self.research
@@ -70,7 +73,16 @@ class CampaignConfirmationTests(unittest.TestCase):
             'execution_context': copy.deepcopy(self.canonical)})
         self.adapter = Mock()
         self.adapter.capability = 'fake'
+        self.adapter.provider_name='fake-email';self.adapter.account_id='offline-mailbox'
         self.adapter.send.return_value = ProviderResult('s1', 'confirmed', receipt_ref='offline:1')
+
+    def change_config(self, **changes):
+        self.config.update(changes)
+        self.registry_row=self.service.configure_campaign(self.config,'ygor',expected_version=self.registry_row['version'])
+        self.canonical=self.registry_row['context']
+
+    def revoke(self):
+        self.registry_row=self.service.revoke_campaign(self.config['campaign_id'],'ygor',expected_version=self.registry_row['version'])
 
     def approve(self, request='exact'):
         cadence = self.repo.get_state('cadence', 'batch-1')
@@ -84,8 +96,7 @@ class CampaignConfirmationTests(unittest.TestCase):
     def worker(self, worker_id='offline-worker', provider='fake-email'):
         worker = WorkerRuntime(self.repo, self.ledger, {'email': self.adapter}, worker_id=worker_id,
             health_path=Path(self.tmp.name)/(worker_id+'.json'), revision='offline',
-            campaign_context_loader=lambda _: copy.deepcopy(self.canonical),
-            adapter_provider_ids={'email': provider})
+            adapter_provider_ids={'email': provider}, adapter_account_ids={'email':'offline-mailbox'})
         worker.authorization_service.current_research = lambda _: self.research
         return worker
 
@@ -118,11 +129,11 @@ class CampaignConfirmationTests(unittest.TestCase):
         self.assertEqual(self.repo.effects(), [])
 
     def test_rule_version_configuration_and_provider_changes_block_queued_effect(self):
-        for field,value in [('campaign_version','2'),('rules_hash','c'*64),
-                            ('configuration_hash','d'*64),('providers',{'email':'other'})]:
+        for field,value in [('campaign_version','2'),('rules','Changed rules'),
+                            ('configuration',{'flow_version':'v2','provider_accounts':{'email':'offline-mailbox'}}),('providers',{'email':'other'})]:
             with self.subTest(field=field):
                 self.setUp()
-                self.approve();self.queue();self.canonical[field]=value
+                self.approve();self.queue();self.change_config(**{field:value})
                 self.assertTrue(self.worker().process_one())
                 self.adapter.send.assert_not_called()
                 self.assertEqual(self.ledger.calls, [])
@@ -164,7 +175,7 @@ class CampaignConfirmationTests(unittest.TestCase):
 
     def test_revalidate_after_ledger_reservation(self):
         self.approve();self.queue()
-        self.ledger.on_reserve=lambda:self.canonical.update(rules_version='changed')
+        self.ledger.on_reserve=lambda:self.change_config(rules_version='changed')
         self.worker().process_one();self.adapter.send.assert_not_called()
         self.assertEqual(len(self.ledger.calls),1)
         self.assertEqual(self.repo.effects()[0]['state'],'needs_reconciliation')
@@ -174,14 +185,17 @@ class CampaignConfirmationTests(unittest.TestCase):
         calls = []
         def preflight(*args, **kwargs):
             calls.append(1)
-            if len(calls) == 2:self.canonical['rules_version'] = 'during-preflight'
+            if len(calls) == 2:self.change_config(rules_version='during-preflight')
             return {}
         self.ledger.preflight=preflight
         self.worker().process_one();self.adapter.send.assert_not_called()
         self.assertEqual(self.repo.effects()[0]['state'],'needs_reconciliation')
 
     def test_malformed_loader_context_is_terminal_without_send(self):
-        self.approve();self.queue();self.canonical['platform']=[]
+        self.approve();self.queue()
+        row=self.repo.get_state('campaign_config',self.config['campaign_id'])
+        row['context']['platform']=[]
+        self.repo.put_state('campaign_config',self.config['campaign_id'],row)
         self.assertTrue(self.worker().process_one())
         self.adapter.send.assert_not_called();self.assertEqual(self.ledger.calls,[])
         self.assertEqual(self.repo.effects()[0]['error_code'],'campaign_context_unavailable')
@@ -191,7 +205,7 @@ class CampaignConfirmationTests(unittest.TestCase):
         self.assertIn('Thunder OS',view['execution_question'])
         self.assertIn('synthetic-mexico',view['execution_question'])
         self.assertEqual(view['execution_confirmation']['batch_id'],'batch-1')
-        self.service.campaign_context_loader=None
+        self.revoke()
         self.assertIsNone(self.service.campaign_review_view(self.cadence)['execution_confirmation'])
 
     def test_new_confirmation_does_not_reauthorize_old_queue(self):
@@ -205,14 +219,132 @@ class CampaignConfirmationTests(unittest.TestCase):
         self.repo.put_state('cadence','batch-1',legacy)
         with self.assertRaisesRegex(ApprovalError,'context_required'):self.approve()
         self.repo.put_state('cadence','batch-1',self.cadence)
-        self.service.campaign_context_loader=None
-        with self.assertRaisesRegex(ApprovalError,'loader_unconfigured'):self.approve()
+        self.revoke()
+        with self.assertRaisesRegex(ApprovalError,'context_unavailable'):self.approve()
 
     def test_payload_only_coordinator_cannot_bypass_campaign_gate(self):
         coordinator=EffectCoordinator(self.ledger,ApprovalService(lambda:False),{'email':self.adapter})
         with self.assertRaisesRegex(EffectBlocked,'integration_required'):
             coordinator.execute_due(self.step,None,datetime.now(timezone.utc))
         self.adapter.send.assert_not_called();self.assertEqual(self.ledger.calls,[])
+
+    def test_revocation_after_queue_blocks_before_reservation(self):
+        self.approve();self.queue();self.revoke()
+        self.worker().process_one()
+        self.adapter.send.assert_not_called();self.assertEqual(self.ledger.calls,[])
+
+    def test_expiration_between_queue_and_worker_blocks(self):
+        approval=self.approve()
+        expiry=datetime.now(timezone.utc)+timedelta(seconds=10)
+        approval['execution_confirmation']['expires_at']=expiry.isoformat()
+        self.repo.put_state('approval','batch-1',approval)
+        self.queue()
+        class Later(datetime):
+            @classmethod
+            def now(cls,tz=None):return expiry+timedelta(seconds=1)
+        with patch('thunder_os.service.datetime',Later):self.worker().process_one()
+        self.adapter.send.assert_not_called();self.assertEqual(self.ledger.calls,[])
+        self.assertEqual(self.repo.effects()[0]['error_code'],'campaign_confirmation_expired')
+
+    def test_configuration_and_revocation_are_serialized_with_dispatch(self):
+        for operation in ('configure','revoke'):
+            with self.subTest(operation=operation):
+                self.setUp();self.approve();self.queue()
+                sending=threading.Event();release=threading.Event();writer_started=threading.Event()
+                initial=copy.deepcopy(self.canonical)
+                def send(effect):
+                    sending.set()
+                    if not release.wait(3):raise RuntimeError('test synchronization timeout')
+                    self.assertEqual(self.service.campaign_registry.load(self.config['campaign_id']),initial)
+                    return ProviderResult('s1','confirmed',receipt_ref='offline:fenced')
+                self.adapter.send.side_effect=send
+                other=ThunderService(Repository(self.repo.path))
+                def change():
+                    writer_started.set()
+                    if operation=='configure':
+                        return other.configure_campaign({**self.config,'rules':'new rules'},'ygor',expected_version=1)
+                    return other.revoke_campaign(self.config['campaign_id'],'ygor',expected_version=1)
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    work=pool.submit(self.worker().process_one)
+                    self.assertTrue(sending.wait(2))
+                    write=pool.submit(change);self.assertTrue(writer_started.wait(2))
+                    try:
+                        with self.assertRaises(FutureTimeout):write.result(timeout=0.1)
+                    finally:release.set()
+                    self.assertTrue(work.result(timeout=3));changed=write.result(timeout=3)
+                self.adapter.send.assert_called_once()
+                self.assertEqual(self.repo.effects()[0]['state'],'sent')
+                self.assertEqual(changed['version'],2)
+
+    def test_expired_lease_cannot_be_reclaimed_during_fenced_send(self):
+        self.approve();self.queue()
+        def send(effect):
+            # Simulates time crossing lease expiry while lock is held. A different
+            # connection cannot claim until the transaction commits terminal state.
+            with self.repo.transaction() as con:
+                con.execute("UPDATE thunder_effect_jobs SET lease_until=?",
+                    ((datetime.now(timezone.utc)-timedelta(seconds=1)).isoformat(),))
+            return ProviderResult('s1','confirmed',receipt_ref='offline:lease')
+        self.adapter.send.side_effect=send
+        self.worker().process_one()
+        self.assertEqual(self.repo.effects()[0]['state'],'sent')
+        self.assertFalse(self.worker('second').process_one())
+        self.adapter.send.assert_called_once()
+
+    def test_deferred_job_cannot_open_fence_without_owner(self):
+        self.approve();self.queue()
+        job=self.repo.claim_effect('test',datetime.now(timezone.utc),timedelta(seconds=30))
+        self.repo.defer_effect(job['id'],job['lease_owner'],'test')
+        for owner in (None,''):
+            with self.subTest(owner=owner),self.assertRaisesRegex(RepositoryConflict,'owner required'):
+                with self.repo.effect_dispatch_fence(job['id'],owner):self.fail('must not enter')
+        self.adapter.send.assert_not_called()
+
+    def test_wrong_claimant_cannot_open_dispatch_fence(self):
+        self.approve();self.queue()
+        job=self.repo.claim_effect('test',datetime.now(timezone.utc),timedelta(seconds=30))
+        with self.assertRaisesRegex(RepositoryConflict,'lease lost'):
+            with self.repo.effect_dispatch_fence(job['id'],'different-owner'):self.fail('must not enter')
+        self.adapter.send.assert_not_called()
+
+    def test_unknown_provider_exception_commits_uncertainty_without_retry(self):
+        self.approve();self.queue();self.adapter.send.side_effect=TimeoutError('offline')
+        self.worker().process_one()
+        self.assertEqual(self.repo.effects()[0]['state'],'uncertain')
+        self.assertFalse(self.worker('second').process_one())
+        self.adapter.send.assert_called_once()
+
+    def test_wrong_provider_account_blocks(self):
+        self.approve();self.queue();worker=self.worker()
+        worker.adapter_account_ids={'email':'other-account'}
+        worker.process_one();self.adapter.send.assert_not_called()
+        self.assertEqual(self.repo.effects()[0]['error_code'],'campaign_account_mismatch')
+
+    def test_miswired_adapter_cannot_use_trusted_binding_labels(self):
+        self.approve();self.queue();self.adapter.provider_name='wrong-provider'
+        self.worker().process_one();self.adapter.send.assert_not_called()
+        self.assertEqual(self.repo.effects()[0]['error_code'],'campaign_adapter_identity_unverified')
+
+    def test_legacy_like_and_retry_routes_remain_explicitly_blocked(self):
+        with self.assertRaisesRegex(ApprovalError,'integration_required'):
+            self.service.dispatch_like({'id':'synthetic'},'ygor')
+        self.approve();job=self.queue()
+        # A legacy safe-retry label must not silently restart a commercial batch.
+        with self.repo.transaction() as con:
+            con.execute("UPDATE thunder_effect_jobs SET state='failed',error_code='provider_rejected' WHERE id=?",(job['id'],))
+        with self.assertRaisesRegex(ApprovalError,'restart_confirmation_required'):
+            self.service.retry_effect(job['id'],'ygor')
+        self.adapter.send.assert_not_called()
+
+    def test_meeting_mirror_is_blocked_before_external_call(self):
+        hubspot = Mock()
+        self.service.hubspot = hubspot
+        with self.assertRaisesRegex(ApprovalError, 'campaign_confirmation_integration_required'):
+            self.service.record_meeting({'id':'offline-meeting','account_id':'synthetic.invalid',
+                'person_key':'synthetic@example.invalid','occurred_at':datetime.now(timezone.utc).isoformat(),
+                'hubspot_effect':{}}, 'ygor')
+        hubspot.mirror.assert_not_called()
+        self.assertEqual(self.repo.get_state('meeting','offline-meeting')['status'],'mirror_pending')
 
     def test_added_recipient_is_not_covered_by_confirmation(self):
         self.approve()

@@ -11,9 +11,11 @@ class EmailAdapter:
     def __init__(
         self, provider_name: str | None,
         transport: Callable[[Mapping[str, str]], Mapping[str, Any]] | None,
+        *, account_id: str | None = None,
     ):
         self.provider_name = provider_name.strip() if isinstance(provider_name, str) else None
         self.transport = transport
+        self.account_id = account_id
 
     def send(self, effect: Mapping[str, Any]) -> ProviderResult:
         effect_id = str(effect.get("effect_id", ""))

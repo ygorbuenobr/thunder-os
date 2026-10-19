@@ -36,6 +36,7 @@ ALLOWED_FILES = {
     "_ferramentas/painel_modelo.html",
 }
 ALLOWED_TESTS = {
+    "test_thunder_os_campaign_registry.py",
     "test_thunder_os_campaign_confirmation.py",
     "test_thunder_os_legacy_campaign_gate.py",
     "test_thunder_os_cadencia_radar_f3b.py",

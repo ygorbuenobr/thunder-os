@@ -14,6 +14,7 @@ from .db import Repository, RepositoryConflict
 from .models import ContractError, WorkItem, WorkStatus, as_payload, payload_hash, transition
 from .approvals import (ApprovalService, ApprovalError, _step_hash, execution_context,
                         execution_request, confirm_execution, validate_execution)
+from .campaign_registry import CampaignRegistry
 from .learning import LearningEngine
 from .research import validate_artifact, research_is_current
 from .knowledge import KnowledgeStore, KnowledgeError, validate_catalog
@@ -35,7 +36,9 @@ class ThunderService:
                  knowledge_store: KnowledgeStore | None = None, approved_catalog: Mapping[str, Any] | None = None, campaign_context_loader=None):
         self.repository = repository
         # Trusted composition reader, never a request/provider/model field.
-        self.campaign_context_loader = campaign_context_loader
+        if campaign_context_loader is not None:
+            raise ApprovalError("external_campaign_loader_unsupported")
+        self.campaign_registry = CampaignRegistry(repository)
         self.ledger = ledger
         self.hubspot = hubspot
         self.knowledge_store = knowledge_store
@@ -68,12 +71,16 @@ class ThunderService:
             "steps": [ThunderService._approval_step(step) for step in cadence["steps"]],
         })
 
+    def configure_campaign(self, config, actor, *, expected_version):
+        return self.campaign_registry.register(config, actor, expected_version)
+
+    def revoke_campaign(self, campaign_id, actor, *, expected_version):
+        return self.campaign_registry.revoke(campaign_id, actor, expected_version)
+
     def _campaign_context(self, cadence):
         context = execution_context(cadence.get("execution_context"))
-        if self.campaign_context_loader is None:
-            raise ApprovalError("campaign_context_loader_unconfigured")
         try:
-            current = execution_context(self.campaign_context_loader(context["campaign_id"]))
+            current = execution_context(self.campaign_registry.load(context["campaign_id"]))
         except Exception as exc:
             raise ApprovalError("campaign_context_unavailable") from exc
         if current != context or current["platform"] != "thunder_os":

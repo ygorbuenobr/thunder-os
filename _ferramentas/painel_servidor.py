@@ -1542,6 +1542,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.responder(200, service.set_global_pause(body['paused'], actor))
         if rota.path == '/api/os/v1/meetings':
             return self.responder(201, service.record_meeting(body, actor))
+        if rota.path == '/api/os/v1/campaigns' and set(body) == {'config', 'expected_version'}:
+            return self.responder(200, service.configure_campaign(
+                body['config'], actor, expected_version=body['expected_version']))
+        match_campaign = re.fullmatch(r'/api/os/v1/campaigns/([a-zA-Z0-9_-]{1,100})/revoke', rota.path)
+        if match_campaign and set(body) == {'expected_version'}:
+            return self.responder(200, service.revoke_campaign(
+                match_campaign.group(1), actor, expected_version=body['expected_version']))
         if rota.path == '/api/os/v1/cadences':
             return self.responder(201, service.create_cadence(body, actor))
         match_cadence = re.fullmatch(
