@@ -346,6 +346,15 @@ class CampaignConfirmationTests(unittest.TestCase):
         hubspot.mirror.assert_not_called()
         self.assertEqual(self.repo.get_state('meeting','offline-meeting')['status'],'mirror_pending')
 
+    def test_blocked_legacy_application_does_not_starve_confirmed_core(self):
+        app=Mock(); app.process_one.side_effect=AssertionError('legacy application called')
+        self.approve();self.queue();worker=self.worker();worker.connectsafely_app=app
+        self.assertTrue(worker.process_one());self.adapter.send.assert_called_once()
+        app.process_one.assert_not_called()
+        health=__import__('json').loads(worker.health_path.read_text())
+        self.assertEqual(health['blocked_integrations']['connectsafely'],
+                         'campaign_confirmation_integration_required')
+
     def test_added_recipient_is_not_covered_by_confirmation(self):
         self.approve()
         c=self.repo.get_state('cadence','batch-1')

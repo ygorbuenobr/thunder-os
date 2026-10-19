@@ -118,6 +118,8 @@ class WorkerRuntime:
             "external_effects_enabled": True,
             "processed": self.processed, "heartbeat_at": datetime.now(timezone.utc).isoformat(),
             "readiness": state == "ok", "last_progress_at": self.last_progress_at,
+            "blocked_integrations": ({"connectsafely": "campaign_confirmation_integration_required"}
+                                     if self.connectsafely_app is not None else {}),
             "capabilities": {channel: getattr(adapter, "capability", "injected") for channel, adapter in self.adapters.items()},
         }
         self.health_path.parent.mkdir(parents=True, exist_ok=True)
@@ -127,11 +129,8 @@ class WorkerRuntime:
         self._last_health = time.monotonic()
 
     def process_one(self) -> bool:
-        if self.connectsafely_app is not None and self.connectsafely_app.process_one():
-            self.processed += 1
-            self.last_progress_at = datetime.now(timezone.utc).isoformat()
-            self._health("ok")
-            return True
+        # Legacy application has no canonical campaign integration. Do not let
+        # its blocked queue starve the independently confirmed core outbox.
         job = self.repository.claim_effect(
             self.worker_id, datetime.now(timezone.utc), timedelta(seconds=30)
         )
