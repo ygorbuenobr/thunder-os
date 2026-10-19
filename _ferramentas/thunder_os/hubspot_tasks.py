@@ -119,10 +119,15 @@ class HubSpotTasks:
                 "due_at": properties.get("hs_timestamp"), "subject": properties.get("hs_task_subject"),
                 "body": properties.get("hs_task_body"), "contact_ids": contact_ids}
 
-    def complete(self, task_id, receipt_ref):
+    def complete(self, task_id, receipt_ref, expected_task):
         if not isinstance(receipt_ref, str) or not receipt_ref.startswith("connectsafely:"):
             raise ValueError("provider_receipt_required")
+        if (not isinstance(expected_task, dict) or set(expected_task)!={"subject","body","contact_ids"}
+                or not isinstance(expected_task["contact_ids"],list)):
+            raise ValueError("expected_task_contract_required")
         current = self.get(task_id)
+        if any(current[key]!=expected_task[key] for key in ("subject","body","contact_ids")):
+            raise HubSpotTaskError("hubspot_task_changed_after_dispatch")
         if current["status"] == "COMPLETED":
             return {"id": task_id, "status": "COMPLETED"}
         self._call("PATCH", f"/crm/v3/objects/tasks/{quote(task_id, safe='')}",

@@ -164,7 +164,7 @@ class HermesLinkedInCadence:
 
     def _complete_confirmed(self, state: Mapping[str, Any], *, replayed: bool) -> dict[str, Any]:
         task_id, receipt = str(state["task_id"]), str(state["receipt_ref"])
-        self.tasks.complete(task_id, receipt)
+        self.tasks.complete(task_id, receipt, state["task_contract"])
         completed = {**_clean_state(state), "status": "completed"}
         self.repository.put_state("linkedin_cadence_task", task_id, completed)
         audit_id = payload_hash({"task": task_id, "receipt": receipt})
@@ -216,7 +216,10 @@ class HermesLinkedInCadence:
             state = {"status": "provider_confirmed", "task_id": task_id,
                      "approval_id": approval["id"], "marker": step["marker"],
                      "job_id": queued["job_id"], "receipt_ref": receipt,
-                     "actor": "hermes (delegado)"}
+                     "actor": "hermes (delegado)", "task_contract": {
+                         "subject": task["subject"], "body": task["body"],
+                         "contact_ids": list(task["contact_ids"]),
+                     }}
             self.repository.put_state("linkedin_cadence_task", task_id, state)
             try:
                 return self._complete_confirmed(state, replayed=False)
@@ -229,6 +232,9 @@ class HermesLinkedInCadence:
         self.repository.put_state("linkedin_cadence_task", task_id, {
             "status": status, "task_id": task_id, "approval_id": approval["id"],
             "marker": step["marker"], "job_id": queued["job_id"], "error_code": error,
-            "actor": "hermes (delegado)",
+            "actor": "hermes (delegado)", "task_contract": {
+                "subject": task["subject"], "body": task["body"],
+                "contact_ids": list(task["contact_ids"]),
+            },
         })
         return {"task_id": task_id, "status": status, "error_code": error}

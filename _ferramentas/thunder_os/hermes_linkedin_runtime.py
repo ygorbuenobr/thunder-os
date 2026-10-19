@@ -80,7 +80,9 @@ class SyntheticTasks:
         self.task = dict(fixture["task"]); self.completed = []
     def due(self, limit=20): return [self.task["id"]][:limit]
     def get(self, task_id): return dict(self.task)
-    def complete(self, task_id, receipt):
+    def complete(self, task_id, receipt, expected_task):
+        if any(self.task[key]!=expected_task[key] for key in ("subject","body","contact_ids")):
+            raise ValueError("synthetic_task_changed_after_dispatch")
         self.completed.append([task_id, receipt]); self.task["status"] = "COMPLETED"
 
 

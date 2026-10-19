@@ -22,7 +22,8 @@ class Tasks:
         assert task_id == self.task["id"]
         return dict(self.task)
 
-    def complete(self, task_id, receipt):
+    def complete(self, task_id, receipt, expected_task):
+        assert all(self.task[key] == expected_task[key] for key in ("subject", "body", "contact_ids"))
         self.completions.append((task_id, receipt))
         self.task["status"] = "COMPLETED"
 

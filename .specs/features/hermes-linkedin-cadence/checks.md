@@ -61,7 +61,7 @@ Status: complete
 Proof: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=_ferramentas:/root/.hermes/profiles/ygor-personal/brain/_ferramentas:/root/.hermes/profiles/ygor-personal/brain python3 -m unittest -v -k test_synthetic_once_runs_end_to_end_without_network _ferramentas.test_thunder_os_hermes_linkedin_runtime`
 Status: complete
 
-**C11** - HubSpot adapter pins portal, owner, task association and receipt before the sole completion patch (HLC-03, AC 7-9; HLC-04, AC 11)
+**C11** - HubSpot adapter pins portal, owner, exact post-dispatch task contract and receipt before the sole completion patch (HLC-03, AC 7-9; HLC-04, AC 11)
 Proof: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=_ferramentas:/root/.hermes/profiles/ygor-personal/brain/_ferramentas:/root/.hermes/profiles/ygor-personal/brain python3 -m unittest -v -k test_exact_portal_owner_task_and_receipt_bound_completion _ferramentas.test_thunder_os_hubspot_tasks`
 Status: complete
 
@@ -75,7 +75,7 @@ Status: complete
 | provider outcomes (5) | confirmed C6 · blocked C7 · rejected C7 · failed C7 · uncertain C7 | - |
 | replay cases (2) | approval C1 · confirmed task C8 | - |
 | runtime modes (3) | disabled C9 · live C9 · synthetic C10 | - |
-| HubSpot write gates (4) | portal C11 · owner C11 · contact association C11 · provider receipt C11 | - |
+| HubSpot write gates (5) | portal C11 · owner C11 · contact association C11 · unchanged subject/marker C11 · provider receipt C11 | - |
 | approval route statuses (3) | `201` C12 · `400` C12 · `503` C12 | - |
 
 ## Test policy
