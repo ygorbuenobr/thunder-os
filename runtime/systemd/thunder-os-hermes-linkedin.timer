@@ -2,7 +2,7 @@
 Description=Run deterministic Hermes LinkedIn cadence every 30 minutes
 
 [Timer]
-OnCalendar=Mon..Fri *-*-* 08..17:00/30:00
+OnCalendar=Mon..Fri *-*-* 08..18:00/30:00
 Persistent=false
 RandomizedDelaySec=120
 Unit=thunder-os-hermes-linkedin.service

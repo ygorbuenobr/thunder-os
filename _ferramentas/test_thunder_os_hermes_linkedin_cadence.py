@@ -17,6 +17,7 @@ class Tasks:
     def __init__(self, task):
         self.task = dict(task)
         self.completions = []
+        self.uncertain = []
 
     def get(self, task_id):
         assert task_id == self.task["id"]
@@ -26,6 +27,10 @@ class Tasks:
         assert all(self.task[key] == expected_task[key] for key in ("subject", "body", "contact_ids"))
         self.completions.append((task_id, receipt))
         self.task["status"] = "COMPLETED"
+
+    def mark_uncertain(self, contact_id, expected_status):
+        self.uncertain.append((contact_id, expected_status))
+        self.task["contact_status"] = "incerto"
 
 
 class Provider:
@@ -99,7 +104,8 @@ def approval(ident="approval-1"):
 
 def task(marker="cad_li_1"):
     return {"id": "task-1", "status": "NOT_STARTED", "due_at": "2026-10-19T14:00:00+00:00",
-            "subject": STEP_CONTRACT[marker][0], "body": marker, "contact_ids": ["contact-1"]}
+            "subject": STEP_CONTRACT[marker][0], "body": marker, "contact_ids": ["contact-1"],
+            "contact_status": "em_cadencia", "cadence_id": "316669709"}
 
 
 class HermesLinkedInCadenceTests(unittest.TestCase):
@@ -166,7 +172,8 @@ class HermesLinkedInCadenceTests(unittest.TestCase):
     def test_task_contract_selects_only_exact_due_step(self):
         variants = (
             {"due_at": "2026-10-19T16:00:00+00:00"}, {"status": "COMPLETED"},
-            {"body": "wrong"}, {"contact_ids": ["contact-2"]},
+            {"body": "wrong"}, {"contact_ids": ["contact-2"]}, {"contact_status": "respondeu"},
+            {"cadence_id": "other"},
         )
         for mutation in variants:
             with self.subTest(mutation=mutation):
@@ -227,6 +234,8 @@ class HermesLinkedInCadenceTests(unittest.TestCase):
                 first = runner.run_task("task-1")
                 self.assertEqual([], tasks.completions)
                 if first["status"] == "uncertain":
+                    self.assertEqual([("contact-1", "em_cadencia")], tasks.uncertain)
+                    self.assertEqual("uncertain", repo.get_state("linkedin_cadence_alert", "task-1")["status"])
                     second = runner.run_task("task-1")
                     self.assertTrue(second["replayed"]); self.assertEqual(1, console.executes)
                     prior=repo.get_state("linkedin_cadence_task","task-1")

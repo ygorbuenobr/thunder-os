@@ -57,9 +57,9 @@ class HubSpotTasks:
     def _call(self, method, path, body=None):
         allowed = (
             method == "GET" and (path == "/account-info/v3/details" or bool(re.fullmatch(
-                r"/crm/v3/objects/tasks/\d+\?(?:properties=[A-Za-z0-9_,%]+&associations=contacts|properties=[A-Za-z0-9_,%]+)", path)))
+                r"/crm/v3/objects/(?:tasks|contacts)/\d+\?(?:properties=[A-Za-z0-9_,%]+&associations=contacts|properties=[A-Za-z0-9_,%]+)", path)))
             or method == "POST" and path == "/crm/v3/objects/tasks/search"
-            or method == "PATCH" and bool(re.fullmatch(r"/crm/v3/objects/tasks/\d+", path))
+            or method == "PATCH" and bool(re.fullmatch(r"/crm/v3/objects/(?:tasks|contacts)/\d+", path))
         )
         if not allowed:
             raise HubSpotTaskError("hubspot_endpoint_blocked")
@@ -115,23 +115,60 @@ class HubSpotTasks:
                 str(properties.get("hubspot_owner_id")) != self.owner_id or not isinstance(contacts, list)):
             raise HubSpotTaskError("hubspot_task_scope_mismatch")
         contact_ids = [str(item.get("id")) for item in contacts if isinstance(item, dict) and str(item.get("id", "")).isdigit()]
+        contact = self.contact(contact_ids[0]) if len(contact_ids) == 1 else {}
         return {"id": task_id, "status": properties.get("hs_task_status"),
                 "due_at": properties.get("hs_timestamp"), "subject": properties.get("hs_task_subject"),
-                "body": properties.get("hs_task_body"), "contact_ids": contact_ids}
+                "body": properties.get("hs_task_body"), "contact_ids": contact_ids,
+                "contact_status": contact.get("cad_status"), "cadence_id": contact.get("cadence_id")}
+
+    def contact(self, contact_id):
+        if not isinstance(contact_id, str) or not contact_id.isdigit():
+            raise ValueError("hubspot_contact_id_invalid")
+        self._portal()
+        query = urlencode({"properties": "cad_status,hs_latest_sequence_enrolled"})
+        row = self._call("GET", f"/crm/v3/objects/contacts/{quote(contact_id, safe='')}?{query}")
+        properties = row.get("properties")
+        if str(row.get("id")) != contact_id or not isinstance(properties, dict):
+            raise HubSpotTaskError("hubspot_contact_scope_mismatch")
+        status = properties.get("cad_status")
+        cadence_id = properties.get("hs_latest_sequence_enrolled")
+        if status not in {"rascunho", "aprovado", "em_cadencia", "respondeu", "encerrado", "incerto"}:
+            raise HubSpotTaskError("hubspot_cadence_status_invalid")
+        if not isinstance(cadence_id, str) or not cadence_id.isdigit():
+            raise HubSpotTaskError("hubspot_cadence_id_invalid")
+        return {"cad_status": status, "cadence_id": cadence_id}
+
+    def mark_uncertain(self, contact_id, expected_status):
+        if expected_status not in {"aprovado", "em_cadencia"}:
+            raise HubSpotTaskError("hubspot_cadence_status_changed")
+        if self.contact(contact_id)["cad_status"] != expected_status:
+            raise HubSpotTaskError("hubspot_cadence_status_changed")
+        self._call("PATCH", f"/crm/v3/objects/contacts/{quote(contact_id, safe='')}",
+                   {"properties": {"cad_status": "incerto"}})
+        if self.contact(contact_id)["cad_status"] != "incerto":
+            raise HubSpotTaskError("hubspot_uncertain_status_unconfirmed")
+        return {"id": contact_id, "cad_status": "incerto"}
 
     def complete(self, task_id, receipt_ref, expected_task):
         if not isinstance(receipt_ref, str) or not receipt_ref.startswith("connectsafely:"):
             raise ValueError("provider_receipt_required")
-        if (not isinstance(expected_task, dict) or set(expected_task)!={"subject","body","contact_ids"}
-                or not isinstance(expected_task["contact_ids"],list)):
+        if (not isinstance(expected_task, dict)
+                or set(expected_task)!={"subject","body","contact_ids","content","sent_at"}
+                or not isinstance(expected_task["contact_ids"],list)
+                or not all(isinstance(expected_task[key],str) and expected_task[key]
+                           for key in ("content","sent_at"))):
             raise ValueError("expected_task_contract_required")
         current = self.get(task_id)
-        if any(current[key]!=expected_task[key] for key in ("subject","body","contact_ids")):
+        note = (expected_task["body"] + "\n\n[Thunder OS] Enviado por Hermes via ConnectSafely; "
+                "horario=" + expected_task["sent_at"] + "; provider_id=" + receipt_ref
+                + "; texto=" + expected_task["content"])
+        if (current["subject"] != expected_task["subject"] or current["contact_ids"] != expected_task["contact_ids"]
+                or current["body"] not in {expected_task["body"], note}):
             raise HubSpotTaskError("hubspot_task_changed_after_dispatch")
         if current["status"] == "COMPLETED":
             return {"id": task_id, "status": "COMPLETED"}
         self._call("PATCH", f"/crm/v3/objects/tasks/{quote(task_id, safe='')}",
-                   {"properties": {"hs_task_status": "COMPLETED"}})
+                   {"properties": {"hs_task_status": "COMPLETED", "hs_task_body": note}})
         confirmed = self.get(task_id)
         if confirmed["status"] != "COMPLETED":
             raise HubSpotTaskError("hubspot_completion_unconfirmed")

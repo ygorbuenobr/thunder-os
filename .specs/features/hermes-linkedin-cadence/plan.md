@@ -47,16 +47,16 @@ After this change, a bounded Hermes runner can execute exactly one due HubSpot L
 
 **Acceptance Criteria**
 
-4. WHEN one open due HubSpot task has the exact approved subject, marker and contact association THEN the runner SHALL select the matching frozen step without invoking an LLM or accepting generated copy.
-5. IF the task is early, completed, unassociated, associated to another contact, malformed, or not in the approval THEN it SHALL remain open and return a stable blocked reason.
-6. IF the invite step observes anything other than `NOT_CONNECTED`, or a message step observes anything other than `CONNECTED`, THEN it SHALL not dispatch; reply/suppression/duplicate gates remain owned by the canonical ConnectSafely ledger.
+4. WHEN one open due HubSpot task has the exact approved subject, marker, contact, active `cad_status` and `hs_latest_sequence_enrolled` THEN the runner SHALL select the matching frozen step without invoking an LLM or accepting generated copy.
+5. IF the task is early, completed, unassociated, associated to another contact, malformed, from another cadence, or the contact is not `aprovado`/`em_cadencia` THEN it SHALL remain open and return a stable blocked reason. The CRM state SHALL be read again immediately before queueing so a reply/status change wins.
+6. IF the invite step observes anything other than `NOT_CONNECTED`, or a message step observes anything other than `CONNECTED`, THEN it SHALL not dispatch; reply/suppression/duplicate and provider quota gates remain owned by CRM state plus the canonical ConnectSafely ledger.
 
 ### S3: Receipt-bound completion (P1)
 
 **Acceptance Criteria**
 
-7. WHEN ConnectSafely confirms the exact effect with a receipt THEN the runner SHALL persist an audit record with actor `hermes (delegado)` and complete only that HubSpot task with the receipt reference.
-8. IF ConnectSafely blocks, rejects, fails or returns an uncertain outcome THEN the HubSpot task SHALL remain open; an uncertain outcome SHALL be fenced from automatic retry.
+7. WHEN ConnectSafely confirms the exact effect with a receipt THEN the runner SHALL persist an audit record with actor `hermes (delegado)` and complete only that HubSpot task with a note containing copy, time and receipt.
+8. IF ConnectSafely blocks, rejects, fails or returns an uncertain outcome THEN the HubSpot task SHALL remain open and a local alert SHALL persist; an uncertain outcome SHALL set `cad_status=incerto`, be fenced from redelivery and allow only receipt reconciliation under the same delegated authority.
 9. WHEN the same confirmed task is observed again THEN no second provider write or daily-cap consumption SHALL occur.
 
 ### S4: Bounded runtime configuration (P1)
@@ -64,7 +64,7 @@ After this change, a bounded Hermes runner can execute exactly one due HubSpot L
 **Acceptance Criteria**
 
 10. The checked-in runner SHALL default to disabled external effects, require explicit absolute configuration paths and support a synthetic mode that cannot open provider or HubSpot sockets.
-11. The live configuration contract SHALL name the HubSpot portal/owner, ConnectSafely account/public identity, polling bound, business timezone/hours, daily cap and kill switch; secrets SHALL be referenced by environment variable name, never stored in the file.
+11. The live configuration contract SHALL name the HubSpot portal/owner, ConnectSafely account/public identity, polling bound, weekdays 08:00-19:00 Sao Paulo, random 30-90 second inter-action spacing, daily cap, kill switch and a revision file equal to the configured source revision; secrets SHALL be referenced by environment variable name, never stored in the file.
 12. WHEN a `--once` synthetic run receives a valid fixture THEN it SHALL prove the producer-to-consumer journey from due task through receipt-bound completion and emit a sanitized summary containing source revision, mode and processed outcome with zero secret values.
 
 ## Traceability

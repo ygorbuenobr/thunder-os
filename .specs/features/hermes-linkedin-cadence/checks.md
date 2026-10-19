@@ -5,7 +5,7 @@ Plan: `.specs/features/hermes-linkedin-cadence/plan.md`
 
 ## Intent
 
-12 checks in 4 slices · 2 one-way doors · 0 open
+15 checks in 4 slices · 2 one-way doors · 0 open
 
 ## Checks
 
@@ -25,7 +25,7 @@ Status: complete
 
 ### S2 - Deterministic task gate
 
-**C3** - Exact due subject/marker/contact maps to frozen copy while early, completed, malformed and wrong-contact tasks remain open (HLC-02, AC 4-5)
+**C3** - Exact due subject/marker/contact/status/cadence maps to frozen copy while early, completed, malformed, wrong-contact, replied and wrong-cadence tasks remain open (HLC-02, AC 4-5)
 Proof: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=_ferramentas:/root/.hermes/profiles/ygor-personal/brain/_ferramentas:/root/.hermes/profiles/ygor-personal/brain python3 -m unittest -v -k test_task_contract_selects_only_exact_due_step _ferramentas.test_thunder_os_hermes_linkedin_cadence`
 Status: complete
 
@@ -51,10 +51,22 @@ Status: complete
 Proof: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=_ferramentas:/root/.hermes/profiles/ygor-personal/brain/_ferramentas:/root/.hermes/profiles/ygor-personal/brain python3 -m unittest -v -k test_confirmed_replay_is_idempotent _ferramentas.test_thunder_os_hermes_linkedin_cadence`
 Status: complete
 
+**C13** - An uncertain delegated invitation is reconciled under its unchanged D0 authority, never re-sent, and only then completes its exact HubSpot task (HLC-03, AC 8-9)
+Proof: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=_ferramentas:/root/.hermes/profiles/ygor-personal/brain/_ferramentas:/root/.hermes/profiles/ygor-personal/brain python3 -m unittest -v -k test_delegated_invite_reconciles_under_exact_d0_authority _ferramentas.test_thunder_os_connectsafely_panel_wiring`
+Status: complete
+
 ### S4 - Bounded runtime configuration
 
 **C9** - Disabled/synthetic/live config validation rejects relative paths, embedded secrets, identity mismatch and unbounded polling; checked-in example remains disabled (HLC-04, AC 10-11)
 Proof: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=_ferramentas:/root/.hermes/profiles/ygor-personal/brain/_ferramentas:/root/.hermes/profiles/ygor-personal/brain python3 -m unittest -v -k test_runtime_config_is_explicit_bounded_and_secret_free _ferramentas.test_thunder_os_hermes_linkedin_runtime`
+Status: complete
+
+**C14** - Runtime refuses a revision-file mismatch and inserts exactly one bounded random 30-90 second delay between two due tasks (HLC-04, AC 11)
+Proof: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=_ferramentas:/root/.hermes/profiles/ygor-personal/brain/_ferramentas:/root/.hermes/profiles/ygor-personal/brain python3 -m unittest -v -k test_runtime_binds_revision_and_spaces_multiple_tasks _ferramentas.test_thunder_os_hermes_linkedin_runtime`
+Status: complete
+
+**C15** - HubSpot status/cadence is read with the task, uncertain changes `cad_status` with readback, and confirmed completion writes a receipt-bound note (HLC-02, AC 4-5; HLC-03, AC 7-8)
+Proof: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=_ferramentas:/root/.hermes/profiles/ygor-personal/brain/_ferramentas:/root/.hermes/profiles/ygor-personal/brain python3 -m unittest -v _ferramentas.test_thunder_os_hubspot_tasks`
 Status: complete
 
 **C10** - `--once` synthetic runtime completes one fixture task and prints a sanitized revision-bound summary without sockets or secrets (HLC-04, AC 12)
@@ -70,7 +82,7 @@ Status: complete
 | Set | Member -> proof | Unproven |
 | --- | --- | --- |
 | authority failures (7) | wrong actor C1 · changed C1 · incomplete C1 · expired C1 · pause C2 · scope C2 · cap C2 | - |
-| task mismatch classes (4) | early C3 · completed C3 · malformed C3 · wrong contact C3 | - |
+| task mismatch classes (6) | early C3 · completed C3 · malformed C3 · wrong contact C3 · replied C3 · wrong cadence C3 | - |
 | relationship states (4) | NOT_CONNECTED C4 · CONNECTED C4 · INVITATION_SENT C4 · INVITATION_RECEIVED C4 | - |
 | provider outcomes (5) | confirmed C6 · blocked C7 · rejected C7 · failed C7 · uncertain C7 | - |
 | replay cases (2) | approval C1 · confirmed task C8 | - |
@@ -84,7 +96,7 @@ Status: complete
 | --- | --- | --- |
 | external dispatch authority | unit tests with spy ports | every named rejection proves zero calls |
 | task completion | producer-to-consumer synthetic test | receipt and exact task ID asserted |
-| uncertainty | replay test | a second run never calls provider |
+| uncertainty | replay/reconciliation test | a second run never sends; only exact delegated reconciliation may complete |
 | determinism | AST/source boundary check | no LLM/model/prompt import or identifier in runtime module |
 | runtime config | parser tests | every effectful mode and secret reference validated |
 

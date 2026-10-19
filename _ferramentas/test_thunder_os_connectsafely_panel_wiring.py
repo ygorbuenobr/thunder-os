@@ -329,6 +329,55 @@ class PanelWiringTests(unittest.TestCase):
         app.direct._reconcile.assert_called_once();ledger.reconcile_invitation.assert_called_once()
         self.assertEqual(1,len(self.repo.list_state('connectsafely_reconciliation')))
 
+    def test_delegated_invite_reconciles_under_exact_d0_authority(self):
+        from thunder_os.hermes_linkedin_cadence import (HermesLinkedInCadence,
+            approval_payload_hash, plan_hash)
+        app,preview,job,ledger,result=self.invitation_attempt()
+        delegation=self.repo.put_state('delegation','hermes',{
+            'enabled':True,'scopes':['linkedin_cadence'],'daily_limit':30,
+            'actor':'ygor','audit_actor':'hermes (delegado)'})
+        value={'hubspot_contact_id':'contact-1','cadence_id':'316669709',
+               'expires_at':'2099-01-01T00:00:00+00:00','steps':[{
+                   'marker':'cad_li_0','subject':'LinkedIn: convite','plan':preview['plan'],
+                   'plan_hash':plan_hash(preview['plan'])}],
+               'approved_by':'ygor','status':'active'}
+        value['review_hash']=approval_payload_hash(value)
+        cadence=self.repo.append_state('linkedin_cadence_approval','approval-1',value)
+        authority={'id':cadence['id'],'version':cadence['version'],
+                   'review_hash':cadence['review_hash'],'marker':'cad_li_0'}
+        def clean(row):return {k:v for k,v in row.items() if k not in {'id','version','updated_at'}}
+        origin=self.repo.get_state('connectsafely_preview_origin',preview['id'])
+        self.repo.put_state('connectsafely_preview_origin',preview['id'],{
+            **clean(origin),'executor':'hermes (delegado)','delegated_authority':authority})
+        queued=self.repo.get_state('connectsafely_job',job['job_id'])
+        self.repo.put_state('connectsafely_job',job['job_id'],{
+            **clean(queued),'actor':'hermes (delegado)','delegated_authority':authority})
+        approval=self.repo.get_state('connectsafely_queue_approval',job['job_id'])
+        self.repo.put_state('connectsafely_queue_approval',job['job_id'],{
+            **clean(approval),'executor':'hermes (delegado)','delegated_authority':authority,
+            'delegation_version':delegation['version'],'cadence_approval_hash':cadence['review_hash']})
+        # The one-time dispatch review may expire before the next 30-minute
+        # poll; reconciliation remains read-only and is bound to the current D0.
+        app.clock=lambda:approval['expires_at']+1800
+        task={'id':'task-1','status':'NOT_STARTED','subject':'LinkedIn: convite','body':'cad_li_0',
+              'contact_ids':['contact-1'],'contact_status':'em_cadencia','cadence_id':'316669709'}
+        class Tasks:
+            def __init__(self):self.completions=[]
+            def complete(self,task_id,receipt,expected):self.completions.append((task_id,receipt,expected))
+        tasks=Tasks()
+        self.repo.put_state('linkedin_cadence_task','task-1',{
+            'status':'uncertain','task_id':'task-1','approval_id':cadence['id'],'marker':'cad_li_0',
+            'job_id':job['job_id'],'error_code':'provider_outcome_unknown','actor':'hermes (delegado)',
+            'task_contract':{**{key:task[key] for key in ('subject','body','contact_ids')},
+                             'content':preview['plan']['content'],'sent_at':'2026-10-19T15:00:00+00:00'}})
+        reconciled=HermesLinkedInCadence(self.repo,tasks,app,clock=app.clock).run_task('task-1')
+        self.assertEqual('completed',reconciled['status'])
+        self.assertEqual('done',self.repo.get_state('connectsafely_job',job['job_id'])['state'])
+        self.assertEqual('connectsafely:urn:li:invitation:123',tasks.completions[0][1])
+        audits=self.repo.list_state('connectsafely_reconciliation')
+        self.assertEqual('hermes (delegado)',audits[0]['actor'])
+        app.direct._reconcile.assert_called_once();ledger.reconcile_invitation.assert_called_once()
+
     def test_invite_observation_alone_keeps_job_uncertain_and_no_ledger_finish(self):
         app,preview,job,ledger,result=self.invitation_attempt()
         app.direct._reconcile.return_value={'status':'uncertain','error_code':'invite_receipt_unavailable',

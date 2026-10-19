@@ -60,7 +60,7 @@ The canonical architecture, data models and requirements are in `.specs/features
 - `worker.py`, `touch_ledger.py` and provider adapters form the effect boundary. Reservation, final validation, receipt and reconciliation are independent from draft generation.
 - ConnectSafely, HubSpot and SEQD adapters are channel/CRM capabilities. Read access never creates write authority. Preview, execute and reconcile are distinct paths.
 - `hermes_linkedin_cadence.py` is the deterministic executor for a contact-scoped LinkedIn package approved by Ygor at D0. It accepts only the four fixed HubSpot task markers, rechecks the `linkedin_cadence` delegation and relationship state, and completes a task only after a ConnectSafely receipt. It does not call an LLM or generate copy.
-- `runtime/hermes-linkedin-cadence.live.example.json` is a disabled production-shaped template. Source readiness does not authorize enabling its systemd candidate, changing the live delegation or running a provider canary.
+- `runtime/hermes-linkedin-cadence.live.example.json` is a disabled production-shaped template. It binds HubSpot portal/owner and enrolled sequence, ConnectSafely identity, a matching release `REVISION`, weekdays 08:00-19:00 Sao Paulo, 30-90 second spacing, daily cap and kill switch. Source readiness does not authorize enabling its systemd candidate, changing the live delegation or running a provider canary.
 - `ops.py`, `connection_reconcile_cli.py`, `scripts/build_runtime_bundle.py` and `scripts/check_runtime_bundle.py` provide operational inspection, recoverable reconciliation and immutable assembly.
 
 ## Local tests

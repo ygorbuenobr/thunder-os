@@ -24,6 +24,7 @@ STEP_CONTRACT = {
     "cad_li_2": ("LinkedIn: msg 2", "dm"),
     "cad_li_3": ("LinkedIn: msg 3", "dm"),
 }
+ACTIVE_CADENCE_STATUSES = {"aprovado", "em_cadencia"}
 
 
 def _clean_state(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -50,6 +51,14 @@ def approval_payload_hash(payload: Mapping[str, Any]) -> str:
     return payload_hash({key: payload[key] for key in (
         "hubspot_contact_id", "cadence_id", "expires_at", "steps",
     )})
+
+
+def _task_contract(task: Mapping[str, Any], step: Mapping[str, Any], clock) -> dict[str, Any]:
+    return {
+        "subject": task["subject"], "body": task["body"], "contact_ids": list(task["contact_ids"]),
+        "content": step["plan"]["content"],
+        "sent_at": datetime.fromtimestamp(clock(), timezone.utc).isoformat(),
+    }
 
 
 def validate_delegated_plan(repository, authority: Mapping[str, Any], plan: Mapping[str, Any], clock) -> dict[str, Any]:
@@ -146,6 +155,8 @@ class HermesLinkedInCadence:
         contacts = task.get("contact_ids")
         if not isinstance(contacts, list) or len(contacts) != 1 or not isinstance(contacts[0], str):
             raise CadenceBlocked("task_contact_ambiguous")
+        if task.get("contact_status") not in ACTIVE_CADENCE_STATUSES:
+            raise CadenceBlocked("cadence_status_blocked")
         marker = task.get("body")
         if marker not in STEP_CONTRACT or task.get("subject") != STEP_CONTRACT[marker][0]:
             raise CadenceBlocked("task_contract_mismatch")
@@ -157,6 +168,8 @@ class HermesLinkedInCadence:
         if len(matches) != 1:
             raise CadenceBlocked("task_approval_ambiguous_or_missing")
         approval = matches[0]
+        if task.get("cadence_id") != approval.get("cadence_id"):
+            raise CadenceBlocked("task_cadence_mismatch")
         if _iso(approval["expires_at"]).timestamp() <= self.clock():
             raise CadenceBlocked("approval_expired")
         step = next(step for step in approval["steps"] if step["marker"] == marker)
@@ -173,12 +186,29 @@ class HermesLinkedInCadence:
         return {"task_id": task_id, "status": "completed", "receipt_ref": receipt,
                 "actor": "hermes (delegado)", **({"replayed": True} if replayed else {})}
 
+    def _record_alert(self, task_id: str, state: Mapping[str, Any]) -> None:
+        value = {**_clean_state(state), "task_id": task_id, "actor": "hermes (delegado)"}
+        self.repository.put_state("linkedin_cadence_alert", task_id, value)
+
     def run_task(self, task_id: str) -> dict[str, Any]:
         prior = self.repository.get_state("linkedin_cadence_task", task_id)
         if prior and prior.get("status") == "completed":
             return {"task_id": task_id, "status": "completed", "replayed": True,
                     "receipt_ref": prior.get("receipt_ref")}
         if prior and prior.get("status") == "uncertain":
+            if prior.get("marker") == "cad_li_0":
+                approval = self.repository.get_state("linkedin_cadence_approval", str(prior.get("approval_id", "")))
+                step = next((item for item in (approval or {}).get("steps", [])
+                             if item.get("marker") == prior.get("marker")), None)
+                if approval and step:
+                    authority = {"id": approval["id"], "version": approval["version"],
+                                 "review_hash": approval["review_hash"], "marker": step["marker"]}
+                    job = self.repository.get_state("connectsafely_job", str(prior.get("job_id", "")))
+                    if job:
+                        try:
+                            self.app.reconcile_delegated({"preview_id": job["preview_id"]}, authority)
+                        except Exception:
+                            pass
             job = self.repository.get_state("connectsafely_job", str(prior.get("job_id", "")))
             result = job.get("result", {}) if job else {}
             if job and job.get("state") == "done" and result.get("status") == "sent" and result.get("receipt_ref"):
@@ -203,6 +233,14 @@ class HermesLinkedInCadence:
         required = "NOT_CONNECTED" if step["plan"]["action"] == "invite" else "CONNECTED"
         if relationship.get("relationship_status") != required:
             raise CadenceBlocked("relationship_gate_blocked")
+        # Re-read the CRM authority immediately before queueing so a reply or
+        # sequence/status change observed during relationship lookup wins.
+        latest = self.tasks.get(task_id)
+        latest_approval, latest_step = self._match(latest)
+        if (latest_approval["id"] != approval["id"] or latest_approval["version"] != approval["version"]
+                or latest_step["plan_hash"] != step["plan_hash"]):
+            raise CadenceBlocked("task_authority_changed")
+        task = latest
         preview = self.app.prepare_delegated(step["plan"], authority)
         queued = self.app.enqueue_delegated({
             "preview_id": preview["id"], "expected_version": preview["version"],
@@ -216,10 +254,8 @@ class HermesLinkedInCadence:
             state = {"status": "provider_confirmed", "task_id": task_id,
                      "approval_id": approval["id"], "marker": step["marker"],
                      "job_id": queued["job_id"], "receipt_ref": receipt,
-                     "actor": "hermes (delegado)", "task_contract": {
-                         "subject": task["subject"], "body": task["body"],
-                         "contact_ids": list(task["contact_ids"]),
-                     }}
+                     "actor": "hermes (delegado)",
+                     "task_contract": _task_contract(task, step, self.clock)}
             self.repository.put_state("linkedin_cadence_task", task_id, state)
             try:
                 return self._complete_confirmed(state, replayed=False)
@@ -232,9 +268,13 @@ class HermesLinkedInCadence:
         self.repository.put_state("linkedin_cadence_task", task_id, {
             "status": status, "task_id": task_id, "approval_id": approval["id"],
             "marker": step["marker"], "job_id": queued["job_id"], "error_code": error,
-            "actor": "hermes (delegado)", "task_contract": {
-                "subject": task["subject"], "body": task["body"],
-                "contact_ids": list(task["contact_ids"]),
-            },
+            "actor": "hermes (delegado)",
+            "task_contract": _task_contract(task, step, self.clock),
         })
+        self._record_alert(task_id, {
+            "status": status, "approval_id": approval["id"], "marker": step["marker"],
+            "job_id": queued["job_id"], "error_code": error,
+        })
+        if uncertain and hasattr(self.tasks, "mark_uncertain"):
+            self.tasks.mark_uncertain(task["contact_ids"][0], task.get("contact_status"))
         return {"task_id": task_id, "status": status, "error_code": error}

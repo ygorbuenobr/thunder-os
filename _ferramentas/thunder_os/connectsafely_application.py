@@ -277,6 +277,26 @@ class ConnectSafelyApplication:
         elif job.get('actor') != 'ygor' or approval.get('executor') is not None:
             raise ConnectSafelyError('job_authority_invalid')
 
+    def _delegated_reconciliation_authorized(self, job, preview):
+        """Validate current D0 authority without reopening the dispatch lease."""
+        from .hermes_linkedin_cadence import validate_delegated_plan
+        approval=self.repo.get_state('connectsafely_queue_approval',job['id'])
+        authority=job.get('delegated_authority')
+        delegation=self.repo.get_state('delegation','hermes')
+        if (job.get('actor')!='hermes (delegado)' or not approval
+                or approval.get('actor')!='ygor' or approval.get('executor')!='hermes (delegado)'
+                or approval.get('delegated_authority')!=authority
+                or approval.get('review')!=job.get('review')
+                or approval.get('simulation') is not self.simulation
+                or job.get('simulation') is not self.simulation
+                or job.get('execution_scope')!=self.execution_scope
+                or approval.get('execution_scope')!=self.execution_scope
+                or not delegation or approval.get('delegation_version')!=delegation.get('version')):
+            raise ConnectSafelyError('job_authority_invalid')
+        current=validate_delegated_plan(self.repo,authority,preview['plan'],self.clock)
+        if approval.get('cadence_approval_hash')!=current.get('review_hash'):
+            raise ConnectSafelyError('delegated_authority_changed')
+
     def _claim(self, job_id=None):
         if self.execution_scope is not None and job_id is None:
             return None
@@ -364,6 +384,26 @@ class ConnectSafelyApplication:
         result = self._console(preview['plan']['action']).reconcile(body, actor=actor)
         return {**result, 'simulation':self.simulation}
 
+    def reconcile_delegated(self, body, authority):
+        """Reconcile a Hermes job without turning the executor into human authority."""
+        self._simulation_boundary()
+        if not isinstance(body,dict) or set(body) != {'preview_id'}:
+            raise ConnectSafelyError('invalid_reconciliation')
+        preview = self._preview(body['preview_id'])
+        self._check_mode(preview)
+        origin = self.repo.get_state('connectsafely_preview_origin', preview['id'])
+        if (not origin or origin.get('executor') != 'hermes (delegado)'
+                or origin.get('delegated_authority') != dict(authority)):
+            raise ConnectSafelyError('delegated_authority_changed')
+        jobs=[j for j in self.repo.list_state('connectsafely_job') if j['preview_id']==preview['id']]
+        if len(jobs)!=1 or jobs[0].get('delegated_authority') != dict(authority):
+            raise ConnectSafelyError('job_authority_invalid')
+        self._delegated_reconciliation_authorized(jobs[0], preview)
+        if preview['plan']['action']=='invite':
+            return self._reconcile_invitation_job(preview, body, 'hermes (delegado)')
+        result = self._console(preview['plan']['action']).reconcile(body, actor='ygor')
+        return {**result, 'simulation':self.simulation}
+
     def _reconcile_invitation_job(self, preview, body, actor):
         from .approvals import _step_hash
         jobs=[j for j in self.repo.list_state('connectsafely_job') if j['preview_id']==preview['id']]
@@ -372,9 +412,14 @@ class ConnectSafelyApplication:
         approval=self.repo.get_state('connectsafely_queue_approval',job['id'])
         attempt=self.repo.get_state('connectsafely_attempt',preview.get('effect_key',''))
         console=self._console('invite')
+        delegated=actor=='hermes (delegado)'
+        if actor not in {'ygor','hermes (delegado)'}:
+            raise ConnectSafelyError('job_authority_invalid')
         if (job.get('state') not in {'needs_reconciliation','done'} or not job.get('dispatch_started')
-                or job.get('actor')!='ygor' or job.get('simulation') is not self.simulation
+                or job.get('actor')!=('hermes (delegado)' if delegated else 'ygor')
+                or job.get('simulation') is not self.simulation
                 or not approval or approval.get('actor')!='ygor' or approval.get('review')!=review
+                or approval.get('executor')!=('hermes (delegado)' if delegated else None)
                 or approval.get('simulation') is not self.simulation
                 or job.get('execution_scope')!=self.execution_scope or approval.get('execution_scope')!=self.execution_scope
                 or not attempt or attempt.get('preview_id')!=preview['id']
@@ -387,6 +432,8 @@ class ConnectSafelyApplication:
                 or not approval.get('approved_at',float('inf'))<=attempt.get('attempted_at',0)<approval.get('expires_at',0)
                 or attempt.get('approval_hash')!=_step_hash(console._step(preview['plan'],preview['id'],review['expected_version']))):
             raise ConnectSafelyError('job_authority_invalid')
+        if delegated:
+            self._delegated_reconciliation_authorized(job, preview)
         def reconciliation_guard():
             current=self.repo.get_state('connectsafely_job',job['id'])
             current_approval=self.repo.get_state('connectsafely_queue_approval',job['id'])
@@ -394,7 +441,7 @@ class ConnectSafelyApplication:
                     or current.get('review')!=review or current_approval!=approval):
                 raise RepositoryConflict('attempt_changed')
             return True
-        result=console.reconcile(body,actor=actor,reconciliation_guard=reconciliation_guard)
+        result=console.reconcile(body,actor='ygor',reconciliation_guard=reconciliation_guard)
         with self.repo.transaction():
             current=self.repo.get_state('connectsafely_job',job['id'])
             current_attempt=self.repo.get_state('connectsafely_attempt',preview['effect_key'])

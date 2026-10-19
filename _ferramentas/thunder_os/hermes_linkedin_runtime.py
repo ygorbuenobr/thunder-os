@@ -9,6 +9,8 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
+import time
 
 from .connectsafely_runtime import ExistingRepository, build as build_connectsafely, load_config as load_cs_config
 from .hermes_linkedin_cadence import HermesLinkedInCadence
@@ -27,10 +29,11 @@ def load_config(path):
         raise ValueError("runtime_config_invalid")
     allowed = {"version", "mode", "execution_enabled", "repository", "source_revision", "poll_minutes",
                "max_tasks_per_run", "timezone", "business_hours", "daily_cap", "kill_switch",
-               "hubspot", "connectsafely_config", "connectsafely_identity", "synthetic"}
+               "action_spacing_seconds", "source_revision_file", "hubspot", "connectsafely_config",
+               "connectsafely_identity", "synthetic"}
     if set(cfg) - allowed or type(cfg.get("execution_enabled")) is not bool:
         raise ValueError("runtime_config_invalid")
-    _absolute(cfg.get("repository"))
+    _absolute(cfg.get("repository")); _absolute(cfg.get("source_revision_file"))
     if not isinstance(cfg.get("source_revision"), str) or not cfg["source_revision"]:
         raise ValueError("runtime_config_invalid")
     if type(cfg.get("poll_minutes")) is not int or not 5 <= cfg["poll_minutes"] <= 60:
@@ -38,6 +41,11 @@ def load_config(path):
     if type(cfg.get("max_tasks_per_run")) is not int or not 1 <= cfg["max_tasks_per_run"] <= 30:
         raise ValueError("runtime_config_invalid")
     if type(cfg.get("daily_cap")) is not int or not 1 <= cfg["daily_cap"] <= 30:
+        raise ValueError("runtime_config_invalid")
+    spacing = cfg.get("action_spacing_seconds")
+    if (not isinstance(spacing, dict) or set(spacing) != {"min", "max"}
+            or type(spacing.get("min")) is not int or type(spacing.get("max")) is not int
+            or spacing["min"] < 30 or spacing["max"] > 90 or spacing["min"] > spacing["max"]):
         raise ValueError("runtime_config_invalid")
     hours = cfg.get("business_hours")
     if (cfg.get("timezone") != "America/Sao_Paulo" or not isinstance(hours, dict)
@@ -123,6 +131,10 @@ def _business_window(cfg, now):
 
 
 def build(cfg):
+    try: installed_revision=_absolute(cfg["source_revision_file"]).read_text().strip()
+    except OSError as exc: raise ValueError("source_revision_unavailable") from exc
+    if installed_revision != cfg["source_revision"]:
+        raise ValueError("source_revision_mismatch")
     repository=ExistingRepository(_absolute(cfg["repository"])); repository.migrate()
     delegation=repository.get_state("delegation","hermes")
     if (not delegation or delegation.get("daily_limit")!=cfg["daily_cap"]
@@ -149,10 +161,16 @@ def run_once(cfg):
     runner,tasks,now=build(cfg)
     if not _business_window(cfg,now):
         return {"source_revision":cfg["source_revision"],"mode":cfg["mode"],"status":"outside_business_hours","processed":[]}
-    outcomes=[]
-    for task_id in tasks.due(limit=cfg["max_tasks_per_run"]):
+    outcomes=[]; due=tasks.due(limit=cfg["max_tasks_per_run"])
+    for index,task_id in enumerate(due):
         try: outcomes.append(runner.run_task(task_id))
-        except Exception as exc: outcomes.append({"task_id":task_id,"status":"blocked","error_code":_error_code(exc)})
+        except Exception as exc:
+            code=_error_code(exc)
+            runner._record_alert(task_id,{"status":"blocked","error_code":code})
+            outcomes.append({"task_id":task_id,"status":"blocked","error_code":code})
+        if index + 1 < len(due):
+            spacing=cfg["action_spacing_seconds"]
+            time.sleep(spacing["min"] + secrets.randbelow(spacing["max"] - spacing["min"] + 1))
     return {"source_revision":cfg["source_revision"],"config_sha256":cfg["_digest"],
             "mode":cfg["mode"],"status":"ok","processed":outcomes}
 
