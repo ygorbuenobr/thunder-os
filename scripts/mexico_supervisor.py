@@ -85,6 +85,34 @@ def classify(tasks, now):
     return alerts, summary
 
 
+def mac_coverage(config, now):
+    path = Path(config.get('mac_observation', '/nonexistent'))
+    try:
+        if path.stat().st_size > 65536: raise ValueError('size')
+        data = json.loads(path.read_text())
+        if (data.get('schema') != 2 or data.get('campaign') != config['campaign']
+                or data.get('account_id') != config['loa_account_id']
+                or data.get('batches') != config['batches']): raise ValueError('identity')
+        if data.get('state') == 'BLOCKED':
+            return [incident('mac-collector-blocked', 'Coletor Mac interrompido: ' + str(data.get('error_code', 'unknown')),
+                'Revisar erro no Mac e rearmar explicitamente; sem repetição automática. Sync geral preservado.')], {'state': 'BLOCKED'}
+        age = now - float(data['observed_at'])
+        if age < -60 or age > 1200 or data.get('state') != 'OK': raise ValueError('stale')
+        rows = data['invitations']
+        if len(rows) != 3 or not all(r.get('state') in ('sent_pending', 'accepted', 'uncertain') for r in rows):
+            raise ValueError('scope')
+        alerts = []
+        for row in rows:
+            if row['state'] == 'uncertain':
+                alerts.append(incident('loa-uncertain:' + row['task_id'], 'Estado remoto Loa incerto.', 'Reconciliar convite da tarefa ' + row['task_id'] + '; não reenviar.'))
+        return alerts, {'state': 'FRESH', 'age_seconds': round(age), 'invitations': rows,
+                        'receipt_reference_count': len(data['receipt_references']),
+                        'collector_call_count': data.get('call_count'), 'collector_duration_ms': data.get('duration_ms')}
+    except (OSError, ValueError, KeyError, TypeError):
+        return [incident('mac-observation-missing-stale', 'Observação Mac ausente, vencida ou inválida: Loa/recibos sem cobertura atual.',
+            'Conferir Mac ligado, coletor e sync privado; não inferir aceite nem ausência de resposta.')], {'state': 'UNAVAILABLE'}
+
+
 def collect(config):
     alerts, tasks, observations = [], [], {}
     env = {}
@@ -139,8 +167,8 @@ def collect(config):
     observations['inbox'] = last
     if not last or not last.get('healthy') or last.get('stale') or last.get('from_cache') or not last.get('window_complete'):
         alerts.append(incident('inbox-degraded', 'Inbox VPS sem cobertura atual completa: ' + str((last or {}).get('error_code') or 'unknown'), 'Reconciliar leitor ConnectSafely. Exitcode zero não prova saúde; respostas/aceites não estão integralmente cobertos.'))
-    alerts.append(incident('coverage-loa', 'Cobertura parcial: credencial Hermes não acessa Loa (HTTP404 comprovado); MCP Loa separado funciona.', 'Usar revisão manual pela rota Loa autorizada. Não transferir credenciais nem ampliar acesso.'))
-    alerts.append(incident('coverage-receipts-mail', 'Cobertura parcial: recibos atuais do executor no Mac e Gmail não têm coleta contínua verificada neste hook VPS.', 'Executor deve conferir Gmail e recibos antes de cada toque. Este supervisor não afirma ausência de respostas nem envio apenas por COMPLETED.'))
+    mac_alerts, observations['mac'] = mac_coverage(config, time.time()); alerts += mac_alerts
+    alerts.append(incident('coverage-gmail', 'Cobertura parcial: Gmail inbox não tem coleta contínua verificada neste hook VPS.', 'Executor deve conferir Gmail antes de cada toque. Recibos SENT locais não comprovam ausência de resposta, recusa ou bounce.'))
     return {'observed_at': time.time(), 'coverage': 'DEGRADED', 'observations': observations, 'incidents': alerts}
 
 
