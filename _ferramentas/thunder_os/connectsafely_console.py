@@ -229,8 +229,20 @@ class ConnectSafelyConsole:
                     current=self.repo.get_state('connectsafely_attempt',effect)
                     if current.get('attempt_token') != token: raise RepositoryConflict('attempt_changed')
                     self.repo.put_state('connectsafely_attempt',effect,{**current,'phase':'dispatch_started'})
+                dispatch_error = None
                 with gate.execution_guard(campaign_record, 'connectsafely_attempt', effect):
-                    result=self._result(self._send(plan,before_dispatch,execution_context))
+                    try:
+                        result=self._result(self._send(plan,before_dispatch,execution_context))
+                    except Exception as exc:
+                        # Preserve queue callback markers for read-only reconciliation.
+                        dispatch_error = exc
+                        result={'status':'uncertain','error_code':'requires_reconciliation','retry_write':False}
+                    if not dispatched:
+                        result={'status':'uncertain','error_code':'dispatch_callback_not_used','retry_write':False}
+                        dispatch_error=ConnectSafelyError('dispatch_callback_not_used')
+                    self._store(effect,result,attempt_token=token)
+                if dispatch_error is not None:
+                    raise dispatch_error
                 if not dispatched:raise ConnectSafelyError('dispatch_callback_not_used')
                 stored=self.ledger.finish(effect,'sent' if result['status']=='sent' else 'uncertain',result.get('receipt_ref'))
                 if stored['status']=='sent':result={**result,'status':'sent','receipt_ref':stored['receipt_ref'],'retry_write':False}

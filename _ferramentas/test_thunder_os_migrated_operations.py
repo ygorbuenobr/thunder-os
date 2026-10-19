@@ -245,6 +245,26 @@ class MigratedOperationsTests(unittest.TestCase):
         self.assertFalse(app.process_one(job_id=job['job_id']))
         self.assertEqual(port.calls, 1)
 
+    def test_provider_receipt_without_dispatch_callback_never_marks_sent(self):
+        console, port, _, plan = self.build('connectsafely')
+        app = self.app(console)
+        def invalid_send(plan, before_dispatch=None):
+            port.calls += 1
+            return {'status': 'sent', 'receipt_ref': 'synthetic:invalid-receipt',
+                    'confirmation_kind': 'provider_receipt', 'write_attribution_confirmed': True}
+        port.send = invalid_send
+        preview = app.prepare(plan, 'ygor')
+        job = app.enqueue(self.body(console, preview, 'connectsafely'), 'ygor')
+        self.assertTrue(app.process_one(job_id=job['job_id']))
+        stored = self.repo.get_state('connectsafely_job', job['job_id'])
+        self.assertNotEqual(stored['state'], 'done')
+        self.assertNotEqual(stored['result']['status'], 'sent')
+        self.assertFalse(stored.get('dispatch_started', False))
+        attempt = self.repo.list_state('connectsafely_attempt')[0]
+        self.assertNotEqual(attempt['status'], 'sent')
+        self.assertFalse(app.process_one(job_id=job['job_id']))
+        self.assertEqual(port.calls, 1)
+
     def test_legacy_queue_retained_for_reconciliation_without_send(self):
         console, port, _, plan = self.build('connectsafely')
         app = self.app(console)
@@ -306,6 +326,12 @@ class MigratedOperationsTests(unittest.TestCase):
                 self.assertEqual(len(bound), 1)
 
     def test_real_email_canary_claim_dispatch_and_no_replay(self):
+        self.exercise_real_email_canary(unknown=False)
+
+    def test_canary_provider_timeout_preserves_dispatch_for_reconciliation(self):
+        self.exercise_real_email_canary(unknown=True)
+
+    def exercise_real_email_canary(self, *, unknown):
         console, port, _, plan = self.build('seqd')
         preview = console.prepare(plan, 'ygor')
         body = self.body(console, preview, 'seqd')
@@ -321,15 +347,17 @@ class MigratedOperationsTests(unittest.TestCase):
                        'THUNDER_OS_CANARY_POLICY_FILE': str(policy_path),
                        'THUNDER_OS_CANARY_POLICY_SHA256': hashlib.sha256(raw).hexdigest()}
         observations = []
+        port.unknown = unknown
         with patch.dict(os.environ, environment), patch('thunder_os.email_canary.restricted_mode', return_value=True):
             guard = EmailCanary(self.repo, clock=lambda: self.now).claim(body, 'ygor')
             self.assertEqual(self.observer.get_state('email_canary_claim', guard.key)['phase'], 'claimed')
             port.hook = lambda: observations.append(self.observer.get_state('email_canary_claim', guard.key))
             result = console.execute(body, 'ygor', dispatch_guard=guard.before_dispatch,
                                      dispatch_expires_at=policy['expires_at'])
-            self.assertEqual(result['status'], 'sent', result)
+            self.assertEqual(result['status'], 'uncertain' if unknown else 'sent', result)
             self.assertEqual(port.calls, 1)
             self.assertEqual(self.observer.get_state('email_canary_claim', guard.key)['phase'], 'dispatch_started')
+            self.assertTrue(guard.reconcile_scope({'preview_id': preview['id']}, 'ygor'))
             self.assertEqual(len(observations), 1)
             self.assertEqual(observations[0]['token'], guard.token)
             with self.assertRaisesRegex(CanaryError, 'canary_already_claimed'):
@@ -338,6 +366,38 @@ class MigratedOperationsTests(unittest.TestCase):
                 console.execute(body, 'ygor', dispatch_guard=guard.before_dispatch,
                                 dispatch_expires_at=policy['expires_at'])
             self.assertEqual(port.calls, 1)
+
+    def test_invite_provider_timeout_preserves_job_and_allows_readonly_reconciliation(self):
+        console, port, ledger, plan = self.build('connectsafely')
+        app = self.app(console)
+        port.unknown = True
+        preview = app.prepare({**plan, 'action': 'invite'}, 'ygor')
+        job = app.enqueue(self.body(console, preview, 'connectsafely'), 'ygor')
+        self.assertTrue(app.process_one(job_id=job['job_id']))
+        stored = self.observer.get_state('connectsafely_job', job['job_id'])
+        self.assertTrue(stored['dispatch_started'])
+        self.assertEqual(stored['state'], 'needs_reconciliation')
+        attempt = self.observer.list_state('connectsafely_attempt')[0]
+        self.assertEqual(attempt['phase'], 'dispatch_started')
+        self.assertEqual(attempt['status'], 'uncertain')
+        self.assertEqual(port.calls, 1)
+        self.assertFalse(app.process_one(job_id=job['job_id']))
+        self.assertEqual(port.calls, 1)
+        reads, reconciliations = [], []
+        def reconcile(plan, attempted_at):
+            reads.append((plan, attempted_at))
+            return {'status': 'sent', 'receipt_ref': 'synthetic:observed-invite',
+                    'confirmation_kind': 'observed_outbound'}
+        port.reconcile = reconcile
+        ledger.reconcile_invitation = lambda *args: reconciliations.append(args)
+        result = app.reconcile({'preview_id': preview['id']}, 'ygor')
+        self.assertEqual(result['status'], 'sent', result)
+        self.assertEqual(len(reads), 1)
+        self.assertEqual(len(reconciliations), 1)
+        self.assertEqual(self.repo.get_state('connectsafely_job', job['job_id'])['state'], 'done')
+        self.assertEqual(len(self.repo.list_state('connectsafely_reconciliation')), 1)
+        self.assertFalse(app.process_one(job_id=job['job_id']))
+        self.assertEqual(port.calls, 1)
 
     def test_queued_confirmation_expiry_and_revocation_require_reconciliation(self):
         console, port, _, plan = self.build('connectsafely')

@@ -222,13 +222,23 @@ class SEQDConsole:
                         'subject':plan['subject']},raise_blocked=True)
                 if not self._send_allowed():
                     raise SEQDError('seqd_sends_disabled_or_paused')
+                dispatch_error = None
                 with gate.execution_guard(campaign_record, 'seqd_attempt', effect):
                     if dispatch_guard is not None and dispatch_guard(envelope) is not True:
                         raise SEQDError('dispatch_authority_denied')
                     if not self._send_allowed():
                         raise SEQDError('seqd_sends_disabled_or_paused')
                     dispatch_started=True
-                    result=self._result(self.port.send(envelope))
+                    try:
+                        result=self._result(self.port.send(envelope))
+                    except Exception as exc:
+                        # Commit one-shot/canary markers even after a lost response.
+                        dispatch_error = exc
+                        result=self._result(None)
+                    current=self.repo.get_state('seqd_attempt',effect)
+                    self.repo.put_state('seqd_attempt',effect,{**current,**result})
+                if dispatch_error is not None:
+                    raise dispatch_error
                 self.ledger.finish(effect,'sent' if result['status']=='sent' else 'uncertain',result.get('receipt_ref'))
         except TouchBlocked:
             result=(self._result(None) if dispatch_started else
