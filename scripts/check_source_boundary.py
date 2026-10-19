@@ -105,6 +105,8 @@ ALLOWED_FILES = {
     "scripts/agenttrail_mac_publish.py",
     "scripts/provision_agenttrail_ingress.py",
     "scripts/check_hermes_linkedin_determinism.py",
+    "scripts/mexico_supervisor.py",
+    "scripts/test_mexico_supervisor.py",
     "runtime/dependencies.json",
     "runtime/systemd/thunder-os-agent-pythonpath.conf",
     "runtime/systemd/thunder-os-agent-hermes-ro.conf",
