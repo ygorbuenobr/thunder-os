@@ -76,6 +76,14 @@ a:hover,a:focus-visible{text-decoration:underline}
 .voce-topo{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:8px 16px}
 .estado{font:12px var(--body);color:var(--muted)}
 .cards{display:grid;gap:12px}
+.briefing-card{border-radius:8px!important}
+.briefing-card h3{font-size:22px!important;letter-spacing:0}
+.briefing-summary{margin:0;line-height:1.55;max-width:72ch;overflow-wrap:anywhere}
+.briefing-card summary{font-size:14px!important;padding:8px 0}
+.briefing-context{display:grid;gap:16px;padding:12px 0}
+.briefing-context h4{font-size:14px;margin:0 0 4px}
+.briefing-context time{font-size:12px;color:var(--muted)}
+.briefing-context p,.briefing-draft{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.55;margin:4px 0}
 .card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:18px;display:grid;gap:10px;min-width:0;box-shadow:0 1px 2px rgba(32,33,31,.04)}
 .card[data-st="aprovado"],.card[data-st="na-fila"]{border-color:rgba(163,105,226,.5)}
 .card[data-st="erro"]{border-color:rgba(224,96,90,.55)}
@@ -293,6 +301,10 @@ button,.btn,select,input:not([type="hidden"]),summary {min-height:44px;}
 
 <main class="hoje" id="sec-hoje" data-painel="hoje" hidden>
   <header><h2 style="font-size:26px;text-transform:none;letter-spacing:0;color:var(--text)">Hoje</h2><p>Um resumo curto para você começar pelo que importa.</p></header>
+  <section class="grupo-dia" aria-labelledby="h-hoje-briefing">
+    <h2 id="h-hoje-briefing">Prioridades do briefing</h2>
+    <div class="cards" id="hoje-briefing"><p class="vazio">Aguardando consulta.</p></div>
+  </section>
   <section class="grupo-dia" id="hoje-pedido" aria-labelledby="h-hoje-pedido">
     <h2 id="h-hoje-pedido">Pedir pesquisa ou preparo</h2>
     <form class="pedido-dia" id="os-pedido">
@@ -1898,7 +1910,23 @@ async function usarVariante(it,variante){
   await salvar(it.id,{texto:variante.texto,angulo:variante.angulo||''});
 }
 
+function briefingCardHTML(it, today=false){
+  const contexts=Array.isArray(it.contexto)?it.contexto:[];
+  const facts=Array.isArray(it.fatos)?it.fatos:[];
+  const key=String(it.id||'');
+  const draft=typeof it.rascunho==='string'?it.rascunho:'';
+  return `<article class="card briefing-card" id="${today?'hoje-':''}${esc(key)}" ${today?'data-today-id':'data-id'}="${esc(key)}" data-st="${esc(it.status||'pendente')}">
+    <h3>${esc(it.titulo||'Assunto comercial')}</h3>
+    <div class="cab"><span class="chip">Briefing comercial</span><span class="sub">${esc(it.status==='descartado'?'Arquivado':'Para sua revisão')}</span></div>
+    <p class="briefing-summary">${esc(it.porque||'Contexto ainda não disponível.')}</p>
+    ${contexts.length?`<details><summary>Contexto e próximo passo</summary><div class="briefing-context">${contexts.map(c=>`<section><h4>${esc(c.quem||'Contexto')}</h4>${c.quando?`<time>${esc(c.quando)}</time>`:''}<p>${esc(c.texto||'')}</p></section>`).join('')}</div></details>`:''}
+    ${draft?`<details><summary>Revisar rascunho</summary><p class="briefing-draft">${esc(draft)}</p><p class="msg">Rascunho. Nenhum envio autorizado.</p></details>`:''}
+    ${facts.length?`<details><summary>Fontes e evidências</summary><ul class="fatos">${facts.map(f=>`<li>${esc(f)}</li>`).join('')}</ul></details>`:''}
+    ${(it.status||'pendente')==='pendente'?`<div class="acoes"><button class="btn fraco alerta" type="button" ${today?'data-today-a':'data-a'}="descartar">Descartar</button><span class="msg" id="msg-${today?'hoje-':''}${esc(key)}" role="status"></span></div>`:''}
+  </article>`;
+}
 function cardHTML(it){
+  if(it.origem==='briefing') return briefingCardHTML(it);
   const id = it.id, st = it.status || 'pendente', aberto = st === 'pendente' || st === 'erro' || (it.tipo === 'comentario' && st === 'copiar') || (it.tipo === 'whatsapp' && st === 'aguardando-confirmacao');
   const texto = sujo[id] ?? it.texto ?? '';
   const preparando = MODO === 'servidor' && it.origem === 'aceite' && !String(it.texto||'').trim();
@@ -1957,6 +1985,7 @@ function cardHTML(it){
 }
 
 function todayCardHTML(it){
+  if(it.origem==='briefing') return briefingCardHTML(it,true);
   const st=it.status||'pendente', confirma=confirmar[it.id], envia=['dm','comentario'].includes(it.tipo);
   const rotulo=it.cadencia?'Aprovar sequência':it.tipo==='comentario'?'Aprovar e comentar':envia?'Aprovar e enviar':'Aprovar';
   return `<article class="card" data-today-id="${esc(it.id)}" data-st="${esc(st)}"><h3>${esc(tituloItem(it))}</h3>
@@ -1986,10 +2015,12 @@ function render(){
   const comentariosL=MODO==='servidor'?demais.filter(i=>i.tipo==='comentario'):[];
   const restoL=MODO==='servidor'?demais.filter(i=>!TIPOS_MSG.includes(i.tipo)&&i.tipo!=='comentario'):demais;
   if(MODO==='servidor'){
-    const aprovFechadas=demais;
+    const briefings=demais.filter(i=>i.origem==='briefing').sort((a,b)=>String(b.atualizado||'').localeCompare(String(a.atualizado||'')));
+    $('hoje-briefing').innerHTML=briefings.length?briefings.slice(0,3).map(todayCardHTML).join(''):'<p class="vazio">Nenhuma prioridade registrada pelo briefing.</p>';
+    const aprovFechadas=demais.filter(i=>i.origem!=='briefing');
     $('hoje-aprovacoes').innerHTML=aprovFechadas.length?aprovFechadas.slice(0,4).map(todayCardHTML).join(''):'<p class="vazio">Nada para conferir agora.</p>';
     const restantes=Math.max(0,aprovFechadas.length-4), ver=$('hoje-conferir-todas');ver.hidden=!restantes;ver.textContent=restantes?`Ver todas · mais ${restantes}`:'';
-    hojeContagens.aprovacoes=aprovFechadas.length;hojeFalhas.aprovacoes=false;atualizarHojeVazio();
+    hojeContagens.aprovacoes=aprovFechadas.length+briefings.length;hojeFalhas.aprovacoes=false;atualizarHojeVazio();
   }
   if(MODO==='servidor'){
     const pendDe=l=>l.filter(i=>['pendente','erro','copiar','aguardando-confirmacao'].includes(i.status||'pendente')).length;
@@ -2346,6 +2377,7 @@ $('aprendizado').addEventListener('click',async ev=>{
       render();
     }, e => {
       if(MODO==='servidor') $('aceites-estado').textContent='Não consegui carregar os aceites. Vou tentar novamente.';
+      if(MODO==='servidor') $('hoje-briefing').innerHTML='<p class="msg erro">Não foi possível consultar as prioridades do briefing.</p>';
       if(MODO==='servidor') $('hoje-aprovacoes').innerHTML='<p class="msg erro">Não foi possível atualizar os itens para conferir.</p><button class="btn" type="button" data-retry="aprovacoes">Tentar novamente</button>';
       hojeFalhas.aprovacoes=true;atualizarHojeVazio();
       fallback(e && e.code === 'unavailable' ? 'banco fora do ar agora; tente recarregar' : 'não consegui ler as decisões');
