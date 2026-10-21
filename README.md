@@ -86,3 +86,40 @@ python3 scripts/check_source_boundary.py
 ```
 
 Run focused connection tests separately as they are added. Agent/service journeys, provider and Panel integration, the brain account-catalog fixture, and runtime unit-file checks require VPS staging; local tests do not prove deployment or live integration. The account-specific producer test is intentionally omitted from the copied test file; the remaining producer tests are retained.
+
+### Cadence Evidence (Task 2 Candidate)
+
+`cadence_evidence.py` reads the legacy pipe title only through the explicit mapping
+`MX27-CDMX-D0-20261021 -> MX27-CDMX`. Other batch prefixes are not aliases. Gmail
+confirmation paragraphs require matching metadata, the pinned mailbox, a complete
+exact CRM contact association, recipient and payload hash. Later reconciliation
+can supersede an older error. This is `recorded_confirmation` from the task body,
+not a new Gmail read or evidence of delivery. Completed tasks without this evidence
+remain distinct; uncertain sends have no retry action. Missing coverage preserves
+null totals and separate observed counts. Replies and meetings remain null without
+a campaign attribution contract. A portal/owner identity failure stops all further
+provider reads, leaving only unknown local registry projections.
+
+Apollo/Instantly attribution is an optional read-only runtime binding, injected by
+`painel_servidor.main` through `THUNDER_OS_CADENCE_ACTIVITY_BINDINGS`, a JSON array
+of objects with exactly `campaign_id`, `provider` (`apollo` or `instantly`),
+`campaign_guid` and `source_id`. The operator must verify the integration's actual
+HubSpot `hs_campaign_guid` and `hs_engagement_source_id` before configuring a pair.
+No real pair is bundled or enabled by this change. Missing/invalid bindings and
+partial/schema-failed reads remain visibly unknown, never an assumed zero.
+Only an exact pair can attribute an email or meeting to a known campaign; a contact
+association alone cannot. `SENT` is a CRM-recorded send, not a delivery receipt.
+Explicitly attributed `INCOMING_EMAIL` records count as received replies, without
+claiming a human classification. Meetings count `SCHEDULED`, `COMPLETED` and
+`RESCHEDULED`; canceled/no-show records remain visible but do not count. Missing
+classification fields, invalid timestamps, unavailable schema and partial pages
+keep aggregate metrics null, with observed counters separate.
+
+The Mexico E1 writer was not located in this source repository. This candidate does
+not replace it, mutate `toques.py`, persist `hubspot_task_id` for future executions,
+or schedule a next touch. Integrating those writes with the actual executor and
+verifying Apollo/Instantly production bindings remain separate, unresolved work.
+
+Focused isolated checks: `PYTHONPATH=_ferramentas python3 -m unittest
+test_thunder_os_cadence_evidence test_thunder_os_cadence_readonly`; use the existing
+Playwright harness `_ferramentas/test_painel_cadencias_ui.cjs` for UI coverage.

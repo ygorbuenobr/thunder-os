@@ -65,6 +65,8 @@ class Provider:
             result = {"results": [{"toObjectId": 300}] if "/emails?" in path else []}
         elif path.endswith("emails/batch/read"):
             result = {"status": "COMPLETE", "results": [self.activity]}
+        elif path.endswith('meetings/search'):
+            result = {'results': [], 'total': 0}
         else:
             raise AssertionError("unexpected endpoint")
         return 200, json.dumps(result).encode()

@@ -27,6 +27,11 @@ const registered={id:'REGISTRY-ONLY',registry:{id:'REGISTRY-ONLY',platform:'code
       const group=complete?registered:{...registered,task_state:'unknown',task_coverage_complete:false,metrics:{contacts:null,tasks:null,completed_with_receipt:null,pending:null,overdue:null,replies:null,meetings:null}};
       body={...snapshot,campaigns:[...snapshot.campaigns,group]};
       if(registryState==='nonempty-partial')body.campaigns=[{...group,id:'PILOTO',registry:null,task_state:'observed',tasks:[{...task,status:'COMPLETED'}],metrics:{...group.metrics,observed_tasks:1,observed_completed_status:1,observed_pending:0,observed_overdue:0}}];
+      if(registryState==='evidence')body.campaigns=[{...snapshot.campaigns[0],metrics:{...snapshot.campaigns[0].metrics,completed_with_receipt:1,external_sent:1,observed_uncertain:1,observed_blocked:1},tasks:[
+       {...task,id:'201',status:'COMPLETED',outcome:'sent_with_receipt',receipt:{provider:'gmail',message_id:'abc123',verification:'recorded_confirmation'}},
+       {...task,id:'202',status:'WAITING',outcome:'uncertain_no_retry',reason:'Sem recibo; resultado não confirmado.'},
+       {...task,id:'203',status:'WAITING',outcome:'blocked',reason:'Histórico incompleto <img src=x onerror=alert(1)>'},
+       {...task,id:'204',status:'COMPLETED',outcome:'completed_without_receipt'}],activities:[{id:'emails:901',provider:'apollo',sent_evidence:true,subject:'Mensagem sintética',occurred_at:'2026-10-21T10:00:00Z',receipt:null}]}];
      }
     }else if(p==='/api/os/v1/cadencias/contacts/123')body={contact_id:'123',contact_name:'Contato exemplo',coverage:{complete:false,limitations:['Somente eventos vinculados.']},events:[{type:'email',subject:'Conversa de exemplo',text:'<img src=x onerror=alert(1)> Texto enviado',occurred_at:'2026-10-20T12:00:00Z',source:'HubSpot',receipt:'receipt:test-only'}]};
     else if(p==='/api/os/v1/panel-capabilities')body={legacy_mutations:false};
@@ -83,6 +88,18 @@ const registered={id:'REGISTRY-ONLY',registry:{id:'REGISTRY-ONLY',platform:'code
    await partialDetails.getByRole('cell',{name:'Concluída no HubSpot',exact:true}).waitFor();
    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
    await page.screenshot({path:path.join(__dirname,`../.scratch/cadencias-registry-nonempty-partial-${viewport.width}.png`),fullPage:true});
+   registryState='evidence';await page.locator('#cad-read-refresh').click();
+   const evidenceDetails=page.locator('#cad-read-campaigns details').filter({hasText:'PILOTO'}).first();
+   await evidenceDetails.locator('summary').first().click();
+   await evidenceDetails.getByText('Incerto, não repetir',{exact:true}).waitFor();
+   await evidenceDetails.getByText('Concluída sem recibo',{exact:true}).waitFor();
+   await evidenceDetails.getByText('Enviado com recibo registrado',{exact:true}).waitFor();
+   assert.match(await evidenceDetails.innerText(),/Histórico incompleto/);
+   assert.match(await evidenceDetails.innerText(),/Enviado \(Apollo\)/);
+   assert.equal(await evidenceDetails.locator('img').count(),0);
+   assert.equal(await evidenceDetails.getByRole('button',{name:/retry|repetir|reenviar/i}).count(),0);
+   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+   await page.screenshot({path:path.join(__dirname,`../.scratch/cadencias-evidence-${viewport.width}.png`),fullPage:true});
    assert.equal(requests.filter(r=>r.method!=='GET').length,0);
    assert.deepEqual(errors,[]);
    await page.close();

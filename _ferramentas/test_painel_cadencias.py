@@ -1,6 +1,7 @@
 """Read-only cadence route and presentation boundaries; no live provider calls."""
 import unittest
 import os
+import json
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -93,11 +94,21 @@ class CadencePanelTests(unittest.TestCase):
             database.parent.mkdir()
             registry = CampaignRegistry(Repository(database))
             registry.register({**config(), 'campaign_id': 'REGISTERED', 'platform': 'codex_local'}, 'ygor', 0)
+            registry.register({**config(), 'campaign_id': 'APOLLO-TEST', 'platform': 'apollo'}, 'ygor', 0)
             before = registry.repo.list_state('campaign_config')
             server = SimpleNamespace(serve_forever=Mock())
             provider = Provider()
             provider.tasks = []
+            binding = {'campaign_id': 'APOLLO-TEST', 'provider': 'apollo', 'campaign_guid': 'test-guid', 'source_id': 'test-app'}
+            def read(method, path, body, headers, timeout):
+                if path == '/crm/v3/objects/emails/search':
+                    self.assertEqual(body['filterGroups'][0]['filters'][0]['value'], 'test-guid')
+                    return 200, json.dumps({'results': [{'id': '901', 'properties': {
+                        'hs_campaign_guid': 'test-guid', 'hs_engagement_source_id': 'test-app',
+                        'hs_email_status': 'SENT', 'hs_email_direction': 'EMAIL', 'hs_timestamp': '2026-10-21T10:00:00Z'}}], 'total': 1}).encode()
+                return provider(method, path, body, headers, timeout)
             with patch.dict(os.environ, {'PAINEL_DB': str(database), 'THUNDER_OS_HUBSPOT_READ_ENABLED': 'true',
+                                         'THUNDER_OS_CADENCE_ACTIVITY_BINDINGS': json.dumps([binding]),
                                          'THUNDER_EXTERNAL_EFFECTS_ENABLED': 'false'}, clear=True), \
                     patch.object(panel, 'RAIZ', brain), \
                     patch.object(panel, 'ThreadingHTTPServer', return_value=server), \
@@ -105,7 +116,8 @@ class CadencePanelTests(unittest.TestCase):
                 self.assertEqual(panel.main(['servir']), 0)
                 console = server.thunder_cadence_readonly
                 self.assertIs(console.campaign_registry.repo, server.thunder_service.repository)
-                console.adapter.request = provider
+                self.assertEqual(console.activity_bindings_loader(), [binding])
+                console.adapter.request = read
                 console.adapter.sleep = lambda _: None
                 handler = object.__new__(panel.Handler)
                 handler.server = server
@@ -115,8 +127,10 @@ class CadencePanelTests(unittest.TestCase):
                 handler.responder = lambda status, body: (status, body)
                 status, result = handler.thunder_api(urlsplit('/api/os/v1/cadencias'))
             self.assertEqual(status, 200)
-            self.assertEqual(result['campaigns'][0]['id'], 'REGISTERED')
-            self.assertEqual(result['campaigns'][0]['task_state'], 'empty')
+            groups = {group['id']: group for group in result['campaigns']}
+            self.assertEqual(groups['REGISTERED']['task_state'], 'empty')
+            self.assertEqual(groups['APOLLO-TEST']['metrics']['external_sent'], 1)
+            self.assertEqual(groups['APOLLO-TEST']['activities'][0]['provider'], 'apollo')
             self.assertEqual(registry.repo.list_state('campaign_config'), before)
             self.assertEqual(registry.repo.effects(), [])
             server.serve_forever.assert_called_once_with()

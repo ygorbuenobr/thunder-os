@@ -1729,6 +1729,7 @@ $('agenttrail-atualizar').addEventListener('click',atualizarAgenttrail);
 setInterval(()=>{if(document.body.dataset.aba==='agentes')atualizarAgenttrail();},30000);
 let cadReadLoading=false,cadReadSnapshot=null,cadReadContact=null,cadReadTimelineRequest=0,cadReadPollTimer=null;
 const cadReadNumber=v=>Number.isInteger(v)?String(v):'Não verificado';
+const cadReadOutcome={sent_with_receipt:'Enviado com recibo registrado',completed_without_receipt:'Concluída sem recibo',uncertain_no_retry:'Incerto, não repetir',blocked:'Bloqueado antes do envio',paused_reply:'Suspenso por resposta',unverified:'Resultado não verificado'};
 function cadReadDate(value){
   if(!value)return 'Sem data';
   const d=new Date(value);return Number.isNaN(d.getTime())?'Data não disponível':d.toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo',dateStyle:'short',timeStyle:'short'});
@@ -1739,15 +1740,27 @@ function cadReadTasks(tasks,empty='Nenhuma tarefa nesta lista.'){
     const ids=(t.contact_ids||[]).filter(id=>/^\d+$/.test(String(id)));
     const people=ids.length?ids.map(id=>`<button class="btn" type="button" data-cad-contact="${esc(id)}">${esc(t.contact_names?.[id]||t.contact_name||'Contato '+id)}</button>`).join(' '):t.link_status==='unverified'?'Vínculo não verificado':'Sem vínculo';
     const states={COMPLETED:'Concluída no HubSpot',NOT_STARTED:'Pendente',IN_PROGRESS:'Em andamento',WAITING:'Em espera',DEFERRED:'Adiada'};
-    return `<tr><td>${people}</td><td>${esc(t.title||t.touch||'Tarefa')}<br><small>${esc(t.campaign||'')}</small></td><td>${esc(t.channel||'Não informado')}</td><td>${esc(cadReadDate(t.due_at))}</td><td>${esc(states[t.status]||t.status||'Não informado')}${t.receipt?'<br>Com recibo':''}</td></tr>`;
+    return `<tr><td>${people}</td><td>${esc(t.title||t.touch||'Tarefa')}<br><small>${esc(t.campaign||'')}</small></td><td>${esc(t.channel||'Não informado')}</td><td>${esc(cadReadDate(t.due_at))}</td><td><span>${esc(cadReadOutcome[t.outcome]||states[t.status]||t.status||'Não informado')}</span>${t.reason?`<p>${esc(t.reason)}</p>`:''}${t.receipt?`<details><summary>Recibo registrado na tarefa</summary><pre>${esc(JSON.stringify(t.receipt,null,2))}</pre></details>`:''}</td></tr>`;
   }).join('')}</tbody></table></div>`;
+}
+function cadReadEvidence(c){
+  const m=c.metrics||{};
+  let html='';
+  if(m.observed_uncertain>0||m.observed_blocked>0)html+=`<p>Observados: ${esc(m.observed_uncertain||0)} incertos, não repetir · ${esc(m.observed_blocked||0)} bloqueados antes do envio.</p>`;
+  if(m.completed_with_receipt==null&&m.observed_completed_with_receipt>0)html+=`<p>Recibos observados: ${esc(m.observed_completed_with_receipt)}. Total não verificado.</p>`;
+  const activities=Array.isArray(c.activities)?c.activities:[];
+  if(activities.length||['apollo','instantly'].includes(c.registry?.platform)||['complete','partial','unknown'].includes(c.external_activity_state)){
+    html+=`<h4>Atividades externas registradas</h4><p>Envios registrados: ${esc(cadReadNumber(m.external_sent))}${c.external_activity_state==='complete'?'':' · cobertura não verificada'}</p>`;
+    html+=activities.map(e=>`<p><b>${esc(e.sent_evidence?'Enviado ('+({apollo:'Apollo',instantly:'Instantly'}[e.provider]||e.provider)+')':e.status||'Estado não verificado')}</b> · ${esc(e.subject||'E-mail')}<br><small>${esc(cadReadDate(e.occurred_at))} · atividade HubSpot, não comprova entrega</small></p>`).join('');
+  }
+  return html;
 }
 function renderCadencias(data){
   const campaigns=Array.isArray(data.campaigns)?data.campaigns:[];
   const emptyLabel=c=>c.task_state==='empty'&&c.task_coverage_complete===true?'Sem tarefas ainda nesta consulta.':'Tarefas não verificadas: cobertura incompleta.';
   const campaignLabel=c=>!c.tasks?.length?emptyLabel(c):c.task_coverage_complete!==true?'Tarefas observadas; totais não verificados: cobertura incompleta.':'';
   const noCampaigns=data.coverage?.complete===true?'Nenhuma campanha ou tarefa reconhecida nesta consulta.':'Campanhas e tarefas não verificadas: cobertura incompleta.';
-  $('cad-read-campaigns').innerHTML=campaigns.length?`<div class="cad-read-table-wrap"><table class="cad-read-table"><thead><tr><th scope="col">Campanha</th><th scope="col">Contatos</th><th scope="col">Toques com recibo</th><th scope="col">Pendentes</th><th scope="col">Atrasados</th><th scope="col">Respostas</th><th scope="col">Reuniões</th></tr></thead><tbody>${campaigns.map(c=>`<tr><td>${esc(c.id)}${campaignLabel(c)?`<br><small>${esc(campaignLabel(c))}</small>`:''}</td>${['contacts','completed_with_receipt','pending','overdue','replies','meetings'].map(k=>`<td>${esc(cadReadNumber(c.metrics?.[k]))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`+campaigns.map(c=>`<details><summary>${esc(c.id)} · contatos e tarefas</summary>${cadReadTasks(c.tasks,emptyLabel(c))}</details>`).join(''):`<p class="sub">${esc(noCampaigns)}</p>`;
+  $('cad-read-campaigns').innerHTML=campaigns.length?`<div class="cad-read-table-wrap"><table class="cad-read-table"><thead><tr><th scope="col">Campanha</th><th scope="col">Contatos</th><th scope="col">Toques com recibo</th><th scope="col">Pendentes</th><th scope="col">Atrasados</th><th scope="col">Respostas</th><th scope="col">Reuniões</th></tr></thead><tbody>${campaigns.map(c=>`<tr><td>${esc(c.id)}${campaignLabel(c)?`<br><small>${esc(campaignLabel(c))}</small>`:''}</td>${['contacts','completed_with_receipt','pending','overdue','replies','meetings'].map(k=>`<td>${esc(cadReadNumber(c.metrics?.[k]))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`+campaigns.map(c=>`<details><summary>${esc(c.id)} · contatos e tarefas</summary>${cadReadEvidence(c)}${cadReadTasks(c.tasks,emptyLabel(c))}</details>`).join(''):`<p class="sub">${esc(noCampaigns)}</p>`;
   const today=data.today||{};
   $('cad-read-today').innerHTML=`<h4>Previsto para hoje</h4>${cadReadTasks(today.planned,'Nenhuma tarefa prevista para hoje na consulta.')}<h4>Aguardando sua aprovação</h4>${today.awaiting_approval==null?'<p class="sub">Aprovações ainda não verificadas nesta fonte.</p>':cadReadTasks(today.awaiting_approval,'Sem aprovações pendentes identificadas nesta consulta.')}<h4>Respostas sem retorno</h4>${today.unreplied==null?'<p class="sub">Respostas sem retorno ainda não verificadas nesta fonte.</p>':cadReadTasks(today.unreplied,'Nenhuma resposta sem retorno identificada nesta consulta.')}`;
   $('cad-read-unlinked').innerHTML=cadReadTasks(data.unlinked,'Nenhuma tarefa sem vínculo nesta consulta.');
@@ -1778,7 +1791,7 @@ async function abrirCadenciaContato(id,focus=true){
     const events=data.events||[];
     $('cad-read-detail-title').textContent='Linha do tempo · '+(data.contact_name||'contato '+id);
     $('cad-read-detail-status').textContent=(events.length?'':'Nenhuma atividade encontrada. ')+(data.coverage?.complete?'':'Histórico parcial. ')+(data.coverage?.limitations||[]).join(' ');
-    $('cad-read-events').innerHTML=events.map(e=>`<li><b>${esc(e.subject||e.type||'Atividade')}</b><br><small>${esc(cadReadDate(e.occurred_at))} · ${esc(e.status||'')} · ${esc(e.source||'HubSpot')}</small>${e.text?`<pre>${esc(e.text)}</pre>`:''}${e.receipt?`<details><summary>Recibo</summary><pre>${esc(typeof e.receipt==='string'?e.receipt:JSON.stringify(e.receipt,null,2))}</pre></details>`:''}</li>`).join('');
+    $('cad-read-events').innerHTML=events.map(e=>`<li><b>${esc(e.subject||e.type||'Atividade')}</b><br><small>${esc(cadReadDate(e.occurred_at))} · ${esc(cadReadOutcome[e.outcome]||e.status||'')} · ${esc(e.source||'HubSpot')}</small>${e.reason?`<p>${esc(e.reason)}</p>`:''}${e.text?`<pre>${esc(e.text)}</pre>`:''}${e.receipt?`<details><summary>Recibo</summary><pre>${esc(typeof e.receipt==='string'?e.receipt:JSON.stringify(e.receipt,null,2))}</pre></details>`:''}</li>`).join('');
   }catch(e){if(request===cadReadTimelineRequest)$('cad-read-detail-status').textContent='Não foi possível consultar o histórico deste contato.';}
 }
 $('cad-read-refresh').addEventListener('click',atualizarCadencias);

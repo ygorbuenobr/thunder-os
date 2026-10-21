@@ -51,6 +51,7 @@ ALLOWED_FILES = {
     "_ferramentas/painel_modelo.html",
 }
 ALLOWED_TESTS = {
+    "test_thunder_os_cadence_evidence.py",
     "test_thunder_os_cadence_readonly.py",
     "test_thunder_os_panel_discard.py",
     "test_thunder_os_campaign_registry.py",
