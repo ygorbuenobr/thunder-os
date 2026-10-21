@@ -79,13 +79,16 @@ class PanelVerification:
         activity_match=any(contact_id in row.get('contact_ids',[]) for campaign in snapshot.get('campaigns',[])
                            for row in campaign.get('activities',[]))
         if not tasks and not activity_match:raise VerificationError('contact_not_confirmed')
-        tasks.sort(key=lambda task:(bool(re.search(r'\bE2\b',str(task.get('title','')),re.I)) if re.search(r'\bE2\b',question,re.I) else False,str(task.get('due_at',''))),reverse=True)
+        requested=list(dict.fromkeys(re.findall(r'\b[ELT][0-9]{1,2}\b',question.upper())))
+        requested_touch=requested[0] if len(requested)==1 else None
+        matching=[task for task in tasks if str(task.get('touch','')).upper()==requested_touch] if requested_touch else tasks
+        tasks.sort(key=lambda task:(task in matching,str(task.get('due_at',''))),reverse=True)
         sources=[]
         for task in tasks[:6]:
             if re.fullmatch(r'[1-9][0-9]{0,29}',str(task.get('id',''))):
                 sources.append({'id':'task:'+str(task['id']),'kind':'task',
                     **_qualifiers(task),
-                    **{key:_clip(task.get(key),300) for key in ('title','campaign_id','due_at','status','outcome','reason','reason_code')}})
+                    **{key:_clip(task.get(key),300) for key in ('title','touch','channel','campaign_id','due_at','status','outcome','reason','reason_code')}})
         try:timeline=self.reader.timeline(contact_id)
         except Exception:timeline={'coverage':{'complete':False},'events':[]}
         events=timeline.get('events',[])
@@ -108,6 +111,10 @@ class PanelVerification:
         return {'contact_id':contact_id,'portal_id':PORTAL,'source_ids':[row['id'] for row in sources],
                 'sources':sources,'collected_at':snapshot.get('collected_at'),
                 'server_limits':limits,'source_limitations':source_limits,
+                'requested_touch':requested_touch,
+                'requested_touches':requested,
+                'matching_task_source_ids':[row['id'] for row in sources if row['kind']=='task'
+                    and (not requested_touch or row.get('touch','').upper()==requested_touch)],
                 'coverage':{'all_contact_tasks':len(tasks),'included_tasks':min(len(tasks),6),
                     'tasks_complete':snapshot.get('coverage',{}).get('complete') is True and len(tasks)<=6,
                     'timeline_complete':timeline.get('coverage',{}).get('complete') is True and len(events)<=4,
@@ -124,18 +131,29 @@ class PanelVerification:
             except VerificationError:raise
             except Exception:raise VerificationError('hubspot_unavailable') from None
             if len(json.dumps(packet).encode())>18000:raise VerificationError('verification_context_too_large')
-            try:answer=self.runner(packet,question.strip())
+            ambiguous_touch=len(packet['requested_touches'])>1
+            projection_only=ambiguous_touch or bool(packet['requested_touch'] and not packet['matching_task_source_ids'])
+            try:
+                if projection_only:
+                    text=(f"A pergunta menciona mais de um toque: {', '.join(packet['requested_touches'])}. Eles não são equivalentes. Pergunte sobre um toque por vez para conferir o canal, a tarefa e o recibo correspondentes." if ambiguous_touch else
+                        f"Não há tarefa {packet['requested_touch']} identificada nesta consulta do contato. Toques e canais diferentes não são equivalentes. Não é possível concluir se houve envio ou por que ele não ocorreu. É preciso conferir o toque e o canal exatos na fonte.")
+                    answer={'answer':text,
+                        'source_ids':packet['source_ids'][:1],'uncertainties':[]}
+                else:answer=self.runner(packet,question.strip())
             except Exception as exc:
                 if isinstance(exc,VerificationError):raise
                 raise VerificationError('hermes_unavailable') from None
             answer=validate_answer(answer,packet)
+            if packet['requested_touch'] and packet['matching_task_source_ids'] and not set(answer['source_ids']).intersection(packet['matching_task_source_ids']):
+                raise VerificationError('invalid_verification_answer')
             url=f'https://app.hubspot.com/contacts/{PORTAL}/record/0-1/{contact_id}'
             result={**answer,'sources':[{'id':ident,'url':url} for ident in answer['source_ids']],
                     'coverage':packet['coverage'],'read_only':True,'external_effects':False,
                     'server_limits':packet['server_limits'],
-                    'contact_id':contact_id,'collected_at':packet['collected_at']}
+                    'contact_id':contact_id,'collected_at':packet['collected_at'],
+                    'answer_origin':'source_projection' if projection_only else 'hermes_model'}
             metadata=getattr(self.runner,'metadata',None)
-            if isinstance(metadata,Mapping):result['runtime']=dict(metadata)
+            if not projection_only and isinstance(metadata,Mapping):result['runtime']=dict(metadata)
             return result
         finally:self._slot.release()
 

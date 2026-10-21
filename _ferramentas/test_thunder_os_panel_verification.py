@@ -19,7 +19,7 @@ class Reader:
     def snapshot(self):
         return {'ok':True,'collected_at':'2026-10-21T23:00:00Z','coverage':{'complete':True},
                 'campaigns':[{'id':'PILOT','tasks':[{'id':'11','contact_ids':['123'],
-                    'contact_name':'Synthetic Person','title':'[PILOT][E2] Example | EMAIL',
+                    'contact_name':'Synthetic Person','title':'[PILOT][E2] Example | EMAIL','touch':'E2','channel':'email',
                     'due_at':'2026-10-22T15:00:00Z','status':'WAITING','outcome':'blocked',
                     'reason':'Email not verified','reason_code':'EMAIL_UNVALIDATED'}]}]}
     def timeline(self,ident):
@@ -50,6 +50,35 @@ class PanelVerificationTests(unittest.TestCase):
         self.runner.return_value={'answer':'Synthetic','source_ids':['task:999'],'uncertainties':[]}
         with self.assertRaisesRegex(VerificationError,'invalid_verification_answer'):
             self.service.verify('123','Why?')
+
+    def test_missing_exact_touch_never_substitutes_linkedin_for_email_or_calls_model(self):
+        original=self.reader.snapshot
+        def snapshot():
+            data=original();row=data['campaigns'][0]['tasks'][0]
+            row.update(touch='L2',channel='linkedin',title='[PILOT][L2] Example | LINKEDIN')
+            return data
+        self.reader.snapshot=snapshot
+        result=self.service.verify('123','Por que não recebeu o E2?')
+        self.runner.assert_not_called()
+        self.assertEqual(result['answer_origin'],'source_projection')
+        self.assertIn('Não há tarefa E2 identificada',result['answer'])
+        self.assertNotIn('runtime',result)
+        result=self.service.verify('123','Por que não recebeu E2 depois do L2?')
+        self.runner.assert_not_called()
+        self.assertEqual(result['answer_origin'],'source_projection')
+        self.assertIn('mais de um toque: E2, L2',result['answer'])
+        self.assertNotIn('runtime',result)
+
+    def test_matching_touch_is_canonical_and_is_presented_to_the_model(self):
+        result=self.service.verify('123','Why E2?')
+        packet=self.runner.call_args.args[0]
+        self.assertEqual(packet['matching_task_source_ids'],['task:11'])
+        self.assertEqual(packet['sources'][0]['touch'],'E2')
+        self.assertEqual(result['answer_origin'],'hermes_model')
+        self.runner.return_value={'answer':'Held.','source_ids':['tasks:11'],'uncertainties':[]}
+        self.reader.timeline=lambda _: {'events':[{'id':'tasks:11','subject':'Other context'}],'coverage':{'complete':True}}
+        with self.assertRaisesRegex(VerificationError,'invalid_verification_answer'):
+            self.service.verify('123','Why E2?')
 
     def test_source_qualifiers_and_server_limits_survive_empty_model_limits(self):
         self.reader.timeline=lambda _: {'coverage':{'complete':False,'limitations':['crm_activity_logs_are_not_external_delivery_receipts']},

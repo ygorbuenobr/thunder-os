@@ -12,6 +12,12 @@ no OAuth refresh, no model/provider fallback and no gateway/bot restart.
 Question/source text is data, never executable instructions. Answer references
 must belong to server-issued source IDs; links are assembled by the backend.
 Failure is visibly unavailable, not a simulated Hermes success or automatic retry.
+Exact canonical touch/channel values are preserved: E2 is not LinkedIn L2.
+If a requested touch is absent, the server returns a source-only insufficiency
+answer without calling the model, labelled `answer_origin=source_projection`.
+This is a deterministic precheck, not a model fallback or inferred no-send.
+Multiple explicit touch codes are treated as ambiguous: ask one at a time,
+without a model call. Mentioning L2 cannot bypass an absent-E2 precheck.
 
 Change-route and send remain OFF in the backend. Existing OperationCampaign and
 exact-text approval still govern any separately authorized future integration;
