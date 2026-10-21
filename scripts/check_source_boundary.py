@@ -6,6 +6,9 @@ from pathlib import PurePosixPath
 
 
 ALLOWED_FILES = {
+    "_ferramentas/test_briefing_cards_ui.cjs",
+    "_ferramentas/test_painel_cadencias.py",
+    "_ferramentas/test_painel_cadencias_ui.cjs",
     ".checks/panel-pending-discard.md",
     "scripts/test_panel_discard.cjs",
     ".specs/features/thunder-os-v1/campaign-execution-confirmation.md",
@@ -47,6 +50,7 @@ ALLOWED_FILES = {
     "_ferramentas/painel_modelo.html",
 }
 ALLOWED_TESTS = {
+    "test_thunder_os_cadence_readonly.py",
     "test_thunder_os_panel_discard.py",
     "test_thunder_os_campaign_registry.py",
     "test_thunder_os_operation_campaign.py",

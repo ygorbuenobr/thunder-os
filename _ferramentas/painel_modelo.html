@@ -175,8 +175,22 @@ body[data-aba="hoje"] [data-painel]:not([data-painel~="hoje"]),
 body[data-aba="conversas"] [data-painel]:not([data-painel~="conversas"]),
 body[data-aba="aprovar"] [data-painel]:not([data-painel~="aprovar"]),
 body[data-aba="contas"] [data-painel]:not([data-painel~="contas"]),
+body[data-aba="cadencias"] [data-painel]:not([data-painel~="cadencias"]),
 body[data-aba="agentes"] [data-painel]:not([data-painel~="agentes"]){display:none}
 body[data-aba="agentes"] .detalhes-sistema{display:none}
+body[data-aba="cadencias"] .detalhes-sistema{display:none}
+.cad-read-head{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap}
+.cad-read-table-wrap{overflow-x:auto;max-width:100%;margin:16px 0 28px}
+.cad-read-table{border-collapse:collapse;width:100%;font-size:14px}
+.cad-read-table th,.cad-read-table td{text-align:left;padding:12px 10px;border-bottom:1px solid var(--line,#ddd);vertical-align:top}
+.cad-read-table th{font-size:12px;color:var(--muted);font-weight:600;white-space:nowrap}
+.cad-read-table td:first-child{min-width:140px;max-width:260px;overflow-wrap:anywhere}
+.cad-read-table button{white-space:normal;text-align:left}
+.cad-read-section{display:block;min-width:0;margin:28px 0;border-top:1px solid var(--line,#ddd);padding-top:20px}
+.cad-read-timeline{list-style:none;padding:0;max-width:850px}
+.cad-read-timeline li{padding:16px 0;border-bottom:1px solid var(--line,#ddd);overflow-wrap:anywhere}
+.cad-read-timeline pre{white-space:pre-wrap;font:inherit;overflow-wrap:anywhere;margin:8px 0}
+#cad-read-detail{scroll-margin-top:20px}
 .agenttrail-head{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
 .agenttrail-hosts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:28px;margin-top:20px}
 .agenttrail-host{border-top:3px solid var(--mostarda);padding-top:14px;min-width:0}
@@ -272,10 +286,21 @@ button,.btn,select,input:not([type="hidden"]),summary {min-height:44px;}
 <nav class="abas" id="abas" role="tablist" aria-label="Seções do painel" hidden>
   <button type="button" role="tab" data-aba="hoje" aria-selected="false">Hoje<span class="qt" id="qt-hoje"></span></button>
   <button type="button" role="tab" data-aba="conversas" aria-selected="false">Conversas<span class="qt" id="qt-conversas"></span></button>
+  <button type="button" role="tab" data-aba="cadencias" aria-selected="false">Cadências</button>
   <button type="button" role="tab" data-aba="aprovar" aria-selected="false">Para aprovar<span class="qt" id="qt-aprovar"></span></button>
   <button type="button" role="tab" data-aba="contas" aria-selected="false">Contas<span class="qt" id="qt-contas"></span></button>
   <button type="button" role="tab" data-aba="agentes" aria-selected="false">Agentes</button>
 </nav>
+
+<main id="sec-cadencias" data-painel="cadencias" hidden>
+  <header class="cad-read-head"><div><h2>Cadências</h2><p class="sub">HubSpot · Ygor · somente leitura</p></div><button class="btn" type="button" id="cad-read-refresh">Atualizar</button></header>
+  <p id="cad-read-status" role="status" aria-live="polite">Aguardando consulta.</p>
+  <div id="cad-read-campaigns"></div>
+  <section class="cad-read-section"><h3>Hoje</h3><div id="cad-read-today"></div></section>
+  <section class="cad-read-section"><h3>Sem vínculo</h3><div id="cad-read-unlinked"></div></section>
+  <section class="cad-read-section" id="cad-read-unverified-section" hidden><h3>Vínculo não verificado</h3><div id="cad-read-unverified"></div></section>
+  <section class="cad-read-section" id="cad-read-detail" hidden tabindex="-1"><h3 id="cad-read-detail-title">Linha do tempo</h3><p id="cad-read-detail-status" role="status"></p><ol class="cad-read-timeline" id="cad-read-events"></ol></section>
+</main>
 
 <main id="sec-agentes" data-painel="agentes" hidden>
   <div class="agenttrail-head">
@@ -1702,9 +1727,68 @@ async function atualizarAgenttrail(){
 }
 $('agenttrail-atualizar').addEventListener('click',atualizarAgenttrail);
 setInterval(()=>{if(document.body.dataset.aba==='agentes')atualizarAgenttrail();},30000);
+let cadReadLoading=false,cadReadSnapshot=null,cadReadContact=null,cadReadTimelineRequest=0,cadReadPollTimer=null;
+const cadReadNumber=v=>Number.isInteger(v)?String(v):'Não verificado';
+function cadReadDate(value){
+  if(!value)return 'Sem data';
+  const d=new Date(value);return Number.isNaN(d.getTime())?'Data não disponível':d.toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo',dateStyle:'short',timeStyle:'short'});
+}
+function cadReadTasks(tasks,empty='Nenhuma tarefa nesta lista.'){
+  if(!Array.isArray(tasks)||!tasks.length)return `<p class="sub">${esc(empty)}</p>`;
+  return `<div class="cad-read-table-wrap"><table class="cad-read-table"><thead><tr><th scope="col">Contato</th><th scope="col">Toque</th><th scope="col">Canal</th><th scope="col">Quando</th><th scope="col">Situação</th></tr></thead><tbody>${tasks.map(t=>{
+    const ids=(t.contact_ids||[]).filter(id=>/^\d+$/.test(String(id)));
+    const people=ids.length?ids.map(id=>`<button class="btn" type="button" data-cad-contact="${esc(id)}">${esc(t.contact_names?.[id]||t.contact_name||'Contato '+id)}</button>`).join(' '):t.link_status==='unverified'?'Vínculo não verificado':'Sem vínculo';
+    const states={COMPLETED:'Concluída no HubSpot',NOT_STARTED:'Pendente',IN_PROGRESS:'Em andamento',WAITING:'Em espera',DEFERRED:'Adiada'};
+    return `<tr><td>${people}</td><td>${esc(t.title||t.touch||'Tarefa')}<br><small>${esc(t.campaign||'')}</small></td><td>${esc(t.channel||'Não informado')}</td><td>${esc(cadReadDate(t.due_at))}</td><td>${esc(states[t.status]||t.status||'Não informado')}${t.receipt?'<br>Com recibo':''}</td></tr>`;
+  }).join('')}</tbody></table></div>`;
+}
+function renderCadencias(data){
+  const campaigns=Array.isArray(data.campaigns)?data.campaigns:[];
+  $('cad-read-campaigns').innerHTML=campaigns.length?`<div class="cad-read-table-wrap"><table class="cad-read-table"><thead><tr><th scope="col">Campanha</th><th scope="col">Contatos</th><th scope="col">Toques com recibo</th><th scope="col">Pendentes</th><th scope="col">Atrasados</th><th scope="col">Respostas</th><th scope="col">Reuniões</th></tr></thead><tbody>${campaigns.map(c=>`<tr><td>${esc(c.id)}</td>${['contacts','completed_with_receipt','pending','overdue','replies','meetings'].map(k=>`<td>${esc(cadReadNumber(c.metrics?.[k]))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`+campaigns.map(c=>`<details><summary>${esc(c.id)} · contatos e tarefas</summary>${cadReadTasks(c.tasks)}</details>`).join(''):'<p class="sub">Nenhuma tarefa de campanha encontrada nesta consulta.</p>';
+  const today=data.today||{};
+  $('cad-read-today').innerHTML=`<h4>Previsto para hoje</h4>${cadReadTasks(today.planned,'Nenhuma tarefa prevista para hoje na consulta.')}<h4>Aguardando sua aprovação</h4>${today.awaiting_approval==null?'<p class="sub">Aprovações ainda não verificadas nesta fonte.</p>':cadReadTasks(today.awaiting_approval,'Sem aprovações pendentes identificadas nesta consulta.')}<h4>Respostas sem retorno</h4>${today.unreplied==null?'<p class="sub">Respostas sem retorno ainda não verificadas nesta fonte.</p>':cadReadTasks(today.unreplied,'Nenhuma resposta sem retorno identificada nesta consulta.')}`;
+  $('cad-read-unlinked').innerHTML=cadReadTasks(data.unlinked,'Nenhuma tarefa sem vínculo nesta consulta.');
+  $('cad-read-unverified-section').hidden=!data.unverified?.length;
+  $('cad-read-unverified').innerHTML=cadReadTasks(data.unverified);
+  const coverage=data.coverage||{};
+  $('cad-read-status').textContent=`${coverage.complete?'Tarefas consultadas':'Consulta parcial'} · ${cadReadDate(data.collected_at)} · atualização a cada 60 s. ${coverage.limitations?.length?'Há dados não verificados; veja a cobertura abaixo.':''}`;
+  const old=$('cad-read-coverage');if(old)old.remove();
+  if(coverage.limitations?.length){const details=document.createElement('details');details.id='cad-read-coverage';const summary=document.createElement('summary');summary.textContent='Cobertura da consulta';details.appendChild(summary);const list=document.createElement('ul');for(const value of coverage.limitations){const li=document.createElement('li');li.textContent=String(value);list.appendChild(li);}details.appendChild(list);$('cad-read-status').after(details);}
+}
+async function atualizarCadencias(){
+  if(cadReadLoading||!apiServidor)return;
+  cadReadLoading=true;$('cad-read-refresh').disabled=true;
+  $('cad-read-status').textContent=cadReadSnapshot?'Atualizando consulta…':'Consultando tarefas no HubSpot…';
+  try{cadReadSnapshot=await apiServidor('/api/os/v1/cadencias');renderCadencias(cadReadSnapshot);if(cadReadContact)await abrirCadenciaContato(cadReadContact,false);}
+  catch(e){$('cad-read-status').textContent=cadReadSnapshot?'Não foi possível atualizar. Os dados abaixo são da consulta anterior.':'Não foi possível consultar o HubSpot. Tente atualizar.';}
+  finally{cadReadLoading=false;$('cad-read-refresh').disabled=false;}
+}
+async function abrirCadenciaContato(id,focus=true){
+  if(!/^\d+$/.test(String(id))||!apiServidor)return;
+  cadReadContact=String(id);const request=++cadReadTimelineRequest;
+  $('cad-read-detail').hidden=false;$('cad-read-detail-title').textContent='Linha do tempo · contato '+id;
+  $('cad-read-detail-status').textContent='Consultando histórico…';$('cad-read-events').replaceChildren();
+  if(focus)$('cad-read-detail').focus();
+  try{
+    const data=await apiServidor('/api/os/v1/cadencias/contacts/'+encodeURIComponent(id));
+    if(request!==cadReadTimelineRequest)return;
+    const events=data.events||[];
+    $('cad-read-detail-title').textContent='Linha do tempo · '+(data.contact_name||'contato '+id);
+    $('cad-read-detail-status').textContent=(events.length?'':'Nenhuma atividade encontrada. ')+(data.coverage?.complete?'':'Histórico parcial. ')+(data.coverage?.limitations||[]).join(' ');
+    $('cad-read-events').innerHTML=events.map(e=>`<li><b>${esc(e.subject||e.type||'Atividade')}</b><br><small>${esc(cadReadDate(e.occurred_at))} · ${esc(e.status||'')} · ${esc(e.source||'HubSpot')}</small>${e.text?`<pre>${esc(e.text)}</pre>`:''}${e.receipt?`<details><summary>Recibo</summary><pre>${esc(typeof e.receipt==='string'?e.receipt:JSON.stringify(e.receipt,null,2))}</pre></details>`:''}</li>`).join('');
+  }catch(e){if(request===cadReadTimelineRequest)$('cad-read-detail-status').textContent='Não foi possível consultar o histórico deste contato.';}
+}
+$('cad-read-refresh').addEventListener('click',atualizarCadencias);
+$('sec-cadencias').addEventListener('click',event=>{const b=event.target.closest('[data-cad-contact]');if(b)abrirCadenciaContato(b.dataset.cadContact);});
 function mostrarAba(aba,{registrar=true}={}){
-  if(!['hoje','conversas','aprovar','contas','agentes'].includes(aba)) aba='hoje';
+  if(!['hoje','conversas','cadencias','aprovar','contas','agentes'].includes(aba)) aba='hoje';
   if(document.body)document.body.dataset.aba=aba;
+  $('sec-cadencias').hidden=aba!=='cadencias';
+  clearInterval(cadReadPollTimer);
+  if(aba==='cadencias'){
+    atualizarCadencias();
+    cadReadPollTimer=setInterval(()=>{if(!document.hidden&&document.body.dataset.aba==='cadencias')atualizarCadencias();},60000);
+  }
   $('sec-agentes').hidden=aba!=='agentes';
   if(aba==='agentes')atualizarAgenttrail();
   $('abas').querySelectorAll('button').forEach(b=>{const ativa=b.dataset.aba===aba;b.setAttribute('aria-selected',String(ativa));b.tabIndex=ativa?0:-1;});
@@ -1715,7 +1799,7 @@ function mostrarAba(aba,{registrar=true}={}){
 function iniciarAbas(){
   $('abas').hidden=false;
   let aba='hoje';try{aba=localStorage.getItem('painel-aba')||aba}catch(e){}
-  const hash=location.hash.slice(1);if(['hoje','conversas','aprovar','contas','agentes'].includes(hash))aba=hash;
+  const hash=location.hash.slice(1);if(['hoje','conversas','cadencias','aprovar','contas','agentes'].includes(hash))aba=hash;
   mostrarAba(aba,{registrar:false});
   if($('abas').dataset.iniciada)return;
   $('abas').dataset.iniciada='true';

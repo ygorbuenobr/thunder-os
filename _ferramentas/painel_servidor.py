@@ -25,7 +25,7 @@ from thunder_os.db import Repository, RepositoryConflict
 from thunder_os.models import ContractError, StaleVersionError, as_payload, payload_hash
 from thunder_os.service import AuthorizationError, ThunderService
 from thunder_os.knowledge import KnowledgeStore
-from thunder_os.hubspot_console import HubSpotConsole
+from thunder_os.hubspot_console import HubSpotConsole, systemd_hubspot_credential
 from thunder_os.seqd_console import SEQDConsole
 from thunder_os.email_canary import EmailCanary, CanaryError, restricted_mode, canary_view
 from thunder_os.seqd_client import SEQDError
@@ -1344,6 +1344,28 @@ class Handler(BaseHTTPRequestHandler):
         service = getattr(self.server, 'thunder_service', None)
         if service is None:
             raise Erro('Thunder OS indisponível', 503)
+        cadence_base = '/api/os/v1/cadencias'
+        if rota.path == cadence_base or rota.path.startswith(cadence_base + '/'):
+            actor = self.thunder_proxy_actor()
+            if actor != 'ygor':
+                raise Erro('Somente Ygor pode consultar cadências.', 403)
+            if self.command != 'GET' or rota.query:
+                raise Erro('Cadências permite apenas consulta.', 405)
+            console = getattr(self.server, 'thunder_cadence_readonly', None)
+            if console is None:
+                raise Erro('Leitura das cadências indisponível.', 503)
+            contact = re.fullmatch(re.escape(cadence_base) + r'/contacts/([1-9][0-9]{0,29})', rota.path)
+            if rota.path != cadence_base and not contact:
+                raise Erro('Contato inválido.', 400)
+            try:
+                result = console.snapshot() if not contact else console.timeline(contact.group(1))
+            except LookupError:
+                raise Erro('Contato não encontrado nas cadências.', 404) from None
+            except Exception:
+                raise Erro('Não foi possível consultar as cadências no HubSpot.', 503) from None
+            if result.get('ok') is False:
+                raise Erro('Não foi possível consultar as cadências no HubSpot.', 503)
+            return self.responder(200, result)
         if self.command == 'GET' and rota.path == '/api/os/v1/agenttrail' and not rota.query:
             actor = self.agenttrail_ingress_actor()
             if actor != 'ygor':
@@ -1861,6 +1883,9 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
             servidor.thunder_seqd_console = SEQDConsole(servidor.thunder_service.repository,
                 read_enabled=seqd_read, send_enabled=seqd_send, dispatch_authorized=lambda: external_effects_enabled() and (restricted_mode() or os.environ.get('THUNDER_OS_COPILOT_MODE','') == 'human_approval'))
             crm_read = os.environ.get('THUNDER_OS_HUBSPOT_READ_ENABLED', '') == 'true'
+            if crm_read:
+                from thunder_os.cadence_readonly import CadenceReadonlyConsole
+                servidor.thunder_cadence_readonly = CadenceReadonlyConsole(systemd_hubspot_credential)
             crm_write = external_effects_enabled() and not restricted_mode() and os.environ.get('THUNDER_OS_HUBSPOT_WRITE_ENABLED', '') == 'true'
             copilot = external_effects_enabled() and not restricted_mode() and os.environ.get('THUNDER_OS_COPILOT_MODE', '') == 'human_approval'
             servidor.thunder_hubspot_console = HubSpotConsole(servidor.thunder_service.repository,
