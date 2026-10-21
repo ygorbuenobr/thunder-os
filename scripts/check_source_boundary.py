@@ -11,6 +11,7 @@ ALLOWED_FILES = {
     "scripts/recover_mexico_runner.cjs",
     "scripts/test_mexico_e1_runner.cjs",
     "docs/branches.md",
+    "docs/task3-membership.md",
     "_ferramentas/test_briefing_cards_ui.cjs",
     "_ferramentas/test_painel_cadencias.py",
     "_ferramentas/test_painel_cadencias_ui.cjs",
@@ -55,6 +56,7 @@ ALLOWED_FILES = {
     "_ferramentas/painel_modelo.html",
 }
 ALLOWED_TESTS = {
+    "test_thunder_os_campaign_membership.py",
     "test_thunder_os_cadence_contact_campaign.py",
     "test_thunder_os_mexico_runner.py",
     "test_thunder_os_cadence_evidence.py",

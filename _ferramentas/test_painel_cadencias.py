@@ -4,6 +4,9 @@ import os
 import json
 from pathlib import Path
 import tempfile
+from http.client import HTTPConnection
+from http.server import ThreadingHTTPServer
+from threading import Thread
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from urllib.parse import urlsplit
@@ -16,6 +19,59 @@ from test_thunder_os_cadence_contact_campaign import ContactProvider, contact
 
 
 class CadencePanelTests(unittest.TestCase):
+    def test_membership_actual_http_dispatch_blocks_mutations(self):
+        reader = Mock()
+        reader.inspect.return_value = {'status':'ready','mutation_enabled':False}
+        server = ThreadingHTTPServer(('127.0.0.1',0),panel.Handler)
+        server.banco = object()
+        server.thunder_service = object()
+        server.thunder_campaign_membership = reader
+        thread = Thread(target=server.serve_forever,daemon=True)
+        thread.start()
+        try:
+            for method in ('GET','POST','PATCH','DELETE','PUT'):
+                with self.subTest(method=method):
+                    connection = HTTPConnection('127.0.0.1',server.server_port,timeout=3)
+                    try:
+                        connection.request(method,'/api/os/v1/campaign-membership/123/BR-APOLLO-01',headers={'X-Authenticated-User':'ygor'})
+                        response = connection.getresponse()
+                        self.assertEqual(response.status,200 if method=='GET' else 405)
+                        payload = json.loads(response.read())
+                        if method=='GET':
+                            self.assertFalse(payload['mutation_enabled'])
+                    finally:
+                        connection.close()
+            reader.inspect.assert_called_once_with('123','BR-APOLLO-01')
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+
+    def test_membership_route_is_readonly_and_human_scoped(self):
+        reader = Mock()
+        reader.inspect.return_value = {'status':'blocked','reason':'lead_occupied','mutation_enabled':False}
+        handler = object.__new__(panel.Handler)
+        handler.server = SimpleNamespace(thunder_service=object(), thunder_campaign_membership=reader)
+        handler.client_address = ('127.0.0.1',1234)
+        handler.headers = {'X-Authenticated-User':'ygor'}
+        handler.command = 'GET'
+        handler.responder = lambda status,body:(status,body)
+        url = urlsplit('/api/os/v1/campaign-membership/123/BR-APOLLO-01')
+        self.assertEqual(handler.thunder_api(url)[1]['reason'],'lead_occupied')
+        reader.inspect.assert_called_once_with('123','BR-APOLLO-01')
+        reader.reset_mock()
+        for method in ('POST','PATCH','DELETE','PUT'):
+            handler.command = method
+            with self.assertRaises(panel.Erro) as error:
+                handler.thunder_api(url)
+            self.assertEqual(error.exception.status,405)
+        reader.inspect.assert_not_called()
+        handler.command = 'GET'
+        handler.headers = {'X-Authenticated-User':'claude'}
+        with self.assertRaises(panel.Erro) as error:
+            handler.thunder_api(url)
+        self.assertEqual(error.exception.status,403)
+
     def route(self, path='/api/os/v1/cadencias', actor='ygor', method='GET', console=True):
         self.reader = Mock()
         self.reader.snapshot.return_value = {'campaigns': [], 'coverage': {'complete': True}}

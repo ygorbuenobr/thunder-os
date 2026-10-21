@@ -1344,6 +1344,24 @@ class Handler(BaseHTTPRequestHandler):
         service = getattr(self.server, 'thunder_service', None)
         if service is None:
             raise Erro('Thunder OS indisponível', 503)
+        membership_base = '/api/os/v1/campaign-membership/'
+        if rota.path.startswith(membership_base):
+            actor = self.thunder_proxy_actor()
+            if actor != 'ygor':
+                raise Erro('Somente Ygor pode consultar vínculos.', 403)
+            if self.command != 'GET' or rota.query:
+                raise Erro('Vínculos permitem apenas consulta nesta versão.', 405)
+            match = re.fullmatch(re.escape(membership_base) + r'([1-9][0-9]{0,29})/([A-Za-z0-9_-]{1,100})', rota.path)
+            if not match:
+                raise Erro('Contato ou campanha inválidos.', 400)
+            console = getattr(self.server, 'thunder_campaign_membership', None)
+            if console is None:
+                raise Erro('Consulta de vínculo indisponível.', 503)
+            try:
+                result = console.inspect(match.group(1), match.group(2))
+            except Exception:
+                raise Erro('Não foi possível verificar o vínculo no HubSpot.', 503) from None
+            return self.responder(200, result)
         cadence_base = '/api/os/v1/cadencias'
         if rota.path == cadence_base or rota.path.startswith(cadence_base + '/'):
             actor = self.thunder_proxy_actor()
@@ -1797,6 +1815,7 @@ class Handler(BaseHTTPRequestHandler):
     do_GET = executar
     do_POST = executar
     do_PATCH = executar
+    do_PUT = executar
     do_DELETE = executar
     do_OPTIONS = executar
 
@@ -1884,11 +1903,17 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
                 read_enabled=seqd_read, send_enabled=seqd_send, dispatch_authorized=lambda: external_effects_enabled() and (restricted_mode() or os.environ.get('THUNDER_OS_COPILOT_MODE','') == 'human_approval'))
             crm_read = os.environ.get('THUNDER_OS_HUBSPOT_READ_ENABLED', '') == 'true'
             if crm_read:
+                from thunder_os.campaign_membership import CampaignMembership
+                from thunder_os.campaign_membership_hubspot import CampaignMembershipHubSpot
                 from thunder_os.cadence_readonly import CadenceReadonlyConsole, environment_activity_bindings
                 from thunder_os.campaign_registry import CampaignRegistry
                 servidor.thunder_cadence_readonly = CadenceReadonlyConsole(systemd_hubspot_credential,
                     campaign_registry=CampaignRegistry(servidor.thunder_service.repository),
                     activity_bindings_loader=environment_activity_bindings)
+                membership_port = CampaignMembershipHubSpot(mutation_enabled=False)
+                servidor.thunder_campaign_membership = CampaignMembership(
+                    servidor.thunder_service.repository, membership_port,
+                    writer=membership_port, mutation_enabled=False)
             crm_write = external_effects_enabled() and not restricted_mode() and os.environ.get('THUNDER_OS_HUBSPOT_WRITE_ENABLED', '') == 'true'
             copilot = external_effects_enabled() and not restricted_mode() and os.environ.get('THUNDER_OS_COPILOT_MODE', '') == 'human_approval'
             servidor.thunder_hubspot_console = HubSpotConsole(servidor.thunder_service.repository,

@@ -10,6 +10,7 @@ const unlinked={...task,id:'100',contact_ids:[],contact_name:null};
 const snapshot={collected_at:'2026-10-21T13:00:00Z',coverage:{complete:false,limitations:['Consulta de atividades incompleta.']},campaigns:[{id:'PILOTO',task_state:'observed',task_coverage_complete:true,metrics:{contacts:1,completed_with_receipt:null,pending:2,overdue:0,replies:null,meetings:null},tasks:[task]}],today:{planned:[task],awaiting_approval:[],unreplied:[]},unlinked:[unlinked]};
 const registered={id:'REGISTRY-ONLY',registry:{id:'REGISTRY-ONLY',platform:'codex_local',active:true},task_state:'empty',task_coverage_complete:true,metrics:{contacts:0,tasks:0,completed_with_receipt:null,pending:0,overdue:0,replies:null,meetings:null},tasks:[]};
 (async()=>{
+ snapshot.contact_conflicts=[{contact_id:'123',campaign:'BR-APOLLO-01',task_campaign:'V'.repeat(100),reason:'task_campaign_differs_from_current_campaign'},{contact_id:'123',campaign:'BR-APOLLO-01',task_campaign:'<img src=x onerror=alert(1)>',reason:'task_campaign_differs_from_current_campaign'}];
  const browser=await chromium.launch({headless:true});
  try{
   for(const viewport of [{width:1440,height:1000},{width:390,height:844}]){
@@ -52,6 +53,9 @@ const registered={id:'REGISTRY-ONLY',registry:{id:'REGISTRY-ONLY',platform:'code
    await page.locator('#cad-read-campaigns').getByRole('cell',{name:'PILOTO',exact:true}).waitFor();
    assert.match(await page.locator('#cad-read-status').innerText(),/Consulta parcial/);
    assert.match(await page.locator('#cad-read-unlinked').innerText(),/Sem vínculo/);
+   assert.equal(await page.locator('#cad-read-conflicts-section').isVisible(),true);
+   assert.match(await page.locator('#cad-read-conflicts').innerText(),/BR-APOLLO-01/);
+   assert.equal(await page.locator('#cad-read-conflicts img').count(),0);
    const before=requests.filter(r=>r.p==='/api/os/v1/cadencias').length;
    await page.clock.runFor(60001);
    await page.waitForFunction(()=>!document.querySelector('#cad-read-refresh').disabled);

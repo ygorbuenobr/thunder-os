@@ -227,21 +227,23 @@ private records/paths moved to the operation context, the hash contract explicit
 uses a real newline, toques and structured receipts were wired, and CRM failure was
 separated from provider uncertainty. The raw historical source stays outside Git.
 
-Task 3 remains **incomplete**. The coordinator reports exact REST property reads
-for `campanha_ativa` and `executor` returned 404 in portal `51412240` on runtime
-`8cf7f1aa`; this implementation does not create either property or autofill contacts.
-Live schema creation/configuration needs its separate reviewed scope. This local
-reader was tested only with synthetic transports; no authenticated live read,
-external write, installation, commit, push or deployment was performed here.
-Independent review and user approval of the diff remain with the principal.
+Task 3 update (2026-10-21): the reader was published as `2a08b0d`; the two CONTACT
+string properties were subsequently created and GET-verified in portal `51412240`,
+group `cadencia_thunder`, under explicit operator authorization. No contact values
+were assigned. Earlier 404 observations describe the pre-creation runtime only.
 
-The full Task 3 acceptance tests `test_lead_ocupado_bloqueia` and
-`test_resposta_libera` remain pending. No contact-admission/release writer consumes
-these two properties today. `ReplyCoordinator` pauses cadence state but does not
-clear HubSpot campaign/executor or append the required audit note. Before a writer
-is implemented, settle its entrypoint, executor value contract, concurrent competing
-registrations and the release/note contract. No new ledger, fence, database, schema,
-campaign configuration or fictitious write contract is introduced by this reader.
+The membership workflow and concrete HTTP port are prepared with focused fake
+tests, including `test_lead_ocupado_bloqueia` and `test_resposta_libera`.
+The panel exposes only `GET /api/os/v1/campaign-membership/<contact>/<campaign>`;
+both composition switches are explicitly `mutation_enabled=False`, independently
+of legacy external-effects flags. There is no membership execution HTTP route.
+The read-only cadence projection shows task/current-campaign and executor
+conflicts. An internal proposal is never membership truth: HubSpot remains the
+source, and local CAS cannot serialize external CRM writers or platform enrollment.
+See `docs/task3-membership.md` for activation prerequisites and known limits.
+Release and assignment remain OFF pending a separately authorized operational
+activation using the existing approval machinery; changing an environment flag
+alone does not enable them. No bulk assignment, external pause or send is enabled.
 
 Focused runner checks (Python 3.14.3, Node 22.23.1 locally):
 
