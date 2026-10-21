@@ -115,10 +115,109 @@ claiming a human classification. Meetings count `SCHEDULED`, `COMPLETED` and
 classification fields, invalid timestamps, unavailable schema and partial pages
 keep aggregate metrics null, with observed counters separate.
 
-The Mexico E1 writer was not located in this source repository. This candidate does
-not replace it, mutate `toques.py`, persist `hubspot_task_id` for future executions,
-or schedule a next touch. Integrating those writes with the actual executor and
-verifying Apollo/Instantly production bindings remain separate, unresolved work.
+The external Codex Mexico E1 runner has now been recovered and adapted in
+`scripts/mexico_e1_runner.cjs`. It is a callable source module with no autorun,
+HTTP route, scheduler or activation. `createMexicoContext` binds the current MCP
+Gmail, HubSpot and ConnectSafely tool names to the original prepared package,
+ledger, derived checkpoint, workbook and already-held `fcntl` process.
+`runMexicoE1` calls the real `mexico_toques_bridge.py` before and after the Gmail
+effect. Importing/constructing this module does not send, update CRM or acquire a
+lock. The current authorization covers local source/tests/review only.
+
+The caller supplies the canonical operation root and workbook path, the original
+`sendLock` child handle and its `LOCK_HELD` acknowledgement, the actual MCP tools
+object, and an absolute path to the pinned dependency. The consumer reads existing
+`.work/cdmx-d0-prepared.json` and `.work/cdmx-email-send-ledger.jsonl`; an explicitly
+invoked run appends/fsyncs that same ledger and replaces only the existing derived
+`.work/cdmx-email-results.json`. It does not rewrite the package/queue. Task IDs are
+normalized from legacy numbers to strings; contact-level `STOP_ON_REPLY` events
+without a task ID remain effective and are retained in the checkpoint. A durable
+intent or uncertain result blocks another send, including when toques has no row.
+
+The runner retains the original E1 scope, approval/copy hash, workbook exclusion,
+exact contact association, suppression/reply/history preflight, held lock, dated
+window and 65-80 second minimum send pacing (inside the approved 60-120 second
+range). Portal `51412240`, owner `92901049` and the mailbox are pinned; the
+consumer checks the authenticated identities. Missing suppression fields are
+unknown and block sending; explicit null/empty values remain distinct from absent
+fields. MCP transports supply their own request deadline; the runner awaits each
+effect and does not race a timeout against an abandoned send or retry it. The
+Python ledger/workbook subprocesses have a 15 second deadline. The historical
+window expires at `2026-10-22T06:00:00Z`; this source grants no new approval/window.
+
+The canonical hash is `SHA256(subject + '\n' + text)` with one actual newline.
+After a successful send, Gmail `full` readback must match message ID, `SENT`, exact
+sender/recipient, subject and HTML body. `PROVIDER_CONFIRMED` is saved in the
+existing ledger and toques becomes `feito` before CRM reconciliation. A structured
+JSON receipt in the task binds campaign, batch, task, contact, step, mailbox,
+recipient and payload hash. Its deterministic marker/key prevents re-appending.
+CRM completion and exact body readback are checked separately from HTTP/tool
+acceptance. A later CRM failure yields `PROVIDER_CONFIRMED_CRM_PENDING`, preserving
+the confirmed receipt. Replay reconciles CRM without another Gmail send. A lost
+persistence response never grants retry authority. A full readback followed by a
+ledger write failure still remains a factual provider confirmation; the runner
+attempts to persist it in toques and retains its receipt for reconciliation.
+
+`mexico_toques_bridge.py` checks dependency SHA256
+`84eb0c7a86fe8fbe72c11427e747895b30d6acc66135eb36e4a8d3aa28e1e875` before import.
+Local checks use `.scratch/dependencies/toques.py`; operational adoption must
+explicitly supply the same verified dependency from its existing bundle. The
+current Brain copy has another hash and is refused. There is no vendored copy,
+manifest update, schema change or migration. Campaign/task/contact/hash/mailbox
+bindings use supported `ref`/`detalhe` JSON, never a silently ignored
+`hubspot_task_id` keyword. Reservation uses the canonical API and unique key.
+Finalization uses the existing `TouchLedger.finish` conditional SQL pattern over
+the actual dependency's `_banco`: only `reservado`/`incerto` may change. This
+protects terminal `feito` against a late uncertain write or competing receipt.
+
+E1 retains the existing normalized subject target. A later step sharing its
+subject uses a step-qualified target only after checking an exactly linked,
+confirmed earlier subject record. Legacy unlinked, uncertain or conflicting
+history blocks it. The structured reader accepts the exact step from its binding;
+legacy prose receipts remain E1-only. The exported runner itself remains E1-only:
+no E2 automation or follow-up scheduler is activated by these adapter/reader tests.
+
+Provenance: `scripts/recover_mexico_runner.cjs` parses the original session JSONL
+as data, without evaluating historical calls or their trailing invocation. Records
+32661, 32944, 35212 and 35217 identify the stored runner, independent-item
+continuation, ledger-derived checkpoint patch and subsequent invocation. The
+cooked original source has 10082 characters, SHA256
+`9281ed8790b92bb07ee798c70c431b0344063e82d37bf6dc1673057b78d42b52`;
+after the two recorded edits, 10268 characters, SHA256
+`de28f79e6bdec4e4dc9a2066126249af4d436d57c845fae466af7f288cf5910c`.
+The callable module is an adaptation of that source, not a byte-identical export:
+private records/paths moved to the operation context, the hash contract explicitly
+uses a real newline, toques and structured receipts were wired, and CRM failure was
+separated from provider uncertainty. The raw historical source stays outside Git.
+
+Apollo/Instantly remain **not integrated for campaign attribution in this
+candidate**. The main coordinator's REST investigation on 2026-10-21 confirmed
+that `hs_campaign_guid` and `hs_engagement_source_id` exist on emails/meetings,
+but observed no populated campaign GUID/pair and no runtime bindings. The MCP
+property lookup alone was insufficient to establish schema absence. Observed
+provider sends are not equivalent to correlated HubSpot activity. Metrics remain
+unknown, not zero sends. Configuring integrations/bindings, production writes,
+installation and activation remain outside this local change.
+
+Focused runner checks (Python 3.14.3, Node 22.23.1 locally):
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=_ferramentas \
+  THUNDER_TEST_TOQUES_PATH="$PWD/.scratch/dependencies/toques.py" \
+  THUNDER_TEST_WORKBOOK_PYTHON=/absolute/path/to/python-with-openpyxl \
+  python3 -m unittest test_thunder_os_mexico_runner \
+  test_thunder_os_cadence_evidence test_thunder_os_cadence_readonly
+python3 scripts/check_source_boundary.py
+git diff --check
+```
+
+The suite uses the actual pinned dependency with a temporary SQLite table matching
+its existing unique key, an injected `_banco` for interleaving tests, and the real
+CLI bridge from the callable runner. MCP providers are fakes. The context consumer
+test uses synthetic prepared/ledger files, a real temporary `fcntl` holder and an
+openpyxl synthetic workbook; the system Python may need a separately configured
+workbook interpreter. No real provider effect, PostgreSQL/production write,
+installation or active automation is demonstrated by these tests.
 
 Focused isolated checks: `PYTHONPATH=_ferramentas python3 -m unittest
 test_thunder_os_cadence_evidence test_thunder_os_cadence_readonly`; use the existing

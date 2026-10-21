@@ -8,6 +8,7 @@ from html.parser import HTMLParser
 import json
 import re
 from .seqd_client import MAILBOX
+from .mexico_receipt import MARKER, validate_receipt
 
 BATCH_CAMPAIGNS = {'MX27-CDMX-D0-20261021': 'MX27-CDMX'}
 PIPE_TITLE = re.compile(r'^([A-Za-z0-9_-]{1,100})\s*\|\s*([EL][1-9][0-9]?)\s*\|\s*([^|\r\n]+)\s*\|\s*([^|\r\n]+)$')
@@ -52,7 +53,7 @@ def task_evidence(raw_body, task, pipe):
     result = {'outcome': 'completed_without_receipt' if task['completed'] else 'pending',
               'receipt': None, 'reason': None, 'reason_code': None,
               'retry_allowed': False, 'evidence_scope': 'hubspot_task_body'}
-    if not pipe or task['touch'] != 'E1' or not isinstance(raw_body, str):
+    if not pipe or not isinstance(raw_body, str):
         return result
     parser = _Blocks()
     parser.feed(raw_body)
@@ -64,7 +65,7 @@ def task_evidence(raw_body, task, pipe):
             value = json.loads(text)
         except (ValueError, TypeError):
             continue
-        if isinstance(value, dict) and value.get('batch') == pipe['batch']:
+        if isinstance(value, dict) and value.get('marker') != MARKER and value.get('batch') == pipe['batch']:
             metadata.append(value)
     if len(metadata) != 1:
         return result
@@ -74,7 +75,7 @@ def task_evidence(raw_body, task, pipe):
             ('contact_id', 'campaign', 'batch', 'task_key', 'provider', 'account', 'recipient', 'sha256_subject_newline_text'))
             or not re.fullmatch(r'[1-9][0-9]{0,29}', cid)
             or meta.get('campaign') != 'Mexico2027-networking'
-            or meta.get('task_key') != f"{pipe['batch']}:{cid}:E1"
+            or meta.get('task_key') != f"{pipe['batch']}:{cid}:{task['touch']}"
             or meta.get('provider') != 'Gmail'
             or meta.get('account') != MAILBOX
             or not re.fullmatch(r'[^\s@;]+@[^\s@;]+\.[^\s@;]+', meta['recipient'])
@@ -83,7 +84,33 @@ def task_evidence(raw_body, task, pipe):
     # Process outcome paragraphs in document order: a later reconciliation wins;
     # a later uncertain result must not silently inherit an earlier confirmation.
     for tag, text in parser.blocks:
+        if tag == 'pre':
+            try:
+                receipt = json.loads(text)
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(receipt, dict) or receipt.get('marker') != MARKER:
+                continue
+            try:
+                validate_receipt(receipt, {'campaign_id': pipe['campaign'], 'batch': pipe['batch'],
+                    'hubspot_task_id': task['id'], 'contact_id': cid, 'touch': task['touch'],
+                    'sender': MAILBOX, 'recipient': meta['recipient'],
+                    'payload_sha256': meta['sha256_subject_newline_text']})
+                if (not task['completed'] or task['link_status'] != 'linked' or task['contact_ids'] != [cid]):
+                    raise ValueError('RECEIPT_CONTACT_LINK_UNVERIFIED')
+            except ValueError:
+                result.update(outcome='unverified', receipt=None, reason_code='RECEIPT_BINDING_MISMATCH')
+                continue
+            result.update(outcome='sent_with_receipt', reason=None, reason_code=None,
+                receipt={'provider': 'gmail', 'message_id': receipt['message_id'], 'task_id': task['id'],
+                    'contact_id': cid, 'batch': pipe['batch'], 'campaign_id': pipe['campaign'],
+                    'touch': task['touch'], 'payload_sha256': receipt['payload_sha256'],
+                    'confirmed_at': receipt['confirmed_at'], 'verification': 'recorded_confirmation',
+                    'source': 'hubspot_task_body', 'reconciled': True, 'key': receipt['key']})
+            continue
         if tag != 'p':
+            continue
+        if task['touch'] != 'E1':
             continue
         direct, reconciled, outcome = DIRECT.fullmatch(text), RECONCILED.fullmatch(text), RESULT.fullmatch(text)
         if direct or reconciled:

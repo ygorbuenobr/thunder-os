@@ -6,6 +6,10 @@ from pathlib import PurePosixPath
 
 
 ALLOWED_FILES = {
+    "scripts/mexico_e1_runner.cjs",
+    "scripts/mexico_toques_bridge.py",
+    "scripts/recover_mexico_runner.cjs",
+    "scripts/test_mexico_e1_runner.cjs",
     "docs/branches.md",
     "_ferramentas/test_briefing_cards_ui.cjs",
     "_ferramentas/test_painel_cadencias.py",
@@ -51,6 +55,7 @@ ALLOWED_FILES = {
     "_ferramentas/painel_modelo.html",
 }
 ALLOWED_TESTS = {
+    "test_thunder_os_mexico_runner.py",
     "test_thunder_os_cadence_evidence.py",
     "test_thunder_os_cadence_readonly.py",
     "test_thunder_os_panel_discard.py",
@@ -108,7 +113,7 @@ FORBIDDEN_PARTS = {
 
 def tracked_files() -> list[str]:
     result = subprocess.run(
-        ["git", "ls-files", "-z"], check=True, capture_output=True
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"], check=True, capture_output=True
     )
     return [entry.decode() for entry in result.stdout.split(b"\0") if entry]
 
@@ -141,7 +146,7 @@ def main() -> int:
     if not all(any(path.startswith(root) for path in paths) for root in required_roots):
         print("expected source package and selected tests are missing", file=sys.stderr)
         return 1
-    print(f"source boundary ok: {len(paths)} tracked paths")
+    print(f"source boundary ok: {len(paths)} tracked and unignored source paths")
     return 0
 
 
