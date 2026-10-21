@@ -19,6 +19,43 @@ from test_thunder_os_cadence_contact_campaign import ContactProvider, contact
 
 
 class CadencePanelTests(unittest.TestCase):
+    def test_external_email_default_status_and_disabled_ingress(self):
+        handler = object.__new__(panel.Handler)
+        handler.server = SimpleNamespace(thunder_service=object())
+        handler.client_address = ('127.0.0.1',1234)
+        handler.headers = {'X-Authenticated-User':'ygor'}
+        handler.command = 'GET'
+        handler.responder = lambda status,body:(status,body)
+        handler.corpo = Mock(side_effect=AssertionError('disabled ingress must not parse body'))
+        url = urlsplit('/api/os/v1/integrations/external-email/status')
+        with patch('http.client.HTTPSConnection',side_effect=AssertionError('network forbidden')):
+            status,body = handler.thunder_api(url)
+            self.assertEqual(status,200)
+            for key in ('automatic_reader_enabled','crm_import_enabled','webhook_enabled'):
+                self.assertIs(body[key],False)
+            handler.command = 'POST'
+            handler.headers = {}
+            status,body = handler.thunder_api(urlsplit('/api/os/v1/integrations/instantly/events'))
+            self.assertEqual(status,410)
+        handler.corpo.assert_not_called()
+        handler.command = 'GET'
+        handler.headers = {'X-Authenticated-User':'claude'}
+        with self.assertRaises(panel.Erro) as error:
+            handler.thunder_api(url)
+        self.assertEqual(error.exception.status,403)
+
+    def test_external_email_simulation_requires_backend_authority(self):
+        handler = object.__new__(panel.Handler)
+        handler.server = SimpleNamespace(thunder_service=object(),thunder_nonces={},thunder_origin='https://painel.r3xdigital.tech')
+        handler.client_address = ('127.0.0.1',1234)
+        handler.headers = {'X-Authenticated-User':'ygor'}
+        handler.command = 'POST'
+        handler.corpo = Mock(side_effect=AssertionError('unauthorized body read'))
+        with self.assertRaises(panel.Erro) as error:
+            handler.thunder_api(urlsplit('/api/os/v1/integrations/instantly/simulate'))
+        self.assertEqual(error.exception.status,401)
+        handler.corpo.assert_not_called()
+
     def test_membership_actual_http_dispatch_blocks_mutations(self):
         reader = Mock()
         reader.inspect.return_value = {'status':'ready','mutation_enabled':False}

@@ -245,6 +245,23 @@ Release and assignment remain OFF pending a separately authorized operational
 activation using the existing approval machinery; changing an environment flag
 alone does not enable them. No bulk assignment, external pause or send is enabled.
 
+## External email activity preparation
+
+`apollo_readonly` reads the existing scoped sequence and its completed content;
+`external_email_import` plans minimal contact creation or existing-contact reuse
+and factual EMAIL logging. It never dispatches an email or assigns a campaign.
+`instantly_webhook` requires a custom authentication header and independent API
+readback before preparing an event; an automatic reply is not a human reply.
+
+The panel publishes a read-only external-email status, a default-disabled event
+ingress (HTTP 410 before body/provider access), and an authenticated stateless
+simulation endpoint. All CRM writers remain OFF, no webhook is registered, and
+no Apollo/Instantly runtime credential is provisioned by this code. A live canary
+must wait for the explicitly missing HubSpot EMAIL-write permission; do not switch
+credentials or use another interface to bypass it. Source IDs are audit metadata,
+not fabricated RFC Message-IDs. See `docs/external-email-integrations.md` for the
+activation prerequisites, deduplication and uncertain-result recovery contract.
+
 Focused runner checks (Python 3.14.3, Node 22.23.1 locally):
 
 ```sh

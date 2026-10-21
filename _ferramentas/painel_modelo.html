@@ -297,6 +297,7 @@ button,.btn,select,input:not([type="hidden"]),summary {min-height:44px;}
   <header class="cad-read-head"><div><h2>Cadências</h2><p class="sub">Registro local e HubSpot · Ygor · somente leitura</p></div><button class="btn" type="button" id="cad-read-refresh">Atualizar</button></header>
   <p id="cad-read-status" role="status" aria-live="polite">Aguardando consulta.</p>
   <div id="cad-read-campaigns"></div>
+  <section class="cad-read-section"><h3>Integrações de e-mail</h3><div id="cad-email-integrations" role="status">Não verificado.</div></section>
   <section class="cad-read-section" id="cad-read-conflicts-section" hidden><h3>Conflitos de campanha</h3><div id="cad-read-conflicts"></div></section>
   <section class="cad-read-section"><h3>Hoje</h3><div id="cad-read-today"></div></section>
   <section class="cad-read-section"><h3>Sem vínculo</h3><div id="cad-read-unlinked"></div></section>
@@ -1782,10 +1783,20 @@ function renderCadencias(data){
   const old=$('cad-read-coverage');if(old)old.remove();
   if(coverage.limitations?.length){const details=document.createElement('details');details.id='cad-read-coverage';const summary=document.createElement('summary');summary.textContent='Cobertura da consulta';details.appendChild(summary);const list=document.createElement('ul');for(const value of coverage.limitations){const li=document.createElement('li');li.textContent=String(value);list.appendChild(li);}details.appendChild(list);$('cad-read-status').after(details);}
 }
+async function carregarIntegracoesEmail(){
+  const target=$('cad-email-integrations');
+  try{
+    const state=await apiServidor('/api/os/v1/integrations/external-email/status');
+    if(state?.schema_version!==1)throw new Error('Disponibilidade não verificada');
+    const flag=value=>value===false?'Desligado':value===true?'Ligado':'Não verificado';
+    target.innerHTML=`<div class="cad-read-table-wrap"><table class="cad-read-table"><thead><tr><th>Origem</th><th>Leitor automático</th><th>Registro no HubSpot</th><th>Webhook</th></tr></thead><tbody><tr><td>Apollo</td><td>${flag(state.automatic_reader_enabled)}</td><td>${flag(state.crm_import_enabled)}</td><td>Não se aplica</td></tr><tr><td>Instantly</td><td>Não verificado</td><td>${flag(state.crm_import_enabled)}</td><td>${flag(state.webhook_enabled)}</td></tr></tbody></table></div>`;
+  }catch(e){target.textContent='Disponibilidade não verificada.';}
+}
 async function atualizarCadencias(){
   if(cadReadLoading||!apiServidor)return;
   cadReadLoading=true;$('cad-read-refresh').disabled=true;
   $('cad-read-status').textContent=cadReadSnapshot?'Atualizando consulta…':'Consultando tarefas no HubSpot…';
+  await carregarIntegracoesEmail();
   try{cadReadSnapshot=await apiServidor('/api/os/v1/cadencias');renderCadencias(cadReadSnapshot);if(cadReadContact)await abrirCadenciaContato(cadReadContact,false);}
   catch(e){$('cad-read-status').textContent=cadReadSnapshot?'Não foi possível atualizar. Os dados abaixo são da consulta anterior.':'Não foi possível consultar o HubSpot. Tente atualizar.';}
   finally{cadReadLoading=false;$('cad-read-refresh').disabled=false;}

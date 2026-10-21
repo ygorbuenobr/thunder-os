@@ -41,6 +41,7 @@ const registered={id:'REGISTRY-ONLY',registry:{id:'REGISTRY-ONLY',platform:'code
       }));
      }
     }else if(p==='/api/os/v1/cadencias/contacts/123')body={contact_id:'123',contact_name:'Contato exemplo',coverage:{complete:false,limitations:['Somente eventos vinculados.']},events:[{type:'email',subject:'Conversa de exemplo',text:'<img src=x onerror=alert(1)> Texto enviado',occurred_at:'2026-10-20T12:00:00Z',source:'HubSpot',receipt:'receipt:test-only'}]};
+    else if(p==='/api/os/v1/integrations/external-email/status')body={schema_version:1,automatic_reader_enabled:false,crm_import_enabled:false,webhook_enabled:false};
     else if(p==='/api/os/v1/panel-capabilities')body={legacy_mutations:false};
     else if(p==='/api/os/v1/today')body={priorities:[],work:[],cadences:[],replies:[],controls:{},usage:[],alerts:[]};
     else if(p==='/api/os/v1/integrations/status')body={};
@@ -56,6 +57,7 @@ const registered={id:'REGISTRY-ONLY',registry:{id:'REGISTRY-ONLY',platform:'code
    assert.equal(await page.locator('#cad-read-conflicts-section').isVisible(),true);
    assert.match(await page.locator('#cad-read-conflicts').innerText(),/BR-APOLLO-01/);
    assert.equal(await page.locator('#cad-read-conflicts img').count(),0);
+   assert.equal(await page.locator('#cad-email-integrations').getByRole('cell',{name:'Desligado',exact:true}).count(),4);
    const before=requests.filter(r=>r.p==='/api/os/v1/cadencias').length;
    await page.clock.runFor(60001);
    await page.waitForFunction(()=>!document.querySelector('#cad-read-refresh').disabled);

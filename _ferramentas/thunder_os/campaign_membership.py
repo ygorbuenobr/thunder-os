@@ -195,6 +195,8 @@ class CampaignMembership:
         _require(_identifier(contact_id), 'membership_contact_id_invalid')
         _version(expected_version, 1)
         _require(self.mutation_enabled is True, 'membership_mutations_disabled')
+        _require(getattr(self.repo._local, 'connection', None) is None,
+                 'membership_outer_transaction_blocked')
         try:
             with self.repo.transaction():
                 row = self.repo.get_state(PROPOSAL_KIND, contact_id)

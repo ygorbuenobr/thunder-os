@@ -151,6 +151,15 @@ class CampaignMembershipTests(unittest.TestCase):
         self.hubspot.record['properties'] = {'campanha_ativa': campaign,
                                             'executor': executor}
 
+    def test_outer_transaction_cannot_hide_attempt_before_crm_write(self):
+        row = self.service.propose('100', 'BR-APOLLO-01')
+        before = deepcopy(row)
+        with self.repo.transaction():
+            with self.assertRaisesRegex(CampaignMembershipError, 'membership_outer_transaction_blocked'):
+                self.enabled().execute('100', expected_version=row['version'])
+        self.assertEqual(self.hubspot.writes, [])
+        self.assertEqual(self.repo.get_state('campaign_membership_proposal', '100'), before)
+
     def test_lead_ocupado_bloqueia(self):
         self.occupied()
         row = self.service.propose('100', 'BR-VAGAS-01')

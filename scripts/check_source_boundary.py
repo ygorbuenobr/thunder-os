@@ -12,6 +12,7 @@ ALLOWED_FILES = {
     "scripts/test_mexico_e1_runner.cjs",
     "docs/branches.md",
     "docs/task3-membership.md",
+    "docs/external-email-integrations.md",
     "_ferramentas/test_briefing_cards_ui.cjs",
     "_ferramentas/test_painel_cadencias.py",
     "_ferramentas/test_painel_cadencias_ui.cjs",
@@ -56,6 +57,9 @@ ALLOWED_FILES = {
     "_ferramentas/painel_modelo.html",
 }
 ALLOWED_TESTS = {
+    "test_thunder_os_external_email_import.py",
+    "test_thunder_os_apollo_readonly.py",
+    "test_thunder_os_instantly_webhook.py",
     "test_thunder_os_campaign_membership.py",
     "test_thunder_os_cadence_contact_campaign.py",
     "test_thunder_os_mexico_runner.py",

@@ -1344,6 +1344,24 @@ class Handler(BaseHTTPRequestHandler):
         service = getattr(self.server, 'thunder_service', None)
         if service is None:
             raise Erro('Thunder OS indisponível', 503)
+        external_email_base = '/api/os/v1/integrations/external-email'
+        instantly_event_path = '/api/os/v1/integrations/instantly/events'
+        if rota.path == instantly_event_path:
+            if self.command != 'POST' or rota.query:
+                raise Erro('Evento inválido.', 405)
+            from thunder_os.instantly_webhook import InstantlyWebhook
+            result = InstantlyWebhook(enabled=False).handle({}, None)
+            return self.responder(410, result)
+        if rota.path == external_email_base + '/status':
+            if self.thunder_proxy_actor() != 'ygor':
+                raise Erro('Somente Ygor pode consultar integrações.', 403)
+            if self.command != 'GET' or rota.query:
+                raise Erro('Disponibilidade permite apenas consulta.', 405)
+            from thunder_os.apollo_readonly import contract_status as apollo_status
+            from thunder_os.instantly_webhook import contract_status as instantly_status
+            return self.responder(200, {'schema_version':1,'read_only':True,
+                'automatic_reader_enabled':False,'crm_import_enabled':False,
+                'webhook_enabled':False,'apollo':apollo_status(),'instantly':instantly_status()})
         membership_base = '/api/os/v1/campaign-membership/'
         if rota.path.startswith(membership_base):
             actor = self.thunder_proxy_actor()
@@ -1519,6 +1537,13 @@ class Handler(BaseHTTPRequestHandler):
             raise Erro('Rota Thunder OS inválida', 405)
         actor = self.thunder_actor()
         body = self.corpo()
+        if rota.path == '/api/os/v1/integrations/instantly/simulate':
+            if actor != 'ygor':
+                raise Erro('Somente Ygor pode simular eventos.', 403)
+            if not isinstance(body,dict) or set(body) != {'payload'} or not isinstance(body['payload'],dict):
+                raise Erro('Payload de simulação inválido.')
+            from thunder_os.instantly_webhook import dry_run
+            return self.responder(200,dry_run(payload=body['payload']))
         discard = re.fullmatch(r'/api/os/v1/items/([A-Za-z0-9_-]{1,100})/discard', rota.path)
         if discard:
             if body:
