@@ -64,9 +64,11 @@ def install_hermes_origin_guard(root):
     return validate
 
 
-def configured_adapter(*, brain: Path, evidence: Path, hermes_root: Path, profile: Path, mode: str = "trial"):
+def configured_adapter(*, brain: Path, evidence: Path, hermes_root: Path, profile: Path, mode: str = "trial", capability=None):
     if mode not in {"trial", "operation"}:
         raise ValueError("explicit text mode required")
+    if capability=='verify' and mode!='operation':
+        raise ValueError('verification requires read-only operation mode')
     if any(os.environ.get(key, "false") != "false" for key in ("THUNDER_EXTERNAL_EFFECTS_ENABLED", "THUNDER_OS_EXTERNAL_EFFECTS_ENABLED")):
         raise ValueError("external effects must remain disabled")
     if not (hermes_root / "hermes_cli/runtime_provider.py").is_file() or not (profile / "config.yaml").is_file():
@@ -102,7 +104,6 @@ def configured_adapter(*, brain: Path, evidence: Path, hermes_root: Path, profil
         config_loader, runtime_loader, create_client = load_config_readonly, resolve_runtime_provider, _create_openai_client
 
     def context_loader(job):
-        context = load_catalog_context(brain)
         with evidence.open("rb") as stream:
             raw = stream.read(LIMIT + 1)
         if len(raw) > LIMIT:
@@ -110,6 +111,12 @@ def configured_adapter(*, brain: Path, evidence: Path, hermes_root: Path, profil
         bundle = json.loads(raw)
         if not isinstance(bundle, dict) or bundle.get("account_id") != job.payload.get("account_id"):
             raise ValueError("trusted evidence account mismatch")
+        if job.type=='verify':
+            if capability!='verify' or mode!='operation':
+                raise ValueError('verification capability not configured')
+            return {'verification_context':bundle.get('verification_context'),
+                    'not_a_send_authorization':True}
+        context = load_catalog_context(brain)
         context["current_date"] = date.today().isoformat()
         context["research_evidence"] = bundle.get("research_evidence", [])
         if "source_coverage" in bundle:
@@ -177,8 +184,9 @@ def main(argv=None):
         if set(data) != {"id", "type", "payload"}:
             raise ValueError("invalid job")
         with open(os.devnull, "w") as quiet, redirect_stdout(quiet):
+            extra={'capability':'verify'} if data['type']=='verify' else {}
             adapter = configured_adapter(brain=args.brain.resolve(strict=True), evidence=args.evidence.resolve(strict=True),
-                hermes_root=args.hermes_root.resolve(strict=True), profile=args.profile.resolve(strict=True), mode=args.mode)
+                hermes_root=args.hermes_root.resolve(strict=True), profile=args.profile.resolve(strict=True), mode=args.mode,**extra)
             # Parent enforces the capability's hard process-group deadline including
             # config/auth work. The HTTP request also has this timeout, no retries.
             stage = "inference"
@@ -189,6 +197,7 @@ def main(argv=None):
             raise ValueError("trial must remain research-only")
         from .agent_consumer import atomic_json
         atomic_json(args.diagnostic, {"status": "completed", "model": getattr(adapter, "model_name", None),
+            "usage":getattr(adapter,'usage',None),
             "external_effects_enabled": False})
         sys.stdout.write(result)
         return 0

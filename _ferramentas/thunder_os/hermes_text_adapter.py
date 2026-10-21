@@ -22,6 +22,7 @@ from typing import Any, Callable, Mapping
 
 from .agents import AgentJob, AgentRunner, AgentRunnerError
 from .knowledge import validate_catalog
+from .models import payload_hash
 from .research import COVERAGE_STATUSES, RATINGS, RECOMMENDATIONS, SOURCE_AREAS, SOURCE_CLASSES
 
 LIMIT = 1_000_000
@@ -414,7 +415,7 @@ def _field(value: Any, key: str, default: Any = None) -> Any:
 
 
 def text_deadline(job_type: str) -> int:
-    return 240 if job_type == "research" else 120
+    return 60 if job_type == 'verify' else 240 if job_type == "research" else 120
 
 
 class HermesTextAdapter:
@@ -437,10 +438,17 @@ class HermesTextAdapter:
     def __call__(self, job: AgentJob, timeout: float) -> str:
         if not all(callable(x) for x in (self.config_loader, self.runtime_loader, self.client_factory, self.context_loader)):
             raise AgentRunnerError("hermes text runtime not configured")
-        if job.type not in {"research", "copy"}:
+        if job.type not in {"research", "copy", "verify"}:
             raise AgentRunnerError("unsupported internal capability")
         context = self.context_loader(job)
-        if (not isinstance(context, Mapping) or context.get("catalog_hash") != job.payload.get("catalog_hash")
+        verify=job.type=='verify'
+        if verify:
+            scope=context.get('verification_context') if isinstance(context,Mapping) else None
+            if (not isinstance(scope,Mapping) or context.get('not_a_send_authorization') is not True
+                    or scope.get('contact_id')!=job.payload.get('contact_id')
+                    or payload_hash(scope)!=job.payload.get('scope_hash')):
+                raise AgentRunnerError('trusted verification context required')
+        elif (not isinstance(context, Mapping) or context.get("catalog_hash") != job.payload.get("catalog_hash")
                 or context.get("not_a_send_authorization") is not True
                 or not context.get("restrictions") or not context.get("capabilities")):
             raise AgentRunnerError("trusted canonical context required")
@@ -461,9 +469,13 @@ class HermesTextAdapter:
             raise AgentRunnerError("matching existing Codex runtime required")
         prompt = json.dumps({"job": {"id": job.id, "type": job.type, "payload": dict(job.payload)},
                              "trusted_context": dict(context)}, ensure_ascii=False)
-        if len(prompt.encode()) > LIMIT:
+        if len(prompt.encode()) > (24000 if verify else LIMIT):
             raise AgentRunnerError("input too large")
-        schema = (research_instructions(context) if job.type == "research" else
+        schema = ('Exactly {"answer":"concise answer in Portuguese, at most 900 characters",'
+                  '"source_ids":["IDs from verification_context only"],"uncertainties":["up to 3 short limits"]}. '
+                  'Explain facts and next verification, never claim an action was applied. Missing evidence is unknown, not zero. '
+                  'Do not infer no reply or no send from partial coverage. No markdown links or HTML.' if verify else
+                  research_instructions(context) if job.type == "research" else
                   'Exactly {"copy": "draft", "angle_id": "existing angle", "evidence": [{"id": "used canonical id"}]}.')
         instructions = ('Return only JSON. You have no tools and no authority to approve, send, spend or write. '
                         'Use supplied evidence only; do not invent facts, claims, sources, angles or results. '
@@ -474,6 +486,7 @@ class HermesTextAdapter:
         parts: list[str] = []
         size = 0
         completed = False
+        self.usage=None
         try:
             stream = client.responses.create(model=model, instructions=instructions,
                 input=[{"role": "user", "content": prompt}], tools=[], store=False,
@@ -491,7 +504,7 @@ class HermesTextAdapter:
                     if not isinstance(delta, str):
                         raise AgentRunnerError("invalid response delta")
                     size += len(delta.encode("utf-8"))
-                    if size > LIMIT:
+                    if size > (8192 if verify else LIMIT):
                         raise AgentRunnerError("response too large")
                     parts.append(delta)
                 elif kind in {"error", "response.failed", "response.incomplete"}:
@@ -502,6 +515,9 @@ class HermesTextAdapter:
                         if _field(item, "type") not in {"message", "reasoning"}:
                             raise PermissionError("tool output forbidden")
                     completed = _field(response, "status") == "completed"
+                    usage=_field(response,'usage',{})
+                    values={key:_field(usage,key) for key in ('input_tokens','output_tokens')}
+                    if all(type(value) is int and value>=0 for value in values.values()):self.usage=values
             if not completed or not parts:
                 raise AgentRunnerError("complete text response required")
             result = "".join(parts)

@@ -210,6 +210,7 @@ body[data-aba="cadencias"] .detalhes-sistema{display:none}
 [data-prioridade="dia"]{border-left:4px solid var(--mostarda)}
 [data-prioridade="dia"] .proximo{font-weight:650;margin:0}.frescor{font-size:12px;color:var(--muted)}
 .pedido-dia{display:grid;gap:8px}.pedido-dia .acoes{justify-content:flex-end}
+.pedido-dia>*{min-width:0;max-width:100%}#os-verificacao,#cad-learning{overflow-wrap:anywhere;min-width:0;max-width:100%}#os-verificacao-answer{white-space:pre-wrap}
 .cadencia-revisao{display:grid;gap:10px;padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--surface2)}
 .cadencia-revisao ol{display:grid;gap:10px;margin:0;padding-left:22px}.cadencia-revisao li p{margin:4px 0}
 .cadencia-revisao .proxima-decisao{font-weight:650}.cadencia-revisao .alerta-humano{color:var(--alerta)}
@@ -299,6 +300,7 @@ button,.btn,select,input:not([type="hidden"]),summary {min-height:44px;}
   <header class="cad-read-head"><div><h2>Cadências</h2><p class="sub">Registro local e HubSpot · Ygor · somente leitura</p></div><button class="btn" type="button" id="cad-read-refresh">Atualizar</button></header>
   <p id="cad-read-status" role="status" aria-live="polite">Aguardando consulta.</p>
   <div id="cad-read-campaigns"></div>
+  <section class="cad-read-section"><h3>Aprendizados</h3><div id="cad-learning" role="status">Não verificado.</div></section>
   <section class="cad-read-section"><h3>Integrações de e-mail</h3><div id="cad-email-integrations" role="status">Não verificado.</div></section>
   <section class="cad-read-section"><h3>Respostas e paradas</h3><div id="cad-reply-control" role="status">Não verificado.</div></section>
   <section class="cad-read-section"><h3>LinkedIn</h3><p id="cad-linkedin-preparation" role="status">Não verificado.</p></section>
@@ -346,17 +348,20 @@ button,.btn,select,input:not([type="hidden"]),summary {min-height:44px;}
     <div class="cards" id="hoje-briefing"><p class="vazio">Aguardando consulta.</p></div>
   </section>
   <section class="grupo-dia" id="hoje-pedido" aria-labelledby="h-hoje-pedido">
-    <h2 id="h-hoje-pedido">Pedir pesquisa ou preparo</h2>
+    <h2 id="h-hoje-pedido">Perguntar ao Hermes</h2>
     <form class="pedido-dia" id="os-pedido">
-      <label for="os-pedido-tipo">O que vamos preparar?</label>
-      <select id="os-pedido-tipo"><option value="research">Pesquisa de conta</option><option value="copy">Preparar mensagem</option></select>
-      <label for="os-pedido-conta">Domínio da empresa</label>
-      <input id="os-pedido-conta" type="text" autocomplete="off" placeholder="empresa.com.br" required aria-describedby="os-pedido-ajuda">
-      <p id="os-pedido-ajuda">Preparar mensagem usa uma pesquisa já validada. O pedido registra trabalho; a execução depende da configuração disponível e não envia mensagens.</p>
+      <label for="os-pedido-tipo">Pedido</label>
+      <select id="os-pedido-tipo"><option value="verify">Verificar</option><option value="research">Pesquisa de conta</option><option value="copy">Preparar rascunho</option><option disabled>Corrigir/mudar rota · desligado</option><option disabled>Enviar · desligado</option></select>
+      <label id="os-pedido-contato-label" for="os-pedido-contato">Contato</label>
+      <select id="os-pedido-contato" required><option value="">Contatos ainda não consultados</option></select>
+      <label id="os-pedido-conta-label" for="os-pedido-conta" hidden>Domínio da empresa</label>
+      <input id="os-pedido-conta" type="text" autocomplete="off" placeholder="empresa.com.br" aria-describedby="os-pedido-ajuda" hidden>
+      <p id="os-pedido-ajuda">Somente leitura</p>
       <label for="os-pedido-texto">O que você precisa?</label>
-      <textarea id="os-pedido-texto" rows="2" placeholder="Ex.: pesquise a conta Acme e diga se vale abordar agora"></textarea>
+      <textarea id="os-pedido-texto" rows="2" maxlength="600" placeholder="Por que este lead não recebeu o E2?"></textarea>
       <div class="acoes"><span class="msg" id="os-pedido-msg" role="status" aria-live="polite"></span><button class="btn pri" type="submit">Pedir</button></div>
     </form>
+    <div id="os-verificacao" hidden aria-live="polite"><p id="os-verificacao-answer"></p><ul id="os-verificacao-sources"></ul><details><summary>Limites da consulta</summary><ul id="os-verificacao-limits"></ul></details><small id="os-verificacao-runtime"></small></div>
   </section>
   <section class="grupo-dia" id="hoje-thunder-os" aria-labelledby="h-hoje-thunder-os">
     <h2 id="h-hoje-thunder-os">Trabalho acompanhado</h2>
@@ -1812,9 +1817,18 @@ async function atualizarCadencias(){
   await carregarControleRespostas();
   await carregarPreparacaoLinkedin();
   await carregarFontesCampanhas();
+  await carregarPlacarAprendizados();
   try{cadReadSnapshot=await apiServidor('/api/os/v1/cadencias');renderCadencias(cadReadSnapshot);if(cadReadContact)await abrirCadenciaContato(cadReadContact,false);}
   catch(e){$('cad-read-status').textContent=cadReadSnapshot?'Não foi possível atualizar. Os dados abaixo são da consulta anterior.':'Não foi possível consultar o HubSpot. Tente atualizar.';}
   finally{cadReadLoading=false;$('cad-read-refresh').disabled=false;}
+}
+async function carregarPlacarAprendizados(){
+  const target=$('cad-learning');
+  try{
+    const state=await apiServidor('/api/os/v1/campaign-scoreboard');
+    const proposals=(state.campaigns||[]).filter(c=>c.learning?.proposal&&c.learning?.requires_human_approval===true);
+    target.innerHTML=proposals.length?proposals.map(c=>`<details><summary>${esc(c.id)} · proposta para sua revisão</summary><p>${esc(c.learning.proposal.hypothesis)}</p><p>${esc(c.learning.proposal.limitation)}</p></details>`).join(''):'<p>Ainda não há base suficiente para propor um aprendizado.</p>';
+  }catch(error){target.textContent='Aprendizados não verificados.';}
 }
 async function carregarFontesCampanhas(){
   const target=$('cad-source-list');
@@ -1890,6 +1904,7 @@ function mostrarAba(aba,{registrar=true}={}){
   }
   $('sec-agentes').hidden=aba!=='agentes';
   if(aba==='agentes')atualizarAgenttrail();
+  if(aba==='hoje')carregarContatosHermes();
   $('abas').querySelectorAll('button').forEach(b=>{const ativa=b.dataset.aba===aba;b.setAttribute('aria-selected',String(ativa));b.tabIndex=ativa?0:-1;});
   $('abas').querySelector('[aria-selected="true"]')?.scrollIntoView({block:'nearest',inline:'nearest'});
   try{localStorage.setItem('painel-aba',aba)}catch(e){}
@@ -2479,6 +2494,33 @@ $('pedido').addEventListener('submit', async ev => {
 });
 
 let osPedidoPendente=null;
+let osContatosCarregados=false,osContatosCarregando=false,osVerificacaoRequest=0;
+async function carregarContatosHermes(){
+  if(!apiServidor||osContatosCarregados||osContatosCarregando)return;
+  osContatosCarregando=true;
+  try{
+    const data=await apiServidor('/api/os/v1/hermes/contacts');
+    const select=$('os-pedido-contato'),selected=select.value;
+    select.replaceChildren(new Option(data.complete?'Selecione o contato':'Selecione · cobertura parcial',''));
+    for(const row of data.contacts||[]){if(/^[1-9][0-9]{0,29}$/.test(row.id))select.add(new Option((row.name||'Contato')+' · '+row.id,row.id));}
+    if([...select.options].some(o=>o.value===selected))select.value=selected;
+    osContatosCarregados=true;
+  }catch(error){$('os-pedido-contato').replaceChildren(new Option('Contatos não verificados',''));}
+  finally{osContatosCarregando=false;}
+}
+function modoPedidoHermes(){
+  const verify=$('os-pedido-tipo').value==='verify';osVerificacaoRequest++;
+  $('os-verificacao').hidden=true;
+  for(const id of ['os-pedido-contato','os-pedido-contato-label'])$(id).hidden=!verify;
+  for(const id of ['os-pedido-conta','os-pedido-conta-label'])$(id).hidden=verify;
+  $('os-pedido-contato').required=verify;$('os-pedido-conta').required=!verify;
+  $('os-pedido-ajuda').textContent=verify?'Somente leitura':'Preparo interno';
+  if(verify){$('os-pedido-texto').maxLength=600;carregarContatosHermes();}
+  else $('os-pedido-texto').removeAttribute('maxlength');
+}
+$('os-pedido-tipo').addEventListener('change',modoPedidoHermes);
+$('os-pedido-contato').addEventListener('change',()=>{osVerificacaoRequest++;$('os-verificacao').hidden=true;});
+$('os-pedido-texto').addEventListener('input',()=>{osVerificacaoRequest++;$('os-verificacao').hidden=true;});
 function montarPedidoOS(texto,capability,dominio){
   const account_id=dominio.trim().toLowerCase();
   if(!['research','copy'].includes(capability))throw new Error('Escolha o tipo de trabalho.');
@@ -2489,6 +2531,27 @@ function montarPedidoOS(texto,capability,dominio){
 $('os-pedido').addEventListener('submit', async ev => {
   ev.preventDefault();
   const campo=$('os-pedido-texto'),mensagem=$('os-pedido-msg');
+  if($('os-pedido-tipo').value==='verify'){
+    const contact=$('os-pedido-contato').value,question=campo.value.trim(),request=++osVerificacaoRequest;
+    if(!/^[1-9][0-9]{0,29}$/.test(contact)||!question||question.length>600){mensagem.textContent='Selecione um contato e escreva uma pergunta curta.';return;}
+    const button=ev.currentTarget.querySelector('button[type="submit"]');button.disabled=true;
+    $('os-verificacao').hidden=true;
+    mensagem.textContent='Consultando o Hermes…';mensagem.className='msg';
+    try{
+      const result=await apiServidor('/api/os/v1/hermes/verify','POST',{contact_id:contact,question});
+      if(request!==osVerificacaoRequest||campo.value.trim()!==question)return;
+      if(result.read_only!==true||result.external_effects!==false||result.contact_id!==contact)throw new Error('Resposta não validada.');
+      $('os-verificacao-answer').textContent=result.answer;
+      $('os-verificacao-sources').replaceChildren();
+      for(const source of result.sources||[]){const li=document.createElement('li'),a=document.createElement('a');a.textContent='HubSpot · '+source.id;a.href='https://app.hubspot.com/contacts/51412240/record/0-1/'+contact;a.target='_blank';a.rel='noopener noreferrer';li.appendChild(a);$('os-verificacao-sources').appendChild(li);}
+      $('os-verificacao-limits').replaceChildren();
+      for(const value of [...new Set([...(result.server_limits||[]),...(result.uncertainties||[])])]){const li=document.createElement('li');li.textContent=value;$('os-verificacao-limits').appendChild(li);}
+      $('os-verificacao-runtime').textContent=result.runtime?.provider==='hermes_codex_oauth'?'Hermes · '+(result.runtime.model||'modelo existente')+' · '+cadReadDate(result.collected_at):'Consulta de fontes · '+cadReadDate(result.collected_at);
+      $('os-verificacao').hidden=false;mensagem.textContent='Consulta concluída. Somente leitura.';
+    }catch(error){if(request===osVerificacaoRequest){mensagem.textContent=error.message||'Hermes indisponível. Nenhuma ação aplicada.';mensagem.className='msg erro';}}
+    finally{button.disabled=false;}
+    return;
+  }
   let pedido;
   try{pedido=montarPedidoOS(campo.value,$('os-pedido-tipo').value,$('os-pedido-conta').value);}
   catch(e){mensagem.textContent=e.message;mensagem.className='msg erro';return;}

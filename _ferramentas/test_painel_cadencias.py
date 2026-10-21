@@ -19,6 +19,32 @@ from test_thunder_os_cadence_contact_campaign import ContactProvider, contact
 
 
 class CadencePanelTests(unittest.TestCase):
+    def test_hermes_query_has_nonce_scope_and_cannot_enable_actions(self):
+        from thunder_os.agent_gateway import AgentGateway
+        handler=object.__new__(panel.Handler)
+        verifier=Mock()
+        verifier.verify.return_value={'read_only':True,'external_effects':False}
+        service=Mock()
+        handler.server=SimpleNamespace(thunder_service=service,thunder_panel_verifier=verifier,
+            thunder_panel_gateway=AgentGateway(service,'.'),thunder_nonces={},thunder_origin='https://painel.r3xdigital.tech')
+        handler.client_address=('127.0.0.1',1234)
+        handler.headers={'X-Authenticated-User':'ygor'};handler.command='POST'
+        handler.responder=lambda status,body:(status,body)
+        handler.corpo=Mock(side_effect=AssertionError('unauthorized body'))
+        with self.assertRaises(panel.Erro) as error:
+            handler.thunder_api(urlsplit('/api/os/v1/hermes/verify'))
+        self.assertEqual(error.exception.status,401)
+        verifier.verify.assert_not_called()
+        handler.thunder_actor=lambda:'ygor'
+        handler.corpo=lambda:{'contact_id':'123','question':'Why E2?'}
+        self.assertTrue(handler.thunder_api(urlsplit('/api/os/v1/hermes/verify'))[1]['read_only'])
+        verifier.verify.assert_called_once_with('123','Why E2?')
+        for path in ('change-route','send'):
+            with self.assertRaises(panel.Erro) as error:
+                handler.thunder_api(urlsplit('/api/os/v1/hermes/'+path))
+            self.assertEqual(error.exception.status,503)
+        self.assertEqual(service.mock_calls,[])
+
     def test_campaign_sources_are_read_only_and_ygor_scoped(self):
         handler=object.__new__(panel.Handler)
         sources=Mock()

@@ -79,6 +79,18 @@ class AgentGateway:
             raise EnvelopeError("malformed envelope") from exc
         return self.ingest(value)
 
+    def verify(self, envelope, verifier):
+        """Stateless panel query; never enters the durable work/send queue."""
+        if (not isinstance(envelope, Mapping)
+                or set(envelope) != {'actor','capability','contact_id','question'}
+                or envelope.get('actor') != 'ygor' or envelope.get('capability') != 'verify'
+                or not isinstance(envelope.get('contact_id'),str)
+                or not re.fullmatch(r'[1-9][0-9]{0,29}',envelope['contact_id'])
+                or not isinstance(envelope.get('question'),str)
+                or not 1 <= len(envelope['question'].strip()) <= 600 or not callable(verifier)):
+            raise EnvelopeError('invalid verification envelope')
+        return verifier(envelope['contact_id'],envelope['question'].strip())
+
 
 def main(args: list[str] | None = None, *, stdin: TextIO | None = None) -> int:
     parser = argparse.ArgumentParser(prog="thunder-agent")

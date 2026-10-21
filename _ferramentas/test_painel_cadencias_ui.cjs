@@ -14,7 +14,7 @@ const registered={id:'REGISTRY-ONLY',registry:{id:'REGISTRY-ONLY',platform:'code
  const browser=await chromium.launch({headless:true});
  try{
   for(const viewport of [{width:1440,height:1000},{width:390,height:844}]){
-   const page=await browser.newPage({viewport});const errors=[],requests=[];let fail=false,empty=false,registryState=null;
+   const page=await browser.newPage({viewport});const errors=[],requests=[];let fail=false,empty=false,registryState=null,holdVerify=false,releaseVerify;
    await page.clock.install();
    page.on('pageerror',e=>errors.push(e.message));
    await page.route('**/*',async route=>{
@@ -45,6 +45,14 @@ const registered={id:'REGISTRY-ONLY',registry:{id:'REGISTRY-ONLY',platform:'code
     else if(p==='/api/os/v1/reply-control')body={external_pause_enabled:false,alerts:[{title:'Synthetic alert <img src=x onerror=alert(1)>',reason:'Pausa externa desligada.',content:'X'.repeat(4000),campaign_id:'C'.repeat(100),hubspot_contact_id:'123'}]};
     else if(p==='/api/os/v1/linkedin-preparation')body={executor_enabled:false,quota_reader_configured:false};
     else if(p==='/api/os/v1/campaign-sources')body={automatic_collection_enabled:false,candidates:[{company:'Synthetic <img src=x onerror=alert(1)>','domain':'D'.repeat(253),signals:[{fact:'F'.repeat(1000),url:'https://www.linkedin.com/jobs/view/123',published_on:'2026-10-21'}]}],held:[{company:'Held','reason':'icp_not_confirmed'}]};
+    else if(p==='/api/os/v1/campaign-scoreboard')body={read_only:true,campaigns:[{id:'PILOTO',metrics:{replies:null,meetings:null},learning:{status:'observation_only',requires_human_approval:true}}]};
+    else if(p==='/api/os/v1/hermes/contacts')body={contacts:[{id:'123',name:'Synthetic Person '+'X'.repeat(200)}],complete:false};
+    else if(p==='/api/os/v1/hermes/verify'){
+     assert.deepEqual(req.postDataJSON(),{contact_id:'123',question:'Why E2?'});
+     assert.equal(req.headers()['x-thunder-nonce'],'synthetic-nonce');
+     if(holdVerify)await new Promise(resolve=>{releaseVerify=resolve;});
+     body={answer:'Synthetic <img src=x onerror=alert(1)> '+'A'.repeat(750),contact_id:'123',read_only:true,external_effects:false,sources:[{id:'task:99',url:'javascript:alert(1)'}],uncertainties:[],server_limits:['CRM activity does not prove delivery.','Partial coverage'],collected_at:'2026-10-21T12:00:00Z',runtime:{provider:'hermes_codex_oauth',model:'synthetic-model'}};
+    }
     else if(p==='/api/os/v1/session')body={actor:'ygor',nonce:'synthetic-nonce'};
     else if(p==='/api/os/v1/reply-control/manual'){
      const sent=req.postDataJSON();
@@ -153,10 +161,32 @@ const registered={id:'REGISTRY-ONLY',registry:{id:'REGISTRY-ONLY',platform:'code
    assert.match(await page.locator('#cad-reply-result').innerText(),/Resposta registrada no OS/);
    assert.equal(requests.filter(r=>r.method==='POST').length,1);
    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+   await page.locator('#abas button[data-aba="hoje"]').click();
+   await page.locator('#os-pedido-contato option[value="123"]').waitFor({state:'attached'});
+   await page.locator('#os-pedido-contato').selectOption('123');
+   await page.locator('#os-pedido-texto').fill('Why E2?');
+   await page.locator('#os-pedido button[type="submit"]').click();
+   await page.locator('#os-verificacao').waitFor({state:'visible'});
+   assert.equal(await page.locator('#os-verificacao img').count(),0);
+   assert.match(await page.locator('#os-verificacao-answer').innerText(),/Synthetic <img/);
+   assert.equal(await page.locator('#os-verificacao-sources a').getAttribute('href'),'https://app.hubspot.com/contacts/51412240/record/0-1/123');
+   assert.match(await page.locator('#os-verificacao-limits').textContent(),/CRM activity does not prove delivery/);
+   assert.equal(requests.filter(r=>r.method==='POST').length,2);
+   assert.equal(requests.some(r=>r.method==='POST'&&/\/work|\/send|change-route/.test(r.p)),false);
+   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+   await page.screenshot({path:path.join(outputDir,`hermes-verificar-${viewport.width}.png`),fullPage:true});
+   holdVerify=true;
+   const sent=page.waitForRequest(r=>new URL(r.url()).pathname==='/api/os/v1/hermes/verify');
+   const returned=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/os/v1/hermes/verify');
+   await page.locator('#os-pedido button[type="submit"]').click();await sent;
+   await page.locator('#os-pedido-texto').fill('Why E3?');
+   assert.equal(typeof releaseVerify,'function');releaseVerify();await returned;
+   await page.waitForFunction(()=>!document.querySelector('#os-pedido button[type="submit"]').disabled);
+   assert.equal(await page.locator('#os-verificacao').isVisible(),false);
    assert.deepEqual(errors,[]);
    await page.close();
   }
-  console.log('PASS: 1440/390, timeline, escaping, partial, stale failure, unknown empty, registered empty/partial, nonempty partial totals unknown, null outcomes, provider/current-campaign labels, observed contact count, keyboard details, no overflow, GET-only on load; one nonce-authenticated manual reply POST after explicit submit');
+  console.log('PASS: 1440/390, timeline, escaping, partial, stale failure, unknown empty, null outcomes, no overflow; nonce-authenticated explicit manual reply and verify; server limits survive empty model limits; edited question invalidates pending answer');
   console.log('Screenshots: '+outputDir);
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

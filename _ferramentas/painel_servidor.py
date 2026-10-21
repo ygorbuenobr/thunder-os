@@ -1344,6 +1344,23 @@ class Handler(BaseHTTPRequestHandler):
         service = getattr(self.server, 'thunder_service', None)
         if service is None:
             raise Erro('Thunder OS indisponível', 503)
+        if rota.path in {'/api/os/v1/hermes/capabilities','/api/os/v1/hermes/contacts','/api/os/v1/campaign-scoreboard'}:
+            if self.thunder_proxy_actor() != 'ygor':
+                raise Erro('Somente Ygor pode consultar o Hermes.',403)
+            if self.command != 'GET' or rota.query:
+                raise Erro('Esta rota permite somente consulta.',405)
+            verifier=getattr(self.server,'thunder_panel_verifier',None)
+            if rota.path.endswith('/capabilities'):
+                return self.responder(200,verifier.capabilities() if verifier else {'verify':False,'change_route':False,'send':False})
+            if rota.path.endswith('/contacts'):
+                if verifier is None:raise Erro('Leitura de contatos indisponível.',503)
+                return self.responder(200,verifier.contacts())
+            scoreboard=getattr(self.server,'thunder_campaign_scoreboard',None)
+            if scoreboard is None:raise Erro('Placar indisponível.',503)
+            return self.responder(200,scoreboard.snapshot())
+        if rota.path in {'/api/os/v1/hermes/change-route','/api/os/v1/hermes/send'}:
+            if self.thunder_proxy_actor() != 'ygor':raise Erro('Somente Ygor pode solicitar ações.',403)
+            raise Erro('Ações e envios estão desligados nesta rodada.',503)
         if rota.path == '/api/os/v1/campaign-sources':
             if self.thunder_proxy_actor() != 'ygor':
                 raise Erro('Somente Ygor pode consultar fontes.',403)
@@ -1564,6 +1581,30 @@ class Handler(BaseHTTPRequestHandler):
             raise Erro('Rota Thunder OS inválida', 405)
         actor = self.thunder_actor()
         body = self.corpo()
+        if rota.path == '/api/os/v1/hermes/verify':
+            if actor != 'ygor':raise Erro('Somente Ygor pode consultar o Hermes.',403)
+            if not isinstance(body,dict) or set(body)!={'contact_id','question'} or rota.query:
+                raise Erro('Consulta inválida.')
+            verifier=getattr(self.server,'thunder_panel_verifier',None)
+            gateway=getattr(self.server,'thunder_panel_gateway',None)
+            if verifier is None or gateway is None:raise Erro('Hermes indisponível neste painel.',503)
+            from thunder_os.panel_verification import VerificationError
+            from thunder_os.agent_gateway import EnvelopeError
+            try:
+                result=gateway.verify({'actor':actor,'capability':'verify',**body},verifier.verify)
+            except EnvelopeError:
+                raise Erro('Selecione um contato e escreva uma pergunta curta.') from None
+            except VerificationError as error:
+                code=str(error)
+                messages={'auth_expired':'O acesso do Hermes expirou. É preciso reconectar, sem alterar campanhas.',
+                    'auth_unavailable':'A autenticação do Hermes não está disponível.',
+                    'contact_not_confirmed':'Contato não confirmado nesta consulta de campanhas.',
+                    'verification_busy':'Há uma consulta em andamento.',
+                    'invalid_verification_answer':'O Hermes retornou uma resposta não validada. Nenhuma ação foi aplicada.'}
+                return self.responder(429 if code=='verification_busy' else 409 if code=='contact_not_confirmed' else 503,
+                    {'erro':messages.get(code,'Não foi possível consultar o Hermes. Nenhuma ação foi aplicada.'),
+                     'code':code,'read_only':True,'applied':False})
+            return self.responder(200,result)
         if rota.path == '/api/os/v1/reply-control/manual':
             if actor != 'ygor':
                 raise Erro('Somente Ygor pode marcar uma resposta.', 403)
@@ -2005,6 +2046,13 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
                 servidor.thunder_campaign_membership = CampaignMembership(
                     servidor.thunder_service.repository, membership_port,
                     writer=membership_port, mutation_enabled=False)
+                if runtime is None:
+                    from thunder_os.panel_verification import PanelVerification,HermesVerifyProcess
+                    from thunder_os.agent_gateway import AgentGateway
+                    from thunder_os.campaign_scoreboard import CampaignScoreboard
+                    servidor.thunder_panel_verifier=PanelVerification(servidor.thunder_cadence_readonly,HermesVerifyProcess.configured())
+                    servidor.thunder_panel_gateway=AgentGateway(servidor.thunder_service,RAIZ)
+                    servidor.thunder_campaign_scoreboard=CampaignScoreboard(servidor.thunder_cadence_readonly,repository)
             crm_write = external_effects_enabled() and not restricted_mode() and os.environ.get('THUNDER_OS_HUBSPOT_WRITE_ENABLED', '') == 'true'
             copilot = external_effects_enabled() and not restricted_mode() and os.environ.get('THUNDER_OS_COPILOT_MODE', '') == 'human_approval'
             servidor.thunder_hubspot_console = HubSpotConsole(servidor.thunder_service.repository,
