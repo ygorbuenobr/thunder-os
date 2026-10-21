@@ -19,6 +19,92 @@ from test_thunder_os_cadence_contact_campaign import ContactProvider, contact
 
 
 class CadencePanelTests(unittest.TestCase):
+    def test_manual_reply_route_persists_stop_and_alert_without_external_io(self):
+        from thunder_os.reply_control import ReplyControl
+        with tempfile.TemporaryDirectory() as root:
+            repo=Repository(Path(root)/'isolated.db')
+            registry=CampaignRegistry(repo)
+            registry.register({**config(),'campaign_id':'PILOT'},'ygor',0)
+            repo.put_state('cadence','one',{'hubspot_contact_id':'123','person_key':'hubspot:123',
+                'status':'approved','steps':[{'id':'next','status':'approved'}]})
+            control=ReplyControl(repo,registry)
+            reader=Mock()
+            reader.snapshot.return_value={'ok':True,'campaigns':[{'id':'PILOT','tasks':[{'contact_ids':['123']}]}]}
+            handler=object.__new__(panel.Handler)
+            handler.server=SimpleNamespace(thunder_service=object(),thunder_reply_control=control,
+                                           thunder_cadence_readonly=reader)
+            handler.command='POST';handler.thunder_actor=lambda:'ygor'
+            handler.responder=lambda status,body:(status,body)
+            handler.corpo=lambda:{'request_id':'request-1','contact_id':'123','campaign_id':'PILOT',
+                                  'channel':'phone','content':'Synthetic reply'}
+            with patch('http.client.HTTPSConnection',side_effect=AssertionError('external I/O forbidden')):
+                first=handler.thunder_api(urlsplit('/api/os/v1/reply-control/manual'))
+                repeat=handler.thunder_api(urlsplit('/api/os/v1/reply-control/manual'))
+            self.assertEqual(first[0],200)
+            self.assertEqual(first[1]['status'],'paused_internal')
+            self.assertTrue(repeat[1]['duplicate'])
+            self.assertFalse(first[1]['external_pause_enabled'])
+            self.assertEqual(repo.get_state('cadence','one')['status'],'paused_reply')
+            self.assertEqual(len(control.snapshot()['alerts']),1)
+            self.assertEqual(repo.effects(),[])
+            self.assertEqual(repo.outbox(),[])
+
+    def test_reply_control_read_and_manual_require_exact_contact_and_actor(self):
+        control=Mock()
+        control.snapshot.return_value={'external_pause_enabled':False,'alerts':[]}
+        control.ingest.return_value={'state':'needs_classification'}
+        reader=Mock()
+        reader.snapshot.return_value={'ok':True,'campaigns':[{'id':'PILOT','tasks':[{'contact_ids':['123']}]}]}
+        handler=object.__new__(panel.Handler)
+        handler.server=SimpleNamespace(thunder_service=object(),thunder_reply_control=control,
+                                       thunder_cadence_readonly=reader)
+        handler.client_address=('127.0.0.1',1234)
+        handler.headers={'X-Authenticated-User':'ygor'}
+        handler.responder=lambda status,body:(status,body)
+        handler.command='GET'
+        self.assertFalse(handler.thunder_api(urlsplit('/api/os/v1/reply-control'))[1]['external_pause_enabled'])
+        body={'request_id':'request-1','contact_id':'123','campaign_id':'PILOT','channel':'phone','content':'Synthetic reply'}
+        handler.command='POST'
+        handler.thunder_actor=Mock(return_value='ygor')
+        handler.corpo=lambda:body
+        self.assertEqual(handler.thunder_api(urlsplit('/api/os/v1/reply-control/manual'))[0],200)
+        event,actor=control.ingest.call_args.args
+        self.assertTrue(event['human_reply'])
+        self.assertEqual(event['source']['provider'],'manual')
+        self.assertEqual(actor,'ygor')
+        control.ingest.reset_mock()
+        for channel in ([],{},None,True):
+            handler.corpo=lambda channel=channel:{**body,'channel':channel}
+            with self.assertRaises(panel.Erro) as error:
+                handler.thunder_api(urlsplit('/api/os/v1/reply-control/manual'))
+            self.assertEqual(error.exception.status,400)
+        handler.corpo=lambda:body
+        control.ingest.assert_not_called()
+        reader.snapshot.return_value={'campaigns':[{'id':'PILOT','tasks':[{'contact_ids':['124']}]}]}
+        with self.assertRaises(panel.Erro) as error:
+            handler.thunder_api(urlsplit('/api/os/v1/reply-control/manual'))
+        self.assertEqual(error.exception.status,409)
+        control.ingest.assert_not_called()
+        handler.thunder_actor=Mock(return_value='claude')
+        with self.assertRaises(panel.Erro) as error:
+            handler.thunder_api(urlsplit('/api/os/v1/reply-control/manual'))
+        self.assertEqual(error.exception.status,403)
+
+    def test_reply_control_manual_uses_existing_nonce_gate(self):
+        handler=object.__new__(panel.Handler)
+        control=Mock()
+        handler.server=SimpleNamespace(thunder_service=object(),thunder_reply_control=control,
+                                       thunder_nonces={},thunder_origin='https://painel.r3xdigital.tech')
+        handler.command='POST'
+        handler.client_address=('127.0.0.1',1234)
+        handler.headers={'X-Authenticated-User':'ygor'}
+        handler.corpo=Mock(side_effect=AssertionError('body before auth'))
+        with self.assertRaises(panel.Erro) as error:
+            handler.thunder_api(urlsplit('/api/os/v1/reply-control/manual'))
+        self.assertEqual(error.exception.status,401)
+        handler.corpo.assert_not_called()
+        control.ingest.assert_not_called()
+
     def test_external_email_default_status_and_disabled_ingress(self):
         handler = object.__new__(panel.Handler)
         handler.server = SimpleNamespace(thunder_service=object())

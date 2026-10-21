@@ -1344,6 +1344,15 @@ class Handler(BaseHTTPRequestHandler):
         service = getattr(self.server, 'thunder_service', None)
         if service is None:
             raise Erro('Thunder OS indisponível', 503)
+        if rota.path == '/api/os/v1/reply-control':
+            if self.thunder_proxy_actor() != 'ygor':
+                raise Erro('Somente Ygor pode consultar respostas.', 403)
+            if self.command != 'GET' or rota.query:
+                raise Erro('Respostas permitem consulta nesta rota.', 405)
+            control = getattr(self.server, 'thunder_reply_control', None)
+            if control is None:
+                raise Erro('Controle de respostas indisponível.', 503)
+            return self.responder(200, control.snapshot())
         external_email_base = '/api/os/v1/integrations/external-email'
         instantly_event_path = '/api/os/v1/integrations/instantly/events'
         if rota.path == instantly_event_path:
@@ -1537,6 +1546,37 @@ class Handler(BaseHTTPRequestHandler):
             raise Erro('Rota Thunder OS inválida', 405)
         actor = self.thunder_actor()
         body = self.corpo()
+        if rota.path == '/api/os/v1/reply-control/manual':
+            if actor != 'ygor':
+                raise Erro('Somente Ygor pode marcar uma resposta.', 403)
+            fields = {'request_id','contact_id','campaign_id','channel','content'}
+            if not isinstance(body,dict) or set(body) != fields or rota.query:
+                raise Erro('Registro de resposta inválido.')
+            if (not isinstance(body['request_id'],str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,80}',body['request_id'])
+                    or not isinstance(body['contact_id'],str) or not re.fullmatch(r'[1-9][0-9]{0,29}',body['contact_id'])
+                    or not isinstance(body['campaign_id'],str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}',body['campaign_id'])
+                    or not isinstance(body['channel'],str) or body['channel'] not in {'email','linkedin','whatsapp','phone','chattie'}
+                    or not isinstance(body['content'],str) or not 1 <= len(body['content'].strip()) <= 4000):
+                raise Erro('Contato, campanha, canal ou texto inválidos.')
+            reader = getattr(self.server,'thunder_cadence_readonly',None)
+            control = getattr(self.server,'thunder_reply_control',None)
+            if reader is None or control is None:
+                raise Erro('Leitura de identidade indisponível.',503)
+            snapshot = reader.snapshot()
+            known = any(c.get('id') == body['campaign_id'] and any(
+                body['contact_id'] in r.get('contact_ids',[]) for r in c.get('tasks',[])+c.get('activities',[]))
+                for c in snapshot.get('campaigns',[]))
+            if snapshot.get('ok') is False or not known:
+                raise Erro('Contato não confirmado nessa campanha por ID.',409)
+            event = {'id':'manual-'+body['request_id'],'channel':body['channel'],
+                'content':body['content'].strip(),'received_at':dt.datetime.now(dt.timezone.utc).isoformat(),
+                'hubspot_contact_id':body['contact_id'],'campaign_id':body['campaign_id'],
+                'human_reply':True,'identity_verified':True,
+                'source':{'provider':'manual','account_id':'ygor','provider_message_id':body['request_id']}}
+            try:
+                return self.responder(200,control.ingest(event,actor))
+            except ValueError:
+                raise Erro('Resposta não pôde ser registrada; confira o vínculo e tente consultar.',409) from None
         if rota.path == '/api/os/v1/integrations/instantly/simulate':
             if actor != 'ygor':
                 raise Erro('Somente Ygor pode simular eventos.', 403)
@@ -1921,6 +1961,10 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
                 from thunder_os.connectsafely_runtime import ExistingRepository
                 repository = ExistingRepository(banco.arquivo)
             servidor.thunder_service = ThunderService(repository, ledger, knowledge_store=KnowledgeStore(RAIZ if runtime is None else runtime['panel_root']))
+            from thunder_os.reply_control import ReplyControl
+            from thunder_os.campaign_registry import CampaignRegistry
+            servidor.thunder_reply_control = ReplyControl(repository, CampaignRegistry(repository),
+                external_pause_enabled=False)
             configure_connectsafely_server(servidor, servidor.thunder_service.repository, connectsafely_factory)
             seqd_read = os.environ.get('THUNDER_OS_SEQD_READ_ENABLED', '') == 'true'
             seqd_send = external_effects_enabled() and os.environ.get('THUNDER_OS_SEQD_SEND_ENABLED', '') == 'true'

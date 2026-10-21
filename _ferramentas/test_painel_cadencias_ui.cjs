@@ -42,6 +42,14 @@ const registered={id:'REGISTRY-ONLY',registry:{id:'REGISTRY-ONLY',platform:'code
      }
     }else if(p==='/api/os/v1/cadencias/contacts/123')body={contact_id:'123',contact_name:'Contato exemplo',coverage:{complete:false,limitations:['Somente eventos vinculados.']},events:[{type:'email',subject:'Conversa de exemplo',text:'<img src=x onerror=alert(1)> Texto enviado',occurred_at:'2026-10-20T12:00:00Z',source:'HubSpot',receipt:'receipt:test-only'}]};
     else if(p==='/api/os/v1/integrations/external-email/status')body={schema_version:1,automatic_reader_enabled:false,crm_import_enabled:false,webhook_enabled:false};
+    else if(p==='/api/os/v1/reply-control')body={external_pause_enabled:false,alerts:[{title:'Synthetic alert <img src=x onerror=alert(1)>',reason:'Pausa externa desligada.',content:'X'.repeat(4000),campaign_id:'C'.repeat(100),hubspot_contact_id:'123'}]};
+    else if(p==='/api/os/v1/session')body={actor:'ygor',nonce:'synthetic-nonce'};
+    else if(p==='/api/os/v1/reply-control/manual'){
+     const sent=req.postDataJSON();
+     assert.equal(sent.contact_id,'123');assert.equal(sent.campaign_id,'BR-APOLLO-01');
+     assert.equal(sent.content,'Synthetic human reply');assert.equal(req.headers()['x-thunder-nonce'],'synthetic-nonce');
+     body={state:'needs_classification',external_pause_enabled:false};
+    }
     else if(p==='/api/os/v1/panel-capabilities')body={legacy_mutations:false};
     else if(p==='/api/os/v1/today')body={priorities:[],work:[],cadences:[],replies:[],controls:{},usage:[],alerts:[]};
     else if(p==='/api/os/v1/integrations/status')body={};
@@ -50,7 +58,7 @@ const registered={id:'REGISTRY-ONLY',registry:{id:'REGISTRY-ONLY',platform:'code
     else if(p==='/api/sugestoes')body={items:[]};
     return route.fulfill({contentType:'application/json',body:JSON.stringify(body)});
    });
-   await page.goto('http://cadencias.test/#cadencias');
+   await page.goto('https://cadencias.test/#cadencias');
    await page.locator('#cad-read-campaigns').getByRole('cell',{name:'PILOTO',exact:true}).waitFor();
    assert.match(await page.locator('#cad-read-status').innerText(),/Consulta parcial/);
    assert.match(await page.locator('#cad-read-unlinked').innerText(),/Sem vínculo/);
@@ -58,6 +66,8 @@ const registered={id:'REGISTRY-ONLY',registry:{id:'REGISTRY-ONLY',platform:'code
    assert.match(await page.locator('#cad-read-conflicts').innerText(),/BR-APOLLO-01/);
    assert.equal(await page.locator('#cad-read-conflicts img').count(),0);
    assert.equal(await page.locator('#cad-email-integrations').getByRole('cell',{name:'Desligado',exact:true}).count(),4);
+   assert.match(await page.locator('#cad-reply-control').innerText(),/Pausas externas: desligadas/);
+   assert.equal(await page.locator('#cad-reply-control img').count(),0);
    const before=requests.filter(r=>r.p==='/api/os/v1/cadencias').length;
    await page.clock.runFor(60001);
    await page.waitForFunction(()=>!document.querySelector('#cad-read-refresh').disabled);
@@ -130,10 +140,18 @@ const registered={id:'REGISTRY-ONLY',registry:{id:'REGISTRY-ONLY',platform:'code
    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
    await page.screenshot({path:path.join(outputDir,`cadencias-contact-current-${viewport.width}.png`),fullPage:true});
    assert.equal(requests.filter(r=>r.method!=='GET').length,0);
+   await page.locator('#cad-read-conflicts [data-cad-contact]').first().click();
+   await page.locator('#cad-read-detail > details > summary').click();
+   await page.locator('#cad-reply-text').fill('Synthetic human reply');
+   await page.locator('#cad-reply-save').click();
+   await page.waitForFunction(()=>document.querySelector('#cad-reply-result').textContent.length>0);
+   assert.match(await page.locator('#cad-reply-result').innerText(),/Resposta registrada no OS/);
+   assert.equal(requests.filter(r=>r.method==='POST').length,1);
+   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
    assert.deepEqual(errors,[]);
    await page.close();
   }
-  console.log('PASS: 1440/390, timeline, escaping, partial, stale failure, unknown empty, registered empty/partial, nonempty partial totals unknown, null outcomes, legacy provider label preserved, current-contact Apollo/Instantly labels and origin/delivery note, observed contact count, keyboard details, no overflow, GET-only');
+  console.log('PASS: 1440/390, timeline, escaping, partial, stale failure, unknown empty, registered empty/partial, nonempty partial totals unknown, null outcomes, provider/current-campaign labels, observed contact count, keyboard details, no overflow, GET-only on load; one nonce-authenticated manual reply POST after explicit submit');
   console.log('Screenshots: '+outputDir);
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

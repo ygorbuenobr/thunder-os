@@ -192,6 +192,7 @@ body[data-aba="cadencias"] .detalhes-sistema{display:none}
 .cad-read-timeline pre{white-space:pre-wrap;font:inherit;overflow-wrap:anywhere;margin:8px 0}
 #cad-read-detail{scroll-margin-top:20px}
 #cad-read-conflicts{overflow-wrap:anywhere;min-width:0}
+#cad-reply-control{overflow-wrap:anywhere;min-width:0;max-width:100%}
 .agenttrail-head{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
 .agenttrail-hosts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:28px;margin-top:20px}
 .agenttrail-host{border-top:3px solid var(--mostarda);padding-top:14px;min-width:0}
@@ -298,11 +299,19 @@ button,.btn,select,input:not([type="hidden"]),summary {min-height:44px;}
   <p id="cad-read-status" role="status" aria-live="polite">Aguardando consulta.</p>
   <div id="cad-read-campaigns"></div>
   <section class="cad-read-section"><h3>Integrações de e-mail</h3><div id="cad-email-integrations" role="status">Não verificado.</div></section>
+  <section class="cad-read-section"><h3>Respostas e paradas</h3><div id="cad-reply-control" role="status">Não verificado.</div></section>
   <section class="cad-read-section" id="cad-read-conflicts-section" hidden><h3>Conflitos de campanha</h3><div id="cad-read-conflicts"></div></section>
   <section class="cad-read-section"><h3>Hoje</h3><div id="cad-read-today"></div></section>
   <section class="cad-read-section"><h3>Sem vínculo</h3><div id="cad-read-unlinked"></div></section>
   <section class="cad-read-section" id="cad-read-unverified-section" hidden><h3>Vínculo não verificado</h3><div id="cad-read-unverified"></div></section>
-  <section class="cad-read-section" id="cad-read-detail" hidden tabindex="-1"><h3 id="cad-read-detail-title">Linha do tempo</h3><p id="cad-read-detail-status" role="status"></p><ol class="cad-read-timeline" id="cad-read-events"></ol></section>
+  <section class="cad-read-section" id="cad-read-detail" hidden tabindex="-1"><h3 id="cad-read-detail-title">Linha do tempo</h3><p id="cad-read-detail-status" role="status"></p><ol class="cad-read-timeline" id="cad-read-events"></ol>
+    <details><summary>Marcar resposta recebida</summary><form id="cad-reply-form">
+      <label for="cad-reply-campaign">Campanha</label><select id="cad-reply-campaign" required></select>
+      <label for="cad-reply-channel">Canal</label><select id="cad-reply-channel"><option value="whatsapp">WhatsApp</option><option value="phone">Ligação</option><option value="chattie">Chattie</option><option value="email">E-mail</option><option value="linkedin">LinkedIn</option></select>
+      <label for="cad-reply-text">Resposta recebida</label><textarea id="cad-reply-text" maxlength="4000" required></textarea>
+      <button type="submit" id="cad-reply-save">Registrar resposta e parar no OS</button><p id="cad-reply-result" role="status"></p>
+    </form></details>
+  </section>
 </main>
 
 <main id="sec-agentes" data-painel="agentes" hidden>
@@ -1730,7 +1739,7 @@ async function atualizarAgenttrail(){
 }
 $('agenttrail-atualizar').addEventListener('click',atualizarAgenttrail);
 setInterval(()=>{if(document.body.dataset.aba==='agentes')atualizarAgenttrail();},30000);
-let cadReadLoading=false,cadReadSnapshot=null,cadReadContact=null,cadReadTimelineRequest=0,cadReadPollTimer=null;
+let cadReadLoading=false,cadReadSnapshot=null,cadReadContact=null,cadReadTimelineRequest=0,cadReadPollTimer=null,cadReplyRequest=null;
 const cadReadNumber=v=>Number.isInteger(v)?String(v):'Não verificado';
 const cadReadOutcome={sent_with_receipt:'Enviado com recibo registrado',completed_without_receipt:'Concluída sem recibo',uncertain_no_retry:'Incerto, não repetir',blocked:'Bloqueado antes do envio',paused_reply:'Suspenso por resposta',unverified:'Resultado não verificado'};
 function cadReadDate(value){
@@ -1797,13 +1806,30 @@ async function atualizarCadencias(){
   cadReadLoading=true;$('cad-read-refresh').disabled=true;
   $('cad-read-status').textContent=cadReadSnapshot?'Atualizando consulta…':'Consultando tarefas no HubSpot…';
   await carregarIntegracoesEmail();
+  await carregarControleRespostas();
   try{cadReadSnapshot=await apiServidor('/api/os/v1/cadencias');renderCadencias(cadReadSnapshot);if(cadReadContact)await abrirCadenciaContato(cadReadContact,false);}
   catch(e){$('cad-read-status').textContent=cadReadSnapshot?'Não foi possível atualizar. Os dados abaixo são da consulta anterior.':'Não foi possível consultar o HubSpot. Tente atualizar.';}
   finally{cadReadLoading=false;$('cad-read-refresh').disabled=false;}
 }
+async function carregarControleRespostas(){
+  const target=$('cad-reply-control');
+  try{
+    const state=await apiServidor('/api/os/v1/reply-control');
+    const alerts=Array.isArray(state.alerts)?state.alerts:[];
+    const reasons={external_pause_off:'Parada nas plataformas externas desligada.',pause_capability_unverified:'Parada na plataforma ainda não comprovada.',external_pause_failed:'Falha ao confirmar a parada externa.',external_pause_readback_required:'A plataforma aceitou o pedido, mas a parada ainda não foi confirmada.',identity_unresolved:'Confirme quem respondeu antes de agir.',nonhuman_or_unknown_reply:'Resposta automática ou ainda não classificada como humana.'};
+    target.innerHTML=`<p>Pausas externas: ${state.external_pause_enabled===false?'desligadas':'não verificadas'}. Leitura automática de respostas: não conectada.</p>`+
+      (alerts.length?`<p>${esc(alerts.length)} alertas internos · até 20 mais recentes</p><ul>`+alerts.slice(-20).reverse().map(a=>`<li><b>${esc(a.title||'Revisão necessária')}</b>${/^[1-9][0-9]*$/.test(a.hubspot_contact_id||'')?` · <button type="button" data-cad-contact="${esc(a.hubspot_contact_id)}">Contato ${esc(a.hubspot_contact_id)}</button>`:''}${a.campaign_id?' · '+esc(a.campaign_id):''}<p>${esc(reasons[a.reason]||a.reason||a.message||'Confira a resposta antes do próximo toque.')}</p>${a.content?'<p>'+esc(a.content.slice(0,240))+'</p>':''}</li>`).join('')+'</ul>':'<p>Nenhum alerta interno registrado. Isso não comprova ausência de respostas.</p>');
+  }catch(e){target.textContent='Respostas e paradas não verificadas.';}
+}
 async function abrirCadenciaContato(id,focus=true){
   if(!/^\d+$/.test(String(id))||!apiServidor)return;
+  if(cadReadContact!==String(id)){cadReplyRequest=null;$('cad-reply-text').value='';$('cad-reply-result').textContent='';}
   cadReadContact=String(id);const request=++cadReadTimelineRequest;
+  const choices=(cadReadSnapshot?.campaigns||[]).filter(c=>(c.tasks||[]).concat(c.activities||[]).some(r=>(r.contact_ids||[]).includes(cadReadContact)));
+  const selectedCampaign=$('cad-reply-campaign').value;
+  $('cad-reply-campaign').innerHTML=choices.map(c=>`<option value="${esc(c.id)}">${esc(c.id)}</option>`).join('');
+  if(choices.some(c=>c.id===selectedCampaign))$('cad-reply-campaign').value=selectedCampaign;
+  $('cad-reply-save').disabled=!choices.length;
   $('cad-read-detail').hidden=false;$('cad-read-detail-title').textContent='Linha do tempo · contato '+id;
   $('cad-read-detail-status').textContent='Consultando histórico…';$('cad-read-events').replaceChildren();
   if(focus)$('cad-read-detail').focus();
@@ -1817,6 +1843,18 @@ async function abrirCadenciaContato(id,focus=true){
   }catch(e){if(request===cadReadTimelineRequest)$('cad-read-detail-status').textContent='Não foi possível consultar o histórico deste contato.';}
 }
 $('cad-read-refresh').addEventListener('click',atualizarCadencias);
+$('cad-reply-form').addEventListener('submit',async event=>{
+  event.preventDefault();const button=$('cad-reply-save');button.disabled=true;
+  cadReplyRequest=cadReplyRequest||crypto.randomUUID();
+  const contactId=cadReadContact,campaignId=$('cad-reply-campaign').value;
+  try{
+    await apiServidor('/api/os/v1/reply-control/manual','POST',{request_id:cadReplyRequest,contact_id:contactId,campaign_id:campaignId,channel:$('cad-reply-channel').value,content:$('cad-reply-text').value});
+    if(cadReadContact===contactId&&$('cad-reply-campaign').value===campaignId)$('cad-reply-result').textContent='Resposta registrada no OS. Pausas nas plataformas externas continuam desligadas; confira o alerta.';
+    await carregarControleRespostas();
+  }catch(error){if(cadReadContact===contactId)$('cad-reply-result').textContent=error.message||'Não foi possível registrar. Consulte antes de repetir.';}
+  finally{button.disabled=false;}
+});
+for(const id of ['cad-reply-campaign','cad-reply-channel','cad-reply-text'])$(id).addEventListener('change',()=>{cadReplyRequest=null;$('cad-reply-result').textContent='';});
 $('sec-cadencias').addEventListener('click',event=>{const b=event.target.closest('[data-cad-contact]');if(b)abrirCadenciaContato(b.dataset.cadContact);});
 function mostrarAba(aba,{registrar=true}={}){
   if(!['hoje','conversas','cadencias','aprovar','contas','agentes'].includes(aba)) aba='hoje';
