@@ -55,7 +55,7 @@ LIMITATIONS = [
     "completed_status_is_not_delivery_receipt",
     "crm_recorded_confirmation_is_not_delivery_proof",
     "approval_state_unknown",
-    "campaign_activity_attribution_requires_explicit_binding",
+    "contact_current_campaign_is_not_historical_membership",
     "unreplied_cross_channel_contract_unavailable",
     "search_is_eventually_consistent_and_excludes_archived_records",
 ]
@@ -204,7 +204,7 @@ def _partial(coverage, reason):
 
 
 def validate_activity_bindings(value):
-    """Explicit integration app + campaign GUID pairs; never contact inference."""
+    """Legacy configuration parser; the current-contact reader never uses it."""
     if not isinstance(value, list) or len(value) > 30:
         raise CadenceReadonlyError('activity_bindings_invalid')
     seen_campaigns, seen_sources = set(), set()
@@ -223,7 +223,7 @@ def validate_activity_bindings(value):
 
 
 def environment_activity_bindings():
-    """Operator-supplied read attribution only; does not register/activate a campaign."""
+    """Compatibility with the existing server import; no attribution authority."""
     raw = os.environ.get('THUNDER_OS_CADENCE_ACTIVITY_BINDINGS', '[]')
     if len(raw) > 10000:
         raise CadenceReadonlyError('activity_bindings_invalid')
@@ -304,7 +304,8 @@ def project_snapshot(records, *, collected_at, coverage=None, associations=None,
             "collected_at": collected_at, "coverage": result_coverage, "errors": [],
             "campaigns": campaigns, "today": {"planned": planned, "awaiting_approval": None, "unreplied": None},
             "unlinked": [task for task in ordered if task["link_status"] == "sem_vinculo"],
-            "unverified": [task for task in ordered if task["link_status"] == "unverified"]}
+            "unverified": [task for task in ordered if task["link_status"] == "unverified"],
+            "contact_memberships": [], "contact_conflicts": [], "unattributed_activities": []}
 
 
 def _https(method, path, body, headers, timeout):
@@ -350,11 +351,12 @@ class _ReadSession:
         kinds = "emails|meetings|calls|notes|communications"
         allowed = (method == "GET" and (path == "/account-info/v3/details" or
                    path == "/crm/v3/owners/" + OWNER_ID or
-                   re.fullmatch(r"/crm/v3/properties/(?:tasks|" + kinds + r")", path) or
+                   re.fullmatch(r"/crm/v3/properties/(?:tasks|contacts|" + kinds + r")", path) or
                    re.fullmatch(r"/crm/v4/objects/contacts/[1-9][0-9]{0,29}/associations/(?:" + kinds + r")(?:\?[^#]*)?", path) or
                    re.fullmatch(r"/crm/v4/objects/tasks/[1-9][0-9]{0,29}/associations/contacts(?:\?[^#]*)?", path)))
         allowed = allowed or (method == "POST" and (path in {"/crm/v3/objects/tasks/search", "/crm/v3/objects/emails/search", "/crm/v3/objects/meetings/search"} or
-                  path == "/crm/v4/associations/tasks/contacts/batch/read" or
+                  path in {"/crm/v4/associations/tasks/contacts/batch/read",
+                           "/crm/v4/associations/emails/contacts/batch/read"} or
                   re.fullmatch(r"/crm/v3/objects/(?:contacts|" + kinds + r")/batch/read", path)))
         if not allowed:
             raise CadenceReadonlyError("readonly_endpoint_blocked")
@@ -414,25 +416,31 @@ class _ReadSession:
         return names
 
     def task_contacts(self, task_ids, coverage):
+        return self.object_contacts('tasks', task_ids, coverage)
+
+    def object_contacts(self, kind, object_ids, coverage):
         """V4 batch read (100 inputs), with per-result after cursors, no links.
 
         https://developers.hubspot.com/changelog/bug-fix-batch-read-limit-for-hubspot-associations-api
         Provider limit is 1,000 inputs; using 100 bounds response size as well.
         """
-        pending = [{"id": id_} for id_ in sorted(set(task_ids))]
-        contacts = {id_: set() for id_ in task_ids}
-        cursors, resolved = {}, set()
+        source = 'task_contacts' if kind == 'tasks' else 'email_contacts'
+        pending = [{"id": id_} for id_ in sorted(set(object_ids))]
+        contacts = {id_: set() for id_ in object_ids}
+        cursors, resolved, incomplete = {}, set(), set()
+        expected = set()
         info = {"complete": not pending, "pages": 0, "records": 0, "requested": len(pending)}
-        coverage["sources"]["task_contacts"] = info
+        coverage["sources"][source] = info
         try:
             while pending and info["pages"] < self.adapter.max_pages:
                 inputs, pending = pending[:100], pending[100:]
                 expected = {item["id"] for item in inputs}
-                result = self.call("POST", "/crm/v4/associations/tasks/contacts/batch/read", {"inputs": inputs})
+                result = self.call("POST", f"/crm/v4/associations/{kind}/contacts/batch/read", {"inputs": inputs})
                 info["pages"] += 1
                 batch_complete = result.get("status") == "COMPLETE" and not result.get("errors") and not result.get("numErrors", 0)
                 if not batch_complete:
-                    _partial(coverage, "task_contacts:batch_incomplete")
+                    incomplete.update(expected)
+                    _partial(coverage, source + ":batch_incomplete")
                 rows, found = result.get("results"), set()
                 if not isinstance(rows, list):
                     raise CadenceReadonlyError("provider_invalid_batch")
@@ -455,7 +463,7 @@ class _ReadSession:
                     if after is None:
                         if paging.get("next"):
                             raise CadenceReadonlyError("provider_invalid_paging")
-                        if batch_complete:
+                        if batch_complete and id_ not in incomplete:
                             resolved.add(id_)
                     else:
                         if not isinstance(after, (str, int)) or isinstance(after, bool):
@@ -467,16 +475,65 @@ class _ReadSession:
                         seen.add(after)
                         pending.append({"id": id_, "after": after})
                 if found != expected:
-                    _partial(coverage, "task_contacts:batch_records_missing")
+                    _partial(coverage, source + ":batch_records_missing")
             if pending:
-                _partial(coverage, "task_contacts:page_limit")
+                _partial(coverage, source + ":page_limit")
         except CadenceReadonlyError as exc:
-            _partial(coverage, "task_contacts:" + exc.code)
+            resolved.difference_update(expected)
+            _partial(coverage, source + ":" + exc.code)
             info["error"] = exc.code
         info["records"] = len(resolved)
         info["complete"] = len(resolved) == len(contacts) and not any(
-            reason.startswith("task_contacts:") for reason in coverage["limitations"])
+            reason.startswith(source + ":") for reason in coverage["limitations"])
         return {id_: sorted(values) for id_, values in contacts.items()}, resolved
+
+    def contact_campaigns(self, contact_ids, coverage):
+        """Current CRM properties by proved ID; no autofill, history or writer."""
+        rows, resolved, ids = {}, set(), sorted(set(contact_ids))
+        source = 'contact_campaigns'
+        info = {'complete': not ids, 'records': 0, 'requested': len(ids)}
+        coverage['sources'][source] = info
+        try:
+            available = self.properties('contacts')
+            missing = {'campanha_ativa', 'executor'} - available
+            coverage['sources']['contact_campaign_schema'] = {
+                'complete': not missing, 'missing': sorted(missing)}
+            if missing:
+                _partial(coverage, source + ':configuration_pending')
+            if 'campanha_ativa' not in available:
+                raise CadenceReadonlyError('campaign_property_unavailable')
+            for offset in range(0, len(ids), 100):
+                expected = set(ids[offset:offset + 100])
+                result = self.call('POST', '/crm/v3/objects/contacts/batch/read', {
+                    'properties': sorted({'campanha_ativa', 'executor'} & available),
+                    'inputs': [{'id': ident} for ident in sorted(expected)]})
+                complete = (result.get('status') == 'COMPLETE' and not result.get('errors')
+                            and not result.get('numErrors', 0))
+                if not complete:
+                    _partial(coverage, source + ':batch_incomplete')
+                if not isinstance(result.get('results'), list):
+                    raise CadenceReadonlyError('provider_invalid_batch')
+                found, batch_rows = set(), {}
+                for row in result['results']:
+                    ident = _id(row.get('id')) if isinstance(row, dict) else None
+                    if ident not in expected or not isinstance(row.get('properties'), dict):
+                        raise CadenceReadonlyError('provider_invalid_record')
+                    if ident in found:
+                        raise CadenceReadonlyError('duplicate_contact_record')
+                    found.add(ident)
+                    if complete and row.get('archived') is not True:
+                        batch_rows[ident] = row
+                rows.update(batch_rows)
+                resolved.update(batch_rows)
+                if not expected <= resolved:
+                    _partial(coverage, source + ':batch_records_missing')
+        except CadenceReadonlyError as exc:
+            _partial(coverage, source + ':' + exc.code)
+            info['error'] = exc.code
+        info['records'] = len(resolved)
+        info['complete'] = len(resolved) == len(ids) and not any(
+            reason.startswith(source + ':') for reason in coverage['limitations'])
+        return rows, resolved
 
     def contact_names(self, contact_ids, coverage):
         names, ids = {}, sorted(set(contact_ids))
@@ -568,6 +625,7 @@ class CadenceReadonlyConsole:
             max_pages=max_pages, max_requests=max_requests, budget_seconds=budget_seconds, sleep=sleep)
         self.clock, self.monotonic = clock, monotonic
         self.campaign_registry = campaign_registry
+        # Retain the server constructor contract; legacy event bindings are ignored.
         self.activity_bindings = activity_bindings
         self.activity_bindings_loader = activity_bindings_loader
         self._lock, self._cache = threading.RLock(), {}
@@ -651,122 +709,156 @@ class CadenceReadonlyConsole:
                 task["contact_names"] = {cid: names.get(cid) for cid in task["contact_ids"]}
                 task["contact_name"] = names.get(task["contact_ids"][0]) if len(task["contact_ids"]) == 1 else None
         self._external_activities(session, result)
-        result["activity_collection"] = {"mode": "on_demand_timeline", "population_sampled": False,
-                                         "campaign_attribution": "explicit_integration_bindings_only"}
+        result["activity_collection"] = {"mode": "bounded_email_search_and_on_demand_timeline",
+            "population_sampled": False, "campaign_attribution": "contact_current_campaign",
+            "historical_membership_verified": False, "delivery_verified": False}
         return result
 
     def _external_activities(self, session, snapshot):
         coverage = snapshot['coverage']
-        try:
-            bindings = validate_activity_bindings(self.activity_bindings_loader() if self.activity_bindings_loader
-                                                 else [] if self.activity_bindings is None else self.activity_bindings)
-        except (CadenceReadonlyError, ValueError, TypeError):
-            _partial(coverage, 'external_emails:bindings_invalid')
-            coverage['sources']['external_emails'] = {'complete': False, 'error': 'bindings_invalid'}
+        groups = {group['id']: group for group in snapshot['campaigns']
+                  if (group.get('registry') or {}).get('active') is True
+                  and group['registry'].get('platform') in {'apollo', 'instantly'}}
+        if not groups:
             return
-        groups = {group['id']: group for group in snapshot['campaigns']}
-        bound = {binding['campaign_id'] for binding in bindings}
+        task_contact_ids = {campaign: {cid for task in group['tasks'] if task['link_status'] == 'linked'
+                                      for cid in task['contact_ids']} for campaign, group in groups.items()}
         for group in groups.values():
-            platform = (group.get('registry') or {}).get('platform')
-            if platform in {'apollo', 'instantly'} and group['id'] not in bound:
-                _partial(coverage, 'external_emails:' + group['id'] + ':binding_not_configured')
-                coverage['sources']['external_emails:' + group['id']] = {'complete': False, 'error': 'binding_not_configured'}
-        for binding in bindings:
-            ident = binding['campaign_id']
-            source = 'external_emails:' + ident
-            group = groups.get(ident)
-            if group is None:
-                _partial(coverage, source + ':campaign_not_observed')
-                continue
             group['external_activity_state'] = 'unknown'
-            try:
-                platform = (group.get('registry') or {}).get('platform')
-                if platform is not None and platform != binding['provider']:
-                    raise CadenceReadonlyError('activity_platform_mismatch')
-                available = session.properties('emails')
-                required = {'hs_campaign_guid', 'hs_engagement_source_id', 'hs_email_status', 'hs_email_direction', 'hs_timestamp'}
-                if not required <= available:
-                    raise CadenceReadonlyError('activity_attribution_schema_unavailable')
-                filters = [{'propertyName': 'hs_campaign_guid', 'operator': 'EQ', 'value': binding['campaign_guid']},
-                           {'propertyName': 'hs_engagement_source_id', 'operator': 'EQ', 'value': binding['source_id']}]
-                rows = session.pages('POST', '/crm/v3/objects/emails/search', {
-                    'filterGroups': [{'filters': filters}], 'limit': 100,
-                    'properties': sorted(set(ACTIVITY_PROPERTIES['emails']) & available)}, coverage, source)
-                for row in rows:
-                    props = row.get('properties')
-                    if (not isinstance(props, dict) or props.get('hs_campaign_guid') != binding['campaign_guid']
-                            or props.get('hs_engagement_source_id') != binding['source_id']):
-                        _partial(coverage, source + ':attribution_mismatch')
-                        continue
-                    if row.get('archived') is True:
-                        _partial(coverage, source + ':archived_record')
-                        continue
-                    event = project_activity('emails', row)
-                    if (not isinstance(props.get('hs_email_direction'), str)
-                            or props.get('hs_email_direction') not in {'EMAIL', 'INCOMING_EMAIL', 'FORWARDED_EMAIL', 'DRAFT_EMAIL'}
-                            or (props.get('hs_email_direction') != 'INCOMING_EMAIL' and
-                                (not isinstance(props.get('hs_email_status'), str) or
-                                 props.get('hs_email_status') not in {'SENT', 'BOUNCED', 'FAILED', 'SCHEDULED', 'SENDING', 'DRAFT'}))
-                            or not event['occurred_at']):
-                        _partial(coverage, source + ':classification_unavailable')
-                        continue
-                    event.update(campaign=ident, provider=binding['provider'], attribution='explicit_integration_binding',
-                                 sent_evidence=props.get('hs_email_status') == 'SENT' and props.get('hs_email_direction') == 'EMAIL')
-                    group['activities'].append(event)
-                observed = sum(event['sent_evidence'] for event in group['activities'])
-                complete = coverage['sources'].get(source, {}).get('complete') is True and not any(
-                    reason.startswith(source + ':') for reason in coverage['limitations'])
-                coverage['sources'][source]['complete'] = complete
-                group['metrics']['observed_external_sent'] = observed
-                group['metrics']['external_sent'] = observed if complete else None
-                replies = sum(event['response_evidence'] for event in group['activities'])
-                group['metrics']['observed_replies'] = replies
-                group['metrics']['replies'] = replies if complete else None
-                group['metric_availability']['replies'] = 'explicit_integration_binding' if complete else 'activity_read_incomplete'
-                group['external_activity_state'] = 'complete' if complete else 'partial'
-                self._external_meetings(session, group, binding, coverage)
-            except CadenceReadonlyError as exc:
-                _partial(coverage, source + ':' + exc.code)
-                coverage['sources'][source] = {'complete': False, 'error': exc.code}
-
-    def _external_meetings(self, session, group, binding, coverage):
-        source = 'external_meetings:' + binding['campaign_id']
+            group['metrics'].update(contacts=None, observed_contacts=len(task_contact_ids[group['id']]))
+            group['metric_availability']['contacts'] = 'contact_read_incomplete'
+        source = 'external_emails'
         try:
-            available = session.properties('meetings')
-            required = {'hs_campaign_guid', 'hs_engagement_source_id', 'hs_meeting_outcome', 'hs_timestamp'}
+            schema = session.properties('contacts')
+            missing = {'campanha_ativa', 'executor'} - schema
+            coverage['sources']['contact_campaign_schema'] = {
+                'complete': not missing, 'missing': sorted(missing)}
+            if missing:
+                _partial(coverage, 'contact_campaigns:configuration_pending')
+            configuration_pending = bool(missing)
+            if 'campanha_ativa' not in schema:
+                raise CadenceReadonlyError('configuration_pending')
+            available = session.properties('emails')
+            required = {'hs_email_status', 'hs_email_direction', 'hs_timestamp'}
             if not required <= available:
-                raise CadenceReadonlyError('activity_attribution_schema_unavailable')
-            rows = session.pages('POST', '/crm/v3/objects/meetings/search', {
-                'filterGroups': [{'filters': [
-                    {'propertyName': 'hs_campaign_guid', 'operator': 'EQ', 'value': binding['campaign_guid']},
-                    {'propertyName': 'hs_engagement_source_id', 'operator': 'EQ', 'value': binding['source_id']}]}],
-                'limit': 100, 'properties': sorted(set(ACTIVITY_PROPERTIES['meetings']) & available)}, coverage, source)
-            count = 0
+                raise CadenceReadonlyError('activity_classification_schema_unavailable')
+            rows = session.pages('POST', '/crm/v3/objects/emails/search', {
+                'filterGroups': [], 'limit': 100,
+                'properties': sorted(set(ACTIVITY_PROPERTIES['emails']) & available)}, coverage, source)
+            links, resolved = session.object_contacts('emails', [str(row['id']) for row in rows], coverage)
+            task_contacts = {cid for group in snapshot['campaigns'] for task in group['tasks']
+                             for cid in task['contact_ids']}
+            contacts, proved = session.contact_campaigns(
+                task_contacts | {cid for ids in links.values() for cid in ids}, coverage)
+            registry = {group['id']: group['registry'] for group in snapshot['campaigns'] if group.get('registry')}
+            memberships = {}
+            for cid, record in contacts.items():
+                props = record['properties']
+                campaign = props.get('campanha_ativa')
+                registered = registry.get(campaign) if isinstance(campaign, str) else None
+                known = registered is not None and registered.get('active') is True
+                without_campaign = 'campanha_ativa' in props and (campaign is None or campaign == '')
+                memberships[cid] = {'id': cid, 'campaign': campaign if known else None,
+                    'status': 'without_campaign' if without_campaign else
+                        'linked' if known else 'campaign_missing_or_unknown',
+                    'executor': plain_text(props.get('executor')) or None,
+                    'platform': registered.get('platform') if known else None}
+                member = memberships[cid]
+                if member['executor'] and member['platform'] and member['executor'] != member['platform']:
+                    snapshot['contact_conflicts'].append({'contact_id': cid, 'campaign': member['campaign'],
+                        'executor': member['executor'], 'platform': member['platform'],
+                        'reason': 'executor_differs_from_registry_platform'})
+            snapshot['contact_memberships'] = list(memberships.values())
+            for group in snapshot['campaigns']:
+                for task in group['tasks']:
+                    if task['link_status'] != 'linked':
+                        continue
+                    for cid in task['contact_ids']:
+                        current = memberships.get(cid, {}).get('campaign')
+                        if current and current != task['campaign']:
+                            snapshot['contact_conflicts'].append({'contact_id': cid, 'campaign': current,
+                                'task_campaign': task['campaign'], 'task_id': task['id'],
+                                'reason': 'task_campaign_differs_from_current_campaign'})
             for row in rows:
+                ident = str(row['id'])
                 props = row.get('properties')
-                if (not isinstance(props, dict) or props.get('hs_campaign_guid') != binding['campaign_guid']
-                        or props.get('hs_engagement_source_id') != binding['source_id'] or row.get('archived') is True):
-                    _partial(coverage, source + ':attribution_mismatch')
+                if not isinstance(props, dict) or row.get('archived') is True:
+                    _partial(coverage, source + ':invalid_or_archived_record')
                     continue
-                event = project_activity('meetings', row)
-                if (not isinstance(props.get('hs_meeting_outcome'), str)
-                        or props['hs_meeting_outcome'] not in {'SCHEDULED', 'COMPLETED', 'RESCHEDULED', 'NO_SHOW', 'CANCELED'}
-                        or not event['occurred_at']):
+                event = project_activity('emails', row)
+                ids = links.get(ident, [])
+                event.update(contact_ids=ids, provider=None, origin_provider=None,
+                    origin_identifiers={key: plain_text(props.get(key)) or None
+                        for key in ('hs_campaign_guid', 'hs_engagement_source_id')},
+                    sent_evidence=False, response_evidence=False, crm_recorded_sent=False,
+                    historical_membership_verified=False, delivery_verified=False)
+                direction, status = props.get('hs_email_direction'), props.get('hs_email_status')
+                classified = (isinstance(direction, str)
+                    and direction in {'EMAIL', 'INCOMING_EMAIL', 'FORWARDED_EMAIL', 'DRAFT_EMAIL'}
+                    and (direction == 'INCOMING_EMAIL' or isinstance(status, str) and status in {
+                        'SENT', 'BOUNCED', 'FAILED', 'SCHEDULED', 'SENDING', 'DRAFT'})
+                    and event['occurred_at'] is not None)
+                sent = classified and status == 'SENT' and direction == 'EMAIL'
+                event.update(sent_evidence=sent, crm_recorded_sent=sent,
+                             sent_evidence_kind='crm_recorded_status')
+                reason = None
+                if ident not in resolved:
+                    reason = 'contact_association_incomplete'
+                elif not ids:
+                    reason = 'contact_id_unavailable'
+                elif not set(ids) <= proved:
+                    reason = 'contact_read_incomplete'
+                elif any(memberships[cid]['status'] == 'campaign_missing_or_unknown' for cid in ids):
+                    reason = 'contact_campaign_unavailable'
+                elif len({memberships[cid]['campaign'] for cid in ids}) != 1:
+                    reason = 'contact_campaign_conflict'
+                elif memberships[ids[0]]['status'] == 'without_campaign':
+                    reason = 'contact_without_campaign'
+                else:
+                    campaign = memberships[ids[0]]['campaign']
+                    if campaign not in groups:
+                        reason = 'contact_campaign_out_of_scope'
+                if reason:
+                    event['attribution_reason'] = reason
+                    snapshot['unattributed_activities'].append(event)
+                    if reason not in {'contact_without_campaign', 'contact_campaign_out_of_scope'}:
+                        _partial(coverage, source + ':' + reason)
+                    continue
+                if not classified:
                     _partial(coverage, source + ':classification_unavailable')
-                    continue
-                count += props['hs_meeting_outcome'] in {'SCHEDULED', 'COMPLETED', 'RESCHEDULED'}
-                event.update(campaign=binding['campaign_id'], provider=binding['provider'],
-                             attribution='explicit_integration_binding', sent_evidence=False)
+                group = groups[campaign]
+                event.update(campaign=campaign, provider=group['registry']['platform'],
+                    provider_semantics='registry_platform_not_origin',
+                    attribution='contact_current_campaign')
                 group['activities'].append(event)
-            complete = coverage['sources'].get(source, {}).get('complete') is True and not any(
-                reason.startswith(source + ':') for reason in coverage['limitations'])
-            coverage['sources'][source]['complete'] = complete
-            group['metrics']['observed_meetings'] = count
-            group['metrics']['meetings'] = count if complete else None
-            group['metric_availability']['meetings'] = 'explicit_integration_binding' if complete else 'activity_read_incomplete'
+            complete = all(coverage['sources'].get(key, {}).get('complete') is True for key in
+                ('external_emails', 'email_contacts', 'contact_campaigns', 'contact_campaign_schema'))
+            complete = complete and not any(reason.startswith(source + ':') for reason in coverage['limitations'])
+            for campaign, group in groups.items():
+                observed = sum(event['crm_recorded_sent'] for event in group['activities'])
+                group['metrics'].update(observed_external_sent=observed,
+                                        external_sent=observed if complete else None)
+                observed_contacts = len(task_contact_ids[campaign] | {
+                    cid for event in group['activities'] for cid in event['contact_ids']})
+                contacts_complete = complete and group['task_coverage_complete'] and not any(
+                    task['link_status'] == 'unverified' for task in group['tasks'])
+                group['metrics'].update(contacts=observed_contacts if contacts_complete else None,
+                                        observed_contacts=observed_contacts)
+                group['metric_availability']['contacts'] = (
+                    'observed_task_and_email_contacts' if contacts_complete else 'contact_read_incomplete')
+                group['metric_availability']['external_sent'] = ('configuration_pending' if configuration_pending else
+                    'crm_recorded_sent_not_delivery' if complete else 'activity_read_incomplete')
+                group['external_activity_state'] = ('configuration_pending' if configuration_pending else
+                    'complete' if complete else 'partial')
+                coverage['sources'][source + ':' + campaign] = {'complete': complete,
+                    'records': len(group['activities']), 'attribution': 'contact_current_campaign'}
         except CadenceReadonlyError as exc:
             _partial(coverage, source + ':' + exc.code)
             coverage['sources'][source] = {'complete': False, 'error': exc.code}
+            for campaign, group in groups.items():
+                group['external_activity_state'] = 'configuration_pending' if exc.code == 'configuration_pending' else 'partial'
+                group['metric_availability']['external_sent'] = exc.code
+                coverage['sources'][source + ':' + campaign] = {'complete': False, 'error': exc.code}
 
     def timeline(self, contact_id, campaign=None):
         if not isinstance(contact_id, str) or _id(contact_id) is None:
@@ -784,9 +876,13 @@ class CadenceReadonlyConsole:
                   "events": events, "coverage": coverage, "errors": errors}
         tasks = [task for group in snapshot["campaigns"] for task in group["tasks"] if
                  contact_id in task["contact_ids"] and (campaign is None or task["campaign"] == campaign)]
-        if not tasks:
+        linked_activities = {event['id']: event for group in snapshot['campaigns']
+            for event in group.get('activities', []) if contact_id in event.get('contact_ids', [])
+            and (campaign is None or event['campaign'] == campaign)}
+        if not tasks and not linked_activities:
             task_sources = {key: value for key, value in coverage["sources"].items()
-                            if key in {"tasks", "task_contacts", "task_schema"}}
+                            if key in {"tasks", "task_contacts", "task_schema", "external_emails",
+                                       "email_contacts", "contact_campaigns", "contact_campaign_schema"}}
             if not task_sources or not all(source["complete"] for source in task_sources.values()):
                 raise CadenceReadonlyError("contact_membership_unverified")
             raise LookupError("contact_not_in_observed_cadence")
@@ -801,11 +897,11 @@ class CadenceReadonlyConsole:
         session.identity()
         context = self._cached(("activities", contact_id), lambda: self._activities(session, contact_id))
         events.extend(context["events"])
-        attributed = {event['id']: event for group in snapshot['campaigns'] for event in group.get('activities', [])}
+        observed_ids = {event['id'] for event in events}
+        events.extend(deepcopy(event) for ident, event in linked_activities.items() if ident not in observed_ids)
         for event in events:
-            if event['id'] in attributed:
-                for key in ('campaign', 'provider', 'attribution', 'sent_evidence'):
-                    event[key] = attributed[event['id']][key]
+            if event['id'] in linked_activities:
+                event.update(deepcopy(linked_activities[event['id']]))
         for source, info in context["coverage"]["sources"].items():
             coverage["sources"]["activities:" + source] = info
         for reason in context["coverage"]["limitations"]:
@@ -822,7 +918,8 @@ class CadenceReadonlyConsole:
         for kind, wanted in ACTIVITY_PROPERTIES.items():
                 try:
                     available = session.properties(kind)
-                    if set(wanted) - available:
+                    required = set(wanted) - {'hs_campaign_guid', 'hs_engagement_source_id'}
+                    if required - available:
                         _partial(coverage, kind + ":properties_unavailable")
                     links = session.pages("GET", f"/crm/v4/objects/contacts/{contact_id}/associations/{kind}",
                         None, coverage, kind, key="toObjectId")

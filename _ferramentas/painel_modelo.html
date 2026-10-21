@@ -1751,7 +1751,13 @@ function cadReadEvidence(c){
   const activities=Array.isArray(c.activities)?c.activities:[];
   if(activities.length||['apollo','instantly'].includes(c.registry?.platform)||['complete','partial','unknown'].includes(c.external_activity_state)){
     html+=`<h4>Atividades externas registradas</h4><p>Envios registrados: ${esc(cadReadNumber(m.external_sent))}${c.external_activity_state==='complete'?'':' · cobertura não verificada'}</p>`;
-    html+=activities.map(e=>`<p><b>${esc(e.sent_evidence?'Enviado ('+({apollo:'Apollo',instantly:'Instantly'}[e.provider]||e.provider)+')':e.status||'Estado não verificado')}</b> · ${esc(e.subject||'E-mail')}<br><small>${esc(cadReadDate(e.occurred_at))} · atividade HubSpot, não comprova entrega</small></p>`).join('');
+    html+=activities.map(e=>{
+      const current=e.attribution==='contact_current_campaign';
+      const platform=e.provider||c.registry?.platform;
+      const label=e.sent_evidence?(current?'Envio registrado · campanha '+({apollo:'Apollo',instantly:'Instantly'}[platform]||platform||'não verificada'):'Enviado ('+({apollo:'Apollo',instantly:'Instantly'}[e.provider]||e.provider)+')'):e.status||'Estado não verificado';
+      const note=current?'Campanha atual do contato; origem e entrega não verificadas.':'atividade HubSpot, não comprova entrega';
+      return `<p><b>${esc(label)}</b> · ${esc(e.subject||'E-mail')}<br><small>${esc(cadReadDate(e.occurred_at))} · ${esc(note)}</small></p>`;
+    }).join('');
   }
   return html;
 }
@@ -1760,7 +1766,7 @@ function renderCadencias(data){
   const emptyLabel=c=>c.task_state==='empty'&&c.task_coverage_complete===true?'Sem tarefas ainda nesta consulta.':'Tarefas não verificadas: cobertura incompleta.';
   const campaignLabel=c=>!c.tasks?.length?emptyLabel(c):c.task_coverage_complete!==true?'Tarefas observadas; totais não verificados: cobertura incompleta.':'';
   const noCampaigns=data.coverage?.complete===true?'Nenhuma campanha ou tarefa reconhecida nesta consulta.':'Campanhas e tarefas não verificadas: cobertura incompleta.';
-  $('cad-read-campaigns').innerHTML=campaigns.length?`<div class="cad-read-table-wrap"><table class="cad-read-table"><thead><tr><th scope="col">Campanha</th><th scope="col">Contatos</th><th scope="col">Toques com recibo</th><th scope="col">Pendentes</th><th scope="col">Atrasados</th><th scope="col">Respostas</th><th scope="col">Reuniões</th></tr></thead><tbody>${campaigns.map(c=>`<tr><td>${esc(c.id)}${campaignLabel(c)?`<br><small>${esc(campaignLabel(c))}</small>`:''}</td>${['contacts','completed_with_receipt','pending','overdue','replies','meetings'].map(k=>`<td>${esc(cadReadNumber(c.metrics?.[k]))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`+campaigns.map(c=>`<details><summary>${esc(c.id)} · contatos e tarefas</summary>${cadReadEvidence(c)}${cadReadTasks(c.tasks,emptyLabel(c))}</details>`).join(''):`<p class="sub">${esc(noCampaigns)}</p>`;
+  $('cad-read-campaigns').innerHTML=campaigns.length?`<div class="cad-read-table-wrap"><table class="cad-read-table"><thead><tr><th scope="col">Campanha</th><th scope="col">Contatos observados</th><th scope="col">Toques com recibo</th><th scope="col">Pendentes</th><th scope="col">Atrasados</th><th scope="col">Respostas</th><th scope="col">Reuniões</th></tr></thead><tbody>${campaigns.map(c=>`<tr><td>${esc(c.id)}${campaignLabel(c)?`<br><small>${esc(campaignLabel(c))}</small>`:''}</td>${['contacts','completed_with_receipt','pending','overdue','replies','meetings'].map(k=>`<td>${esc(cadReadNumber(c.metrics?.[k]))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`+campaigns.map(c=>`<details><summary>${esc(c.id)} · contatos e tarefas</summary>${cadReadEvidence(c)}${cadReadTasks(c.tasks,emptyLabel(c))}</details>`).join(''):`<p class="sub">${esc(noCampaigns)}</p>`;
   const today=data.today||{};
   $('cad-read-today').innerHTML=`<h4>Previsto para hoje</h4>${cadReadTasks(today.planned,'Nenhuma tarefa prevista para hoje na consulta.')}<h4>Aguardando sua aprovação</h4>${today.awaiting_approval==null?'<p class="sub">Aprovações ainda não verificadas nesta fonte.</p>':cadReadTasks(today.awaiting_approval,'Sem aprovações pendentes identificadas nesta consulta.')}<h4>Respostas sem retorno</h4>${today.unreplied==null?'<p class="sub">Respostas sem retorno ainda não verificadas nesta fonte.</p>':cadReadTasks(today.unreplied,'Nenhuma resposta sem retorno identificada nesta consulta.')}`;
   $('cad-read-unlinked').innerHTML=cadReadTasks(data.unlinked,'Nenhuma tarefa sem vínculo nesta consulta.');

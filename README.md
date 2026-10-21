@@ -100,20 +100,57 @@ null totals and separate observed counts. Replies and meetings remain null witho
 a campaign attribution contract. A portal/owner identity failure stops all further
 provider reads, leaving only unknown local registry projections.
 
-Apollo/Instantly attribution is an optional read-only runtime binding, injected by
-`painel_servidor.main` through `THUNDER_OS_CADENCE_ACTIVITY_BINDINGS`, a JSON array
-of objects with exactly `campaign_id`, `provider` (`apollo` or `instantly`),
-`campaign_guid` and `source_id`. The operator must verify the integration's actual
-HubSpot `hs_campaign_guid` and `hs_engagement_source_id` before configuring a pair.
-No real pair is bundled or enabled by this change. Missing/invalid bindings and
-partial/schema-failed reads remain visibly unknown, never an assumed zero.
-Only an exact pair can attribute an email or meeting to a known campaign; a contact
-association alone cannot. `SENT` is a CRM-recorded send, not a delivery receipt.
-Explicitly attributed `INCOMING_EMAIL` records count as received replies, without
-claiming a human classification. Meetings count `SCHEDULED`, `COMPLETED` and
-`RESCHEDULED`; canceled/no-show records remain visible but do not count. Missing
-classification fields, invalid timestamps, unavailable schema and partial pages
-keep aggregate metrics null, with observed counters separate.
+The Task 3 read-only candidate supersedes the earlier Apollo/Instantly GUID/source
+binding decision. Commercial email attribution is now strictly by complete HubSpot
+email/contact ID associations, the exact current contact `campanha_ativa`, and an
+active validated Registry campaign with platform `apollo` or `instantly`. It is
+labelled `contact_current_campaign`. No prefix, title, name, address, GUID, event
+source ID or inferred enrollment time establishes campaign membership. Legacy
+`THUNDER_OS_CADENCE_ACTIVITY_BINDINGS` input is ignored by this reader, including
+malformed input; its parser/import remains for server compatibility.
+
+An old email can therefore appear under the contact's current commercial campaign.
+This deliberate current-association view is **not historical membership proof**.
+Returned events carry `historical_membership_verified=false`,
+`delivery_verified=false`, `origin_provider=null` and sanitized
+`origin_identifiers` where available. `provider` denotes the Registry platform,
+explicitly labelled `provider_semantics=registry_platform_not_origin`; it does not
+prove which integration produced the CRM record. No provider origin is guessed.
+The consumer renders current-contact attribution as "Envio registrado · campanha
+Apollo/Instantly", with "Campanha atual do contato; origem e entrega não
+verificadas." Legacy provider-origin evidence retains its previous label.
+
+For Apollo/Instantly groups, `metrics.contacts` and `observed_contacts` count the
+distinct proved IDs across the group's tasks and attributed emails. Repeated
+emails and a contact present in both sources count once. The heading is "Contatos
+observados"; this is not a provider enrollment total. Incomplete task/email
+coverage keeps `contacts=null`, with distinct proved `observed_contacts` separate.
+
+`metrics.external_sent` counts only CRM `SENT` + outbound `EMAIL`, with
+`metric_availability.external_sent=crm_recorded_sent_not_delivery`. Events expose
+`crm_recorded_sent` separately from `receipt=null`. Replies and meetings remain
+null for campaigns: a received CRM email is not inferred to be a campaign reply
+or a human response. Existing per-contact context metrics remain separately scoped.
+No meeting search or attribution by an event GUID/source pair runs in this path.
+
+Missing properties produce `configuration_pending`; omitted/unknown/multiple
+campaign values, incomplete associations, missing contact records and conflicting
+associated campaigns do not attribute an event or establish zero sends. A contact
+field explicitly returned as JSON null or an empty string proves no current
+campaign (`without_campaign`), whereas an omitted field remains unknown. An email
+whose fully read associated contacts agree on no current campaign, or on an exact
+active Registry campaign on another platform, is outside this reader's scope.
+These exclusions remain in `unattributed_activities` with `contact_without_campaign`
+or `contact_campaign_out_of_scope`; they do not degrade Apollo/Instantly totals,
+even if the excluded email lacks classification metadata. Mixed/conflicting contact
+campaigns and unknown, inactive or unregistered values still keep totals null. Bounded
+pagination, batch status, schema and budget failures preserve null totals with
+separate observed counters and explicit coverage. A zero is possible only after a
+complete read. Email-only attributed contacts may use the existing timeline route.
+`contact_conflicts` exposes task/current-campaign and executor/Registry differences;
+it does not block admission or change the contact. Executor differences are visible
+diagnostics, not an extra email-attribution gate. `unattributed_activities` preserves
+observed records with the reason attribution was unavailable.
 
 The external Codex Mexico E1 runner has now been recovered and adapted in
 `scripts/mexico_e1_runner.cjs`. It is a callable source module with no autorun,
@@ -190,14 +227,21 @@ private records/paths moved to the operation context, the hash contract explicit
 uses a real newline, toques and structured receipts were wired, and CRM failure was
 separated from provider uncertainty. The raw historical source stays outside Git.
 
-Apollo/Instantly remain **not integrated for campaign attribution in this
-candidate**. The main coordinator's REST investigation on 2026-10-21 confirmed
-that `hs_campaign_guid` and `hs_engagement_source_id` exist on emails/meetings,
-but observed no populated campaign GUID/pair and no runtime bindings. The MCP
-property lookup alone was insufficient to establish schema absence. Observed
-provider sends are not equivalent to correlated HubSpot activity. Metrics remain
-unknown, not zero sends. Configuring integrations/bindings, production writes,
-installation and activation remain outside this local change.
+Task 3 remains **incomplete**. The coordinator reports exact REST property reads
+for `campanha_ativa` and `executor` returned 404 in portal `51412240` on runtime
+`8cf7f1aa`; this implementation does not create either property or autofill contacts.
+Live schema creation/configuration needs its separate reviewed scope. This local
+reader was tested only with synthetic transports; no authenticated live read,
+external write, installation, commit, push or deployment was performed here.
+Independent review and user approval of the diff remain with the principal.
+
+The full Task 3 acceptance tests `test_lead_ocupado_bloqueia` and
+`test_resposta_libera` remain pending. No contact-admission/release writer consumes
+these two properties today. `ReplyCoordinator` pauses cadence state but does not
+clear HubSpot campaign/executor or append the required audit note. Before a writer
+is implemented, settle its entrypoint, executor value contract, concurrent competing
+registrations and the release/note contract. No new ledger, fence, database, schema,
+campaign configuration or fictitious write contract is introduced by this reader.
 
 Focused runner checks (Python 3.14.3, Node 22.23.1 locally):
 
@@ -219,6 +263,17 @@ openpyxl synthetic workbook; the system Python may need a separately configured
 workbook interpreter. No real provider effect, PostgreSQL/production write,
 installation or active automation is demonstrated by these tests.
 
-Focused isolated checks: `PYTHONPATH=_ferramentas python3 -m unittest
-test_thunder_os_cadence_evidence test_thunder_os_cadence_readonly`; use the existing
+Focused isolated checks: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=_ferramentas python3 -m unittest
+test_thunder_os_cadence_contact_campaign test_thunder_os_cadence_evidence test_thunder_os_cadence_readonly`; use the existing
 Playwright harness `_ferramentas/test_painel_cadencias_ui.cjs` for UI coverage.
+
+The Task 3 round 2 browser harness intercepts all requests, uses synthetic responses
+and checks current-contact Apollo/Instantly labels at 1440 and 390 pixels. It keeps
+screenshots under `.scratch/task3-reader-round2-ui/`, without overwriting prior
+evidence. It uses the already available bundled Node/Playwright, with no install:
+
+```sh
+NODE_PATH=/Users/ygorbueno/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules \
+  /Users/ygorbueno/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node \
+  _ferramentas/test_painel_cadencias_ui.cjs
+```

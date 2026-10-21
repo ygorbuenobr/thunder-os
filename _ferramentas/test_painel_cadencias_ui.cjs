@@ -3,6 +3,7 @@ const fs=require('node:fs');
 const path=require('node:path');
 const assert=require('node:assert/strict');
 const {chromium}=require('playwright');
+const outputDir=path.join(__dirname,'../.scratch/task3-reader-round2-ui');
 const html=fs.readFileSync(path.join(__dirname,'painel_modelo.html'),'utf8').replaceAll("/*MODO*/'artifact'","'servidor'").replaceAll('/*DADOS*/{}','{}');
 const task={id:'99',title:'[PILOTO][D0] Empresa exemplo | LINKEDIN',campaign:'PILOTO',contact_ids:['123'],contact_name:'Contato exemplo',channel:'LINKEDIN',status:'NOT_STARTED',due_at:'2026-10-21T15:00:00Z'};
 const unlinked={...task,id:'100',contact_ids:[],contact_name:null};
@@ -31,7 +32,12 @@ const registered={id:'REGISTRY-ONLY',registry:{id:'REGISTRY-ONLY',platform:'code
        {...task,id:'201',status:'COMPLETED',outcome:'sent_with_receipt',receipt:{provider:'gmail',message_id:'abc123',verification:'recorded_confirmation'}},
        {...task,id:'202',status:'WAITING',outcome:'uncertain_no_retry',reason:'Sem recibo; resultado não confirmado.'},
        {...task,id:'203',status:'WAITING',outcome:'blocked',reason:'Histórico incompleto <img src=x onerror=alert(1)>'},
-       {...task,id:'204',status:'COMPLETED',outcome:'completed_without_receipt'}],activities:[{id:'emails:901',provider:'apollo',sent_evidence:true,subject:'Mensagem sintética',occurred_at:'2026-10-21T10:00:00Z',receipt:null}]}];
+       {...task,id:'204',status:'COMPLETED',outcome:'completed_without_receipt'}],activities:[{id:'emails:901',provider:'apollo',origin_provider:'apollo',attribution:'explicit_integration_binding',sent_evidence:true,subject:'Mensagem sintética',occurred_at:'2026-10-21T10:00:00Z',receipt:null}]}];
+      if(registryState==='contact-current')body.campaigns=[['BR-APOLLO-01','apollo'],['BR-INSTANTLY-01','instantly']].map(([id,platform])=>({
+       id,registry:{id,platform,active:true},task_state:'empty',task_coverage_complete:true,external_activity_state:'complete',tasks:[],
+       metrics:{contacts:1,observed_contacts:1,completed_with_receipt:null,pending:0,overdue:0,replies:null,meetings:null,external_sent:1},
+       activities:[{id:'emails:'+platform,campaign:id,contact_ids:['123'],provider:platform,origin_provider:null,provider_semantics:'registry_platform_not_origin',attribution:'contact_current_campaign',sent_evidence:true,crm_recorded_sent:true,delivery_verified:false,historical_membership_verified:false,subject:'Mensagem sintética <img src=x onerror=alert(1)>',occurred_at:'2026-10-21T10:00:00Z',receipt:null}]
+      }));
      }
     }else if(p==='/api/os/v1/cadencias/contacts/123')body={contact_id:'123',contact_name:'Contato exemplo',coverage:{complete:false,limitations:['Somente eventos vinculados.']},events:[{type:'email',subject:'Conversa de exemplo',text:'<img src=x onerror=alert(1)> Texto enviado',occurred_at:'2026-10-20T12:00:00Z',source:'HubSpot',receipt:'receipt:test-only'}]};
     else if(p==='/api/os/v1/panel-capabilities')body={legacy_mutations:false};
@@ -55,8 +61,8 @@ const registered={id:'REGISTRY-ONLY',registry:{id:'REGISTRY-ONLY',platform:'code
    assert.match(await page.locator('#cad-read-events').innerText(),/Texto enviado/);
    assert.equal(await page.locator('#cad-read-events img').count(),0);
    const overflow=await page.evaluate(()=>({width:innerWidth,scroll:document.documentElement.scrollWidth,elements:[...document.querySelectorAll('body *')].filter(e=>e.getBoundingClientRect().width&&e.getBoundingClientRect().right>innerWidth+1).slice(0,8).map(e=>({tag:e.tagName,id:e.id,cls:e.className,right:e.getBoundingClientRect().right}))}));
-   fs.mkdirSync(path.join(__dirname,'../.scratch'),{recursive:true});
-   await page.screenshot({path:path.join(__dirname,`../.scratch/cadencias-registry-timeline-${viewport.width}.png`),fullPage:true});
+   fs.mkdirSync(outputDir,{recursive:true});
+   await page.screenshot({path:path.join(outputDir,`cadencias-registry-timeline-${viewport.width}.png`),fullPage:true});
    assert.equal(overflow.scroll>overflow.width,false,JSON.stringify(overflow));
    fail=true;await page.locator('#cad-read-refresh').click();
    await page.getByText('Não foi possível atualizar. Os dados abaixo são da consulta anterior.').waitFor();
@@ -70,14 +76,14 @@ const registered={id:'REGISTRY-ONLY',registry:{id:'REGISTRY-ONLY',platform:'code
    await page.locator('#cad-read-campaigns details').filter({hasText:'REGISTRY-ONLY'}).locator('summary').click();
    await page.locator('#cad-read-campaigns details').filter({hasText:'REGISTRY-ONLY'}).getByText('Sem tarefas ainda nesta consulta.',{exact:true}).waitFor();
    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
-   await page.screenshot({path:path.join(__dirname,`../.scratch/cadencias-registry-empty-${viewport.width}.png`),fullPage:true});
+   await page.screenshot({path:path.join(outputDir,`cadencias-registry-empty-${viewport.width}.png`),fullPage:true});
    registryState='partial';await page.locator('#cad-read-refresh').click();
    await registryRow.getByText('Tarefas não verificadas: cobertura incompleta.',{exact:true}).waitFor();
    assert.equal(await registryRow.getByRole('cell',{name:'Não verificado',exact:true}).count(),6);
    assert.equal(await page.locator('#cad-read-campaigns').getByText('Sem tarefas ainda nesta consulta.',{exact:true}).count(),0);
    assert.equal(await page.locator('#cad-read-campaigns').getByRole('cell',{name:'PILOTO',exact:true}).count(),1);
    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
-   await page.screenshot({path:path.join(__dirname,`../.scratch/cadencias-registry-partial-${viewport.width}.png`),fullPage:true});
+   await page.screenshot({path:path.join(outputDir,`cadencias-registry-partial-${viewport.width}.png`),fullPage:true});
    registryState='nonempty-partial';await page.locator('#cad-read-refresh').click();
    const partialRow=page.locator('#cad-read-campaigns tbody tr').filter({hasText:'PILOTO'});
    await partialRow.getByText('Tarefas observadas; totais não verificados: cobertura incompleta.',{exact:true}).waitFor();
@@ -87,7 +93,7 @@ const registered={id:'REGISTRY-ONLY',registry:{id:'REGISTRY-ONLY',platform:'code
    await partialDetails.locator('summary').click();
    await partialDetails.getByRole('cell',{name:'Concluída no HubSpot',exact:true}).waitFor();
    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
-   await page.screenshot({path:path.join(__dirname,`../.scratch/cadencias-registry-nonempty-partial-${viewport.width}.png`),fullPage:true});
+   await page.screenshot({path:path.join(outputDir,`cadencias-registry-nonempty-partial-${viewport.width}.png`),fullPage:true});
    registryState='evidence';await page.locator('#cad-read-refresh').click();
    const evidenceDetails=page.locator('#cad-read-campaigns details').filter({hasText:'PILOTO'}).first();
    await evidenceDetails.locator('summary').first().click();
@@ -96,14 +102,32 @@ const registered={id:'REGISTRY-ONLY',registry:{id:'REGISTRY-ONLY',platform:'code
    await evidenceDetails.getByText('Enviado com recibo registrado',{exact:true}).waitFor();
    assert.match(await evidenceDetails.innerText(),/Histórico incompleto/);
    assert.match(await evidenceDetails.innerText(),/Enviado \(Apollo\)/);
+   assert.doesNotMatch(await evidenceDetails.innerText(),/Campanha atual do contato;/);
    assert.equal(await evidenceDetails.locator('img').count(),0);
    assert.equal(await evidenceDetails.getByRole('button',{name:/retry|repetir|reenviar/i}).count(),0);
    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
-   await page.screenshot({path:path.join(__dirname,`../.scratch/cadencias-evidence-${viewport.width}.png`),fullPage:true});
+   await page.screenshot({path:path.join(outputDir,`cadencias-evidence-${viewport.width}.png`),fullPage:true});
+   registryState='contact-current';await page.locator('#cad-read-refresh').click();
+   await page.locator('#cad-read-campaigns').getByRole('columnheader',{name:'Contatos observados',exact:true}).waitFor();
+   for(const [id,platform] of [['BR-APOLLO-01','Apollo'],['BR-INSTANTLY-01','Instantly']]){
+    const currentRow=page.locator('#cad-read-campaigns tbody tr').filter({hasText:id});
+    await currentRow.waitFor();
+    assert.equal(await currentRow.getByRole('cell').nth(1).innerText(),'1');
+    const currentDetails=page.locator('#cad-read-campaigns > details').filter({hasText:id});
+    await currentDetails.locator('summary').first().focus();await page.keyboard.press('Enter');
+    await currentDetails.getByText('Envio registrado · campanha '+platform,{exact:true}).waitFor();
+    assert.match(await currentDetails.innerText(),/Campanha atual do contato; origem e entrega não verificadas\./);
+    assert.doesNotMatch(await currentDetails.innerText(),/Enviado \((Apollo|Instantly)\)/);
+    assert.equal(await currentDetails.locator('img').count(),0);
+    assert.equal(await currentDetails.locator('button').count(),0);
+   }
+   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+   await page.screenshot({path:path.join(outputDir,`cadencias-contact-current-${viewport.width}.png`),fullPage:true});
    assert.equal(requests.filter(r=>r.method!=='GET').length,0);
    assert.deepEqual(errors,[]);
    await page.close();
   }
-  console.log('PASS: desktop/mobile, timeline, escaping, partial, stale failure, unknown empty, registered empty/partial, nonempty partial totals unknown, null outcomes, no overflow, GET-only');
+  console.log('PASS: 1440/390, timeline, escaping, partial, stale failure, unknown empty, registered empty/partial, nonempty partial totals unknown, null outcomes, legacy provider label preserved, current-contact Apollo/Instantly labels and origin/delivery note, observed contact count, keyboard details, no overflow, GET-only');
+  console.log('Screenshots: '+outputDir);
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

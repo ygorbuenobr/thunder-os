@@ -162,29 +162,28 @@ class EvidenceTests(unittest.TestCase):
 
 
 class ExternalActivityTests(unittest.TestCase):
-    def test_explicit_incoming_and_meeting_attribution_and_missing_meeting_schema(self):
+    # The user's Task 3 decision supersedes GUID/source attribution in Task 2.
+    def test_event_pair_does_not_attribute_incoming_or_meetings(self):
         provider = Provider()
         provider.tasks = [task(title='[APOLLO-TEST][E1] Test | EMAIL', hs_task_sequence_id=None,
                                hs_task_sequence_step_enrollment_id=None)]
         common = {'hs_campaign_guid': 'guid', 'hs_engagement_source_id': 'app', 'hs_timestamp': STAMP}
         email = {'id': '901', 'properties': {**common, 'hs_email_direction': 'INCOMING_EMAIL'}}
         meeting = {'id': '902', 'properties': {**common, 'hs_meeting_outcome': 'SCHEDULED'}}
-        for missing_schema in [False, True]:
-            def request(method, path, body, headers, timeout):
-                if path.endswith('/properties/meetings') and missing_schema:
-                    return 200, json.dumps({'results': [{'name': 'hs_timestamp'}]}).encode()
-                if path.endswith('/emails/search'):
-                    return 200, json.dumps({'results': [email], 'total': 1}).encode()
-                if path.endswith('/meetings/search'):
-                    return 200, json.dumps({'results': [meeting], 'total': 1}).encode()
-                return provider(method, path, body, headers, timeout)
-            result = CadenceReadonlyConsole(lambda: 'synthetic-token', request=request, sleep=lambda _: None,
-                activity_bindings=[{'campaign_id': 'APOLLO-TEST', 'provider': 'apollo',
-                                   'campaign_guid': 'guid', 'source_id': 'app'}]).snapshot()
-            metrics = result['campaigns'][0]['metrics']
-            self.assertEqual(metrics['replies'], 1)
-            self.assertEqual(metrics['meetings'], None if missing_schema else 1)
-            self.assertEqual(metrics['external_sent'], 0)
+        def request(method, path, body, headers, timeout):
+            if path.endswith('/emails/search'):
+                return 200, json.dumps({'results': [email], 'total': 1}).encode()
+            if path.endswith('/meetings/search'):
+                return 200, json.dumps({'results': [meeting], 'total': 1}).encode()
+            return provider(method, path, body, headers, timeout)
+        result = CadenceReadonlyConsole(lambda: 'synthetic-token', request=request, sleep=lambda _: None,
+            activity_bindings=[{'campaign_id': 'APOLLO-TEST', 'provider': 'apollo',
+                               'campaign_guid': 'guid', 'source_id': 'app'}]).snapshot()
+        group = result['campaigns'][0]
+        self.assertIsNone(group['metrics']['replies'])
+        self.assertIsNone(group['metrics']['meetings'])
+        self.assertIsNone(group['metrics']['external_sent'])
+        self.assertEqual(group['activities'], [])
 
     def test_wrong_portal_stops_all_provider_reads_after_identity(self):
         class Registry:
@@ -201,32 +200,29 @@ class ExternalActivityTests(unittest.TestCase):
         self.assertFalse(result['coverage']['complete'])
 
     def test_missing_activity_classification_is_unknown_not_zero(self):
-        provider = Provider()
-        provider.tasks = [task(title='[APOLLO-TEST][E1] Test | EMAIL', hs_task_sequence_id=None,
-                               hs_task_sequence_step_enrollment_id=None)]
+        from test_thunder_os_cadence_contact_campaign import ContactProvider, Registry, CAMPAIGN
         for missing in ['hs_email_status', 'hs_email_direction']:
-            props = {'hs_campaign_guid': 'guid', 'hs_engagement_source_id': 'app', 'hs_email_status': 'SENT',
-                     'hs_email_direction': 'EMAIL', 'hs_timestamp': STAMP}
-            props.pop(missing)
-            def request(method, path, body, headers, timeout):
-                if path.endswith('/emails/search'):
-                    return 200, json.dumps({'results': [{'id': '1', 'properties': props}], 'total': 1}).encode()
-                return provider(method, path, body, headers, timeout)
-            result = CadenceReadonlyConsole(lambda: 'synthetic-token', request=request, sleep=lambda _: None,
-                activity_bindings=[{'campaign_id': 'APOLLO-TEST', 'provider': 'apollo',
-                                   'campaign_guid': 'guid', 'source_id': 'app'}]).snapshot()
-            self.assertIsNone(result['campaigns'][0]['metrics']['external_sent'], missing)
+            provider = ContactProvider()
+            provider.emails[0]['properties'].pop(missing)
+            result = CadenceReadonlyConsole(lambda: 'synthetic-token', request=provider, sleep=lambda _: None,
+                                             campaign_registry=Registry()).snapshot()
+            group = next(row for row in result['campaigns'] if row['id'] == CAMPAIGN)
+            self.assertIsNone(group['metrics']['external_sent'], missing)
+            self.assertEqual(group['metrics']['observed_external_sent'], 0)
             self.assertFalse(result['coverage']['complete'])
 
-    def test_runtime_binding_input_failures_degrade_and_keep_tasks(self):
+    def test_runtime_binding_input_is_unused_for_contact_attribution(self):
         from thunder_os.cadence_readonly import environment_activity_bindings
+        from test_thunder_os_cadence_contact_campaign import ContactProvider, Registry, CAMPAIGN
         for raw in ['not-json', '{}', '[{"campaign_id":true}]']:
             with patch.dict(os.environ, {'THUNDER_OS_CADENCE_ACTIVITY_BINDINGS': raw}):
-                result = CadenceReadonlyConsole(lambda: 'synthetic-token', request=Provider(), sleep=lambda _: None,
+                result = CadenceReadonlyConsole(lambda: 'synthetic-token', request=ContactProvider(),
+                    sleep=lambda _: None, campaign_registry=Registry(),
                     activity_bindings_loader=environment_activity_bindings).snapshot()
-            self.assertEqual(len(result['campaigns'][0]['tasks']), 1)
-            self.assertIsNone(result['campaigns'][0]['metrics']['external_sent'])
-            self.assertIn('external_emails:bindings_invalid', result['coverage']['limitations'])
+            group = next(row for row in result['campaigns'] if row['id'] == CAMPAIGN)
+            self.assertEqual(group['metrics']['external_sent'], 1)
+            self.assertEqual(group['activities'][0]['attribution'], 'contact_current_campaign')
+            self.assertNotIn('external_emails:bindings_invalid', result['coverage']['limitations'])
 
     def test_contact_context_alone_never_attributes_activity(self):
         result = CadenceReadonlyConsole(lambda: 'synthetic-token', request=Provider(), sleep=lambda _: None).timeline('100')
@@ -235,48 +231,36 @@ class ExternalActivityTests(unittest.TestCase):
         self.assertIsNone(email['receipt'])
 
     def test_instantly_pagination_or_schema_gap_keeps_total_unknown(self):
-        provider = Provider()
-        provider.tasks = [task(title='[INSTANTLY-TEST][E1] Test | EMAIL', hs_task_sequence_id=None,
-                               hs_task_sequence_step_enrollment_id=None)]
-        binding = {'campaign_id': 'INSTANTLY-TEST', 'provider': 'instantly', 'campaign_guid': 'guid', 'source_id': 'app'}
-        record = {'id': '1', 'properties': {'hs_campaign_guid': 'guid', 'hs_engagement_source_id': 'app',
-                  'hs_email_status': 'SENT', 'hs_email_direction': 'EMAIL', 'hs_timestamp': STAMP}}
+        from test_thunder_os_cadence_contact_campaign import ContactProvider, Registry, OTHER, contact
         for schema_missing in [True, False]:
+            provider = ContactProvider()
+            provider.contacts['100'] = contact(campaign=OTHER, executor='instantly')
+            provider.email_pages = {'': {'results': provider.emails, 'paging': {'next': {'after': 'next'}}}}
             def request(method, path, body, headers, timeout):
                 if path.endswith('/properties/emails') and schema_missing:
                     return 200, json.dumps({'results': []}).encode()
-                if path.endswith('/emails/search'):
-                    return 200, json.dumps({'results': [record], 'paging': {'next': {'after': 'next'}}}).encode()
                 return provider(method, path, body, headers, timeout)
             result = CadenceReadonlyConsole(lambda: 'synthetic-token', request=request, sleep=lambda _: None,
-                max_pages=1, activity_bindings=[binding]).snapshot()
-            group = result['campaigns'][0]
+                                             campaign_registry=Registry(), max_pages=1).snapshot()
+            group = next(row for row in result['campaigns'] if row['id'] == OTHER)
             self.assertIsNone(group['metrics']['external_sent'])
             self.assertEqual(group['metrics']['observed_external_sent'], 0 if schema_missing else 1)
             self.assertFalse(result['coverage']['complete'])
 
     def test_email_apollo_conta_como_enviado_not_delivery_receipt(self):
-        provider = Provider()
-        provider.tasks = [task(title='[BR-APOLLO-01][E1] Test | EMAIL',
-                               hs_task_sequence_id=None, hs_task_sequence_step_enrollment_id=None)]
-        row = {'id': '900', 'properties': {'hs_email_status': 'SENT', 'hs_email_direction': 'EMAIL',
-               'hs_campaign_guid': 'synthetic-guid', 'hs_engagement_source_id': 'synthetic-app',
-               'hs_email_subject': 'Example', 'hs_timestamp': STAMP}}
-        def request(method, path, body, headers, timeout):
-            if path == '/crm/v3/objects/emails/search':
-                provider.calls.append((method, path, deepcopy(body)))
-                return 200, json.dumps({'results': [row], 'total': 1}).encode()
-            return provider(method, path, body, headers, timeout)
-        console = CadenceReadonlyConsole(lambda: 'synthetic-test-token', request=request, sleep=lambda _: None,
-            activity_bindings=[{'campaign_id': 'BR-APOLLO-01', 'provider': 'apollo',
-                                'campaign_guid': 'synthetic-guid', 'source_id': 'synthetic-app'}])
-        group = console.snapshot()['campaigns'][0]
+        from test_thunder_os_cadence_contact_campaign import ContactProvider, Registry, CAMPAIGN
+        provider = ContactProvider()
+        console = CadenceReadonlyConsole(lambda: 'synthetic-token', request=provider, sleep=lambda _: None,
+                                         campaign_registry=Registry())
+        group = next(row for row in console.snapshot()['campaigns'] if row['id'] == CAMPAIGN)
         self.assertEqual(group['metrics']['external_sent'], 1)
         self.assertEqual(group['activities'][0]['provider'], 'apollo')
+        self.assertEqual(group['activities'][0]['provider_semantics'], 'registry_platform_not_origin')
+        self.assertIsNone(group['activities'][0]['origin_provider'])
         self.assertIsNone(group['activities'][0]['receipt'])
-        row['properties']['hs_campaign_guid'] = 'another-campaign'
+        provider.contacts['100']['properties']['campanha_ativa'] = 'unknown'
         console._cache.clear()
-        group = console.snapshot()['campaigns'][0]
+        group = next(row for row in console.snapshot()['campaigns'] if row['id'] == CAMPAIGN)
         self.assertIsNone(group['metrics']['external_sent'])
         self.assertEqual(group['activities'], [])
 

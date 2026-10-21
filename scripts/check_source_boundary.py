@@ -55,6 +55,7 @@ ALLOWED_FILES = {
     "_ferramentas/painel_modelo.html",
 }
 ALLOWED_TESTS = {
+    "test_thunder_os_cadence_contact_campaign.py",
     "test_thunder_os_mexico_runner.py",
     "test_thunder_os_cadence_evidence.py",
     "test_thunder_os_cadence_readonly.py",

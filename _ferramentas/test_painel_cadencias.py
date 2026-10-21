@@ -12,7 +12,7 @@ import painel_servidor as panel
 from thunder_os.campaign_registry import CampaignRegistry
 from thunder_os.db import Repository
 from test_thunder_os_campaign_registry import config
-from test_thunder_os_cadence_readonly import Provider
+from test_thunder_os_cadence_contact_campaign import ContactProvider, contact
 
 
 class CadencePanelTests(unittest.TestCase):
@@ -97,12 +97,14 @@ class CadencePanelTests(unittest.TestCase):
             registry.register({**config(), 'campaign_id': 'APOLLO-TEST', 'platform': 'apollo'}, 'ygor', 0)
             before = registry.repo.list_state('campaign_config')
             server = SimpleNamespace(serve_forever=Mock())
-            provider = Provider()
+            provider = ContactProvider()
             provider.tasks = []
+            provider.contacts['100'] = contact(campaign='APOLLO-TEST')
             binding = {'campaign_id': 'APOLLO-TEST', 'provider': 'apollo', 'campaign_guid': 'test-guid', 'source_id': 'test-app'}
             def read(method, path, body, headers, timeout):
                 if path == '/crm/v3/objects/emails/search':
-                    self.assertEqual(body['filterGroups'][0]['filters'][0]['value'], 'test-guid')
+                    self.assertEqual(body['filterGroups'], [])
+                    provider.email_links['901'] = ['100']
                     return 200, json.dumps({'results': [{'id': '901', 'properties': {
                         'hs_campaign_guid': 'test-guid', 'hs_engagement_source_id': 'test-app',
                         'hs_email_status': 'SENT', 'hs_email_direction': 'EMAIL', 'hs_timestamp': '2026-10-21T10:00:00Z'}}], 'total': 1}).encode()
@@ -131,6 +133,8 @@ class CadencePanelTests(unittest.TestCase):
             self.assertEqual(groups['REGISTERED']['task_state'], 'empty')
             self.assertEqual(groups['APOLLO-TEST']['metrics']['external_sent'], 1)
             self.assertEqual(groups['APOLLO-TEST']['activities'][0]['provider'], 'apollo')
+            self.assertEqual(groups['APOLLO-TEST']['activities'][0]['attribution'], 'contact_current_campaign')
+            self.assertIsNone(groups['APOLLO-TEST']['activities'][0]['origin_provider'])
             self.assertEqual(registry.repo.list_state('campaign_config'), before)
             self.assertEqual(registry.repo.effects(), [])
             server.serve_forever.assert_called_once_with()
