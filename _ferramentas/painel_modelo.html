@@ -193,6 +193,7 @@ body[data-aba="cadencias"] .detalhes-sistema{display:none}
 #cad-read-detail{scroll-margin-top:20px}
 #cad-read-conflicts{overflow-wrap:anywhere;min-width:0}
 #cad-reply-control{overflow-wrap:anywhere;min-width:0;max-width:100%}
+#cad-source-list{overflow-wrap:anywhere;min-width:0;max-width:100%}
 .agenttrail-head{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
 .agenttrail-hosts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:28px;margin-top:20px}
 .agenttrail-host{border-top:3px solid var(--mostarda);padding-top:14px;min-width:0}
@@ -301,6 +302,7 @@ button,.btn,select,input:not([type="hidden"]),summary {min-height:44px;}
   <section class="cad-read-section"><h3>Integrações de e-mail</h3><div id="cad-email-integrations" role="status">Não verificado.</div></section>
   <section class="cad-read-section"><h3>Respostas e paradas</h3><div id="cad-reply-control" role="status">Não verificado.</div></section>
   <section class="cad-read-section"><h3>LinkedIn</h3><p id="cad-linkedin-preparation" role="status">Não verificado.</p></section>
+  <section class="cad-read-section"><h3>Fontes · Para aprovar</h3><div id="cad-source-list" role="status">Não verificado.</div></section>
   <section class="cad-read-section" id="cad-read-conflicts-section" hidden><h3>Conflitos de campanha</h3><div id="cad-read-conflicts"></div></section>
   <section class="cad-read-section"><h3>Hoje</h3><div id="cad-read-today"></div></section>
   <section class="cad-read-section"><h3>Sem vínculo</h3><div id="cad-read-unlinked"></div></section>
@@ -1809,9 +1811,20 @@ async function atualizarCadencias(){
   await carregarIntegracoesEmail();
   await carregarControleRespostas();
   await carregarPreparacaoLinkedin();
+  await carregarFontesCampanhas();
   try{cadReadSnapshot=await apiServidor('/api/os/v1/cadencias');renderCadencias(cadReadSnapshot);if(cadReadContact)await abrirCadenciaContato(cadReadContact,false);}
   catch(e){$('cad-read-status').textContent=cadReadSnapshot?'Não foi possível atualizar. Os dados abaixo são da consulta anterior.':'Não foi possível consultar o HubSpot. Tente atualizar.';}
   finally{cadReadLoading=false;$('cad-read-refresh').disabled=false;}
+}
+async function carregarFontesCampanhas(){
+  const target=$('cad-source-list');
+  try{
+    const state=await apiServidor('/api/os/v1/campaign-sources');
+    const candidates=Array.isArray(state.candidates)?state.candidates:[],held=Array.isArray(state.held)?state.held:[];
+    target.innerHTML='<p>Coleta automática desligada. Lista, vagas e engajadores dependem de fonte e ICP confirmados.</p>'+
+      (candidates.length?'<ul>'+candidates.slice(0,20).map(c=>`<li><b>${esc(c.company)}</b> · ${esc(c.domain)} · aguardando aprovação<p>${esc(c.signals?.[0]?.fact||'Pesquisa da conta pendente.')}</p><small>${esc(c.signals?.[0]?.url||'Lista importada')} · ${esc(c.signals?.[0]?.published_on||'Data não verificada')}</small></li>`).join('')+'</ul>':'<p>Nenhum candidato qualificado publicado. Isso não significa ausência de oportunidades.</p>')+
+      (held.length?`<details><summary>${esc(held.length)} observações retidas</summary><ul>`+held.slice(0,20).map(c=>`<li>${esc(c.company||'Conta não confirmada')} · ${esc(c.reason||'Verificação pendente')}</li>`).join('')+'</ul></details>':'');
+  }catch(error){target.textContent='Fontes e candidatos não verificados.';}
 }
 async function carregarPreparacaoLinkedin(){
   const target=$('cad-linkedin-preparation');

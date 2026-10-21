@@ -19,6 +19,25 @@ from test_thunder_os_cadence_contact_campaign import ContactProvider, contact
 
 
 class CadencePanelTests(unittest.TestCase):
+    def test_campaign_sources_are_read_only_and_ygor_scoped(self):
+        handler=object.__new__(panel.Handler)
+        sources=Mock()
+        sources.snapshot.return_value={'automatic_collection_enabled':False,'candidates':[]}
+        handler.server=SimpleNamespace(thunder_service=object(),thunder_campaign_sources=sources)
+        handler.client_address=('127.0.0.1',1234)
+        handler.headers={'X-Authenticated-User':'ygor'}
+        handler.responder=lambda status,body:(status,body)
+        handler.command='GET'
+        self.assertFalse(handler.thunder_api(urlsplit('/api/os/v1/campaign-sources'))[1]['automatic_collection_enabled'])
+        handler.command='POST'
+        with self.assertRaises(panel.Erro) as error:
+            handler.thunder_api(urlsplit('/api/os/v1/campaign-sources'))
+        self.assertEqual(error.exception.status,405)
+        handler.command='GET';handler.headers={'X-Authenticated-User':'claude'}
+        with self.assertRaises(panel.Erro) as error:
+            handler.thunder_api(urlsplit('/api/os/v1/campaign-sources'))
+        self.assertEqual(error.exception.status,403)
+        sources.record.assert_not_called()
     def test_linkedin_preparation_has_no_execution_route(self):
         handler=object.__new__(panel.Handler)
         prepared=Mock()

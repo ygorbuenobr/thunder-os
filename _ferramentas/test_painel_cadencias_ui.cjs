@@ -44,6 +44,7 @@ const registered={id:'REGISTRY-ONLY',registry:{id:'REGISTRY-ONLY',platform:'code
     else if(p==='/api/os/v1/integrations/external-email/status')body={schema_version:1,automatic_reader_enabled:false,crm_import_enabled:false,webhook_enabled:false};
     else if(p==='/api/os/v1/reply-control')body={external_pause_enabled:false,alerts:[{title:'Synthetic alert <img src=x onerror=alert(1)>',reason:'Pausa externa desligada.',content:'X'.repeat(4000),campaign_id:'C'.repeat(100),hubspot_contact_id:'123'}]};
     else if(p==='/api/os/v1/linkedin-preparation')body={executor_enabled:false,quota_reader_configured:false};
+    else if(p==='/api/os/v1/campaign-sources')body={automatic_collection_enabled:false,candidates:[{company:'Synthetic <img src=x onerror=alert(1)>','domain':'D'.repeat(253),signals:[{fact:'F'.repeat(1000),url:'https://www.linkedin.com/jobs/view/123',published_on:'2026-10-21'}]}],held:[{company:'Held','reason':'icp_not_confirmed'}]};
     else if(p==='/api/os/v1/session')body={actor:'ygor',nonce:'synthetic-nonce'};
     else if(p==='/api/os/v1/reply-control/manual'){
      const sent=req.postDataJSON();
@@ -69,6 +70,8 @@ const registered={id:'REGISTRY-ONLY',registry:{id:'REGISTRY-ONLY',platform:'code
    assert.equal(await page.locator('#cad-email-integrations').getByRole('cell',{name:'Desligado',exact:true}).count(),4);
    assert.match(await page.locator('#cad-reply-control').innerText(),/Pausas externas: desligadas/);
    assert.match(await page.locator('#cad-linkedin-preparation').innerText(),/Executor desligado/);
+   assert.match(await page.locator('#cad-source-list').innerText(),/aguardando aprovação/);
+   assert.equal(await page.locator('#cad-source-list img').count(),0);
    assert.equal(await page.locator('#cad-reply-control img').count(),0);
    const before=requests.filter(r=>r.p==='/api/os/v1/cadencias').length;
    await page.clock.runFor(60001);

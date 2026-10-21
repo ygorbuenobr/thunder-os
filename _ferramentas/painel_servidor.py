@@ -1344,6 +1344,15 @@ class Handler(BaseHTTPRequestHandler):
         service = getattr(self.server, 'thunder_service', None)
         if service is None:
             raise Erro('Thunder OS indisponível', 503)
+        if rota.path == '/api/os/v1/campaign-sources':
+            if self.thunder_proxy_actor() != 'ygor':
+                raise Erro('Somente Ygor pode consultar fontes.',403)
+            if self.command != 'GET' or rota.query:
+                raise Erro('Fontes permitem somente consulta.',405)
+            sources=getattr(self.server,'thunder_campaign_sources',None)
+            if sources is None:
+                raise Erro('Fontes indisponíveis.',503)
+            return self.responder(200,sources.snapshot())
         if rota.path == '/api/os/v1/linkedin-preparation':
             if self.thunder_proxy_actor() != 'ygor':
                 raise Erro('Somente Ygor pode consultar o executor.',403)
@@ -1976,6 +1985,8 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
                 external_pause_enabled=False)
             from thunder_os.linkedin_preparation import LinkedInPreparation
             servidor.thunder_linkedin_preparation=LinkedInPreparation(CampaignRegistry(repository))
+            from thunder_os.campaign_sources import CampaignSources
+            servidor.thunder_campaign_sources=CampaignSources(repository)
             configure_connectsafely_server(servidor, servidor.thunder_service.repository, connectsafely_factory)
             seqd_read = os.environ.get('THUNDER_OS_SEQD_READ_ENABLED', '') == 'true'
             seqd_send = external_effects_enabled() and os.environ.get('THUNDER_OS_SEQD_SEND_ENABLED', '') == 'true'

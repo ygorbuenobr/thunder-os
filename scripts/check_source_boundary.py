@@ -15,6 +15,7 @@ ALLOWED_FILES = {
     "docs/external-email-integrations.md",
     "docs/task4-reply-control.md",
     "docs/task5-linkedin-preparation.md",
+    "docs/task6-campaign-sources.md",
     "_ferramentas/test_briefing_cards_ui.cjs",
     "_ferramentas/test_painel_cadencias.py",
     "_ferramentas/test_painel_cadencias_ui.cjs",
@@ -59,6 +60,7 @@ ALLOWED_FILES = {
     "_ferramentas/painel_modelo.html",
 }
 ALLOWED_TESTS = {
+    "test_thunder_os_campaign_sources.py",
     "test_thunder_os_linkedin_preparation.py",
     "test_thunder_os_reply_control.py",
     "test_thunder_os_external_email_import.py",
