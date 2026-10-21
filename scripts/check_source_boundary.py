@@ -17,6 +17,7 @@ ALLOWED_FILES = {
     "docs/task5-linkedin-preparation.md",
     "docs/task6-campaign-sources.md",
     "docs/task7-hermes-verification.md",
+    "docs/eval-trajectory.md",
     "_ferramentas/test_briefing_cards_ui.cjs",
     "_ferramentas/test_painel_cadencias.py",
     "_ferramentas/test_painel_cadencias_ui.cjs",
@@ -61,6 +62,7 @@ ALLOWED_FILES = {
     "_ferramentas/painel_modelo.html",
 }
 ALLOWED_TESTS = {
+    "test_thunder_os_eval_trajectory.py",
     "test_thunder_os_campaign_scoreboard.py",
     "test_thunder_os_panel_verification.py",
     "test_thunder_os_campaign_sources.py",
