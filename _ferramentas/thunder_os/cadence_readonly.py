@@ -20,11 +20,14 @@ import http.client
 import json
 import os
 import re
+import sqlite3
 import ssl
 import threading
 import time
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
+
+from .approvals import ApprovalError
 
 PORTAL_ID = "51412240"
 OWNER_ID = "92901049"
@@ -189,7 +192,8 @@ def _partial(coverage, reason):
         coverage["limitations"].append(reason)
 
 
-def project_snapshot(records, *, collected_at, coverage=None, associations=None, associations_complete=None):
+def project_snapshot(records, *, collected_at, coverage=None, associations=None, associations_complete=None,
+                     registered_campaigns=()):
     """Pure deterministic projection, including visibly unknown metrics."""
     associations = associations or {}
     if associations_complete is None:
@@ -203,7 +207,12 @@ def project_snapshot(records, *, collected_at, coverage=None, associations=None,
     now = datetime.fromisoformat(collected_at.replace("Z", "+00:00"))
     today = now.astimezone(ZoneInfo("America/Sao_Paulo")).date()
     campaigns, planned = [], []
-    for campaign in sorted({task["campaign"] for task in ordered}):
+    registered = {row['id']: row for row in registered_campaigns}
+    sources = (coverage or {}).get('sources', {})
+    task_coverage_complete = all(sources.get(key, {}).get('complete') is True
+                                 for key in ('tasks', 'task_schema'))
+    # Only exact campaign IDs join. A registry ID is not a prefix or alias rule.
+    for campaign in sorted({task["campaign"] for task in ordered} | registered.keys()):
         rows = [task for task in ordered if task["campaign"] == campaign]
         pending = [task for task in rows if task["status"] in {"NOT_STARTED", "IN_PROGRESS", "WAITING", "DEFERRED"}]
         overdue = [task for task in pending if task["due_at"] and
@@ -214,12 +223,21 @@ def project_snapshot(records, *, collected_at, coverage=None, associations=None,
                    "pending": len(pending), "overdue": len(overdue),
                    "replies": None, "meetings": None,
                    "unknown_status": sum(task["status"] == "UNKNOWN" for task in rows)}
-        metrics["observed_contacts"] = metrics["contacts"]
+        task_counts = ('contacts', 'tasks', 'completed_status', 'pending', 'overdue', 'unknown_status')
+        for key in task_counts:
+            metrics['observed_' + key] = metrics[key]
         if any(task["link_status"] == "unverified" for task in rows):
             metrics["contacts"] = None
+        task_state = 'observed' if rows else 'empty' if task_coverage_complete else 'unknown'
+        if not task_coverage_complete:
+            for key in task_counts:
+                metrics[key] = None
         campaigns.append({"id": campaign, "metrics": metrics, "tasks": rows,
+                          "registry": deepcopy(registered.get(campaign)),
+                          "task_state": task_state, "task_coverage_complete": task_coverage_complete,
                           "metric_availability": {"completed_with_receipt": "receipt_contract_unavailable",
-                              "contacts": "association_read_incomplete" if metrics["contacts"] is None else "observed_task_contacts",
+                              "contacts": "task_read_incomplete" if not task_coverage_complete else
+                                  "association_read_incomplete" if metrics["contacts"] is None else "observed_task_contacts",
                               "replies": "campaign_attribution_unavailable",
                               "meetings": "campaign_attribution_unavailable"}})
         planned.extend(task for task in pending if task["due_at"] and
@@ -490,10 +508,11 @@ class _ReadSession:
 class CadenceReadonlyConsole:
     def __init__(self, credential_loader, *, request=None, clock=time.time,
                  monotonic=time.monotonic, max_pages=100, max_requests=150, budget_seconds=45,
-                 sleep=time.sleep):
+                 sleep=time.sleep, campaign_registry=None):
         self.adapter = HubSpotReadonlyAdapter(credential_loader, request=request, monotonic=monotonic,
             max_pages=max_pages, max_requests=max_requests, budget_seconds=budget_seconds, sleep=sleep)
         self.clock, self.monotonic = clock, monotonic
+        self.campaign_registry = campaign_registry
         self._lock, self._cache = threading.RLock(), {}
 
     def _cached(self, key, build):
@@ -533,16 +552,32 @@ class CadenceReadonlyConsole:
 
     def _snapshot(self):
         coverage, associations = _coverage(), {}
+        registered = []
+        if self.campaign_registry is not None:
+            try:
+                registered = self.campaign_registry.list_campaigns()
+                coverage['sources']['campaign_registry'] = {'complete': True, 'records': len(registered)}
+            except (ApprovalError, sqlite3.Error):
+                coverage['sources']['campaign_registry'] = {'complete': False, 'error': 'unavailable'}
+                _partial(coverage, 'campaign_registry:unavailable')
         session = self.adapter.session()
-        session.identity()
-        records = self._tasks(session, coverage)
-        if not records and coverage["sources"].get("tasks", {}).get("error"):
+        try:
+            session.identity()
+            records = self._tasks(session, coverage)
+        except CadenceReadonlyError as exc:
+            if self.campaign_registry is None:
+                raise
+            records = []
+            coverage['sources']['tasks'] = {'complete': False, 'records': 0, 'error': exc.code}
+            _partial(coverage, 'tasks:' + exc.code)
+        if self.campaign_registry is None and not records and coverage["sources"].get("tasks", {}).get("error"):
             raise CadenceReadonlyError("task_collection_unavailable")
         bracket_ids = [task["id"] for record in records if
                        (task := project_task(record)) and task["source_kind"] == "title"]
         associations, resolved = session.task_contacts(bracket_ids, coverage)
         result = project_snapshot(records, collected_at=self._now(), coverage=coverage,
-                                  associations=associations, associations_complete=resolved)
+                                  associations=associations, associations_complete=resolved,
+                                  registered_campaigns=registered)
         contacts = sorted({cid for campaign in result["campaigns"] for task in campaign["tasks"] for cid in task["contact_ids"]})
         names = session.contact_names(contacts, result["coverage"])
         for group in result["campaigns"]:

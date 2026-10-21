@@ -157,6 +157,60 @@ class CampaignConfirmationTests(unittest.TestCase):
         self.adapter.send.assert_called_once()
         self.assertEqual(self.repo.effects()[0]['state'],'sent')
 
+    def assert_external_campaign_cannot_execute(self, platform, campaign_id):
+        cfg = {**self.config, 'campaign_id': campaign_id, 'platform': platform}
+        registered = self.service.configure_campaign(cfg, 'ygor', expected_version=0)
+        canonical = self.service.campaign_registry.load(campaign_id)
+        self.assertEqual(canonical, registered['context'])
+        self.assertEqual(registered['authorized_by'], 'ygor')
+        cadence = self.repo.put_state('cadence', 'batch-1', {
+            **self.cadence, 'execution_context': canonical})
+        now = datetime.now(timezone.utc)
+        pack = ApprovalService(lambda: False).approve_pack(
+            cadence['id'], cadence['version'], [self.service._approval_step(self.step)],
+            'ygor', now + timedelta(hours=1), now)
+        request = execution_request(canonical, cadence['id'], cadence['version'],
+                                    dict(pack.step_hashes), 0)
+        with self.assertRaisesRegex(ApprovalError, '^campaign_context_changed$'):
+            self.approve(request)
+        self.assertIsNone(self.repo.get_state('approval', 'batch-1'))
+
+        # Persist an otherwise valid external approval fixture: denial must be
+        # the OS platform boundary, not missing approval, stale hash or expiry.
+        confirmation = confirm_execution(request, request, 'ygor', pack.expires_at, now)
+        validate_execution(confirmation, request, now, platform=platform)
+        approval = self.repo.put_state('approval', 'batch-1', {
+            'actor': 'ygor', 'status': 'active', 'cadence_version': cadence['version'],
+            'step_ids': list(pack.step_ids), 'step_hashes': dict(pack.step_hashes),
+            'expires_at': pack.expires_at.isoformat(), 'execution_confirmation': confirmation})
+        approved = self.repo.put_state('cadence', 'batch-1', {
+            **cadence, 'status': 'approved', 'steps': [{**self.step, 'status': 'approved'}]})
+        self.assertEqual(approved['version'], approval['cadence_version'] + 1)
+        with self.assertRaisesRegex(ApprovalError, '^campaign_context_changed$'):
+            self.queue()
+        self.assertEqual(self.repo.effects(), [])
+
+        # A job already in the outbox must be rejected by the actual worker too.
+        effect_hash = dict(pack.step_hashes)['s1']
+        self.repo.enqueue_effect(effect_hash, {
+            'cadence_id': 'batch-1', 'step': approved['steps'][0], 'actor': 'ygor',
+            'approval_hash': effect_hash, 'execution_confirmation_hash': payload_hash(confirmation)})
+        self.assertTrue(self.worker().process_one())
+        self.assertFalse(self.worker().process_one())
+        self.assertEqual(self.repo.effects()[0]['state'], 'failed')
+        self.assertEqual(self.repo.effects()[0]['error_code'], 'campaign_context_changed')
+        self.adapter.send.assert_not_called()
+        self.assertEqual(self.ledger.calls, [])
+
+    def test_registry_plataforma_apollo(self):
+        self.assert_external_campaign_cannot_execute('apollo', 'BR-APOLLO-01')
+
+    def test_other_external_platforms_cannot_execute(self):
+        for platform in ('hubspot_seq', 'codex_local', 'chattie', 'instantly'):
+            with self.subTest(platform=platform):
+                self.setUp()
+                self.assert_external_campaign_cannot_execute(platform, 'synthetic-' + platform)
+
     def test_parallel_workers_do_not_duplicate_confirmed_effect(self):
         self.approve();self.queue()
         with ThreadPoolExecutor(max_workers=2) as pool:

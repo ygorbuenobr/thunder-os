@@ -49,6 +49,19 @@ class CampaignRegistryTests(unittest.TestCase):
         with self.assertRaises(ApprovalError): self.registry.revoke('synthetic', 'hermes', 1)
         self.assertTrue(self.repo.get_state('campaign_config', 'synthetic')['active'])
 
+    def test_external_platforms_register_without_execution_state(self):
+        for platform in ('apollo', 'hubspot_seq', 'codex_local', 'chattie', 'instantly'):
+            with self.subTest(platform=platform):
+                cfg = {**config(), 'campaign_id': platform, 'platform': platform}
+                row = self.registry.register(cfg, 'ygor', 0)
+                self.assertEqual(row['config'], cfg)
+                self.assertEqual(self.registry.load(platform), row['context'])
+                self.assertEqual(self.registry.binding(platform)['providers'], cfg['providers'])
+                self.assertEqual(row['authorized_by'], 'ygor')
+        self.assertEqual(self.repo.effects(), [])
+        for kind in ('cadence', 'approval', 'operation_approval'):
+            self.assertEqual(self.repo.list_state(kind), [])
+
     def test_cas_register_and_revoke_preserve_current_state(self):
         self.registry.register(config(), 'ygor', 0)
         for version in (0, 2):
@@ -78,7 +91,8 @@ class CampaignRegistryTests(unittest.TestCase):
         cases = []
         for key in config():
             bad = config(); del bad[key]; cases.append(bad)
-        for field, value in [('extra', True), ('platform', []), ('campaign_version', 1),
+        for field, value in [('extra', True), ('platform', []), ('platform', 'unknown'),
+                             ('platform', 'Apollo'), ('campaign_version', 1),
                              ('rules', ''), ('rules', ' '), ('rules', 'x'*65537),
                              ('providers', {'sms':'fake'}), ('providers', {'email': 'INVALID'}),
                              ('configuration', {'flow_version': '1', 'provider_accounts': {}, 'extra': True}),
@@ -136,6 +150,38 @@ class CampaignRegistryTests(unittest.TestCase):
     def test_missing_registry_never_returns_a_binding(self):
         for read in (self.registry.load,self.registry.binding):
             with self.assertRaisesRegex(ApprovalError,'missing'):read('unknown')
+
+    def test_listing_is_validated_detached_and_contains_only_public_metadata(self):
+        self.assertEqual(self.registry.list_campaigns(), [])
+        self.registry.register(config(), 'ygor', 0)
+        self.registry.revoke('synthetic', 'ygor', 1)
+        self.registry.register({**config(), 'campaign_id': 'external', 'platform': 'codex_local'}, 'ygor', 0)
+        before = self.repo.list_state('campaign_config')
+        expected = [{'id': 'external', 'platform': 'codex_local', 'active': True},
+                    {'id': 'synthetic', 'platform': 'thunder_os', 'active': False}]
+        rows = self.registry.list_campaigns()
+        self.assertEqual(rows, expected)
+        rows[0]['platform'] = 'mutated'
+        self.assertEqual(self.registry.list_campaigns(), expected)
+        self.assertEqual(self.repo.list_state('campaign_config'), before)
+        self.assertEqual(self.repo.effects(), [])
+        with self.assertRaisesRegex(ApprovalError, 'revoked'):
+            self.registry.load('synthetic')
+
+    def test_listing_rejects_tampering_and_malformed_json(self):
+        row = self.registry.register(config(), 'ygor', 0)
+        for mutate in ('rules', 'context', 'accounts', 'authority', 'json'):
+            bad = deepcopy(row)
+            if mutate == 'rules': bad['config']['rules'] = 'tampered'
+            if mutate == 'context': bad['context']['rules_hash'] = '0' * 64
+            if mutate == 'accounts': bad['config']['configuration']['provider_accounts']['email'] = 'other'
+            if mutate == 'authority': bad['authorized_by'] = 'hermes'
+            payload = 'not-json' if mutate == 'json' else json.dumps({
+                k: v for k, v in bad.items() if k not in {'id', 'version', 'updated_at'}})
+            with self.repo.transaction() as con:
+                con.execute("UPDATE thunder_state SET payload=? WHERE kind='campaign_config'", (payload,))
+            with self.subTest(mutate=mutate), self.assertRaises(ApprovalError):
+                self.registry.list_campaigns()
 
 
 if __name__ == '__main__': unittest.main()

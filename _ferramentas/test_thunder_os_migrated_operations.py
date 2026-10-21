@@ -188,6 +188,28 @@ class MigratedOperationsTests(unittest.TestCase):
                     if mutation == 'pause': self.repo.put_state('control', 'global', {'paused': False})
             self.registry.register(self.cfg, 'ygor', self.repo.get_state('campaign_config', 'synthetic')['version'])
 
+    def test_external_registry_cannot_execute_console_or_enqueue(self):
+        for platform in ('apollo', 'hubspot_seq', 'codex_local', 'chattie', 'instantly'):
+            for kind in ('connectsafely', 'seqd', 'hubspot'):
+                with self.subTest(platform=platform, kind=kind):
+                    self.setUp()
+                    console, port, ledger, plan = self.build(kind)
+                    preview = console.prepare(plan, 'ygor')
+                    body = self.body(console, preview, kind)
+                    row = self.registry.register({**self.cfg, 'platform': platform}, 'ygor', 1)
+                    body['execution_confirmation']['context'] = self.registry.load('synthetic')
+                    self.assertEqual(body['execution_confirmation']['context'], row['context'])
+                    with self.assertRaisesRegex(ValueError, '^operation_campaign_identity_mismatch$'):
+                        console.execute(body, 'ygor')
+                    if kind == 'connectsafely':
+                        with self.assertRaisesRegex(ValueError, '^operation_campaign_identity_mismatch$'):
+                            self.app(console).enqueue(body, 'ygor')
+                        self.assertEqual(self.repo.list_state('connectsafely_job'), [])
+                    self.assertEqual(port.calls, 0)
+                    self.assertEqual(ledger.calls, [])
+                    self.assertEqual(self.repo.list_state(kind + '_attempt'), [])
+                    self.assertEqual(self.repo.list_state('operation_approval'), [])
+
     def test_unknown_results_are_not_replayed(self):
         for kind in ('connectsafely', 'seqd', 'hubspot'):
             with self.subTest(kind=kind):

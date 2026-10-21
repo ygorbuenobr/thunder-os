@@ -39,7 +39,7 @@ def _config(value):
         raise ApprovalError('campaign_registry_accounts_invalid')
     normalized = {**value, 'providers': dict(providers), 'configuration': {
         'flow_version': configuration['flow_version'], 'provider_accounts': dict(accounts)}}
-    # Reuse the exact execution-context types and provider identifiers.
+    # Reuse context validation; accepting an external platform does not grant OS execution.
     _context(normalized, 1)
     return deepcopy(normalized)
 
@@ -107,6 +107,19 @@ class CampaignRegistry:
         with self.repo.transaction():
             _, context = self._read(ident)
             return deepcopy(context)
+
+    def list_campaigns(self):
+        """Validated display metadata, including revoked entries; never a binding."""
+        with self.repo.transaction():
+            try:
+                ids = [row['id'] for row in self.repo.list_state('campaign_config')]
+            except (ValueError, TypeError, KeyError) as exc:
+                raise ApprovalError('campaign_registry_source_invalid') from exc
+            result = []
+            for ident in sorted(ids):
+                row, context = self._read(ident, allow_inactive=True)
+                result.append({'id': ident, 'platform': context['platform'], 'active': row['active']})
+            return result
 
     def binding(self, ident):
         with self.repo.transaction():

@@ -1,11 +1,17 @@
 """Read-only cadence route and presentation boundaries; no live provider calls."""
 import unittest
+import os
 from pathlib import Path
+import tempfile
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from urllib.parse import urlsplit
 
 import painel_servidor as panel
+from thunder_os.campaign_registry import CampaignRegistry
+from thunder_os.db import Repository
+from test_thunder_os_campaign_registry import config
+from test_thunder_os_cadence_readonly import Provider
 
 
 class CadencePanelTests(unittest.TestCase):
@@ -78,6 +84,42 @@ class CadencePanelTests(unittest.TestCase):
         self.assertNotIn('data-os-cancel', section)
         self.assertIn("document.body.dataset.aba==='cadencias'", html)
         self.assertIn('60000', html)
+
+    def test_main_wires_existing_repository_registry_into_read_console(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            brain, database = root / 'brain', root / 'state' / 'panel.db'
+            brain.mkdir()
+            database.parent.mkdir()
+            registry = CampaignRegistry(Repository(database))
+            registry.register({**config(), 'campaign_id': 'REGISTERED', 'platform': 'codex_local'}, 'ygor', 0)
+            before = registry.repo.list_state('campaign_config')
+            server = SimpleNamespace(serve_forever=Mock())
+            provider = Provider()
+            provider.tasks = []
+            with patch.dict(os.environ, {'PAINEL_DB': str(database), 'THUNDER_OS_HUBSPOT_READ_ENABLED': 'true',
+                                         'THUNDER_EXTERNAL_EFFECTS_ENABLED': 'false'}, clear=True), \
+                    patch.object(panel, 'RAIZ', brain), \
+                    patch.object(panel, 'ThreadingHTTPServer', return_value=server), \
+                    patch.object(panel, 'systemd_hubspot_credential', return_value='synthetic-token'):
+                self.assertEqual(panel.main(['servir']), 0)
+                console = server.thunder_cadence_readonly
+                self.assertIs(console.campaign_registry.repo, server.thunder_service.repository)
+                console.adapter.request = provider
+                console.adapter.sleep = lambda _: None
+                handler = object.__new__(panel.Handler)
+                handler.server = server
+                handler.command = 'GET'
+                handler.client_address = ('127.0.0.1', 1234)
+                handler.headers = {'X-Authenticated-User': 'ygor'}
+                handler.responder = lambda status, body: (status, body)
+                status, result = handler.thunder_api(urlsplit('/api/os/v1/cadencias'))
+            self.assertEqual(status, 200)
+            self.assertEqual(result['campaigns'][0]['id'], 'REGISTERED')
+            self.assertEqual(result['campaigns'][0]['task_state'], 'empty')
+            self.assertEqual(registry.repo.list_state('campaign_config'), before)
+            self.assertEqual(registry.repo.effects(), [])
+            server.serve_forever.assert_called_once_with()
 
 
 if __name__ == '__main__':

@@ -1885,7 +1885,9 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
             crm_read = os.environ.get('THUNDER_OS_HUBSPOT_READ_ENABLED', '') == 'true'
             if crm_read:
                 from thunder_os.cadence_readonly import CadenceReadonlyConsole
-                servidor.thunder_cadence_readonly = CadenceReadonlyConsole(systemd_hubspot_credential)
+                from thunder_os.campaign_registry import CampaignRegistry
+                servidor.thunder_cadence_readonly = CadenceReadonlyConsole(systemd_hubspot_credential,
+                    campaign_registry=CampaignRegistry(servidor.thunder_service.repository))
             crm_write = external_effects_enabled() and not restricted_mode() and os.environ.get('THUNDER_OS_HUBSPOT_WRITE_ENABLED', '') == 'true'
             copilot = external_effects_enabled() and not restricted_mode() and os.environ.get('THUNDER_OS_COPILOT_MODE', '') == 'human_approval'
             servidor.thunder_hubspot_console = HubSpotConsole(servidor.thunder_service.repository,

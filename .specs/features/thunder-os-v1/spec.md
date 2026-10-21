@@ -31,7 +31,7 @@ Sistemas antigos podem ser consultados durante a implementação apenas como ref
 | Reviver, corrigir ou migrar integralmente Thunder Cockpit ou Thunder GTM | São sistemas legados separados e importariam a complexidade que o novo produto elimina. |
 | Depender de `/root/projects/thunder-cockpit`, `/root/projects/thunder-gtm`, `/opt/thunder-cockpit` ou `/opt/thunder-gtm` em runtime | O Thunder OS deve operar e ser implantado independentemente. |
 | Autopilot irrestrito de outbound | Primeiro toque, pessoa nova, conteúdo não aprovado, gasto e override de supressão continuam exigindo autorização humana específica; somente ações explicitamente delegadas ao Hermes podem dispensar um novo clique. |
-| Campanhas em lote na V1 | A primeira versão executa cadências por pessoa e conta; disparo massivo ampliaria risco e esconderia falhas. |
+| Envio de e-mail em volume pelo executor do Thunder OS | Apollo, Instantly e demais executores externos mantêm o envio. A V1 admite registrar suas campanhas em lote para visão, parada por resposta e placar; esse registro não autoriza execução pelo Thunder OS nem ativa a campanha externa. |
 | SaaS, múltiplas empresas ou múltiplos tenants | A V1 atende a operação interna da Thunder em um único workspace. |
 | Aplicativo móvel nativo | A interface web responsiva cobre desktop e celular. |
 | Central de logs, observabilidade técnica ou construtor visual de agentes na navegação principal | Diagnóstico existe sob demanda, mas não é trabalho diário do usuário. |
@@ -52,6 +52,7 @@ Sistemas antigos podem ser consultados durante a implementação apenas como ref
 | Unidade de trabalho | Um cartão representa uma necessidade ou resultado; conta e pessoa fornecem contexto, não uma segunda fila | Mantém o modelo mental já estabelecido no Painel novo. | n |
 | Jornada P1 | oportunidade → contexto → cadência → revisão → autorização → execução dos toques → confirmação → resposta ou encerramento | É o menor fluxo que prova prospecção consistente, não apenas uma mensagem isolada. | n |
 | Canais da V1 | LinkedIn e e-mail compõem a cadência; HubSpot recebe o espelho; WhatsApp permanece manual | LinkedIn e e-mail são os pontos de contato necessários para testar consistência multicanal, mantendo cada canal independente. | n |
+| Campanhas externas em lote | O `CampaignRegistry` aceita `apollo`, `hubspot_seq` e `codex_local`, além de `thunder_os`, `chattie` e `instantly`; registro externo serve para visão, parada por resposta e placar, sem autorização de execução pelo OS | Reutiliza o registro existente sem reimplementar envio em volume; as rotas de execução do OS continuam exigindo plataforma `thunder_os` e a aprovação exata já prevista. Leitura de resultados e parada externa pertencem às tarefas seguintes do plano. | y |
 | Aprovação da cadência | Uma aprovação pode autorizar o pacote completo de toques exatos, com destinatário, canal, conteúdo, ordem e intervalo versionados | Reduz confirmações repetidas sem conceder liberdade para alterar ou acrescentar envios. | n |
 | Armazenamento | Evoluir as fontes atuais de forma aditiva; uma autoridade explícita por dado; tecnologia decidida após inventário de leitores e escritores | Evita começar por uma reescrita de banco. | n |
 | Agentes | Hermes é o operador contínuo; Claude e Codex podem pesquisar, preparar, implementar e verificar mediante o mesmo contrato | Corresponde à forma de trabalho desejada sem expor agentes como telas concorrentes. | y |
@@ -61,6 +62,10 @@ Sistemas antigos podem ser consultados durante a implementação apenas como ref
 | Diagnóstico | Saúde resumida e orientação humana no Painel; detalhes técnicos ficam em área secundária protegida | Mantém o produto simples sem esconder indisponibilidade real. | y |
 | Desempenho percebido | Conteúdo útil inicial em até 2 segundos no ambiente de produção normal; fontes lentas carregam de forma independente | O Painel deve ajudar no dia a dia sem aguardar todas as integrações. | n |
 | Verificação final | Um efeito externo real somente será usado no aceite após autorização explícita do Ygor para alvo, canal e conteúdo | O PRD não concede autorização futura de envio ou gasto. | y |
+
+O aceite da Tarefa 1, conforme delimitação do Ygor em 21/10/2026, exige cadastrar no painel somente as campanhas existentes `MX27-MTY`, `MX27-CDMX`, `BR-CADENCIA-V1` e `CHATTIE-01`. `BR-APOLLO-01` e `MX27-INSTANTLY` ficam para quando existirem nas plataformas; não criar registros fictícios. O cadastro real exige prévia conferida e a rota autenticada do painel com `actor=ygor`, nunca escrita direta no banco. Parâmetros factuais ausentes devem ser obtidos, sem inventar regras, versões, contas ou aprovação.
+
+A aba Cadências deve mostrar a união das campanhas cadastradas e das identificadas nas tarefas, sem duplicar o mesmo ID nem deduzir equivalência por nome ou prefixo. Campanha cadastrada sem tarefa reconhecida aparece como "sem tarefas ainda" quando a leitura de tarefas está completa; leitura incompleta permanece explicitamente não verificada. Recibos, aprovação, respostas e reuniões continuam não verificados na Tarefa 1; atribuição de atividades e recibos pertence à Tarefa 2. Preparação local ou registro isolado não substitui o aceite em produção, que depende de aprovação separada do diff e publicação.
 
 **Open questions: none — all unresolved choices use the recorded defaults above.**
 

@@ -110,7 +110,8 @@ _EXECUTION_FIELDS = {
 def execution_context(value: Any) -> dict[str, Any]:
     if not isinstance(value, Mapping) or set(value) != _EXECUTION_FIELDS:
         raise ApprovalError("campaign_context_required")
-    if not isinstance(value["platform"], str) or value["platform"] not in {"thunder_os", "chattie", "instantly"}:
+    if not isinstance(value["platform"], str) or value["platform"] not in {
+            "thunder_os", "chattie", "instantly", "apollo", "hubspot_seq", "codex_local"}:
         raise ApprovalError("campaign_platform_invalid")
     for field in _EXECUTION_FIELDS - {"providers"}:
         if not isinstance(value[field], str) or not value[field].strip() or len(value[field]) > 200:

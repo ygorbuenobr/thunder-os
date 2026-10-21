@@ -2,7 +2,13 @@
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 import json
+from pathlib import Path
+import tempfile
 import unittest
+
+from thunder_os.campaign_registry import CampaignRegistry
+from thunder_os.db import Repository
+from test_thunder_os_campaign_registry import config
 
 from thunder_os.cadence_readonly import (
     ACTIVITY_PROPERTIES, CAMPAIGN_ID, OWNER_ID, PORTAL_ID, SEQUENCE_ID,
@@ -110,7 +116,9 @@ class ProjectionTests(unittest.TestCase):
 
     def test_completion_receipt_approval_and_metrics_are_separate(self):
         rows = [task(hs_task_status="COMPLETED"), task("2", contact=None, hs_task_status="WAITING")]
-        result = project_snapshot(rows, collected_at="2026-10-21T13:00:00Z")
+        result = project_snapshot(rows, collected_at="2026-10-21T13:00:00Z", coverage={
+            'complete': True, 'partial': False, 'limitations': [],
+            'sources': {'tasks': {'complete': True}, 'task_schema': {'complete': True}}})
         metrics = result["campaigns"][0]["metrics"]
         self.assertEqual(metrics["completed_status"], 1)
         self.assertIsNone(metrics["completed_with_receipt"])
@@ -143,6 +151,111 @@ class AdapterTests(unittest.TestCase):
     def make_console(self, provider=None, **kwargs):
         kwargs.setdefault("sleep", lambda seconds: None)
         return CadenceReadonlyConsole(lambda: "synthetic-test-token", request=provider or Provider(), **kwargs)
+
+    def registry(self, *ids):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        registry = CampaignRegistry(Repository(Path(temp.name) / 'registry.db'))
+        for ident in ids:
+            registry.register({**config(), 'campaign_id': ident, 'platform': 'codex_local'}, 'ygor', 0)
+        return registry
+
+    def test_registered_empty_complete_tasks_has_zero_tasks_but_unknown_outcomes(self):
+        provider = Provider()
+        provider.tasks = [task(title='Unrecognized task', hs_task_sequence_id=None,
+                               hs_task_sequence_step_enrollment_id=None)]
+        registry = self.registry('REGISTERED')
+        before = registry.repo.list_state('campaign_config')
+        result = self.make_console(provider, campaign_registry=registry).snapshot()
+        self.assertEqual(len(result['campaigns']), 1)
+        group = result['campaigns'][0]
+        self.assertEqual(group['id'], 'REGISTERED')
+        self.assertEqual(group['registry'], {'id': 'REGISTERED', 'platform': 'codex_local', 'active': True})
+        self.assertEqual(group['task_state'], 'empty')
+        self.assertTrue(group['task_coverage_complete'])
+        self.assertEqual(group['tasks'], [])
+        self.assertEqual(group['metrics']['tasks'], 0)
+        for field in ('completed_with_receipt', 'replies', 'meetings'):
+            self.assertIsNone(group['metrics'][field])
+        self.assertNotIn('synthetic-account', json.dumps(result))
+        self.assertNotIn('provider_accounts', json.dumps(result))
+        self.assertEqual(registry.repo.list_state('campaign_config'), before)
+
+    def test_registered_campaigns_merge_exact_ids_only_and_preserve_task_groups(self):
+        provider = Provider()
+        provider.tasks.append(task('2', title='[REGISTERED-RUN][E1] Example | EMAIL',
+                                   hs_task_sequence_id=None, hs_task_sequence_step_enrollment_id=None))
+        registry = self.registry(CAMPAIGN_ID, 'REGISTERED')
+        registry.revoke('REGISTERED', 'ygor', 1)
+        result = self.make_console(provider, campaign_registry=registry).snapshot()
+        groups = {g['id']: g for g in result['campaigns']}
+        self.assertEqual(set(groups), {CAMPAIGN_ID, 'REGISTERED', 'REGISTERED-RUN'})
+        self.assertEqual(groups[CAMPAIGN_ID]['metrics']['tasks'], 1)
+        self.assertEqual(groups[CAMPAIGN_ID]['task_state'], 'observed')
+        self.assertEqual(groups['REGISTERED']['tasks'], [])
+        self.assertFalse(groups['REGISTERED']['registry']['active'])
+        self.assertIsNone(groups['REGISTERED-RUN']['registry'])
+
+    def test_registered_empty_partial_tasks_or_schema_remains_unknown(self):
+        for partial in ('pagination', 'schema'):
+            provider = Provider()
+            provider.tasks = []
+            if partial == 'pagination':
+                provider.pages = {'': {'results': [], 'paging': {'next': {'after': 'more'}}}}
+            else:
+                provider.schema.remove('hs_task_subject')
+            with self.subTest(partial=partial):
+                result = self.make_console(provider, campaign_registry=self.registry('REGISTERED'), max_pages=1).snapshot()
+                group = result['campaigns'][0]
+                self.assertEqual(group['task_state'], 'unknown')
+                self.assertFalse(group['task_coverage_complete'])
+                for field in ('tasks', 'contacts', 'pending', 'overdue', 'completed_status',
+                              'completed_with_receipt', 'replies', 'meetings'):
+                    self.assertIsNone(group['metrics'][field])
+                self.assertEqual(group['metrics']['observed_tasks'], 0)
+
+    def test_partial_nonempty_completed_page_never_implies_zero_pending_or_overdue(self):
+        for partial in ('pagination', 'schema'):
+            provider = Provider()
+            provider.tasks = [task(hs_task_status='COMPLETED')]
+            if partial == 'pagination':
+                provider.pages = {'': {'results': provider.tasks, 'total': 2,
+                                      'paging': {'next': {'after': 'remaining-unknown'}}}}
+            else:
+                provider.schema.remove('hs_task_subject')
+            with self.subTest(partial=partial):
+                result = self.make_console(provider, max_pages=1).snapshot()
+                group = result['campaigns'][0]
+                self.assertEqual(group['task_state'], 'observed')
+                self.assertFalse(group['task_coverage_complete'])
+                self.assertEqual(len(group['tasks']), 1)
+                self.assertEqual(group['tasks'][0]['status'], 'COMPLETED')
+                for field, count in {'contacts': 1, 'tasks': 1, 'completed_status': 1,
+                                     'pending': 0, 'overdue': 0, 'unknown_status': 0}.items():
+                    self.assertEqual(group['metrics']['observed_' + field], count)
+                    self.assertIsNone(group['metrics'][field])
+                for field in ('completed_with_receipt', 'replies', 'meetings'):
+                    self.assertIsNone(group['metrics'][field])
+
+    def test_registered_campaign_survives_provider_failure_without_false_empty(self):
+        calls = []
+        def forbidden(*args):
+            calls.append(args)
+            return 403, b'{"secret":"do not expose"}'
+        result = self.make_console(forbidden, campaign_registry=self.registry('REGISTERED')).snapshot()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result['campaigns'][0]['task_state'], 'unknown')
+        self.assertTrue(result['coverage']['partial'])
+        self.assertNotIn('do not expose', json.dumps(result))
+
+    def test_corrupt_registry_is_visible_partial_but_preserves_task_campaigns(self):
+        registry = self.registry('REGISTERED')
+        with registry.repo.transaction() as con:
+            con.execute("UPDATE thunder_state SET payload='invalid-json' WHERE kind='campaign_config'")
+        result = self.make_console(campaign_registry=registry).snapshot()
+        self.assertEqual([g['id'] for g in result['campaigns']], [CAMPAIGN_ID])
+        self.assertFalse(result['coverage']['sources']['campaign_registry']['complete'])
+        self.assertIn('campaign_registry:unavailable', result['coverage']['limitations'])
 
     def test_endpoint_enforcement_precedes_credentials(self):
         def no_credential():
@@ -180,7 +293,8 @@ class AdapterTests(unittest.TestCase):
         for max_pages in (1, 3):
             result = self.make_console(provider, max_pages=max_pages).snapshot()
             self.assertTrue(result["coverage"]["partial"])
-            self.assertEqual(result["campaigns"][0]["metrics"]["tasks"], 1)
+            self.assertEqual(result["campaigns"][0]["metrics"]["observed_tasks"], 1)
+            self.assertIsNone(result["campaigns"][0]["metrics"]["tasks"])
 
     def test_missing_schema_and_total_mismatch_do_not_claim_complete(self):
         provider = Provider()

@@ -293,7 +293,7 @@ button,.btn,select,input:not([type="hidden"]),summary {min-height:44px;}
 </nav>
 
 <main id="sec-cadencias" data-painel="cadencias" hidden>
-  <header class="cad-read-head"><div><h2>Cadências</h2><p class="sub">HubSpot · Ygor · somente leitura</p></div><button class="btn" type="button" id="cad-read-refresh">Atualizar</button></header>
+  <header class="cad-read-head"><div><h2>Cadências</h2><p class="sub">Registro local e HubSpot · Ygor · somente leitura</p></div><button class="btn" type="button" id="cad-read-refresh">Atualizar</button></header>
   <p id="cad-read-status" role="status" aria-live="polite">Aguardando consulta.</p>
   <div id="cad-read-campaigns"></div>
   <section class="cad-read-section"><h3>Hoje</h3><div id="cad-read-today"></div></section>
@@ -1744,7 +1744,10 @@ function cadReadTasks(tasks,empty='Nenhuma tarefa nesta lista.'){
 }
 function renderCadencias(data){
   const campaigns=Array.isArray(data.campaigns)?data.campaigns:[];
-  $('cad-read-campaigns').innerHTML=campaigns.length?`<div class="cad-read-table-wrap"><table class="cad-read-table"><thead><tr><th scope="col">Campanha</th><th scope="col">Contatos</th><th scope="col">Toques com recibo</th><th scope="col">Pendentes</th><th scope="col">Atrasados</th><th scope="col">Respostas</th><th scope="col">Reuniões</th></tr></thead><tbody>${campaigns.map(c=>`<tr><td>${esc(c.id)}</td>${['contacts','completed_with_receipt','pending','overdue','replies','meetings'].map(k=>`<td>${esc(cadReadNumber(c.metrics?.[k]))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`+campaigns.map(c=>`<details><summary>${esc(c.id)} · contatos e tarefas</summary>${cadReadTasks(c.tasks)}</details>`).join(''):'<p class="sub">Nenhuma tarefa de campanha encontrada nesta consulta.</p>';
+  const emptyLabel=c=>c.task_state==='empty'&&c.task_coverage_complete===true?'Sem tarefas ainda nesta consulta.':'Tarefas não verificadas: cobertura incompleta.';
+  const campaignLabel=c=>!c.tasks?.length?emptyLabel(c):c.task_coverage_complete!==true?'Tarefas observadas; totais não verificados: cobertura incompleta.':'';
+  const noCampaigns=data.coverage?.complete===true?'Nenhuma campanha ou tarefa reconhecida nesta consulta.':'Campanhas e tarefas não verificadas: cobertura incompleta.';
+  $('cad-read-campaigns').innerHTML=campaigns.length?`<div class="cad-read-table-wrap"><table class="cad-read-table"><thead><tr><th scope="col">Campanha</th><th scope="col">Contatos</th><th scope="col">Toques com recibo</th><th scope="col">Pendentes</th><th scope="col">Atrasados</th><th scope="col">Respostas</th><th scope="col">Reuniões</th></tr></thead><tbody>${campaigns.map(c=>`<tr><td>${esc(c.id)}${campaignLabel(c)?`<br><small>${esc(campaignLabel(c))}</small>`:''}</td>${['contacts','completed_with_receipt','pending','overdue','replies','meetings'].map(k=>`<td>${esc(cadReadNumber(c.metrics?.[k]))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`+campaigns.map(c=>`<details><summary>${esc(c.id)} · contatos e tarefas</summary>${cadReadTasks(c.tasks,emptyLabel(c))}</details>`).join(''):`<p class="sub">${esc(noCampaigns)}</p>`;
   const today=data.today||{};
   $('cad-read-today').innerHTML=`<h4>Previsto para hoje</h4>${cadReadTasks(today.planned,'Nenhuma tarefa prevista para hoje na consulta.')}<h4>Aguardando sua aprovação</h4>${today.awaiting_approval==null?'<p class="sub">Aprovações ainda não verificadas nesta fonte.</p>':cadReadTasks(today.awaiting_approval,'Sem aprovações pendentes identificadas nesta consulta.')}<h4>Respostas sem retorno</h4>${today.unreplied==null?'<p class="sub">Respostas sem retorno ainda não verificadas nesta fonte.</p>':cadReadTasks(today.unreplied,'Nenhuma resposta sem retorno identificada nesta consulta.')}`;
   $('cad-read-unlinked').innerHTML=cadReadTasks(data.unlinked,'Nenhuma tarefa sem vínculo nesta consulta.');
