@@ -18,6 +18,9 @@ answer without calling the model, labelled `answer_origin=source_projection`.
 This is a deterministic precheck, not a model fallback or inferred no-send.
 Multiple explicit touch codes are treated as ambiguous: ask one at a time,
 without a model call. Mentioning L2 cannot bypass an absent-E2 precheck.
+The reader also accepts the observed `[campaign][YGOR|LOA][touch]` format;
+the optional actor label never establishes contact, owner or campaign authority.
+The original two-bracket and sequence/pipe formats retain their identity rules.
 
 Change-route and send remain OFF in the backend. Existing OperationCampaign and
 exact-text approval still govern any separately authorized future integration;

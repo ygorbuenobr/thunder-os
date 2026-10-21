@@ -59,7 +59,7 @@ LIMITATIONS = [
     "unreplied_cross_channel_contract_unavailable",
     "search_is_eventually_consistent_and_excludes_archived_records",
 ]
-TITLE_PATTERN = re.compile(r"^\[([A-Za-z0-9_-]{1,80})\]\[([^\]\r\n]{1,80})\]\s*(.*?)\s*\|\s*([^|\r\n]+)$")
+TITLE_PATTERN = re.compile(r"^\[([A-Za-z0-9_-]{1,80})\](?:\[(?:YGOR|LOA)\](?=\[))?\[([^\]\r\n]{1,80})\]\s*(.*?)\s*\|\s*([^|\r\n]+)$")
 TOUCHES = {"linkedin: convite": ("LI0", "linkedin"),
            "linkedin: msg 1": ("LI1", "linkedin"),
            "linkedin: msg 2": ("LI2", "linkedin"),

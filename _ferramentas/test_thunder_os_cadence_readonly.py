@@ -73,6 +73,22 @@ class Provider:
 
 
 class ProjectionTests(unittest.TestCase):
+    def test_actor_bracket_preserves_exact_touch_without_establishing_identity(self):
+        for actor in ('YGOR','LOA'):
+            record=task(title=f'[MX27-MTY][{actor}][E2] Empresa | EMAIL',
+                        hs_task_sequence_id=None,hs_task_sequence_step_enrollment_id=None,
+                        hs_task_sequence_step_enrollment_contact_id=None)
+            row=project_task(record,associated_contact_ids=[],association_complete=True)
+            self.assertEqual((row['campaign'],row['touch'],row['company'],row['channel']),
+                             ('MX27-MTY','E2','Empresa','email'))
+            self.assertEqual(row['contact_ids'],[])
+            self.assertEqual(row['link_status'],'sem_vinculo')
+            linked=project_task(record,associated_contact_ids=['123'],association_complete=True)
+            self.assertEqual(linked['contact_ids'],['123'])
+        row=project_task(task(title='[MX27-MTY][YGOR] Empresa | EMAIL',
+            hs_task_sequence_id=None,hs_task_sequence_step_enrollment_id=None))
+        self.assertEqual(row['touch'],'YGOR')
+
     def test_sequence_membership_survives_renamed_subject(self):
         row = project_task(task(title="BLOQUEADA - contato de teste - convite nao enviado"))
         self.assertEqual(row["campaign"], CAMPAIGN_ID)
