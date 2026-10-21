@@ -1344,6 +1344,15 @@ class Handler(BaseHTTPRequestHandler):
         service = getattr(self.server, 'thunder_service', None)
         if service is None:
             raise Erro('Thunder OS indisponível', 503)
+        if rota.path == '/api/os/v1/linkedin-preparation':
+            if self.thunder_proxy_actor() != 'ygor':
+                raise Erro('Somente Ygor pode consultar o executor.',403)
+            if self.command != 'GET' or rota.query:
+                raise Erro('Executor LinkedIn permite somente consulta.',405)
+            prepared=getattr(self.server,'thunder_linkedin_preparation',None)
+            if prepared is None:
+                raise Erro('Preparação LinkedIn indisponível.',503)
+            return self.responder(200,prepared.snapshot())
         if rota.path == '/api/os/v1/reply-control':
             if self.thunder_proxy_actor() != 'ygor':
                 raise Erro('Somente Ygor pode consultar respostas.', 403)
@@ -1965,6 +1974,8 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
             from thunder_os.campaign_registry import CampaignRegistry
             servidor.thunder_reply_control = ReplyControl(repository, CampaignRegistry(repository),
                 external_pause_enabled=False)
+            from thunder_os.linkedin_preparation import LinkedInPreparation
+            servidor.thunder_linkedin_preparation=LinkedInPreparation(CampaignRegistry(repository))
             configure_connectsafely_server(servidor, servidor.thunder_service.repository, connectsafely_factory)
             seqd_read = os.environ.get('THUNDER_OS_SEQD_READ_ENABLED', '') == 'true'
             seqd_send = external_effects_enabled() and os.environ.get('THUNDER_OS_SEQD_SEND_ENABLED', '') == 'true'

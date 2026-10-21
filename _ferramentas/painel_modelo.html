@@ -300,6 +300,7 @@ button,.btn,select,input:not([type="hidden"]),summary {min-height:44px;}
   <div id="cad-read-campaigns"></div>
   <section class="cad-read-section"><h3>Integrações de e-mail</h3><div id="cad-email-integrations" role="status">Não verificado.</div></section>
   <section class="cad-read-section"><h3>Respostas e paradas</h3><div id="cad-reply-control" role="status">Não verificado.</div></section>
+  <section class="cad-read-section"><h3>LinkedIn</h3><p id="cad-linkedin-preparation" role="status">Não verificado.</p></section>
   <section class="cad-read-section" id="cad-read-conflicts-section" hidden><h3>Conflitos de campanha</h3><div id="cad-read-conflicts"></div></section>
   <section class="cad-read-section"><h3>Hoje</h3><div id="cad-read-today"></div></section>
   <section class="cad-read-section"><h3>Sem vínculo</h3><div id="cad-read-unlinked"></div></section>
@@ -1807,9 +1808,18 @@ async function atualizarCadencias(){
   $('cad-read-status').textContent=cadReadSnapshot?'Atualizando consulta…':'Consultando tarefas no HubSpot…';
   await carregarIntegracoesEmail();
   await carregarControleRespostas();
+  await carregarPreparacaoLinkedin();
   try{cadReadSnapshot=await apiServidor('/api/os/v1/cadencias');renderCadencias(cadReadSnapshot);if(cadReadContact)await abrirCadenciaContato(cadReadContact,false);}
   catch(e){$('cad-read-status').textContent=cadReadSnapshot?'Não foi possível atualizar. Os dados abaixo são da consulta anterior.':'Não foi possível consultar o HubSpot. Tente atualizar.';}
   finally{cadReadLoading=false;$('cad-read-refresh').disabled=false;}
+}
+async function carregarPreparacaoLinkedin(){
+  const target=$('cad-linkedin-preparation');
+  try{
+    const state=await apiServidor('/api/os/v1/linkedin-preparation');
+    if(state.executor_enabled!==false)throw new Error('Disponibilidade não verificada');
+    target.textContent='Executor desligado. Calendário e cota preparados para teste; uso compartilhado com Chattie ainda não verificado.';
+  }catch(error){target.textContent='Executor LinkedIn não verificado.';}
 }
 async function carregarControleRespostas(){
   const target=$('cad-reply-control');

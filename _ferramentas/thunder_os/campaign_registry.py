@@ -29,7 +29,8 @@ def _config(value):
         raise ApprovalError('campaign_registry_rules_invalid')
     configuration = value['configuration']
     if (not isinstance(configuration, Mapping)
-            or set(configuration) != {'flow_version', 'provider_accounts'}
+            or not {'flow_version', 'provider_accounts'} <= set(configuration)
+            or set(configuration) - {'flow_version', 'provider_accounts', 'linkedin_policy'}
             or not _text(configuration['flow_version'])):
         raise ApprovalError('campaign_registry_configuration_invalid')
     accounts = configuration['provider_accounts']
@@ -39,6 +40,12 @@ def _config(value):
         raise ApprovalError('campaign_registry_accounts_invalid')
     normalized = {**value, 'providers': dict(providers), 'configuration': {
         'flow_version': configuration['flow_version'], 'provider_accounts': dict(accounts)}}
+    if 'linkedin_policy' in configuration:
+        from .linkedin_preparation import validate_policy
+        try:
+            normalized['configuration']['linkedin_policy']=validate_policy(configuration['linkedin_policy'])
+        except ValueError:
+            raise ApprovalError('campaign_registry_linkedin_policy_invalid') from None
     # Reuse context validation; accepting an external platform does not grant OS execution.
     _context(normalized, 1)
     return deepcopy(normalized)
@@ -126,6 +133,12 @@ class CampaignRegistry:
             row, context = self._read(ident)
             return {'providers': dict(context['providers']),
                     'provider_accounts': dict(row['config']['configuration']['provider_accounts'])}
+
+    def configuration(self, ident):
+        """Validated configuration only; it never grants execution authority."""
+        with self.repo.transaction():
+            row,_=self._read(ident)
+            return deepcopy(row['config']['configuration'])
 
     def revoke(self, ident, actor, expected_version):
         self._authority(actor, expected_version)

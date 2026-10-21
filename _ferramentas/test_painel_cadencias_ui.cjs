@@ -43,6 +43,7 @@ const registered={id:'REGISTRY-ONLY',registry:{id:'REGISTRY-ONLY',platform:'code
     }else if(p==='/api/os/v1/cadencias/contacts/123')body={contact_id:'123',contact_name:'Contato exemplo',coverage:{complete:false,limitations:['Somente eventos vinculados.']},events:[{type:'email',subject:'Conversa de exemplo',text:'<img src=x onerror=alert(1)> Texto enviado',occurred_at:'2026-10-20T12:00:00Z',source:'HubSpot',receipt:'receipt:test-only'}]};
     else if(p==='/api/os/v1/integrations/external-email/status')body={schema_version:1,automatic_reader_enabled:false,crm_import_enabled:false,webhook_enabled:false};
     else if(p==='/api/os/v1/reply-control')body={external_pause_enabled:false,alerts:[{title:'Synthetic alert <img src=x onerror=alert(1)>',reason:'Pausa externa desligada.',content:'X'.repeat(4000),campaign_id:'C'.repeat(100),hubspot_contact_id:'123'}]};
+    else if(p==='/api/os/v1/linkedin-preparation')body={executor_enabled:false,quota_reader_configured:false};
     else if(p==='/api/os/v1/session')body={actor:'ygor',nonce:'synthetic-nonce'};
     else if(p==='/api/os/v1/reply-control/manual'){
      const sent=req.postDataJSON();
@@ -67,6 +68,7 @@ const registered={id:'REGISTRY-ONLY',registry:{id:'REGISTRY-ONLY',platform:'code
    assert.equal(await page.locator('#cad-read-conflicts img').count(),0);
    assert.equal(await page.locator('#cad-email-integrations').getByRole('cell',{name:'Desligado',exact:true}).count(),4);
    assert.match(await page.locator('#cad-reply-control').innerText(),/Pausas externas: desligadas/);
+   assert.match(await page.locator('#cad-linkedin-preparation').innerText(),/Executor desligado/);
    assert.equal(await page.locator('#cad-reply-control img').count(),0);
    const before=requests.filter(r=>r.p==='/api/os/v1/cadencias').length;
    await page.clock.runFor(60001);

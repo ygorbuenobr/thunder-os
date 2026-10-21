@@ -19,6 +19,21 @@ from test_thunder_os_cadence_contact_campaign import ContactProvider, contact
 
 
 class CadencePanelTests(unittest.TestCase):
+    def test_linkedin_preparation_has_no_execution_route(self):
+        handler=object.__new__(panel.Handler)
+        prepared=Mock()
+        prepared.snapshot.return_value={'executor_enabled':False}
+        handler.server=SimpleNamespace(thunder_service=object(),thunder_linkedin_preparation=prepared)
+        handler.client_address=('127.0.0.1',1234)
+        handler.headers={'X-Authenticated-User':'ygor'}
+        handler.responder=lambda status,body:(status,body)
+        handler.command='GET'
+        self.assertFalse(handler.thunder_api(urlsplit('/api/os/v1/linkedin-preparation'))[1]['executor_enabled'])
+        handler.command='POST'
+        with self.assertRaises(panel.Erro) as error:
+            handler.thunder_api(urlsplit('/api/os/v1/linkedin-preparation'))
+        self.assertEqual(error.exception.status,405)
+        prepared.execute.assert_not_called()
     def test_manual_reply_route_persists_stop_and_alert_without_external_io(self):
         from thunder_os.reply_control import ReplyControl
         with tempfile.TemporaryDirectory() as root:
