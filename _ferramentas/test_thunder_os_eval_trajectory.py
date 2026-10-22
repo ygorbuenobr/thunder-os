@@ -1,6 +1,8 @@
 """Offline trajectory slice; --trace emits observations, never a release verdict."""
 from contextlib import contextmanager
 from copy import deepcopy
+from datetime import datetime, timedelta, timezone
+from functools import wraps
 import hashlib
 import json
 import os
@@ -15,7 +17,7 @@ from test_thunder_os_research import base_artifact
 from thunder_os.agents import AgentJob, AgentRunner
 from thunder_os.approvals import ApprovalError, _step_hash
 from thunder_os.db import Repository, RepositoryConflict
-from thunder_os.models import ContractError, payload_hash
+from thunder_os.models import ContractError, WorkStatus, as_payload, payload_hash
 from thunder_os.providers.email import EmailAdapter
 from thunder_os.reply_control import ReplyControl
 from thunder_os.service import ThunderService
@@ -25,8 +27,24 @@ from thunder_os.worker import WorkerRuntime
 
 
 TRAJECTORIES = []
+CASE_RUNS = []
+FIXTURE_FILES = {'cases.jsonl': 30, 'cases-person-suppression.jsonl': 6}
 CATALOG = {'version': 'eval-1', 'status': 'validado',
            'capabilities': ['cap-1'], 'proofs': ['proof-1']}
+
+
+def eval_case(ident):
+    """Bind one fixture to one executed scenario; cleanup also captures failures."""
+    def decorate(method):
+        @wraps(method)
+        def execute(self):
+            self.case_fixture = self.fixture(ident)
+            self.observations = {}
+            self.addCleanup(self.capture_case, ident)
+            method(self)
+        execute.eval_case_id = ident
+        return execute
+    return decorate
 
 
 class FakeMailbox:
@@ -34,10 +52,13 @@ class FakeMailbox:
     def __init__(self):
         self.mode = 'confirmed'
         self.commands, self.messages, self.reads = [], {}, []
+        self.readback_results = []
 
     def __call__(self, command):
         self.commands.append(deepcopy(command))
         ident = 'message-' + str(len(self.commands))
+        if self.mode == 'rejected':
+            return {'ok': False, 'http_status': 503, 'code': 'provider_rejected'}
         if self.mode != 'missing_receipt':
             self.messages[ident] = deepcopy(command)
         if self.mode == 'timeout_after_effect':
@@ -48,7 +69,9 @@ class FakeMailbox:
     def readback(self, receipt):
         self.reads.append(receipt)
         ident = receipt.removeprefix('email:eval-mail:')
-        return deepcopy(self.messages.get(ident))
+        message = deepcopy(self.messages.get(ident))
+        self.readback_results.append({'receipt': receipt, 'message': message})
+        return message
 
 
 class EvalTrajectoryTests(unittest.TestCase):
@@ -134,8 +157,9 @@ class EvalTrajectoryTests(unittest.TestCase):
         readbacks = []
         for effect in effects:
             receipt = effect['receipt_ref']
-            readbacks.append({'receipt': receipt, 'requested': bool(receipt),
-                              'message': self.mailbox.readback(receipt) if receipt else None,
+            reads = [row for row in self.mailbox.readback_results if row['receipt'] == receipt]
+            readbacks.append({'receipt': receipt, 'requested': bool(reads),
+                              'message': deepcopy(reads[-1]['message']) if reads else None,
                               'authority': 'fake_provider_observer_only'})
         with self.database() as (connection, _):
             touches = [dict(zip(('id', 'status', 'receipt'), row)) for row in
@@ -151,12 +175,558 @@ class EvalTrajectoryTests(unittest.TestCase):
         TRAJECTORIES.append(trace)
         return trace
 
+    def capture_case(self, ident):
+        result = self._outcome.result
+        failures = [str(detail) for test, detail in result.failures + result.errors
+                    if test.id().startswith(self.id())]
+        trace = self.capture(ident)
+        trace.update(test=self.id(), fixture=deepcopy(self.case_fixture),
+                     observations=deepcopy(self.observations),
+                     outcome='FAIL' if failures else 'PASS', failures=failures,
+                     provider_readbacks=deepcopy(self.mailbox.readback_results),
+                     identities=self.repo.list_state('identity'),
+                     work=[as_payload(item) for item in self.repo.list_work()],
+                     operator_alerts=self.repo.list_state('operator_alert'))
+        CASE_RUNS.append(trace)
+
+    def assert_no_effect(self):
+        self.assertEqual(self.mailbox.commands, [])
+        self.assertEqual(self.repo.effects(), [])
+        with self.database() as (connection, _):
+            self.assertEqual(connection.execute('SELECT COUNT(*) FROM toques').fetchone()[0], 0)
+
+    def send_one(self):
+        self.approve()
+        job = self.queue()
+        self.assertEqual(self.mailbox.commands, [])
+        self.assertTrue(self.worker.process_one())
+        self.assertFalse(self.worker.process_one())
+        return self.repo.effect(job['id'])
+
+    def propose_effect_result(self, effect, *, channel='email', readback=None,
+                              evidence=None, status='sent'):
+        """Exercise the existing result writer, with an effect-linked work context."""
+        self._report_count = getattr(self, '_report_count', 0) + 1
+        item = self.service.request_work({
+            'objective': 'Conferir resultado operacional',
+            'context': {'effect_id': effect['id'], 'cadence_id': 'batch',
+                        'channel': 'email', 'case_id': self.case_fixture['id'],
+                        'request': self.case_fixture['entrada']}},
+            'ygor', self.case_fixture['id'] + '-report-' + str(self._report_count))
+        item = self.service.claim(item.id, item.version, 'ygor')
+        report = {'effect_id': effect['id'], 'cadence_id': 'batch', 'channel': channel,
+                  'status': status, 'receipt_ref': effect['receipt_ref'], 'readback': readback,
+                  'evidence': evidence if evidence is not None else [{
+                      'source': 'fake_provider', 'effect_id': effect['id'],
+                      'channel': channel, 'receipt_ref': effect['receipt_ref'],
+                      'readback': readback}]}
+        self.observations['proposed_result'] = deepcopy(report)
+        try:
+            self.service.record_job_result(item.id, item.version, report, 'ygor')
+        except ContractError as exc:
+            self.observations['result_rejection'] = str(exc)
+        stored = Repository(self.root / 'workflow.db').get_work(item.id)
+        self.observations['result_readback'] = as_payload(stored)
+        self.observations['result_events'] = self.repo.events(item.id)
+        return stored
+
+    def assert_unverified_result_blocked(self, stored):
+        self.assertNotEqual(stored.status, WorkStatus.SUCCEEDED,
+                            'effect-linked work was promoted without matching receipt/readback')
+        self.assertFalse(any(event['type'] == 'work_succeeded'
+                             for event in self.repo.events(stored.id)))
+
+    def identity_records(self, records):
+        identity = self.service.resolve_identity({
+            'id': self.case_fixture['id'], 'records': records}, 'ygor')
+        self.observations['identity'] = identity
+        return identity
+
+    def attempt_identity_effect(self):
+        try:
+            approval = self.approve()
+            self.observations['approval_status'] = approval['status']
+            self.queue()
+            self.worker.process_one()
+        except ContractError as exc:
+            self.observations['identity_effect_rejection'] = str(exc)
+        self.assertEqual(self.mailbox.commands, [],
+                         'unresolved business identity reached the provider')
+        self.assertEqual(self.repo.list_state('contact'), [])
+
+    def test_fixture_case_mapping_is_exactly_thirty_plus_six(self):
+        methods = [getattr(type(self), name) for name in dir(type(self)) if name.startswith('test_')]
+        mapped = [method.eval_case_id for method in methods if hasattr(method, 'eval_case_id')]
+        expected = {f'os-eval-{number:03}' for number in range(1, 37)}
+        self.assertEqual(len(mapped), 36)
+        self.assertEqual(set(mapped), expected)
+        for ident in mapped:
+            self.assertEqual(self.fixture(ident)['estado_inicial']['case_id'], ident)
+
+    @eval_case('os-eval-001')
+    def test_case_001_readonly_research_preserves_account_without_effect(self):
+        domain = self.research['account']['domain']
+        identity = self.identity_records([
+            {'domain': domain, 'person_key': 'person@example.invalid', 'source': source}
+            for source in ('company_site', 'hubspot')])
+        context = self.service.canonical_context(domain)
+        item = self.service.request_work({'objective': self.case_fixture['entrada'],
+            'context': {'account_id': domain, 'identity_id': identity['id'],
+                        'job_type': 'research', 'read_only': True}}, 'ygor', 'case-001')
+        self.assertEqual(identity['status'], 'canonical')
+        self.assertEqual(context['account']['domain'], domain)
+        self.assertEqual(item.status, WorkStatus.REQUESTED)
+        self.assertEqual(self.repo.get_work(item.id).context['account_id'], domain)
+        self.assertEqual(self.repo.outbox()[0]['kind'], 'agent_job')
+        self.assertFalse(self.worker.process_one())
+        self.assert_no_effect()
+
+    @eval_case('os-eval-002')
+    def test_case_002_unconfirmed_business_identity_blocks_effect(self):
+        domain = self.research['account']['domain']
+        identity = self.identity_records([
+            {'domain': domain, 'source': 'company_site'},
+            {'person_key': 'person@example.invalid', 'source': 'unconfirmed_contact'}])
+        with self.subTest(contract='identity_resolution'):
+            self.assertEqual(identity['status'], 'identity_resolution')
+            self.assertIsNone(identity['canonical_person'])
+        with self.subTest(contract='no_effect'):
+            self.attempt_identity_effect()
+
+    @eval_case('os-eval-003')
+    def test_case_003_permitted_next_action_is_prepared_without_dispatch(self):
+        domain = self.research['account']['domain']
+        context = self.service.canonical_context(domain)
+        step = self.service._approval_step(self.repo.get_state('cadence', 'batch')['steps'][0])
+        cadence = self.service.create_cadence({
+            'id': 'next-action', 'account_id': domain, 'person_key': step['recipient'],
+            'objective': self.case_fixture['entrada'], 'execution_context': self.context,
+            'steps': [step]}, 'ygor')
+        self.assertTrue(context['canonical'])
+        self.assertEqual(context['account_id'], domain)
+        self.assertIn(step['channel'], self.context['providers'])
+        self.assertEqual(cadence['status'], 'ready_for_review')
+        self.assertEqual(cadence['objective'], self.case_fixture['entrada'])
+        self.assertEqual(self.repo.get_state('cadence', 'next-action')['steps'][0]['status'], 'draft')
+        with self.assertRaisesRegex(ContractError, 'active approval required'):
+            self.queue('next-action')
+        self.assert_no_effect()
+
+    @eval_case('os-eval-004')
+    def test_case_004_specific_approval_is_required_before_reservation(self):
+        cadence = self.repo.get_state('cadence', 'batch')
+        request = self.service.campaign_execution_review(cadence)
+        self.observations['approval_request'] = request
+        self.assertEqual(request['batch_id'], cadence['id'])
+        self.assertEqual(request['scope_hash'], payload_hash({
+            'E1': _step_hash(self.service._approval_step(cadence['steps'][0]))}))
+        self.assertIsNone(self.repo.get_state('approval', 'batch'))
+        with self.assertRaisesRegex(ContractError, 'active approval required'):
+            self.queue()
+        self.assert_no_effect()
+
+    @eval_case('os-eval-005')
+    def test_case_005_exact_live_approval_receipt_and_explicit_fake_readback(self):
+        approval = self.approve()
+        self.assertGreater(datetime.fromisoformat(approval['expires_at']), datetime.now(timezone.utc))
+        job = self.queue()
+        self.assertEqual(self.mailbox.commands, [])
+        self.assertTrue(self.worker.process_one())
+        effect = Repository(self.root / 'workflow.db').effect(job['id'])
+        self.assertEqual(effect['payload']['approval_hash'], approval['step_hashes']['E1'])
+        self.assertEqual(effect['state'], 'sent')
+        self.assertEqual(effect['receipt_ref'], 'email:eval-mail:message-1')
+        self.assertEqual(self.mailbox.reads, [])
+        message = self.mailbox.readback(effect['receipt_ref'])
+        self.assertEqual(message, self.mailbox.commands[0])
+        self.assertEqual(message['target'], effect['payload']['step']['recipient'])
+        self.assertEqual(message['content'], effect['payload']['step']['content'])
+        result = self.propose_effect_result(effect, readback=message)
+        self.assertEqual(result.status, WorkStatus.SUCCEEDED)
+        self.assertEqual(result.result['receipt_ref'], effect['receipt_ref'])
+        self.assertFalse(self.worker.process_one())
+        self.assertEqual(len(self.mailbox.commands), 1)
+        self.observations['verification_scope'] = 'explicit fake readback; worker itself persists sent'
+
+    @eval_case('os-eval-006')
+    def test_case_006_prior_same_person_channel_target_prevents_second_touch(self):
+        step = self.repo.get_state('cadence', 'batch')['steps'][0]
+        self.assertTrue(self.ledger.reserve('historical', 'E1', step)[0])
+        self.ledger.finish('historical', 'sent', 'email:eval-mail:historical')
+        context = self.service.canonical_context(self.research['account']['domain'])
+        self.observations['context'] = context
+        approval = self.approve()
+        self.assertEqual(approval['status'], 'needs_reconciliation')
+        self.assertEqual(approval['duplicate_evidence'][0]['duplicate']['status'], 'sent')
+        with self.assertRaisesRegex(ContractError, 'active approval required'):
+            self.queue()
+        self.assertFalse(self.worker.process_one())
+        self.assertEqual(self.repo.effects(), [])
+        self.assertEqual(self.mailbox.commands, [])
+        with self.database() as (connection, _):
+            self.assertEqual(connection.execute('SELECT status,provider_id FROM toques').fetchall(),
+                             [('feito', 'email:eval-mail:historical')])
+
+    @eval_case('os-eval-007')
+    def test_case_007_global_person_suppression_blocks_before_reservation(self):
+        person = 'person@example.invalid'
+        self.ledger.suppress('email', person, self.case_fixture['entrada'], identities=[
+            ('linkedin', 'https://www.linkedin.com/in/eval-person')])
+        self.approve()
+        context = self.service.canonical_context(self.research['account']['domain'])
+        self.observations['context'] = context
+        with self.assertRaisesRegex(TouchBlocked, '^suppressed$'):
+            self.queue()
+        with self.database() as (connection, _):
+            self.assertEqual(connection.execute('SELECT canal FROM thunder_suppressions ORDER BY canal').fetchall(),
+                             [('email',), ('linkedin',)])
+        self.assertFalse(self.worker.process_one())
+        self.assert_no_effect()
+
+    @eval_case('os-eval-008')
+    def test_case_008_result_cannot_succeed_before_readback_then_accepts_matching_evidence(self):
+        effect = self.send_one()
+        self.assertEqual(effect['receipt_ref'], 'email:eval-mail:message-1')
+        result = self.propose_effect_result(effect)
+        self.assertEqual(self.mailbox.reads, [])
+        with self.subTest(phase='before_readback'):
+            self.assert_unverified_result_blocked(result)
+        message = self.mailbox.readback(effect['receipt_ref'])
+        self.assertEqual(message, self.mailbox.commands[0])
+        verified = self.propose_effect_result(effect, readback=message)
+        self.assertEqual(verified.status, WorkStatus.SUCCEEDED)
+        self.assertEqual(len(self.mailbox.commands), 1)
+
+    @eval_case('os-eval-009')
+    def test_case_009_completed_worker_without_readback_keeps_result_unverified(self):
+        effect = self.send_one()
+        self.assertEqual(effect['state'], 'sent')
+        self.assertIsNotNone(effect['receipt_ref'])
+        result = self.propose_effect_result(effect)
+        self.assertEqual(self.mailbox.reads, [])
+        self.assert_unverified_result_blocked(result)
+
+    @eval_case('os-eval-010')
+    def test_case_010_unknown_provider_timeout_reconciles_without_new_attempt(self):
+        self.mailbox.mode = 'timeout_after_effect'
+        effect = self.send_one()
+        self.assertEqual(effect['state'], 'uncertain')
+        self.assertEqual(effect['error_code'], 'provider_timeout')
+        self.assertIsNone(effect['receipt_ref'])
+        self.queue()
+        self.assertFalse(self.worker.process_one())
+        with self.assertRaisesRegex(RepositoryConflict, 'not safely retryable'):
+            self.service.retry_effect(effect['id'], 'ygor')
+        self.assertEqual(len(self.mailbox.commands), 1)
+        self.assertEqual(len(self.mailbox.messages), 1)
+        self.assertEqual(self.service.canonical_context(self.research['account']['domain'])['blocks'],
+                         ['provider_timeout'])
+
+    @eval_case('os-eval-011')
+    def test_case_011_known_failure_retry_preserves_required_restart_confirmation(self):
+        self.mailbox.mode = 'rejected'
+        effect = self.send_one()
+        self.assertEqual((effect['state'], effect['error_code']), ('failed', 'provider_rejected'))
+        self.assertEqual(self.mailbox.messages, {})
+        with self.assertRaisesRegex(ApprovalError, '^campaign_restart_confirmation_required$'):
+            self.service.retry_effect(effect['id'], 'ygor')
+        self.assertFalse(self.worker.process_one())
+        self.assertEqual(len(self.mailbox.commands), 1)
+        self.observations['contract_gap'] = ('fixture requires retry_controlado; real service requires '
+            'new campaign restart confirmation and exposes no accepted restart payload on retry_effect')
+        retry = Repository(self.root / 'workflow.db').effect(effect['id'])
+        self.observations['retry_readback'] = retry
+        self.assertEqual(retry['state'], 'pending', self.observations['contract_gap'])
+
+    @eval_case('os-eval-012')
+    def test_case_012_out_of_scope_publication_hands_off_without_external_effect(self):
+        item = self.service.request_work({'objective': 'Publicar campanha fora do escopo operacional',
+            'context': {'request': self.case_fixture['entrada'], 'channel': 'unsupported'}},
+            'hermes', 'case-012')
+        self.assertEqual(item.status, WorkStatus.NEEDS_HUMAN)
+        self.assertIn('Ygor', item.next_action)
+        self.assertEqual(self.repo.outbox(), [])
+        self.assertFalse(self.worker.process_one())
+        self.assert_no_effect()
+
+    @eval_case('os-eval-013')
+    def test_case_013_draft_only_copy_is_persisted_without_dispatch(self):
+        copy = self.service.request_copy({'account_id': self.research['account']['domain'],
+            'capability_ids': ['cap-1'], 'proof_ids': ['proof-1'],
+            'final_copy': self.case_fixture['entrada']}, 'ygor')
+        self.assertEqual(copy['status'], 'ready_for_review')
+        self.assertEqual(self.repo.get_state('copy', copy['id'])['final_copy'], self.case_fixture['entrada'])
+        self.assertIsNone(self.repo.get_state('approval', 'batch'))
+        self.assertFalse(self.worker.process_one())
+        self.assert_no_effect()
+
+    @eval_case('os-eval-014')
+    def test_case_014_similar_unconfirmed_companies_require_disambiguation(self):
+        identity = self.identity_records([
+            {'name': 'Acme Industrial', 'domain': self.research['account']['domain'],
+             'person_key': 'person@example.invalid', 'source': 'company_site'},
+            {'name': 'Acme Industria', 'domain': 'acme-other.invalid',
+             'person_key': 'person@example.invalid', 'source': 'hubspot'}])
+        self.assertEqual(identity['status'], 'identity_resolution')
+        self.assertIsNone(identity['canonical_account'])
+        self.attempt_identity_effect()
+
+    @eval_case('os-eval-015')
+    def test_case_015_result_channel_must_match_executed_email(self):
+        effect = self.send_one()
+        message = self.mailbox.readback(effect['receipt_ref'])
+        self.assertEqual(effect['payload']['step']['channel'], 'email')
+        self.assertEqual(message, self.mailbox.commands[0])
+        result = self.propose_effect_result(effect, channel='linkedin', readback=message)
+        self.assert_unverified_result_blocked(result)
+
+    @eval_case('os-eval-016')
+    def test_case_016_other_target_approval_is_rejected_before_queue(self):
+        cadence = self.repo.get_state('cadence', 'batch')
+        request = self.service.campaign_execution_review(cadence)
+        changed = self.service._approval_step(cadence['steps'][0])
+        changed['recipient'] = 'other@example.invalid'
+        request['scope_hash'] = payload_hash({'E1': _step_hash(changed)})
+        self.observations['wrong_target_approval'] = request
+        with self.assertRaisesRegex(ApprovalError, 'campaign_confirmation_required'):
+            self.approve(request=request)
+        with self.assertRaisesRegex(ContractError, 'active approval required'):
+            self.queue()
+        self.assert_no_effect()
+
+    @eval_case('os-eval-017')
+    def test_case_017_changed_payload_after_approval_blocks_at_dispatch(self):
+        self.approve()
+        cadence = self.repo.get_state('cadence', 'batch')
+        cadence['steps'][0]['content'] = 'Changed after exact human approval'
+        self.repo.put_state('cadence', 'batch', cadence)
+        with self.assertRaisesRegex(ApprovalError, 'campaign_confirmation_scope_changed'):
+            self.queue()
+        self.assertFalse(self.worker.process_one())
+        self.assert_no_effect()
+
+    @eval_case('os-eval-018')
+    def test_case_018_approval_expired_before_reservation_requires_review(self):
+        approval = self.approve()
+        approval['expires_at'] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+        self.repo.put_state('approval', 'batch', approval)
+        with self.assertRaisesRegex(ContractError, '^approval expired; review required$'):
+            self.queue()
+        self.assertEqual(self.repo.get_state('approval', 'batch')['status'], 'expired')
+        self.assertEqual(self.repo.get_state('cadence', 'batch')['status'], 'ready_for_review')
+        self.assertFalse(self.worker.process_one())
+        self.assert_no_effect()
+
+    @eval_case('os-eval-019')
+    def test_case_019_queued_touch_already_in_provider_history_is_reconciled(self):
+        self.approve()
+        job = self.queue()
+        step = job['payload']['step']
+        self.assertTrue(self.ledger.reserve(job['effect_key'], 'E1', step)[0])
+        prior_command = {'target': step['recipient'], 'subject': step['subject'],
+                         'content': step['content'], 'effect_id': step['id']}
+        prior = self.mailbox(prior_command)
+        receipt = 'email:eval-mail:' + prior['provider_id']
+        self.assertEqual(self.mailbox.readback(receipt), prior_command)
+        self.observations['prior_provider_effect'] = {'command': prior_command, 'receipt': receipt}
+        calls_before = len(self.mailbox.commands)
+        self.assertTrue(self.worker.process_one())
+        self.assertFalse(self.worker.process_one())
+        self.assertEqual(len(self.mailbox.commands), calls_before)
+        effect = self.repo.effect(job['id'])
+        self.observations['reconciled_effect'] = effect
+        self.assertIsNone(effect['receipt_ref'])
+        self.assertEqual(effect['state'], 'needs_reconciliation',
+                         'queued/provider-history overlap was promoted instead of flagged for reconciliation')
+        with self.database() as (connection, _):
+            self.assertEqual(connection.execute('SELECT status,provider_id FROM toques').fetchall(),
+                             [('reservado', None)])
+
+    @eval_case('os-eval-020')
+    def test_case_020_existing_email_with_ambiguous_company_cannot_associate_or_send(self):
+        person = 'person@example.invalid'
+        identity = self.identity_records([
+            {'domain': self.research['account']['domain'], 'person_key': person,
+             'hubspot_contact_id': '123', 'source': 'email'},
+            {'domain': 'other-company.invalid', 'person_key': person,
+             'hubspot_contact_id': '123', 'source': 'hubspot'}])
+        self.assertEqual(identity['status'], 'identity_resolution')
+        self.assertIsNone(identity['canonical_account'])
+        self.assertEqual(self.repo.list_state('contact'), [])
+        self.attempt_identity_effect()
+
+    @eval_case('os-eval-021')
+    def test_case_021_missing_receipt_cannot_be_reported_sent_or_retried(self):
+        self.mailbox.mode = 'missing_receipt'
+        effect = self.send_one()
+        self.assertEqual(effect['state'], 'uncertain')
+        self.assertIsNone(effect['receipt_ref'])
+        with self.assertRaisesRegex(RepositoryConflict, 'not safely retryable'):
+            self.service.retry_effect(effect['id'], 'ygor')
+        result = self.propose_effect_result(effect)
+        self.assertEqual(len(self.mailbox.commands), 1)
+        self.assert_unverified_result_blocked(result)
+
+    @eval_case('os-eval-022')
+    def test_case_022_two_consumed_executions_require_incident_without_third_call(self):
+        effect = self.send_one()
+        duplicate_command = deepcopy(self.mailbox.commands[0])
+        second = self.mailbox(duplicate_command)
+        second_receipt = 'email:eval-mail:' + second['provider_id']
+        # Inject already-consumed history, not a second pending command prevented by dedupe.
+        with self.database() as (connection, _):
+            connection.execute('''INSERT INTO toques(canal,acao,pessoa_chave,alvo,status,provider_id,agente,ref)
+                SELECT canal,acao,pessoa_chave,alvo,status,?,'historical-duplicate',ref FROM toques LIMIT 1''',
+                (second_receipt,))
+        self.observations['consumed_history'] = {
+            'command_id': effect['id'], 'provider_receipts': [effect['receipt_ref'], second_receipt],
+            'same_command': self.mailbox.commands[0] == self.mailbox.commands[1]}
+        self.queue()
+        self.assertFalse(self.worker.process_one())
+        self.assertEqual(len(self.mailbox.commands), 2)
+        self.assertEqual(len(self.mailbox.messages), 2)
+        self.observations['context'] = self.service.canonical_context(self.research['account']['domain'])
+        today = self.service.today()
+        self.observations['today'] = today
+        with self.subTest(contract='incident'):
+            self.assertTrue(today['operator_alerts'], 'no incident exposed for two consumed executions')
+        with self.subTest(contract='reconciliation'):
+            self.assertEqual(self.repo.effect(effect['id'])['state'], 'needs_reconciliation')
+
+    @eval_case('os-eval-023')
+    def test_case_023_timeout_after_possible_effect_never_automatically_retries(self):
+        self.mailbox.mode = 'timeout_after_effect'
+        effect = self.send_one()
+        self.assertEqual(effect['state'], 'uncertain')
+        self.assertEqual(len(self.mailbox.messages), 1)
+        self.queue()
+        restarted = WorkerRuntime(Repository(self.root / 'workflow.db'), self.ledger, {'email': self.adapter},
+            worker_id='case-023-restart', health_path=self.root / 'restart.json',
+            revision='offline-eval', approved_catalog=CATALOG)
+        self.assertFalse(restarted.process_one())
+        with self.assertRaisesRegex(RepositoryConflict, 'not safely retryable'):
+            self.service.retry_effect(effect['id'], 'ygor')
+        self.assertEqual(len(self.mailbox.commands), 1)
+        self.assertEqual(self.repo.effect(effect['id'])['state'], 'uncertain')
+
+    @eval_case('os-eval-024')
+    def test_case_024_receipt_conflicting_with_card_is_preserved_and_not_promoted(self):
+        effect = self.send_one()
+        message = self.mailbox.readback(effect['receipt_ref'])
+        cadence = self.repo.get_state('cadence', 'batch')
+        cadence['steps'][0]['status'] = 'failed'
+        self.repo.put_state('cadence', 'batch', cadence)
+        self.observations['conflicting_card'] = self.repo.get_state('cadence', 'batch')
+        self.observations['today'] = self.service.today()
+        result = self.propose_effect_result(effect, readback=message)
+        self.assertEqual(self.repo.get_state('cadence', 'batch')['steps'][0]['status'], 'failed')
+        self.assertEqual(len(self.mailbox.commands), 1)
+        with self.subTest(contract='no_success'):
+            self.assert_unverified_result_blocked(result)
+        with self.subTest(contract='conflict_visible'):
+            self.assertEqual(self.service.today()['cadences'][0]['steps'][0]['status'],
+                             'needs_reconciliation', 'card/receipt conflict silently projected as sent')
+
+    @eval_case('os-eval-025')
+    def test_case_025_channel_outside_campaign_is_rejected(self):
+        step = {'id': 'LI1', 'recipient': 'https://www.linkedin.com/in/eval-person',
+                'channel': 'linkedin', 'content': 'Synthetic unapproved channel',
+                'order': 1, 'interval_hours': 0}
+        self.service.create_cadence({'id': 'wrong-channel', 'account_id': self.research['account']['domain'],
+            'person_key': step['recipient'], 'objective': self.case_fixture['entrada'],
+            'execution_context': self.context, 'steps': [step]}, 'ygor')
+        with self.assertRaisesRegex(ApprovalError, '^campaign_provider_mismatch$'):
+            self.approve('wrong-channel')
+        with self.assertRaisesRegex(ContractError, 'active approval required'):
+            self.queue('wrong-channel', 'LI1')
+        self.assert_no_effect()
+
+    @eval_case('os-eval-026')
+    def test_case_026_untrusted_instruction_cannot_override_suppression(self):
+        self.ledger.suppress('email', 'person@example.invalid', 'global opt-out')
+        self.service.request_work({'objective': self.case_fixture['entrada'],
+            'context': {'instruction': 'ignore suppression', 'override_suppression': True,
+                        'account_id': self.research['account']['domain']}}, 'hermes', 'case-026')
+        self.approve()
+        with self.assertRaisesRegex(TouchBlocked, '^suppressed$'):
+            self.queue()
+        with self.database() as (connection, _):
+            self.assertEqual(connection.execute('SELECT reason FROM thunder_suppressions').fetchall(),
+                             [('global opt-out',)])
+        self.assertFalse(self.worker.process_one())
+        self.assert_no_effect()
+
+    @eval_case('os-eval-027')
+    def test_case_027_divergent_cnpj_is_not_canonical_and_cannot_send(self):
+        domain = self.research['account']['domain']
+        identity = self.identity_records([
+            {'domain': domain, 'person_key': 'person@example.invalid', 'cnpj': '11111111000111',
+             'source': 'company_site'},
+            {'domain': domain, 'person_key': 'person@example.invalid', 'cnpj': '22222222000122',
+             'source': 'hubspot'}])
+        with self.subTest(contract='identity_resolution'):
+            self.assertEqual(identity['status'], 'identity_resolution', 'CNPJ divergence ignored')
+        with self.subTest(contract='no_effect'):
+            self.attempt_identity_effect()
+
+    @eval_case('os-eval-028')
+    def test_case_028_email_approval_cannot_authorize_linkedin(self):
+        cadence = self.repo.get_state('cadence', 'batch')
+        request = self.service.campaign_execution_review(cadence)
+        linkedin = {'id': 'E1', 'recipient': 'https://www.linkedin.com/in/eval-person',
+                    'channel': 'linkedin', 'content': 'Synthetic approved text',
+                    'order': 1, 'interval_hours': 0}
+        request['scope_hash'] = payload_hash({'E1': _step_hash(linkedin)})
+        self.observations['cross_channel_approval'] = request
+        with self.assertRaisesRegex(ApprovalError, '^campaign_confirmation_required$'):
+            self.approve(request=request)
+        self.assertIsNone(self.repo.get_state('approval', 'batch'))
+        self.assert_no_effect()
+
+    @eval_case('os-eval-029')
+    def test_case_029_human_reply_blocks_automatic_resend_and_exposes_handoff(self):
+        self.create_batch('reply-scenario', followup=True)
+        self.approve('reply-scenario')
+        self.queue('reply-scenario')
+        self.assertTrue(self.worker.process_one())
+        step = self.repo.get_state('cadence', 'reply-scenario')['steps'][0]
+        touch = self.ledger.preflight('reply-scenario', step)['duplicate']
+        self.service.record_reply({'id': 'reply-029', 'channel': 'email',
+            'content': 'Synthetic human reply before requested resend', 'classification': 'positive',
+            'cadence_id': 'reply-scenario', 'account_id': self.research['account']['domain'],
+            'person_key': step['recipient'], 'preceding_touch_id': touch['touch_id']}, 'ygor')
+        context = self.service.canonical_context(self.research['account']['domain'])
+        self.observations['context'] = context
+        with self.assertRaisesRegex(ContractError, 'paused'):
+            self.queue('reply-scenario', 'E2')
+        with self.assertRaisesRegex(TouchBlocked, '^has_reply$'):
+            self.ledger.preflight('retry', step, raise_blocked=True)
+        alert = self.repo.get_state('operator_alert', 'reply-029')
+        self.assertEqual(alert['owner'], 'ygor')
+        self.assertTrue(alert['active'])
+        self.assertEqual(self.repo.get_state('cadence', 'reply-scenario')['status'], 'paused_reply')
+        self.assertFalse(self.worker.process_one())
+        self.assertEqual(len(self.mailbox.commands), 1)
+
+    @eval_case('os-eval-030')
+    def test_case_030_http_200_does_not_substitute_for_receipt_and_readback(self):
+        self.mailbox.mode = 'missing_receipt'
+        effect = self.send_one()
+        self.assertEqual(effect['state'], 'uncertain')
+        self.assertIsNone(effect['receipt_ref'])
+        self.assertEqual(self.mailbox.reads, [])
+        result = self.propose_effect_result(effect, evidence=[{'source': 'fake_provider',
+            'effect_id': effect['id'], 'http_status': 200}])
+        self.assertEqual(len(self.mailbox.commands), 1)
+        self.assert_unverified_result_blocked(result)
+
     def test_exact_approval_command_receipt_readback_finalstate(self):
         approval = self.approve()
         self.queue()
         self.assertEqual(self.mailbox.commands, [])
         self.assertTrue(self.worker.process_one())
-        trace = self.capture('os-eval-005/008')
+        self.mailbox.readback(self.repo.effects()[0]['receipt_ref'])
+        trace = self.capture('regression-exact-approval')
         command = trace['command'][0]
         self.assertEqual(command['approval_hash'], approval['step_hashes']['E1'])
         self.assertEqual(command['step']['recipient'], 'person@example.invalid')
@@ -319,8 +889,12 @@ class EvalTrajectoryTests(unittest.TestCase):
     def fixture(self, ident):
         directory = os.environ.get('THUNDER_EVAL_DIR')
         self.assertTrue(directory, 'THUNDER_EVAL_DIR must name the canonical offline eval directory')
-        rows = [json.loads(line) for line in (Path(directory) / 'cases-person-suppression.jsonl').read_text().splitlines()]
-        self.assertEqual(len(rows), 6)
+        rows = []
+        for name, count in FIXTURE_FILES.items():
+            loaded = [json.loads(line) for line in (Path(directory) / name).read_text().splitlines()]
+            self.assertEqual(len(loaded), count, name)
+            rows.extend(loaded)
+        self.assertEqual(len({row['id'] for row in rows}), 36)
         return next(row for row in rows if row['id'] == ident)
 
     def canonical_reply(self, classification='negative', content='Nao me contate novamente.', fixture=None):
@@ -355,6 +929,7 @@ class EvalTrajectoryTests(unittest.TestCase):
             'preceding_touch_id': touch['touch_id']}, 'ygor')
         return reply, linkedin
 
+    @eval_case('os-eval-031')
     def test_email_refusal_suppresses_canonical_linkedin_pending(self):
         fixture = self.fixture('os-eval-031')
         reply, linkedin = self.canonical_reply(fixture['estado_inicial']['classification'], fixture['entrada'], fixture)
@@ -395,15 +970,19 @@ class EvalTrajectoryTests(unittest.TestCase):
         self.assertEqual({c['person_key'] for c in self.repo.list_state('cadence')}, {'person@example.invalid'})
         self.capture(fixture['id'])
 
+    @eval_case('os-eval-032')
     def test_case_032_referral_pauses_sender_without_preparing_third_party(self):
         self.assert_human_handoff('os-eval-032')
 
+    @eval_case('os-eval-033')
     def test_case_033_schedule_request_hands_off_to_ygor_without_autosend(self):
         self.assert_human_handoff('os-eval-033')
 
+    @eval_case('os-eval-034')
     def test_case_034_price_request_hands_off_to_ygor_without_autosend(self):
         self.assert_human_handoff('os-eval-034')
 
+    @eval_case('os-eval-035')
     def test_case_035_edited_approved_text_requires_new_approval(self):
         fixture = self.fixture('os-eval-035')
         self.approve()
@@ -419,6 +998,7 @@ class EvalTrajectoryTests(unittest.TestCase):
                 approval=self.repo.get_state('approval', 'batch'))
         self.assertEqual(self.capture(fixture['id'])['touches'], [])
 
+    @eval_case('os-eval-036')
     def test_case_036_timeout_after_start_never_repeats(self):
         fixture = self.fixture('os-eval-036')
         self.mailbox.mode = fixture['estado_inicial']['provider_mode']
@@ -695,6 +1275,24 @@ if __name__ == '__main__':
         sys.argv.remove('--trace')
     program = unittest.main(exit=False)
     if emit:
-        print(json.dumps({'release_gate': 'OFF', 'trajectory': TRAJECTORIES,
+        executed = [row['case_id'] for row in CASE_RUNS]
+        expected = {f'os-eval-{number:03}' for number in range(1, 37)}
+        directory = os.environ.get('THUNDER_EVAL_DIR')
+        hashes = {name: hashlib.sha256((Path(directory) / name).read_bytes()).hexdigest()
+                  for name in FIXTURE_FILES} if directory else {}
+        print(json.dumps({'release_gate': 'OFF',
+                          'unittest': {'tests_run': program.result.testsRun,
+                              'raw_failures': len(program.result.failures),
+                              'errors': len(program.result.errors),
+                              'skipped': len(program.result.skipped),
+                              'expected_failures': len(program.result.expectedFailures),
+                              'successful': program.result.wasSuccessful()},
+                          'case_coverage': {'expected': 36, 'executed': len(executed),
+                              'unique': len(set(executed)), 'missing': sorted(expected - set(executed)),
+                              'duplicates': sorted({ident for ident in executed if executed.count(ident) > 1}),
+                              'passed': sorted(row['case_id'] for row in CASE_RUNS if row['outcome'] == 'PASS'),
+                              'failed': sorted(row['case_id'] for row in CASE_RUNS if row['outcome'] == 'FAIL'),
+                              'fixture_sha256': hashes}, 'trajectory': CASE_RUNS,
+                          'regression_observations': [row for row in TRAJECTORIES if 'fixture' not in row],
                           'copy_probes': copy_probes()}, ensure_ascii=True, sort_keys=True))
     raise SystemExit(0 if program.result.wasSuccessful() else 1)
