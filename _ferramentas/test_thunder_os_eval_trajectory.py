@@ -482,16 +482,22 @@ class EvalTrajectoryTests(unittest.TestCase):
 
     @eval_case('os-eval-016')
     def test_case_016_other_target_approval_is_rejected_before_queue(self):
+        approval = self.approve()
         cadence = self.repo.get_state('cadence', 'batch')
-        request = self.service.campaign_execution_review(cadence)
-        changed = self.service._approval_step(cadence['steps'][0])
-        changed['recipient'] = 'other@example.invalid'
-        request['scope_hash'] = payload_hash({'E1': _step_hash(changed)})
-        self.observations['wrong_target_approval'] = request
-        with self.assertRaisesRegex(ApprovalError, 'campaign_confirmation_required'):
-            self.approve(request=request)
-        with self.assertRaisesRegex(ContractError, 'active approval required'):
+        approved_step = self.service._approval_step(cadence['steps'][0])
+        self.assertEqual(approval['status'], 'active')
+        self.assertEqual(approved_step['recipient'], 'person@example.invalid')
+        self.assertEqual(approval['step_hashes']['E1'], _step_hash(approved_step))
+        self.service.validate_campaign_execution(cadence, approval)
+        cadence['steps'][0]['recipient'] = 'other@example.invalid'
+        changed = self.repo.put_state('cadence', 'batch', cadence)
+        self.observations.update(replayed_approval=approval, approved_step=approved_step,
+                                 changed_step=self.service._approval_step(changed['steps'][0]))
+        self.assertNotEqual(_step_hash(self.observations['changed_step']), approval['step_hashes']['E1'])
+        with self.assertRaisesRegex(ApprovalError, '^campaign_confirmation_scope_changed$'):
             self.queue()
+        self.assertEqual(self.repo.get_state('approval', 'batch'), approval)
+        self.assertFalse(self.worker.process_one())
         self.assert_no_effect()
 
     @eval_case('os-eval-017')
@@ -671,16 +677,35 @@ class EvalTrajectoryTests(unittest.TestCase):
 
     @eval_case('os-eval-028')
     def test_case_028_email_approval_cannot_authorize_linkedin(self):
+        campaign = self.repo.get_state('campaign_config', self.context['campaign_id'])
+        config = deepcopy(campaign['config'])
+        config['providers']['linkedin'] = 'eval-linkedin'
+        config['configuration']['provider_accounts']['linkedin'] = 'eval-linkedin-account'
+        self.context = self.service.configure_campaign(
+            config, 'ygor', expected_version=campaign['version'])['context']
         cadence = self.repo.get_state('cadence', 'batch')
-        request = self.service.campaign_execution_review(cadence)
-        linkedin = {'id': 'E1', 'recipient': 'https://www.linkedin.com/in/eval-person',
-                    'channel': 'linkedin', 'content': 'Synthetic approved text',
-                    'order': 1, 'interval_hours': 0}
-        request['scope_hash'] = payload_hash({'E1': _step_hash(linkedin)})
-        self.observations['cross_channel_approval'] = request
-        with self.assertRaisesRegex(ApprovalError, '^campaign_confirmation_required$'):
-            self.approve(request=request)
-        self.assertIsNone(self.repo.get_state('approval', 'batch'))
+        cadence['execution_context'] = self.context
+        self.repo.put_state('cadence', 'batch', cadence)
+        approval = self.approve()
+        cadence = self.repo.get_state('cadence', 'batch')
+        approved_step = self.service._approval_step(cadence['steps'][0])
+        self.assertEqual(approval['status'], 'active')
+        self.assertEqual(approved_step['channel'], 'email')
+        self.assertEqual(approval['step_hashes']['E1'], _step_hash(approved_step))
+        self.assertEqual(set(self.context['providers']), {'email', 'linkedin'})
+        self.service.validate_campaign_execution(cadence, approval)
+        cadence['steps'][0].update(channel='linkedin', recipient='https://www.linkedin.com/in/eval-person')
+        cadence['steps'][0].pop('subject')
+        changed = self.repo.put_state('cadence', 'batch', cadence)
+        self.observations.update(replayed_approval=approval, approved_step=approved_step,
+                                 changed_step=self.service._approval_step(changed['steps'][0]),
+                                 campaign_context=self.context)
+        self.assertEqual(self.service._campaign_context(changed), self.context)
+        self.assertNotEqual(_step_hash(self.observations['changed_step']), approval['step_hashes']['E1'])
+        with self.assertRaisesRegex(ApprovalError, '^campaign_confirmation_scope_changed$'):
+            self.queue()
+        self.assertEqual(self.repo.get_state('approval', 'batch'), approval)
+        self.assertFalse(self.worker.process_one())
         self.assert_no_effect()
 
     @eval_case('os-eval-029')
