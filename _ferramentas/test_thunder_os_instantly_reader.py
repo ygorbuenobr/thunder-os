@@ -197,10 +197,10 @@ class HTTPTests(unittest.TestCase):
             server.thunder_instantly_reader.snapshot.return_value = {'status': 'ok', 'read_only': True}
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
-            def request(method, suffix=''):
+            def request(method, suffix='', path='/api/os/v1/integrations/instantly/reader'):
                 conn = http.client.HTTPConnection('127.0.0.1', server.server_port, timeout=5)
                 try:
-                    conn.request(method, '/api/os/v1/integrations/instantly/reader' + suffix)
+                    conn.request(method, path + suffix)
                     response = conn.getresponse()
                     return response.status, json.loads(response.read())
                 finally:
@@ -215,6 +215,15 @@ class HTTPTests(unittest.TestCase):
                         self.assertIn(request(method, suffix)[0], (405, 501))
                 server.thunder_instantly_reader.snapshot.assert_called_once()
                 server.thunder_instantly_reader.refresh.assert_not_called()
+                for code in ('configuration_pending', 'credential_unavailable'):
+                    server.thunder_instantly_reader.snapshot.return_value = {
+                        'status': 'error', 'enabled': True, 'error_code': code}
+                    with patch.object(panel.Handler, 'thunder_proxy_actor', return_value='ygor'):
+                        status, observed = request('GET', path='/api/os/v1/integrations/external-email/status')
+                    self.assertEqual(status, 200)
+                    self.assertTrue(observed['instantly']['configuration_pending'])
+                    self.assertFalse(observed['instantly']['provider_verified'])
+                    self.assertFalse(observed['instantly']['writer_enabled'])
             finally:
                 server.shutdown()
                 server.server_close()

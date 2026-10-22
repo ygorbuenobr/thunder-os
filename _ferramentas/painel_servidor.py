@@ -1429,7 +1429,8 @@ class Handler(BaseHTTPRequestHandler):
                 'apollo':apollo_status(),'instantly':{**instantly_status(),
                     'capture_enabled':capture_enabled,'writer_enabled':False,
                     'enabled':reader_state['enabled'],'status':reader_state['status'],
-                    'configuration_pending':not reader_state['enabled'],
+                    'configuration_pending':not reader_state['enabled'] or reader_state.get('error_code') in (
+                        'configuration_pending','credential_unavailable'),
                     'provider_verified':bool(reader_state.get('last_success_at')),
                     'automatic_reader_enabled':reader_state['enabled'],
                     'reader_status':reader_state['status']}})
