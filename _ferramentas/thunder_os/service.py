@@ -357,6 +357,8 @@ class ThunderService:
         result: Mapping[str, Any],
         actor: str,
     ) -> WorkItem:
+        if "verification" in result:
+            raise ContractError("verification metadata is server-owned")
         evidence = result.get("evidence")
         if not isinstance(evidence, list) or not evidence:
             raise ContractError("result evidence required")

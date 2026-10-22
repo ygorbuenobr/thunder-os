@@ -21,6 +21,10 @@ class TouchBlocked(toques.ErroBanco):
     pass
 
 
+class InvalidTouchScope(ValueError):
+    """Invalid identity or target detected before accessing the touch database."""
+
+
 class TouchLedger:
     def __init__(self, *, db_context=None):
         self._explicit_db_context = db_context is not None
@@ -71,7 +75,10 @@ class TouchLedger:
         """Read bounded confirmed history for one registered effect's exact scope."""
         if type(limit) is not int or not 2 <= limit <= 100:
             raise ValueError("duplicate evidence limit must be between 2 and 100")
-        channel, action, person, target = self._scope(step, effect_key)
+        try:
+            channel, action, person, target = self._scope(step, effect_key)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise InvalidTouchScope("invalid_effect_touch_scope") from exc
         with self._banco() as (connection, marker):
             cursor = connection.cursor()
             cursor.execute(
@@ -227,16 +234,41 @@ class TouchLedger:
         with self._banco() as (connection, marker):
             cursor = connection.cursor()
             cursor.execute(
-                "SELECT t.id,t.status FROM thunder_effect_touches e JOIN toques t ON t.id=e.touch_id WHERE e.effect_key=" + marker,
+                "SELECT t.id,t.canal,t.pessoa_chave FROM thunder_effect_touches e "
+                "JOIN toques t ON t.id=e.touch_id WHERE e.effect_key=" + marker,
+                (effect_key,),
+            )
+            scope = cursor.fetchone()
+            if not scope:
+                return {"touch_id": None, "status": "not_reserved"}
+            # Reuse a caller's SQLite transaction; BEGIN IMMEDIATE cannot nest.
+            # Otherwise take the same person lock as reservation before re-reading.
+            if marker != "?" or not connection.in_transaction:
+                self._lock(connection, marker, scope[1], scope[2])
+            cursor.execute(
+                "SELECT t.id,t.status,t.canal,t.pessoa_chave FROM thunder_effect_touches e "
+                "JOIN toques t ON t.id=e.touch_id WHERE e.effect_key=" + marker,
                 (effect_key,),
             )
             row = cursor.fetchone()
-            if not row:
-                return {"touch_id": None, "status": "not_reserved"}
-            if row[1] != "erro":
+            if (not row or row[0] != scope[0] or row[2] != scope[1]
+                    or row[3] != scope[2] or row[1] != "erro"):
                 raise TouchBlocked("touch is not safely releasable")
-            cursor.execute("UPDATE toques SET status='liberado',atualizado_em=CURRENT_TIMESTAMP WHERE id=" + marker, (row[0],))
-            cursor.execute("DELETE FROM thunder_effect_touches WHERE effect_key=" + marker, (effect_key,))
+            cursor.execute(
+                "UPDATE toques SET status='liberado',atualizado_em=CURRENT_TIMESTAMP "
+                "WHERE id=" + marker + " AND status='erro' AND EXISTS ("
+                "SELECT 1 FROM thunder_effect_touches WHERE effect_key=" + marker
+                + " AND touch_id=" + marker + ")",
+                (row[0], effect_key, row[0]),
+            )
+            if cursor.rowcount != 1:
+                raise TouchBlocked("touch is not safely releasable")
+            cursor.execute(
+                "DELETE FROM thunder_effect_touches WHERE effect_key=" + marker
+                + " AND touch_id=" + marker, (effect_key, row[0]),
+            )
+            if cursor.rowcount != 1:
+                raise TouchBlocked("touch is not safely releasable")
             return {"touch_id": str(row[0]), "status": "released"}
 
     @staticmethod

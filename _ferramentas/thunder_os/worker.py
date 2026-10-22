@@ -23,7 +23,7 @@ from .db import Repository, RepositoryConflict
 from .models import effect_payload_hash, payload_hash
 from .providers.email import EmailAdapter
 from .providers.result import ProviderResult
-from .touch_ledger import TouchBlocked, TouchLedger
+from .touch_ledger import InvalidTouchScope, TouchBlocked, TouchLedger
 
 
 class EffectBlocked(RuntimeError):
@@ -146,7 +146,7 @@ class WorkerRuntime:
         )
         if not job:
             return False
-        if self._reconcile_duplicate_effect(job):
+        if self._reconcile_duplicate_effect(job, claimed=True):
             return True
         payload = job["payload"]
         def finish(state, receipt=None, error=None):
@@ -229,14 +229,23 @@ class WorkerRuntime:
         self._health("ok")
         return True
 
-    def _reconcile_duplicate_effect(self, job) -> bool:
+    def _reconcile_duplicate_effect(self, job, *, claimed=False) -> bool:
         reader = getattr(self.ledger, "duplicate_evidence", None)
-        step = job["payload"].get("step")
-        if reader is None or not isinstance(step, dict):
+        payload = job["payload"]
+        step = payload.get("step") if isinstance(payload, dict) else None
+        if reader is None:
             return False
-        # Unavailable or invalid history is not evidence that dispatch is safe.
-        # Let the runtime report degraded health and leave the job untouched.
-        evidence = reader(job["effect_key"], step)
+        try:
+            if not isinstance(step, dict):
+                raise InvalidTouchScope("invalid_effect_touch_scope")
+            evidence = reader(job["effect_key"], step)
+        except InvalidTouchScope:
+            try:
+                self._record_invalid_effect_scope(job, claimed=claimed)
+            except RepositoryConflict:
+                pass
+            return True
+        # Database/unknown reader failures propagate and block dispatch.
         if evidence is None:
             return False
         try:
@@ -246,11 +255,34 @@ class WorkerRuntime:
             pass
         return True
 
+    def _record_invalid_effect_scope(self, job, *, claimed):
+        code = "invalid_effect_touch_scope"
+        alert_id = "invalid-effect-scope:" + job["id"]
+        with self.repository.transaction():
+            current = self.repository.effect(job["id"])
+            fields = ("effect_key", "payload", "state", "updated_at", "lease_owner",
+                      "lease_until", "receipt_ref", "error_code")
+            if not current or any(current[field] != job[field] for field in fields):
+                raise RepositoryConflict("effect changed during scope validation")
+            if claimed:
+                self.repository.finish_effect(job["id"], "needs_reconciliation",
+                    job["receipt_ref"], code, lease_owner=job["lease_owner"])
+            if not self.repository.get_state("operator_alert", alert_id):
+                self.repository.append_state("operator_alert", alert_id, {
+                    "active": True, "priority": "high", "owner": "ygor", "code": code,
+                    "reason": code, "effect_id": job["id"], "effect_key": job["effect_key"],
+                    "title": "Revisar escopo de toque invalido",
+                    "message": "Efeito registrado com escopo invalido. Historico e recibos preservados.",
+                    "next_action": "Ygor: revisar o efeito e reconciliar o historico sem reenviar.",
+                })
+
     def _reconcile_registered_effects(self) -> None:
         jobs = self.repository.reconciliation_effects(after_rowid=self._reconciliation_cursor)
         for job in jobs:
             self._reconcile_duplicate_effect(job)
-        self._reconciliation_cursor = jobs[-1]["reconciliation_cursor"] if len(jobs) == 100 else 0
+            self._reconciliation_cursor = job["reconciliation_cursor"]
+        if len(jobs) < 100:
+            self._reconciliation_cursor = 0
 
     @contextmanager
     def _keep_lease(self, job):

@@ -1,15 +1,17 @@
 """Consumed-effect incidents on the real core with isolated SQLite and fake email."""
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from threading import Barrier
+import sqlite3
 import unittest
 from unittest.mock import patch
 
 import test_thunder_os_eval_trajectory as trajectory
 from thunder_os.db import Repository, RepositoryConflict
-from thunder_os.touch_ledger import TouchBlocked
+from thunder_os.touch_ledger import TouchBlocked, TouchLedger
 from thunder_os.worker import WorkerRuntime
 
 
@@ -59,6 +61,39 @@ class EffectReconciliationTests(unittest.TestCase):
 
     def evidence(self, job):
         return self.ledger.duplicate_evidence(job['effect_key'], job['payload']['step'])
+
+    def interleaved_ledger(self, after_read, *, read_number=1):
+        class Cursor:
+            def __init__(self, cursor):
+                self.cursor = cursor
+                self.reads = 0
+
+            def __getattr__(self, name):
+                return getattr(self.cursor, name)
+
+            def fetchone(self):
+                row = self.cursor.fetchone()
+                self.reads += 1
+                if row and self.reads == read_number:
+                    after_read()
+                return row
+
+        class Connection:
+            def __init__(self, connection):
+                self.connection = connection
+
+            def __getattr__(self, name):
+                return getattr(self.connection, name)
+
+            def cursor(self):
+                return Cursor(self.connection.cursor())
+
+        @contextmanager
+        def database():
+            with self.scenario.database() as (connection, marker):
+                yield Connection(connection), marker
+
+        return TouchLedger(db_context=database)
 
     def test_consumed_duplicate_preserves_history_receipts_and_stable_alert_after_restart(self):
         job = self.seed_history()
@@ -342,6 +377,178 @@ class EffectReconciliationTests(unittest.TestCase):
                 raise RuntimeError('synthetic caller failure')
         self.assertEqual(self.repo.effect(job['id']), job)
         self.assertEqual(self.repo.get_state('approval', 'batch'), approval)
+
+    def test_release_rereads_confirmation_committed_after_its_initial_select(self):
+        job = self.seed_history(copies=1, terminal='failed', mode='rejected')
+        confirmed = []
+
+        def confirm_after_select():
+            self.scenario.mailbox.mode = 'confirmed'
+            result = self.scenario.adapter.send(self.scenario.mailbox.commands[0])
+            confirmed.append(self.ledger.finish(job['effect_key'], 'sent', result.receipt_ref))
+
+        racing = self.interleaved_ledger(confirm_after_select)
+        with self.assertRaises(TouchBlocked):
+            racing.release_failed_for_retry(job['effect_key'])
+        self.assertEqual(confirmed[0]['status'], 'sent')
+        created, touch = self.ledger.reserve(job['effect_key'], 'E1', job['payload']['step'])
+        self.assertFalse(created)
+        self.assertEqual(touch, confirmed[0])
+        with self.scenario.database() as (connection, _):
+            self.assertEqual(connection.execute('SELECT status,provider_id FROM toques').fetchall(),
+                             [('feito', confirmed[0]['receipt_ref'])])
+            self.assertEqual(connection.execute('SELECT effect_key,touch_id FROM thunder_effect_touches').fetchall(),
+                             [(job['effect_key'], int(confirmed[0]['id']))])
+        self.assertEqual(len(self.scenario.mailbox.commands), 2)
+        self.assertEqual(len(self.scenario.mailbox.messages), 1)
+
+    def test_release_preserves_a_replacement_mapping_created_before_lock(self):
+        job = self.seed_history(copies=1, terminal='failed', mode='rejected')
+        replacement = []
+
+        def replace_after_select():
+            self.ledger.release_failed_for_retry(job['effect_key'])
+            created, touch = self.ledger.reserve(job['effect_key'], 'E1', job['payload']['step'])
+            self.assertTrue(created)
+            replacement.append(touch)
+
+        with self.assertRaises(TouchBlocked):
+            self.interleaved_ledger(replace_after_select).release_failed_for_retry(job['effect_key'])
+        with self.scenario.database() as (connection, _):
+            self.assertEqual(connection.execute('SELECT status FROM toques ORDER BY id').fetchall(),
+                             [('liberado',), ('reservado',)])
+            self.assertEqual(connection.execute('SELECT touch_id FROM thunder_effect_touches').fetchall(),
+                             [(int(replacement[0]['id']),)])
+
+    def test_release_update_cas_rejects_confirmation_after_locked_status_read(self):
+        job = self.seed_history(copies=1, terminal='failed', mode='rejected')
+        confirmed = []
+
+        def confirm_after_status_read():
+            confirmed.append(self.ledger.finish(job['effect_key'], 'sent', 'late-confirmed-receipt'))
+
+        racing = self.interleaved_ledger(confirm_after_status_read, read_number=2)
+        # Isolate the SQL CAS: SQLite's write lock otherwise prevents this
+        # interleaving. This is not a PostgreSQL/advisory-lock integration test.
+        with patch.object(racing, '_lock') as lock, self.assertRaises(TouchBlocked):
+            racing.release_failed_for_retry(job['effect_key'])
+        lock.assert_called_once()
+        self.assertEqual(confirmed[0]['status'], 'sent')
+        with self.scenario.database() as (connection, _):
+            self.assertEqual(connection.execute('SELECT status,provider_id FROM toques').fetchall(),
+                             [('feito', 'late-confirmed-receipt')])
+            self.assertEqual(connection.execute('SELECT touch_id FROM thunder_effect_touches').fetchall(), [(1,)])
+
+    def test_release_reuses_an_existing_sqlite_immediate_transaction(self):
+        job = self.seed_history(copies=1, terminal='failed', mode='rejected')
+
+        @contextmanager
+        def database():
+            with self.scenario.database() as (connection, marker):
+                connection.execute('BEGIN IMMEDIATE')
+                yield connection, marker
+
+        ledger = TouchLedger(db_context=database)
+        self.assertEqual(ledger.release_failed_for_retry(job['effect_key']),
+                         {'touch_id': '1', 'status': 'released'})
+        with self.scenario.database() as (connection, _):
+            self.assertEqual(connection.execute('SELECT status FROM toques').fetchall(), [('liberado',)])
+            self.assertEqual(connection.execute('SELECT * FROM thunder_effect_touches').fetchall(), [])
+
+    def test_two_actual_retries_and_workers_produce_one_confirmed_effect(self):
+        job = self.seed_history(copies=1, terminal='failed', mode='rejected')
+        review = self.scenario.service.retry_execution_review(job['id'])
+        barrier = Barrier(2)
+
+        def retry():
+            service = trajectory.ThunderService(Repository(self.repo.path), self.ledger,
+                                                approved_catalog=trajectory.CATALOG)
+            barrier.wait(timeout=5)
+            try:
+                return service.retry_effect(job['id'], 'ygor', execution_confirmation=review)['state']
+            except RepositoryConflict:
+                return 'blocked'
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(lambda _: retry(), range(2)))
+        self.assertCountEqual(results, ['pending', 'blocked'])
+        self.scenario.mailbox.mode = 'confirmed'
+        workers = [WorkerRuntime(Repository(self.repo.path), self.ledger,
+            {'email': self.scenario.adapter}, worker_id='retry-' + str(index),
+            health_path=self.scenario.root / ('retry-' + str(index) + '.json'),
+            revision='offline', approved_catalog=trajectory.CATALOG) for index in range(2)]
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            worked = list(executor.map(lambda worker: worker.process_one(), workers))
+        self.assertCountEqual(worked, [True, False])
+        effect = self.repo.effect(job['id'])
+        self.assertEqual(effect['state'], 'sent')
+        self.assertEqual(len(self.scenario.mailbox.commands), 2)
+        self.assertEqual(len(self.scenario.mailbox.messages), 1)
+        with self.scenario.database() as (connection, _):
+            self.assertEqual(connection.execute('SELECT status,provider_id FROM toques ORDER BY id').fetchall(),
+                             [('liberado', None), ('feito', effect['receipt_ref'])])
+            self.assertEqual(connection.execute('SELECT touch_id FROM thunder_effect_touches').fetchall(), [(2,)])
+
+    def test_invalid_consumed_history_does_not_starve_independent_valid_job(self):
+        invalid = self.repo.enqueue_effect('malformed-history', {'cadence_id': 'legacy', 'step': {
+            'id': 'legacy-E1', 'channel': 'email', 'recipient': 'not-an-email',
+            'subject': 'Legacy', 'content': 'Historical content', 'order': 1, 'interval_hours': 0}})
+        self.repo.finish_effect(invalid['id'], 'sent', 'preserved-legacy-receipt', None)
+        invalid = self.repo.effect(invalid['id'])
+        self.scenario.approve()
+        valid = self.scenario.queue()
+        self.assertEqual([self.worker.process_one() for _ in range(3)], [True, False, False])
+        self.assertEqual(self.repo.effect(valid['id'])['state'], 'sent')
+        self.assertEqual(self.repo.effect(invalid['id']), invalid)
+        self.assertEqual(len(self.scenario.mailbox.commands), 1)
+        self.assertEqual(len(self.scenario.mailbox.messages), 1)
+        alerts = self.repo.list_state('operator_alert')
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0]['effect_id'], invalid['id'])
+        self.assertEqual(alerts[0]['code'], 'invalid_effect_touch_scope')
+        self.assertEqual(alerts[0]['owner'], 'ygor')
+        self.assertEqual(alerts[0]['version'], 1)
+        self.assertTrue(alerts[0]['active'])
+
+    def test_invalid_pending_scope_is_quarantined_and_existing_alert_preserved(self):
+        invalid = self.repo.enqueue_effect('invalid-pending', {'step': {
+            'id': 'invalid', 'channel': 'email', 'recipient': 'not-an-email'}})
+        alert_id = 'invalid-effect-scope:' + invalid['id']
+        existing = self.repo.append_state('operator_alert', alert_id, {
+            'owner': 'ygor', 'active': True, 'message': 'Prior human incident annotation'})
+        self.scenario.approve()
+        valid = self.scenario.queue()
+        self.assertTrue(self.worker.process_one())
+        self.assertEqual(self.repo.effect(invalid['id'])['state'], 'needs_reconciliation')
+        self.assertEqual(self.scenario.mailbox.commands, [])
+        self.assertTrue(self.worker.process_one())
+        self.assertEqual(self.repo.effect(valid['id'])['state'], 'sent')
+        self.assertEqual(self.repo.get_state('operator_alert', alert_id), existing)
+        self.assertEqual(len(self.scenario.mailbox.commands), 1)
+
+    def test_cursor_advances_past_invalid_scope_but_database_failure_still_blocks(self):
+        invalid = self.repo.enqueue_effect('invalid-before-db-error', {'step': {
+            'channel': 'email', 'recipient': 'not-an-email'}})
+        self.repo.finish_effect(invalid['id'], 'sent', 'preserved-receipt', None)
+        self.scenario.approve()
+        valid = self.scenario.queue()
+        for error in (sqlite3.OperationalError('synthetic database read failure'),
+                      ValueError('synthetic database context failure')):
+            with self.subTest(error=type(error).__name__), patch.object(
+                    self.ledger, '_banco', side_effect=error):
+                with self.assertRaises(type(error)):
+                    self.worker.process_one()
+            self.assertEqual(self.worker._reconciliation_cursor, 1)
+            self.assertEqual(self.repo.effect(valid['id'])['state'], 'pending')
+            self.assertIsNone(self.repo.effect(valid['id'])['lease_owner'])
+            self.assertEqual(self.scenario.mailbox.commands, [])
+            alerts = self.repo.list_state('operator_alert')
+            self.assertEqual(len(alerts), 1)
+            self.assertEqual(alerts[0]['effect_id'], invalid['id'])
+            self.assertEqual(alerts[0]['version'], 1)
+        self.assertTrue(self.worker.process_one())
+        self.assertEqual(self.repo.effect(valid['id'])['state'], 'sent')
+        self.assertEqual(len(self.scenario.mailbox.commands), 1)
 
 
 if __name__ == '__main__':

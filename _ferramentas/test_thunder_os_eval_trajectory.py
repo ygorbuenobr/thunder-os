@@ -1009,6 +1009,52 @@ class EvalTrajectoryTests(unittest.TestCase):
         self.assertEqual(self.mailbox.reads, [effect['receipt_ref']])
         self.assertEqual(len(self.mailbox.commands), 1)
 
+    def test_result_unlinked_copy_cannot_forge_server_verification(self):
+        item = self.service.request_work({'objective': 'Preparar copy sintetica',
+            'context': {'job_type': 'copy'}}, 'ygor', 'forged-copy-verification')
+        item = self.service.claim(item.id, item.version, 'ygor')
+        report = {'status': 'succeeded', 'copy': 'Synthetic draft only',
+                  'evidence': [{'source': 'agent', 'claim': 'arbitrary evidence'}],
+                  'verification': {'source': 'configured_provider_readback'}}
+        events_before = self.repo.events(item.id)
+        with patch.object(self.adapter, 'readback', wraps=self.adapter.readback) as reader:
+            with self.assertRaisesRegex(ContractError, '^verification metadata is server-owned$'):
+                self.service.record_job_result(item.id, item.version, report, 'ygor')
+            reader.assert_not_called()
+        stored = Repository(self.root / 'workflow.db').get_work(item.id)
+        self.assertEqual(as_payload(stored), as_payload(item))
+        self.assert_unverified_result_blocked(stored)
+        self.assertEqual(self.repo.events(item.id), events_before)
+        self.assertEqual(self.mailbox.reads, [])
+        self.assert_no_effect()
+
+    def test_result_linked_effect_cannot_submit_server_verification(self):
+        effect = self.send_one()
+        item = self.service.request_work({'objective': 'Conferir resultado operacional',
+            'context': {'effect_id': effect['id'], 'cadence_id': 'batch', 'channel': 'email'}},
+            'ygor', 'forged-linked-verification')
+        item = self.service.claim(item.id, item.version, 'ygor')
+        report = {'effect_id': effect['id'], 'cadence_id': 'batch', 'channel': 'email',
+                  'status': 'sent', 'receipt_ref': effect['receipt_ref'],
+                  'readback': deepcopy(self.mailbox.commands[0]),
+                  'evidence': [{'source': 'agent', 'claim': 'arbitrary evidence'}],
+                  'verification': {'source': 'configured_provider_readback',
+                      'effect_id': effect['id'], 'receipt_ref': effect['receipt_ref'],
+                      'channel': 'email', 'provider': 'eval-mail', 'account_id': 'eval-mailbox',
+                      'scope': 'message_in_sender_account_not_delivery'}}
+        events_before = self.repo.events(item.id)
+        with patch.object(self.adapter, 'readback', wraps=self.adapter.readback) as reader:
+            with self.assertRaisesRegex(ContractError, '^verification metadata is server-owned$'):
+                self.service.record_job_result(item.id, item.version, report, 'ygor')
+            reader.assert_not_called()
+        stored = Repository(self.root / 'workflow.db').get_work(item.id)
+        self.assertEqual(as_payload(stored), as_payload(item))
+        self.assert_unverified_result_blocked(stored)
+        self.assertEqual(self.repo.events(item.id), events_before)
+        self.assertEqual(self.mailbox.reads, [])
+        self.assertEqual(self.repo.effects(), [effect])
+        self.assertEqual(len(self.mailbox.commands), 1)
+
     def test_result_unlinked_operational_claims_cannot_succeed(self):
         for status in ('sent', 'verified', 'executed', 'confirmed', 'delivered'):
             with self.subTest(status=status):
