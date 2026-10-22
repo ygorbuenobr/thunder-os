@@ -192,6 +192,16 @@ body[data-aba="cadencias"] .detalhes-sistema{display:none}
 .cad-read-timeline pre{white-space:pre-wrap;font:inherit;overflow-wrap:anywhere;margin:8px 0}
 #cad-read-detail{scroll-margin-top:20px}
 #cad-read-conflicts{overflow-wrap:anywhere;min-width:0}
+.cad-instantly{min-width:0;overflow-wrap:anywhere;margin-top:20px}
+.cad-instantly h4{margin:12px 0 4px}.cad-instantly p{margin:8px 0}
+.cad-instantly-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(125px,1fr));gap:12px 20px;margin:16px 0}
+.cad-instantly-metrics dt{font-size:12px;color:var(--muted)}
+.cad-instantly-metrics dd{margin:0;font-size:20px;font-weight:650;font-variant-numeric:tabular-nums}
+.cad-instantly summary{cursor:pointer;min-height:44px;padding:10px 0;scroll-margin-top:90px}
+.cad-instantly details{border-bottom:1px solid var(--line)}
+.cad-instantly-search{display:grid;gap:4px;max-width:420px;margin:12px 0}
+.cad-instantly-search input{width:100%;min-width:0;font:inherit;color:var(--text);background:var(--surface);border:1px solid var(--muted);border-radius:4px;padding:8px}
+.cad-instantly .cad-read-timeline{margin:0}.cad-instantly .cad-read-timeline li:last-child{border-bottom:0}
 #cad-reply-control{overflow-wrap:anywhere;min-width:0;max-width:100%}
 #cad-source-list{overflow-wrap:anywhere;min-width:0;max-width:100%}
 .agenttrail-head{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
@@ -301,7 +311,7 @@ button,.btn,select,input:not([type="hidden"]),summary {min-height:44px;}
   <p id="cad-read-status" role="status" aria-live="polite">Aguardando consulta.</p>
   <div id="cad-read-campaigns"></div>
   <section class="cad-read-section"><h3>Aprendizados</h3><div id="cad-learning" role="status">Não verificado.</div></section>
-  <section class="cad-read-section"><h3>Integrações de e-mail</h3><div id="cad-email-integrations" role="status">Não verificado.</div></section>
+  <section class="cad-read-section"><h3>Integrações de e-mail</h3><div id="cad-email-integrations" role="status">Não verificado.</div><div class="cad-instantly" id="cad-instantly-reader" aria-labelledby="cad-instantly-title"><h4 id="cad-instantly-title">Instantly · BR-INSTANTLY-01</h4><p id="cad-instantly-status" role="status" aria-live="polite">Aguardando leitura do cache.</p><div class="cad-instantly-search" id="cad-instantly-search-field" hidden><label for="cad-instantly-search">Buscar lead por e-mail</label><input id="cad-instantly-search" type="search" maxlength="320" autocomplete="off" aria-controls="cad-instantly-content"></div><div id="cad-instantly-content"></div></div></section>
   <section class="cad-read-section"><h3>Respostas e paradas</h3><div id="cad-reply-control" role="status">Não verificado.</div></section>
   <section class="cad-read-section"><h3>LinkedIn</h3><p id="cad-linkedin-preparation" role="status">Não verificado.</p></section>
   <section class="cad-read-section"><h3>Fontes · Para aprovar</h3><div id="cad-source-list" role="status">Não verificado.</div></section>
@@ -1806,14 +1816,62 @@ async function carregarIntegracoesEmail(){
     const state=await apiServidor('/api/os/v1/integrations/external-email/status');
     if(state?.schema_version!==1)throw new Error('Disponibilidade não verificada');
     const flag=value=>value===false?'Desligado':value===true?'Ligado':'Não verificado';
-    target.innerHTML=`<div class="cad-read-table-wrap"><table class="cad-read-table"><thead><tr><th>Origem</th><th>Leitor automático</th><th>Registro no HubSpot</th><th>Webhook</th></tr></thead><tbody><tr><td>Apollo</td><td>${flag(state.automatic_reader_enabled)}</td><td>${flag(state.crm_import_enabled)}</td><td>Não se aplica</td></tr><tr><td>Instantly</td><td>Não verificado</td><td>${flag(state.crm_import_enabled)}</td><td>${flag(state.webhook_enabled)}</td></tr></tbody></table></div>`;
+    target.innerHTML=`<div class="cad-read-table-wrap"><table class="cad-read-table"><thead><tr><th>Origem</th><th>Leitor automático</th><th>Registro no HubSpot</th><th>Webhook</th></tr></thead><tbody><tr><td>Apollo</td><td>${flag(state.automatic_reader_enabled)}</td><td>${flag(state.crm_import_enabled)}</td><td>Não se aplica</td></tr><tr><td>Instantly</td><td>Estado na leitura abaixo</td><td>${flag(state.crm_import_enabled)}</td><td>${flag(state.webhook_enabled)}</td></tr></tbody></table></div>`;
   }catch(e){target.textContent='Disponibilidade não verificada.';}
+}
+let cadInstantlyLastGood=null,cadInstantlyLoading=false,cadInstantlyView=null,cadInstantlyTransportError=false;
+function renderInstantlyReader(state,transportError=false){
+  const target=$('cad-instantly-content');
+  const open=new Set([...target.querySelectorAll('details[open]')].map(d=>d.dataset.instantlyLead));
+  const focused=target.contains(document.activeElement)?document.activeElement.dataset.instantlyFocus:null;
+  const disabled=state?.status==='disabled'||state?.enabled===false;
+  if(disabled){cadInstantlyLastGood=null;$('cad-instantly-search').value='';state={...state,metrics:null,leads:[],last_success_at:null};}
+  cadInstantlyView=state;cadInstantlyTransportError=transportError;
+  const dated=state?.last_success_at&&Number.isFinite(Date.parse(state.last_success_at));
+  const hasSnapshot=dated&&state.metrics&&typeof state.metrics==='object'&&!Array.isArray(state.metrics);
+  if(hasSnapshot)cadInstantlyLastGood=state;
+  const snapshot=hasSnapshot?state:cadInstantlyLastGood;
+  const labels={disabled:'Leitor desativado',pending:'Primeira leitura pendente',ok:'Leitura atualizada',partial:'Leitura parcial',error:'Falha na leitura',stale:'Leitura desatualizada'};
+  const status=transportError?'Cache indisponível':labels[state.status];
+  const older=transportError||['error','stale','disabled','pending'].includes(state.status);
+  $('cad-instantly-status').textContent=status+(state?.last_attempt_at?' · última tentativa: '+cadReadDate(state.last_attempt_at):'')+'. '+(snapshot?(older?'Última leitura disponível: ':'Último sucesso: ')+cadReadDate(snapshot.last_success_at)+'. ':'Sem leitura bem-sucedida; métricas não verificadas. ')+(state?.enabled===false?'':'Nova consulta ao cache em até 60 s ou em Atualizar.');
+  $('cad-instantly-search-field').hidden=!snapshot;
+  if(!snapshot){target.innerHTML='<p>Sem dados observados disponíveis.</p>';return;}
+  const coverage=snapshot.coverage||{};
+  const complete=coverage.complete===true&&coverage.limit_reached===false&&coverage.invalid_records===0&&snapshot.status!=='partial';
+  const metrics=[['sent_messages','Envios confirmados pela API'],['leads_with_sent','Leads com envio'],['human_replies','Respostas não automáticas (provider)'],['automatic_replies','Respostas automáticas'],['unclassified_replies','Respostas sem classificação']];
+  const leads=Array.isArray(snapshot.leads)?snapshot.leads:[];
+  const query=$('cad-instantly-search').value.trim().toLowerCase();
+  const matches=query?leads.filter(lead=>String(lead.email??'').toLowerCase().includes(query)):leads;
+  const clip=(value,limit)=>String(value??'').slice(0,limit);
+  const types={email_sent:'Envio confirmado pela API · entrega não verificada',reply_received:'Resposta não automática segundo o provider · humana não confirmada',auto_reply_received:'Resposta automática',unclassified_reply:'Resposta sem classificação'};
+  target.innerHTML=`<p>${complete?'Cobertura completa da consulta limitada à campanha.':'Cobertura incompleta · contagens observadas, não totais globais.'} ${esc(cadReadNumber(coverage.pages))} páginas · ${esc(cadReadNumber(coverage.invalid_records))} registros inválidos${coverage.limit_reached?' · limite da consulta atingido':''}.</p><p class="sub">Instantly · ${esc(snapshot.campaign_id)} · conta: ${esc(clip(snapshot.account_id||'Não verificada',320))} · campanha externa: ${esc(clip(snapshot.external_campaign_id||'Não verificada',160))}</p><dl class="cad-instantly-metrics">${metrics.map(([key,label])=>`<div><dt>${esc(label)}${complete?'':' · observado'}</dt><dd>${esc(cadReadNumber(snapshot.metrics[key]))}</dd></div>`).join('')}</dl><p class="sub">Envio confirmado pela API não comprova entrega. Contagens independentes do HubSpot. Classificação de resposta não confirma autoria humana. Somente leitura; sem escrita CRM ou ações externas.</p><h4>Linha do tempo por lead</h4><p role="status">${Math.min(matches.length,50)} de ${matches.length} leads${query?' encontrados':' observados'}.</p>${matches.length?matches.slice(0,50).map((lead,index)=>{
+    const key=String(lead.email??index),events=Array.isArray(lead.events)?lead.events:[];
+    return `<details data-instantly-lead="${esc(key)}"${open.has(key)?' open':''}><summary data-instantly-focus="${esc(key)}">${esc(clip(lead.email||'E-mail não informado',320))} · ${events.length} eventos observados</summary><ol class="cad-read-timeline">${events.slice(0,20).map(event=>{
+      const subject=String(event.subject??''),text=String(event.text??'');
+      const classification=event.classification_source==='subject'?'Classificação por heurística do assunto; não confirmada pelo provider.':event.classification_source==='provider'?'Classificação informada pelo provider.':'Classificação não verificada.';
+      return `<li><b>${esc(types[event.event_type]||'Evento não classificado')}</b><br><small>${esc(cadReadDate(event.occurred_at))} · ${esc(classification)}</small><p><b>Assunto:</b> ${esc(clip(subject,300)||'Não disponível')}</p><pre>${esc(clip(text,4000)||'Conteúdo não disponível.')}</pre>${event.content_complete!==true?'<p class="sub">Conteúdo incompleto na origem.</p>':''}${subject.length>300||text.length>4000?'<p class="sub">Trecho limitado nesta tela.</p>':''}</li>`;
+    }).join('')}</ol>${!events.length?'<p>Nenhum evento disponível nesta leitura.</p>':''}${events.length>20?'<p>Exibindo os primeiros 20 eventos deste lead.</p>':''}</details>`;
+  }).join(''):query?'<p>Nenhum lead encontrado para este e-mail.</p>':'<p>Nenhum lead observado nesta leitura da campanha.</p>'}${matches.length>50?'<p>Exibindo os primeiros 50 leads desta leitura.</p>':''}`;
+  if(focused!=null)[...target.querySelectorAll('summary')].find(s=>s.dataset.instantlyFocus===focused)?.focus({preventScroll:true});
+}
+$('cad-instantly-search').addEventListener('input',()=>renderInstantlyReader(cadInstantlyView,cadInstantlyTransportError));
+async function carregarInstantlyReader(){
+  if(cadInstantlyLoading||!apiServidor)return;
+  cadInstantlyLoading=true;$('cad-instantly-reader').setAttribute('aria-busy','true');
+  $('cad-instantly-status').textContent=cadInstantlyLastGood?'Atualizando leitura do cache…':'Consultando cache Instantly…';
+  try{
+    const state=await apiServidor('/api/os/v1/integrations/instantly/reader');
+    if(state?.schema_version!==1||state.read_only!==true||state.crm_write_enabled!==false||state.external_actions_enabled!==false||state.campaign_id!=='BR-INSTANTLY-01'||typeof state.enabled!=='boolean'||!['disabled','pending','ok','partial','error','stale'].includes(state.status))throw new Error('Contrato não verificado');
+    renderInstantlyReader(state);
+  }catch(e){renderInstantlyReader(null,true);}
+  finally{cadInstantlyLoading=false;$('cad-instantly-reader').setAttribute('aria-busy','false');}
 }
 async function atualizarCadencias(){
   if(cadReadLoading||!apiServidor)return;
   cadReadLoading=true;$('cad-read-refresh').disabled=true;
   $('cad-read-status').textContent=cadReadSnapshot?'Atualizando consulta…':'Consultando tarefas no HubSpot…';
-  await carregarIntegracoesEmail();
+  await Promise.all([carregarIntegracoesEmail(),carregarInstantlyReader()]);
   await carregarControleRespostas();
   await carregarPreparacaoLinkedin();
   await carregarFontesCampanhas();

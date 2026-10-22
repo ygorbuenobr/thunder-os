@@ -1389,6 +1389,15 @@ class Handler(BaseHTTPRequestHandler):
                 raise Erro('Controle de respostas indisponível.', 503)
             return self.responder(200, control.snapshot())
         external_email_base = '/api/os/v1/integrations/external-email'
+        if rota.path == '/api/os/v1/integrations/instantly/reader':
+            if self.thunder_proxy_actor() != 'ygor':
+                raise Erro('Somente Ygor pode consultar integrações.', 403)
+            if self.command != 'GET' or rota.query:
+                raise Erro('Leitor permite apenas consulta.', 405)
+            reader = getattr(self.server, 'thunder_instantly_reader', None)
+            if reader is None:
+                raise Erro('Leitor Instantly indisponível.', 503)
+            return self.responder(200, reader.snapshot())
         instantly_event_path = '/api/os/v1/integrations/instantly/events'
         if rota.path == instantly_event_path:
             if self.command != 'POST' or rota.query:
@@ -1412,11 +1421,18 @@ class Handler(BaseHTTPRequestHandler):
             from thunder_os.instantly_webhook import contract_status as instantly_status
             receiver = getattr(self.server, 'thunder_instantly_capture', None)
             capture_enabled = receiver is not None and receiver.enabled is True
+            reader = getattr(self.server, 'thunder_instantly_reader', None)
+            reader_state = reader.snapshot() if reader is not None else {'enabled':False,'status':'disabled'}
             return self.responder(200, {'schema_version':1,'read_only':True,
                 'automatic_reader_enabled':False,'crm_import_enabled':False,
                 'webhook_enabled':capture_enabled,'webhook_mode':'capture_only' if capture_enabled else 'disabled',
                 'apollo':apollo_status(),'instantly':{**instantly_status(),
-                    'capture_enabled':capture_enabled,'writer_enabled':False}})
+                    'capture_enabled':capture_enabled,'writer_enabled':False,
+                    'enabled':reader_state['enabled'],'status':reader_state['status'],
+                    'configuration_pending':not reader_state['enabled'],
+                    'provider_verified':bool(reader_state.get('last_success_at')),
+                    'automatic_reader_enabled':reader_state['enabled'],
+                    'reader_status':reader_state['status']}})
         membership_base = '/api/os/v1/campaign-membership/'
         if rota.path.startswith(membership_base):
             actor = self.thunder_proxy_actor()
@@ -2036,6 +2052,9 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
                     INSTANTLY_CAPTURE_SECRET_FILE, load_capture_secret)
                 servidor.thunder_instantly_capture = InstantlyCapture(repository,
                     load_capture_secret, enabled=Path(INSTANTLY_CAPTURE_SECRET_FILE).is_file())
+                from thunder_os.instantly_reader import InstantlyReader
+                servidor.thunder_instantly_reader = InstantlyReader(repository)
+                servidor.thunder_instantly_reader.start()
             from thunder_os.reply_control import ReplyControl
             from thunder_os.campaign_registry import CampaignRegistry
             servidor.thunder_reply_control = ReplyControl(repository, CampaignRegistry(repository),
@@ -2087,7 +2106,12 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
             servidor.source_sha = release_source_sha()
             if runtime is not None:
                 print(json.dumps({'role':'connectsafely-web','port':servidor.server_port,'config_sha256':runtime['_digest']}),flush=True)
-            servidor.serve_forever()
+            try:
+                servidor.serve_forever()
+            finally:
+                reader = getattr(servidor, 'thunder_instantly_reader', None)
+                if reader is not None:
+                    reader.stop()
         return 0
     except Erro as e:
         print(json.dumps({'erro': str(e)}, ensure_ascii=False), file=sys.stderr)

@@ -9,10 +9,173 @@ const task={id:'99',title:'[PILOTO][D0] Empresa exemplo | LINKEDIN',campaign:'PI
 const unlinked={...task,id:'100',contact_ids:[],contact_name:null};
 const snapshot={collected_at:'2026-10-21T13:00:00Z',coverage:{complete:false,limitations:['Consulta de atividades incompleta.']},campaigns:[{id:'PILOTO',task_state:'observed',task_coverage_complete:true,metrics:{contacts:1,completed_with_receipt:null,pending:2,overdue:0,replies:null,meetings:null},tasks:[task]}],today:{planned:[task],awaiting_approval:[],unreplied:[]},unlinked:[unlinked]};
 const registered={id:'REGISTRY-ONLY',registry:{id:'REGISTRY-ONLY',platform:'codex_local',active:true},task_state:'empty',task_coverage_complete:true,metrics:{contacts:0,tasks:0,completed_with_receipt:null,pending:0,overdue:0,replies:null,meetings:null},tasks:[]};
+async function testInstantlyReader(browser){
+ const readerPath='/api/os/v1/integrations/instantly/reader';
+ const attack='<img src=x onerror="window.__instantlyXss=1">';
+ const bodyAttack='</pre><script>window.__instantlyXss=1</script><b>plain text</b>';
+ const base={schema_version:1,read_only:true,enabled:true,status:'ok',last_attempt_at:'2026-10-22T12:01:00Z',last_success_at:'2026-10-22T12:00:00Z',poll_interval_seconds:60,campaign_id:'BR-INSTANTLY-01',external_campaign_id:'synthetic-campaign',account_id:'synthetic-account',coverage:{complete:true,pages:1,invalid_records:0,limit_reached:false},metrics:{sent_messages:7,leads_with_sent:1,human_replies:1,automatic_replies:1,unclassified_replies:1},leads:[{email:'lead@example.invalid',events:[
+  {provider_id:'sent-1',event_type:'email_sent',occurred_at:'2026-10-22T11:00:00Z',subject:attack,text:bodyAttack,content_complete:true,classification_source:'provider'},
+  {provider_id:'auto-1',event_type:'auto_reply_received',occurred_at:'2026-10-22T11:01:00Z',subject:'Automatic response',text:'Out of office',content_complete:true,classification_source:'subject'},
+  {provider_id:'unknown-1',event_type:'unclassified_reply',occurred_at:'2026-10-22T11:02:00Z',subject:'Unknown reply',text:'Classification absent',content_complete:false,classification_source:'unknown'},
+  {provider_id:'reply-1',event_type:'reply_received',occurred_at:'2026-10-22T11:03:00Z',subject:'Reply',text:'Provider non-auto flag only',content_complete:true,classification_source:'provider'}]}],error_code:null,crm_write_enabled:false,external_actions_enabled:false};
+ for(const viewport of [{width:1440,height:1000},{width:390,height:844},{width:320,height:800}]){
+  const page=await browser.newPage({viewport}),requests=[],errors=[];
+  let state={...base,status:'disabled',enabled:false,last_attempt_at:null,last_success_at:null,metrics:null,leads:[]},httpFailure=false,hold=false,release;
+  await page.clock.install();
+  page.on('pageerror',e=>errors.push(e.message));
+  await page.route('**/*',async route=>{
+   const req=route.request(),p=new URL(req.url()).pathname;
+   requests.push({p,method:req.method()});
+   assert.equal(req.method(),'GET','Instantly journey must only read');
+   if(p==='/')return route.fulfill({contentType:'text/html',body:html});
+   let result=[];
+   if(p===readerPath){
+    if(hold)await new Promise(resolve=>{release=resolve;});
+    if(httpFailure)return route.fulfill({status:503,contentType:'application/json',body:'{}'});
+    result=state;
+   }else if(p==='/api/os/v1/cadencias')result=snapshot;
+   else if(p==='/api/os/v1/panel-capabilities')result={legacy_mutations:false};
+   else if(p==='/api/os/v1/today')result={priorities:[],work:[],cadences:[],replies:[],controls:{},usage:[],alerts:[]};
+   else if(p==='/api/os/v1/integrations/external-email/status')result={schema_version:1,automatic_reader_enabled:false,crm_import_enabled:false,webhook_enabled:false};
+   else if(p==='/api/os/v1/hermes/contacts')result={contacts:[],complete:true};
+   return route.fulfill({contentType:'application/json',body:JSON.stringify(result)});
+  });
+  const reader=page.locator('#cad-instantly-reader'),content=page.locator('#cad-instantly-content'),status=page.locator('#cad-instantly-status');
+  const settled=()=>page.waitForFunction(()=>document.querySelector('#cad-instantly-reader').getAttribute('aria-busy')==='false'&&!document.querySelector('#cad-read-refresh').disabled);
+  const refresh=async()=>{await page.locator('#cad-read-refresh').click();await settled();};
+  await page.goto('https://instantly-reader.test/#cadencias');await settled();
+  assert.match(await status.innerText(),/Leitor desativado/);
+  assert.equal(await content.locator('dd').count(),0);
+  // Even accidental zero metrics without a successful timestamp must remain unknown.
+  state={...state,status:'pending',enabled:true,metrics:{sent_messages:0}};await refresh();
+  assert.match(await status.innerText(),/Primeira leitura pendente/);
+  assert.equal(await content.locator('dd').count(),0);
+  state={...state,status:'error',error_code:'synthetic_error'};await refresh();
+  assert.match(await status.innerText(),/Falha na leitura.*Sem leitura bem-sucedida/);
+  assert.equal(await content.locator('dd').count(),0);
+  state={...base,status:'partial',coverage:{complete:false,pages:2,invalid_records:3,limit_reached:true}};
+  await refresh();
+  assert.match(await content.innerText(),/contagens observadas, não totais globais/);
+  assert.match(await content.innerText(),/2 páginas · 3 registros inválidos · limite da consulta atingido/);
+  assert.equal(await content.locator('dt').filter({hasText:'observado'}).count(),5);
+  state=base;await refresh();
+  const hubspotBefore=await page.locator('#cad-read-campaigns').innerText();
+  assert.equal(await content.locator('dd').first().innerText(),'7');
+  const summary=content.locator('summary').first();
+  await summary.focus();await page.keyboard.press('Enter');
+  assert.equal(await content.locator('details').first().getAttribute('open'),'');
+  assert.match(await content.innerText(),/Resposta automática/);
+  assert.match(await content.innerText(),/heurística do assunto; não confirmada pelo provider/);
+  assert.match(await content.innerText(),/Resposta sem classificação/);
+  assert.match(await content.innerText(),/humana não confirmada/);
+  assert.match(await content.innerText(),/Conteúdo incompleto na origem/);
+  assert.match(await content.innerText(),/entrega não verificada/);
+  assert.ok((await content.innerText()).includes(attack));
+  assert.ok((await content.innerText()).includes(bodyAttack));
+  assert.equal(await reader.locator('img,script,b:has-text("plain text")').count(),0);
+  assert.equal(await page.evaluate(()=>window.__instantlyXss),undefined);
+  assert.equal(await reader.locator('button,a,form').count(),0);
+  assert.equal(await reader.getByRole('searchbox',{name:'Buscar lead por e-mail'}).count(),1);
+  // The same 60 s cycle refreshes the cache once and keeps expansion and focus.
+  const before=requests.filter(r=>r.p===readerPath).length;
+  await page.clock.runFor(60001);await settled();
+  assert.equal(requests.filter(r=>r.p===readerPath).length,before+1);
+  assert.equal(await content.locator('details').first().getAttribute('open'),'');
+  assert.equal(await summary.evaluate(el=>el===document.activeElement),true);
+  assert.equal(await page.locator('#cad-read-campaigns').innerText(),hubspotBefore);
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+  fs.mkdirSync(outputDir,{recursive:true});
+  await page.evaluate(()=>window.scrollTo(0,0));
+  await page.screenshot({path:path.join(outputDir,`instantly-populated-${viewport.width}.png`),fullPage:true});
+  // Backend failures/staleness may themselves carry the dated last-good snapshot.
+  state={...base,status:'error',last_attempt_at:'2026-10-22T12:02:00Z'};await refresh();
+  assert.match(await status.innerText(),/Falha na leitura.*Última leitura disponível: 22\/10\/2026, 09:00/);
+  assert.equal(await content.locator('dd').first().innerText(),'7');
+  state={...base,status:'stale'};await refresh();
+  assert.match(await status.innerText(),/Leitura desatualizada.*Última leitura disponível/);
+  // A transport error must retain the same dated data, without claiming freshness.
+  httpFailure=true;await refresh();
+  assert.match(await status.innerText(),/Cache indisponível.*Última leitura disponível/);
+  assert.equal(await content.locator('dd').first().innerText(),'7');
+  httpFailure=false;state={...base,schema_version:2};await refresh();
+  assert.match(await status.innerText(),/Cache indisponível/);
+  // Hold one response while another cycle fires: no duplicate cache requests.
+  state=base;hold=true;
+  const pending=page.waitForRequest(r=>new URL(r.url()).pathname===readerPath);
+  await page.locator('#cad-read-refresh').click();await pending;
+  await page.waitForFunction(()=>document.querySelector('#cad-instantly-reader').getAttribute('aria-busy')==='true');
+  assert.match(await status.innerText(),/Atualizando leitura do cache/);
+  const heldCount=requests.filter(r=>r.p===readerPath).length;
+  await page.clock.runFor(60001);
+  assert.equal(requests.filter(r=>r.p===readerPath).length,heldCount);
+  hold=false;release();await settled();
+  state={...base,leads:[],metrics:{sent_messages:0,leads_with_sent:0,human_replies:0,automatic_replies:0,unclassified_replies:0}};await refresh();
+  assert.match(await content.innerText(),/Nenhum lead observado/);
+  assert.equal(await content.locator('dd').first().innerText(),'0');
+  // Explicit rendering bounds are separate from provider coverage.
+  const event={...base.leads[0].events[0],subject:attack+'S'.repeat(400),text:bodyAttack+'X'.repeat(4500)};
+  state={...base,leads:Array.from({length:51},(_,i)=>({email:i===0?attack+'E'.repeat(350):`lead-${i}@example.invalid`,events:Array.from({length:i===0?21:1},()=>event)}))};
+  await refresh();
+  assert.equal(await content.locator('details').count(),50);
+  await content.locator('summary').first().focus();await page.keyboard.press('Enter');
+  assert.equal(await content.locator('details').first().locator('li').count(),20);
+  assert.equal((await content.locator('pre').first().textContent()).length,4000);
+  assert.match(await content.innerText(),/primeiros 50 leads/);
+  assert.match(await content.innerText(),/primeiros 20 eventos/);
+  assert.match(await content.innerText(),/Trecho limitado nesta tela/);
+  assert.equal(await reader.locator('img,script').count(),0);
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+  const focusStyle=await content.locator('summary').first().evaluate(el=>getComputedStyle(el).outlineStyle);
+  assert.notEqual(focusStyle,'none');
+  // Search all cached leads before slicing: the 51st lead remains reachable.
+  const lateLead='pavlack@example.invalid';
+  state={...base,leads:[...state.leads.slice(0,50),{email:lateLead,events:base.leads[0].events}]};
+  await refresh();
+  assert.equal(await content.getByText(lateLead,{exact:false}).count(),0);
+  const search=reader.getByRole('searchbox',{name:'Buscar lead por e-mail'});
+  const searchRequests=requests.length;
+  await search.fill('PAVLACK');
+  assert.equal(requests.length,searchRequests,'Search must only filter the cached snapshot');
+  assert.equal(await content.locator('details').count(),1);
+  assert.match(await content.locator('summary').innerText(),/pavlack@example.invalid/);
+  assert.equal(await search.evaluate(el=>el===document.activeElement),true);
+  await page.clock.runFor(60001);await settled();
+  assert.equal(await search.inputValue(),'PAVLACK');
+  assert.equal(await search.evaluate(el=>el===document.activeElement),true);
+  assert.equal(await content.locator('details').count(),1);
+  assert.equal(await content.locator('dd').first().innerText(),'7');
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+  await page.evaluate(()=>window.scrollTo(0,0));
+  await page.screenshot({path:path.join(outputDir,`instantly-search-${viewport.width}.png`),fullPage:true});
+  await search.fill('missing@example.invalid');
+  assert.match(await content.innerText(),/Nenhum lead encontrado/);
+  await search.fill('');
+  assert.equal(await content.locator('details').count(),50);
+  // Explicit disable revokes retained data, even after a successful read/search.
+  state={...base,status:'disabled',enabled:false,metrics:null,leads:[],last_success_at:null};await refresh();
+  assert.match(await status.innerText(),/Leitor desativado.*Sem leitura bem-sucedida/);
+  assert.equal(await content.locator('dd,details').count(),0);
+  assert.equal(await search.isVisible(),false);
+  assert.equal(await page.locator('#cad-instantly-search').inputValue(),'');
+  assert.doesNotMatch(await reader.innerText(),/pavlack|synthetic-account|Última leitura disponível/);
+  httpFailure=true;await refresh();
+  assert.equal(await content.locator('dd,details').count(),0);
+  assert.match(await status.innerText(),/Cache indisponível.*Sem leitura bem-sucedida/);
+  assert.deepEqual(errors,[]);
+  assert.equal(requests.some(r=>r.method!=='GET'),false);
+  await page.locator('#abas button[data-aba="hoje"]').click();
+  const offTabCount=requests.filter(r=>r.p===readerPath).length;
+  await page.clock.runFor(60001);
+  assert.equal(requests.filter(r=>r.p===readerPath).length,offTabCount);
+  await page.close();
+ }
+ console.log('PASS: independent Instantly cache journey 1440/390/320; disabled clears retained snapshot; pending/partial/error/stale/empty; dated retention; XSS plain text; keyboard/focus; bounded leads/events/content; cached search reaches lead beyond 50 and preserves focus; 60s GET-only polling without overlap or HubSpot totals changes');
+}
 (async()=>{
  snapshot.contact_conflicts=[{contact_id:'123',campaign:'BR-APOLLO-01',task_campaign:'V'.repeat(100),reason:'task_campaign_differs_from_current_campaign'},{contact_id:'123',campaign:'BR-APOLLO-01',task_campaign:'<img src=x onerror=alert(1)>',reason:'task_campaign_differs_from_current_campaign'}];
  const browser=await chromium.launch({headless:true});
  try{
+  await testInstantlyReader(browser);
   for(const viewport of [{width:1440,height:1000},{width:390,height:844}]){
    const page=await browser.newPage({viewport});const errors=[],requests=[];let fail=false,empty=false,registryState=null,holdVerify=false,releaseVerify;
    await page.clock.install();

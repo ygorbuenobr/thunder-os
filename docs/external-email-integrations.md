@@ -1,5 +1,64 @@
 # External email integrations: A/B before T4
 
+## Periodic Instantly API Reader (2026-10-22)
+
+This later slice authorizes source reads and the internal observation cache only,
+not the EMAIL importer, pause control, sending, or campaign configuration.
+`InstantlyReader` runs one daemon worker in the canonical panel process, every
+60 seconds (completion-to-next-attempt). An in-process lock and persisted attempt
+time prevent concurrent refresh/restart bursts. No new service, timer, database,
+queue, contact assignment, or approval mechanism is introduced.
+
+Explicit opt-in: `/etc/thunder-os/instantly_reader_enabled` must be a regular,
+private root/current-user file containing `read-only-v1`. Credential is read from
+`/etc/thunder-os/instantly_api_key` (regular private file, no symlinks/FIFOs,
+max4096 bytes). These are separate from the capture-only webhook secret. Removing
+or renaming the opt-in stops subsequent collections and hides cached source data
+without a service restart; the worker checks it each round. Never print secrets.
+No provider write permissions are inferred from successful reads.
+
+Transport supports GET current workspace and fixed-campaign GET email list only:
+workspace `2ead5b1b-02e1-45d7-b2f7-76e686418250`, campaign
+`ed7ebc41-c816-40d8-832c-f7200a911c0c` / `BR-INSTANTLY-01`.
+List parameters: mode=emode_all, preview_only=false, sort_order=desc,50 per page,
+at most10 pages (500 records) per round, below the endpoint20/minute limit.
+Every round enumerates again, including old messages whose classification changed.
+Cursor loops, malformed envelopes, rate limits, HTTP errors and timeouts fail the
+round without inline retries; next round waits60 seconds. UUID deduplication,
+workspace/campaign/direction binding and invalid-record counts protect the result.
+Exhaustion of the cap or rejected records labels coverage partial, not a global
+total. Completeness describes only this campaign's Unibox email-list surface,
+not every enrolled lead, mailbox, or delivery outcome.
+
+`ue_type=1/3` counts stored outbound messages, not deliveries;4 is scheduled and
+excluded. Incoming2 with explicit integer is_auto_reply=0 is a provider non-auto
+candidate, not confirmed interest. Integer1 is automatic. Null/unknown stays
+unclassified, except a narrowly recognized automatic-response subject prefix,
+displayed with classification_source=subject. This conservative subject rule can
+only downgrade to automatic, never upgrade a message to human interest. Counts
+measure messages, while leads_with_sent separately counts distinct lead emails.
+Bodies become plain text; scripts/styles are excluded; excerpts are explicit.
+
+The existing Repository stores one replaceable `thunder_state` snapshot under
+kind=instantly_reader_snapshot, id=BR-INSTANTLY-01. This contains private message
+text/addresses, not credentials/HTML/attachments, and remains behind panel login.
+Successful source time is preserved on failure; unknown is not zero. Last success
+older than180 seconds becomes stale. GET
+`/api/os/v1/integrations/instantly/reader` is authenticated as Ygor and cache-only;
+query parameters and writes are rejected. Browser refresh does not call providers.
+Cadências shows these observations separately from HubSpot totals and does not
+infer a CRM contact by name. No webhook registration is required for this reader.
+
+Proofs: test_thunder_os_instantly_reader (provider, observation, cache and HTTP),
+test_painel_cadencias_ui.cjs (responsive, failure and unsafe-content fixtures),
+plus the dated real source/cache/public-panel canary in the execution report.
+Offline tests do not prove a real human reply when the source has none classified.
+Rollback is the prior panel release plus rename of the explicit reader opt-in;
+retain the cache/credentials for recovery. No entire-DB restore is necessary.
+
+Official [email-list contract](https://developer.instantly.ai/api-reference/email/list-email)
+documents pagination, email types, body excerpts, classifications and rate limits.
+
 ## Capture-Only Registration (2026-10-21)
 
 The user approved receiving Instantly events before the one-lead CRM canary.
