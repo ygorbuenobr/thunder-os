@@ -108,6 +108,7 @@ class WorkerRuntime:
         self.processed = 0
         self.last_progress_at = None
         self._last_health = 0.0
+        self._reconciliation_cursor = 0
 
     def stop(self, *_args: Any) -> None:
         self.running = False
@@ -129,6 +130,7 @@ class WorkerRuntime:
         self._last_health = time.monotonic()
 
     def process_one(self) -> bool:
+        self._reconcile_registered_effects()
         if self.connectsafely_app is not None:
             try:
                 if self.connectsafely_app.process_one():
@@ -144,6 +146,8 @@ class WorkerRuntime:
         )
         if not job:
             return False
+        if self._reconcile_duplicate_effect(job):
+            return True
         payload = job["payload"]
         def finish(state, receipt=None, error=None):
             self.repository.finish_effect(job["id"], state, receipt, error, lease_owner=job["lease_owner"])
@@ -225,6 +229,29 @@ class WorkerRuntime:
         self._health("ok")
         return True
 
+    def _reconcile_duplicate_effect(self, job) -> bool:
+        reader = getattr(self.ledger, "duplicate_evidence", None)
+        step = job["payload"].get("step")
+        if reader is None or not isinstance(step, dict):
+            return False
+        # Unavailable or invalid history is not evidence that dispatch is safe.
+        # Let the runtime report degraded health and leave the job untouched.
+        evidence = reader(job["effect_key"], step)
+        if evidence is None:
+            return False
+        try:
+            self.repository.mark_effect_reconciliation(job, evidence)
+        except RepositoryConflict:
+            # A changed claim/receipt invalidates this snapshot, never permits a send.
+            pass
+        return True
+
+    def _reconcile_registered_effects(self) -> None:
+        jobs = self.repository.reconciliation_effects(after_rowid=self._reconciliation_cursor)
+        for job in jobs:
+            self._reconcile_duplicate_effect(job)
+        self._reconciliation_cursor = jobs[-1]["reconciliation_cursor"] if len(jobs) == 100 else 0
+
     @contextmanager
     def _keep_lease(self, job):
         stop = Event()
@@ -257,6 +284,9 @@ class WorkerRuntime:
             self.authorization_service.validate_campaign_execution(
                 cadence, approval, channel=str(step.get("channel")),
                 provider=self.adapter_provider_ids.get(str(step.get("channel"))))
+            identity_error = self.authorization_service.identity_execution_error(cadence)
+            if identity_error:
+                return identity_error
             binding = self.authorization_service.campaign_registry.binding(cadence["execution_context"]["campaign_id"])
             channel = str(step.get("channel"))
             if (not self.adapter_account_ids.get(channel)
@@ -311,6 +341,9 @@ class WorkerRuntime:
             self.authorization_service.validate_campaign_execution(
                 cadence, approval, channel=str(step.get("channel")),
                 provider=self.adapter_provider_ids.get(str(step.get("channel"))))
+            identity_error = self.authorization_service.identity_execution_error(cadence)
+            if identity_error:
+                return identity_error
         except ApprovalError as exc:
             return str(exc)
         if datetime.now(timezone.utc) >= datetime.fromisoformat(str(approval["expires_at"])):

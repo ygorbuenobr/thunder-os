@@ -57,6 +57,10 @@ class CampaignConfirmationTests(unittest.TestCase):
             'flow_version':'offline-v1','provider_accounts':{'email':'offline-mailbox'}})
         self.ledger = Ledger()
         self.service = ThunderService(self.repo, self.ledger)
+        self.service.resolve_identity({'id': 'confirmed-person', 'records': [
+            {'domain': 'synthetic.invalid', 'person_key': 'synthetic@example.invalid', 'source': 'fixture:crm'},
+            {'domain': 'synthetic.invalid', 'person_key': 'synthetic@example.invalid', 'source': 'fixture:mailbox'},
+        ]}, 'ygor')
         self.registry_row = self.service.configure_campaign(self.config,'ygor',expected_version=0)
         self.canonical = self.registry_row['context']
         self.research = {'version': 1, 'facts': [], 'account': {}, 'knowledge_source': 'synthetic'}

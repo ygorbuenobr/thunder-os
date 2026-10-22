@@ -10,6 +10,7 @@ from pathlib import Path
 import sqlite3
 import sys
 import tempfile
+from types import MappingProxyType
 import unittest
 from unittest.mock import patch
 
@@ -74,6 +75,79 @@ class FakeMailbox:
         return message
 
 
+class EmailReadbackTests(unittest.TestCase):
+    def setUp(self):
+        self.mailbox = FakeMailbox()
+        self.message = {'target': 'person@example.invalid', 'subject': 'Synthetic subject',
+                        'content': '  Exact synthetic content\n', 'effect_id': 'E1'}
+        self.mailbox.messages['message-1'] = deepcopy(self.message)
+        self.adapter = EmailAdapter('eval-mail', self.mailbox, account_id='eval-mailbox')
+        self.receipt = 'email:eval-mail:message-1'
+
+    def test_readback_uses_explicit_reader_and_preserves_exact_mapping(self):
+        with patch.object(self.mailbox, 'readback', return_value=MappingProxyType(self.message)) as reader:
+            observed = self.adapter.readback(self.receipt)
+            reader.assert_called_once_with(self.receipt)
+        self.assertEqual(observed, self.message)
+        observed['content'] = 'Changed local copy'
+        self.assertEqual(self.message['content'], '  Exact synthetic content\n')
+        self.assertEqual(self.mailbox.commands, [])
+
+    def test_readback_rejects_wrong_receipt_before_transport(self):
+        for receipt in (None, 1, '', 'linkedin:eval-mail:message-1',
+                        'email:other-provider:message-1', 'email:eval-mail:',
+                        'email:eval-mail:   ', ' email:eval-mail:message-1',
+                        'email:eval-mail:message-1 '):
+            with self.subTest(receipt=receipt), self.assertRaises(ValueError):
+                self.adapter.readback(receipt)
+        self.assertEqual(self.mailbox.reads, [])
+        self.assertEqual(self.mailbox.commands, [])
+
+    def test_readback_requires_configured_provider(self):
+        adapter = EmailAdapter(None, self.mailbox, account_id='eval-mailbox')
+        with self.assertRaises(ValueError):
+            adapter.readback(self.receipt)
+        self.assertEqual(self.mailbox.reads, [])
+        self.assertEqual(self.mailbox.commands, [])
+
+    def test_readback_without_callable_reader_never_falls_back_to_send(self):
+        sends = []
+
+        def send_only(command):
+            sends.append(command)
+            return {'ok': True, 'provider_id': 'must-not-send'}
+
+        for transport in (None, send_only):
+            with self.subTest(transport=transport), self.assertRaises(ValueError):
+                EmailAdapter('eval-mail', transport).readback(self.receipt)
+        send_only.readback = 'not callable'
+        with self.assertRaises(ValueError):
+            EmailAdapter('eval-mail', send_only).readback(self.receipt)
+        self.assertEqual(sends, [])
+
+    def test_readback_rejects_missing_or_malformed_provider_message(self):
+        malformed = [None, [], {}, {**self.message, 'target': 'not-an-email'}]
+        for field in self.message:
+            malformed.append({key: value for key, value in self.message.items() if key != field})
+            malformed.extend({**self.message, field: value} for value in (None, 3, '', '  '))
+        for message in malformed:
+            with self.subTest(message=message):
+                with patch.object(self.mailbox, 'readback', return_value=message) as reader:
+                    with self.assertRaises(ValueError):
+                        self.adapter.readback(self.receipt)
+                    reader.assert_called_once_with(self.receipt)
+        self.assertEqual(self.mailbox.commands, [])
+
+    def test_readback_timeout_and_provider_error_never_send_or_retry(self):
+        for error in (TimeoutError('synthetic timeout'), RuntimeError('synthetic provider error')):
+            with self.subTest(error=type(error).__name__):
+                with patch.object(self.mailbox, 'readback', side_effect=error) as reader:
+                    with self.assertRaisesRegex(ValueError, '^email readback failed$'):
+                        self.adapter.readback(self.receipt)
+                    reader.assert_called_once_with(self.receipt)
+        self.assertEqual(self.mailbox.commands, [])
+
+
 class EvalTrajectoryTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix='thunder-eval-')
@@ -104,7 +178,10 @@ class EvalTrajectoryTests(unittest.TestCase):
                 CREATE TABLE thunder_effect_touches (effect_key TEXT PRIMARY KEY,touch_id INTEGER);
             ''')
         self.ledger = TouchLedger(db_context=self.database)
-        self.service = ThunderService(self.repo, self.ledger, approved_catalog=CATALOG)
+        self.mailbox = FakeMailbox()
+        self.adapter = EmailAdapter('eval-mail', self.mailbox, account_id='eval-mailbox')
+        self.service = ThunderService(self.repo, self.ledger, approved_catalog=CATALOG,
+                                      effect_readers={'email': self.adapter})
         config = {'platform': 'thunder_os', 'campaign_id': 'eval-mexico',
                   'campaign_version': '1', 'rules_version': '1', 'run_id': 'eval-run',
                   'rules': 'Synthetic offline campaign; no live authority',
@@ -113,8 +190,11 @@ class EvalTrajectoryTests(unittest.TestCase):
                                     'provider_accounts': {'email': 'eval-mailbox'}}}
         self.context = self.service.configure_campaign(config, 'ygor', expected_version=0)['context']
         self.research = self.service.submit_research({'dossier': base_artifact()}, 'ygor')
-        self.mailbox = FakeMailbox()
-        self.adapter = EmailAdapter('eval-mail', self.mailbox, account_id='eval-mailbox')
+        self.service.resolve_identity({'id': 'person', 'records': [
+            {'domain': self.research['account']['domain'], 'person_key': 'person@example.invalid',
+             'source': 'fixture'} for _ in range(2)]}, 'ygor')
+        self.case_fixture = {'id': 'readback-regression', 'entrada': 'Synthetic result regression'}
+        self.observations = {}
         self.worker = WorkerRuntime(self.repo, self.ledger, {'email': self.adapter},
                                     worker_id='eval-worker', health_path=self.root / 'health.json',
                                     revision='offline-eval', approved_catalog=CATALOG)
@@ -151,6 +231,11 @@ class EvalTrajectoryTests(unittest.TestCase):
 
     def queue(self, ident='batch', step='E1'):
         return self.service.dispatch_step(ident, step, 'ygor')
+
+    def remove_default_identity(self):
+        with self.repo.transaction() as connection:
+            connection.execute('DELETE FROM thunder_state WHERE kind=? AND entity_id=?',
+                               ('identity', 'person'))
 
     def capture(self, case, *, error=None):
         effects = Repository(self.root / 'workflow.db').effects()
@@ -337,16 +422,21 @@ class EvalTrajectoryTests(unittest.TestCase):
         self.assertEqual(effect['state'], 'sent')
         self.assertEqual(effect['receipt_ref'], 'email:eval-mail:message-1')
         self.assertEqual(self.mailbox.reads, [])
-        message = self.mailbox.readback(effect['receipt_ref'])
+        message = self.adapter.readback(effect['receipt_ref'])
         self.assertEqual(message, self.mailbox.commands[0])
         self.assertEqual(message['target'], effect['payload']['step']['recipient'])
         self.assertEqual(message['content'], effect['payload']['step']['content'])
         result = self.propose_effect_result(effect, readback=message)
         self.assertEqual(result.status, WorkStatus.SUCCEEDED)
         self.assertEqual(result.result['receipt_ref'], effect['receipt_ref'])
+        self.assertEqual(result.result['verification'], {
+            'source': 'configured_provider_readback', 'effect_id': effect['id'],
+            'receipt_ref': effect['receipt_ref'], 'channel': 'email', 'provider': 'eval-mail',
+            'account_id': 'eval-mailbox', 'scope': 'message_in_sender_account_not_delivery'})
+        self.assertEqual(self.mailbox.reads, [effect['receipt_ref']] * 2)
         self.assertFalse(self.worker.process_one())
         self.assertEqual(len(self.mailbox.commands), 1)
-        self.observations['verification_scope'] = 'explicit fake readback; worker itself persists sent'
+        self.observations['verification_scope'] = 'submitted fake readback plus trusted consumer reread'
 
     @eval_case('os-eval-006')
     def test_case_006_prior_same_person_channel_target_prevents_second_touch(self):
@@ -391,10 +481,11 @@ class EvalTrajectoryTests(unittest.TestCase):
         self.assertEqual(self.mailbox.reads, [])
         with self.subTest(phase='before_readback'):
             self.assert_unverified_result_blocked(result)
-        message = self.mailbox.readback(effect['receipt_ref'])
+        message = self.adapter.readback(effect['receipt_ref'])
         self.assertEqual(message, self.mailbox.commands[0])
         verified = self.propose_effect_result(effect, readback=message)
         self.assertEqual(verified.status, WorkStatus.SUCCEEDED)
+        self.assertEqual(self.mailbox.reads, [effect['receipt_ref']] * 2)
         self.assertEqual(len(self.mailbox.commands), 1)
 
     @eval_case('os-eval-009')
@@ -432,11 +523,101 @@ class EvalTrajectoryTests(unittest.TestCase):
             self.service.retry_effect(effect['id'], 'ygor')
         self.assertFalse(self.worker.process_one())
         self.assertEqual(len(self.mailbox.commands), 1)
-        self.observations['contract_gap'] = ('fixture requires retry_controlado; real service requires '
-            'new campaign restart confirmation and exposes no accepted restart payload on retry_effect')
+        prior_approval = self.repo.get_state('approval', 'batch')
+        prior_cadence = self.repo.get_state('cadence', 'batch')
+        review = self.service.retry_execution_review(effect['id'])
+        self.assertEqual(review['batch_id'], 'batch')
+        self.assertEqual(review['batch_version'], prior_cadence['version'])
+        self.assertEqual(review['scope_hash'], payload_hash({
+            'E1': _step_hash(self.service._approval_step(effect['payload']['step']))}))
+        self.assertEqual(self.repo.effect(effect['id']), effect)
+        self.assertEqual(self.repo.get_state('approval', 'batch'), prior_approval)
+        self.assertEqual(self.repo.get_state('cadence', 'batch'), prior_cadence)
+        with self.assertRaises(ContractError):
+            self.service.retry_effect(effect['id'], 'ygor',
+                execution_confirmation=prior_approval['execution_confirmation']['request'])
+        self.assertEqual(self.repo.effect(effect['id']), effect)
+        self.service.retry_effect(effect['id'], 'ygor', execution_confirmation=review)
         retry = Repository(self.root / 'workflow.db').effect(effect['id'])
         self.observations['retry_readback'] = retry
-        self.assertEqual(retry['state'], 'pending', self.observations['contract_gap'])
+        self.assertEqual(retry['state'], 'pending')
+        self.assertEqual(retry['effect_key'], effect['effect_key'])
+        self.assertEqual(retry['payload']['step'], effect['payload']['step'])
+        fresh_approval = self.repo.get_state('approval', 'batch')
+        self.assertEqual(fresh_approval['step_ids'], ['E1'])
+        self.assertNotEqual(retry['payload']['execution_confirmation_hash'],
+                            effect['payload']['execution_confirmation_hash'])
+        self.assertEqual(retry['payload']['execution_confirmation_hash'],
+                         payload_hash(fresh_approval['execution_confirmation']))
+        self.mailbox.mode = 'confirmed'
+        self.assertTrue(self.worker.process_one())
+        self.assertFalse(self.worker.process_one())
+        self.assertEqual(self.repo.effect(effect['id'])['state'], 'sent')
+        self.assertEqual(len(self.repo.effects()), 1)
+        self.assertEqual(len(self.mailbox.commands), 2)
+        self.assertEqual(self.mailbox.commands[0], self.mailbox.commands[1])
+        self.assertEqual(len(self.mailbox.messages), 1)
+        self.assertEqual(self.adapter.readback(self.repo.effect(effect['id'])['receipt_ref']),
+                         self.mailbox.commands[1])
+        with self.assertRaises(RepositoryConflict):
+            self.service.retry_effect(effect['id'], 'ygor', execution_confirmation=review)
+        self.assertFalse(self.worker.process_one())
+        self.assertEqual(len(self.mailbox.commands), 2)
+
+    def retry_candidate(self):
+        self.mailbox.mode = 'rejected'
+        effect = self.send_one()
+        return effect, self.service.retry_execution_review(effect['id'])
+
+    def assert_retry_blocked_without_new_attempt(self, effect, review, actor='ygor'):
+        before = self.repo.effect(effect['id'])
+        with self.assertRaises((ContractError, RepositoryConflict, TouchBlocked)):
+            self.service.retry_effect(effect['id'], actor, execution_confirmation=review)
+        self.assertEqual(self.repo.effect(effect['id']), before)
+        self.assertFalse(self.worker.process_one())
+        self.assertEqual(len(self.mailbox.commands), 1)
+        self.assertEqual(self.mailbox.messages, {})
+
+    def test_retry_rejects_confirmation_for_wrong_batch_version_scope_or_control(self):
+        effect, review = self.retry_candidate()
+        for field, wrong in (('batch_id', 'other-batch'),
+                             ('batch_version', review['batch_version'] + 1),
+                             ('scope_hash', '0' * 64),
+                             ('control_version', review['control_version'] + 1)):
+            with self.subTest(field=field):
+                self.assert_retry_blocked_without_new_attempt(effect, {**review, field: wrong})
+
+    def test_retry_rejects_confirmation_after_cadence_version_changes(self):
+        effect, review = self.retry_candidate()
+        cadence = self.repo.get_state('cadence', 'batch')
+        self.repo.put_state('cadence', 'batch', cadence)
+        self.assert_retry_blocked_without_new_attempt(effect, review)
+
+    def test_retry_confirmation_does_not_authorize_hermes(self):
+        effect, review = self.retry_candidate()
+        self.assert_retry_blocked_without_new_attempt(effect, review, actor='hermes')
+
+    def test_retry_global_pause_blocks_before_new_attempt(self):
+        effect, review = self.retry_candidate()
+        self.service.set_global_pause(True, 'ygor')
+        self.assert_retry_blocked_without_new_attempt(effect, review)
+
+    def test_retry_reply_paused_cadence_blocks_before_new_attempt(self):
+        effect, review = self.retry_candidate()
+        cadence = self.repo.get_state('cadence', 'batch')
+        cadence['status'] = 'paused_reply'
+        self.repo.put_state('cadence', 'batch', cadence)
+        self.assert_retry_blocked_without_new_attempt(effect, review)
+
+    def test_retry_suppression_blocks_before_new_attempt(self):
+        effect, review = self.retry_candidate()
+        self.ledger.suppress('email', 'person@example.invalid', 'Synthetic opt-out before retry')
+        self.assert_retry_blocked_without_new_attempt(effect, review)
+
+    def test_retry_missing_canonical_identity_blocks_before_new_attempt(self):
+        effect, review = self.retry_candidate()
+        self.remove_default_identity()
+        self.assert_retry_blocked_without_new_attempt(effect, review)
 
     @eval_case('os-eval-012')
     def test_case_012_out_of_scope_publication_hands_off_without_external_effect(self):
@@ -474,11 +655,12 @@ class EvalTrajectoryTests(unittest.TestCase):
     @eval_case('os-eval-015')
     def test_case_015_result_channel_must_match_executed_email(self):
         effect = self.send_one()
-        message = self.mailbox.readback(effect['receipt_ref'])
+        message = self.adapter.readback(effect['receipt_ref'])
         self.assertEqual(effect['payload']['step']['channel'], 'email')
         self.assertEqual(message, self.mailbox.commands[0])
         result = self.propose_effect_result(effect, channel='linkedin', readback=message)
         self.assert_unverified_result_blocked(result)
+        self.assertEqual(self.mailbox.reads, [effect['receipt_ref']])
 
     @eval_case('os-eval-016')
     def test_case_016_other_target_approval_is_rejected_before_queue(self):
@@ -572,6 +754,7 @@ class EvalTrajectoryTests(unittest.TestCase):
         result = self.propose_effect_result(effect)
         self.assertEqual(len(self.mailbox.commands), 1)
         self.assert_unverified_result_blocked(result)
+        self.assertEqual(self.mailbox.reads, [])
 
     @eval_case('os-eval-022')
     def test_case_022_two_consumed_executions_require_incident_without_third_call(self):
@@ -618,7 +801,7 @@ class EvalTrajectoryTests(unittest.TestCase):
     @eval_case('os-eval-024')
     def test_case_024_receipt_conflicting_with_card_is_preserved_and_not_promoted(self):
         effect = self.send_one()
-        message = self.mailbox.readback(effect['receipt_ref'])
+        message = self.adapter.readback(effect['receipt_ref'])
         cadence = self.repo.get_state('cadence', 'batch')
         cadence['steps'][0]['status'] = 'failed'
         self.repo.put_state('cadence', 'batch', cadence)
@@ -744,6 +927,109 @@ class EvalTrajectoryTests(unittest.TestCase):
             'effect_id': effect['id'], 'http_status': 200}])
         self.assertEqual(len(self.mailbox.commands), 1)
         self.assert_unverified_result_blocked(result)
+        self.assertEqual(self.mailbox.reads, [])
+
+    def test_result_forged_readback_cannot_replace_trusted_provider_read(self):
+        effect = self.send_one()
+        submitted = deepcopy(self.mailbox.commands[0])
+        for field, mismatch in (('target', 'other@example.invalid'),
+                                ('subject', 'Different subject'),
+                                ('content', 'Different content'),
+                                ('effect_id', 'other-effect')):
+            with self.subTest(field=field):
+                self.mailbox.messages['message-1'] = {**submitted, field: mismatch}
+                reads_before = len(self.mailbox.reads)
+                result = self.propose_effect_result(effect, readback=submitted)
+                self.assert_unverified_result_blocked(result)
+                self.assertEqual(len(self.mailbox.reads), reads_before + 1)
+                self.assertEqual(self.mailbox.reads[-1], effect['receipt_ref'])
+        self.assertEqual(len(self.mailbox.commands), 1)
+
+    def test_result_reader_identity_must_match_campaign_account_and_provider(self):
+        effect = self.send_one()
+        submitted = deepcopy(self.mailbox.commands[0])
+        for provider, account in (('eval-mail', 'other-mailbox'),
+                                  ('other-provider', 'eval-mailbox')):
+            with self.subTest(provider=provider, account=account):
+                reader = EmailAdapter(provider, self.mailbox, account_id=account)
+                self.service = ThunderService(self.repo, self.ledger, approved_catalog=CATALOG,
+                                              effect_readers={'email': reader})
+                result = self.propose_effect_result(effect, readback=submitted)
+                self.assert_unverified_result_blocked(result)
+                self.assertEqual(self.mailbox.reads, [])
+        self.assertEqual(len(self.mailbox.commands), 1)
+
+    def test_result_without_configured_reader_cannot_use_submitted_evidence(self):
+        effect = self.send_one()
+        self.service = ThunderService(self.repo, self.ledger, approved_catalog=CATALOG)
+        result = self.propose_effect_result(effect, readback=deepcopy(self.mailbox.commands[0]))
+        self.assert_unverified_result_blocked(result)
+        self.assertEqual(self.mailbox.reads, [])
+        self.assertEqual(len(self.mailbox.commands), 1)
+
+    def test_result_readback_failure_never_promotes_or_resends(self):
+        effect = self.send_one()
+        with patch.object(self.mailbox, 'readback', side_effect=TimeoutError('synthetic read timeout')) as reader:
+            result = self.propose_effect_result(effect, readback=deepcopy(self.mailbox.commands[0]))
+            reader.assert_called_once_with(effect['receipt_ref'])
+        self.assert_unverified_result_blocked(result)
+        self.assertEqual(len(self.mailbox.commands), 1)
+        self.assertEqual(self.repo.effect(effect['id'])['state'], 'sent')
+
+    def test_result_partial_submitted_readback_rejects_before_trusted_reader(self):
+        effect = self.send_one()
+        submitted = deepcopy(self.mailbox.commands[0])
+        with patch.object(self.adapter, 'readback') as reader:
+            for missing in submitted:
+                with self.subTest(missing=missing):
+                    partial = {field: value for field, value in submitted.items() if field != missing}
+                    self.assert_unverified_result_blocked(
+                        self.propose_effect_result(effect, readback=partial))
+            reader.assert_not_called()
+        self.assertEqual(self.mailbox.reads, [])
+        self.assertEqual(len(self.mailbox.commands), 1)
+
+    def test_result_cadence_change_during_trusted_read_cannot_succeed(self):
+        effect = self.send_one()
+        submitted = deepcopy(self.mailbox.commands[0])
+        original_readback = self.mailbox.readback
+
+        def read_then_change_cadence(receipt):
+            message = original_readback(receipt)
+            cadence = self.repo.get_state('cadence', 'batch')
+            cadence['steps'][0]['content'] = 'Changed during trusted readback'
+            self.repo.put_state('cadence', 'batch', cadence)
+            return message
+
+        with patch.object(self.mailbox, 'readback', side_effect=read_then_change_cadence) as reader:
+            result = self.propose_effect_result(effect, readback=submitted)
+            reader.assert_called_once_with(effect['receipt_ref'])
+        self.assert_unverified_result_blocked(result)
+        self.assertEqual(self.observations['result_rejection'], 'effect changed during readback')
+        self.assertEqual(self.mailbox.reads, [effect['receipt_ref']])
+        self.assertEqual(len(self.mailbox.commands), 1)
+
+    def test_result_unlinked_operational_claims_cannot_succeed(self):
+        for status in ('sent', 'verified', 'executed', 'confirmed', 'delivered'):
+            with self.subTest(status=status):
+                item = self.service.request_work({'objective': 'Synthetic operational report',
+                    'context': {}}, 'ygor', 'unlinked-' + status)
+                item = self.service.claim(item.id, item.version, 'ygor')
+                with self.assertRaises(ContractError):
+                    self.service.record_job_result(item.id, item.version, {
+                        'status': status, 'evidence': [{'source': 'agent', 'claim': status}]}, 'ygor')
+                self.assert_unverified_result_blocked(self.repo.get_work(item.id))
+        self.assertEqual(self.mailbox.reads, [])
+        self.assert_no_effect()
+
+    def test_missing_canonical_identity_blocks_before_effect(self):
+        self.remove_default_identity()
+        self.assertEqual(self.repo.list_state('identity'), [])
+        with self.assertRaises(ContractError):
+            self.approve()
+            self.queue()
+        self.assertFalse(self.worker.process_one())
+        self.assert_no_effect()
 
     def test_exact_approval_command_receipt_readback_finalstate(self):
         approval = self.approve()
@@ -1154,6 +1440,7 @@ class EvalTrajectoryTests(unittest.TestCase):
         self.assertTrue(self.worker.process_one())
         step = self.repo.get_state('cadence', 'batch')['steps'][0]
         touch = self.ledger.preflight('unused', step)['duplicate']
+        self.remove_default_identity()
         self.assertEqual(self.repo.list_state('identity'), [])
         reply = self.service.record_reply({'id': 'legacy-negative', 'channel': 'email',
             'content': 'Nao me contate novamente.', 'classification': 'negative',
@@ -1173,6 +1460,7 @@ class EvalTrajectoryTests(unittest.TestCase):
         self.assertTrue(self.worker.process_one())
         step = self.repo.get_state('cadence', 'batch')['steps'][0]
         touch = self.ledger.preflight('unused', step)['duplicate']
+        self.remove_default_identity()
         self.service.record_reply({'id': 'legacy-positive', 'channel': 'email',
             'content': 'Resposta sintetica', 'classification': 'positive', 'cadence_id': 'batch',
             'account_id': self.research['account']['domain'], 'person_key': 'person@example.invalid',

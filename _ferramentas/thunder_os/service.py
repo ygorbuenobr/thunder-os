@@ -33,7 +33,8 @@ class ThunderService:
     }
 
     def __init__(self, repository: Repository, ledger: TouchLedger | None = None, hubspot: Any = None, *,
-                 knowledge_store: KnowledgeStore | None = None, approved_catalog: Mapping[str, Any] | None = None, campaign_context_loader=None):
+                 knowledge_store: KnowledgeStore | None = None, approved_catalog: Mapping[str, Any] | None = None, campaign_context_loader=None,
+                 effect_readers: Mapping[str, Any] | None = None):
         self.repository = repository
         # Trusted composition reader, never a request/provider/model field.
         if campaign_context_loader is not None:
@@ -43,6 +44,60 @@ class ThunderService:
         self.hubspot = hubspot
         self.knowledge_store = knowledge_store
         self._approved_catalog = dict(approved_catalog) if approved_catalog is not None else None
+        # Trusted composition only: result payloads never provide a reader or credentials.
+        self._effect_readers = dict(effect_readers or {})
+
+    @staticmethod
+    def _identity_key(value):
+        text = str(value or '').lower().strip()
+        destination = TouchLedger.identity_destination(text)
+        return destination if destination else ('canonical', text)
+
+    @staticmethod
+    def _identity_records_match(records):
+        if (not isinstance(records, list) or len(records) < 2
+                or any(not isinstance(row, Mapping) for row in records)):
+            return False
+        domains = {str(row.get('domain') or '').lower().strip() for row in records}
+        people = {str(row.get('person_key') or '').lower().strip() for row in records}
+        if '' in domains or '' in people or len(domains) != 1 or len(people) != 1:
+            return False
+        if any(row.get('cnpj') is not None for row in records):
+            cnpjs = [re.sub(r'[.\s/-]', '', str(row.get('cnpj') or '')) for row in records]
+            if len(set(cnpjs)) != 1 or any(not re.fullmatch(r'[0-9]{14}', value) for value in cnpjs):
+                return False
+        return True
+
+    def identity_execution_error(self, cadence):
+        account = str(cadence.get('account_id') or '').lower().strip()
+        required = {self._identity_key(cadence.get('person_key'))}
+        required.update(self._identity_key(step.get('recipient')) for step in cadence.get('steps', []))
+        rows = self.repository.list_state('identity')
+        confirmed = set()
+        contacts = ({str(cadence['hubspot_contact_id'])} if cadence.get('hubspot_contact_id') is not None else set())
+        for row in rows:
+            records = row.get('records', [])
+            keys = {self._identity_key(row.get('canonical_person'))}
+            keys.update(self._identity_key(record.get('person_key'))
+                        for record in records if isinstance(record, Mapping))
+            keys.update(self._identity_key('hubspot:' + str(record['hubspot_contact_id']))
+                        for record in records if isinstance(record, Mapping) and record.get('hubspot_contact_id') is not None)
+            matched = keys & required
+            if not matched:
+                continue
+            if (row.get('actor') != 'ygor' or row.get('status') != 'canonical'
+                    or not self._identity_records_match(records)
+                    or row.get('canonical_account') != account
+                    or any(self._identity_key(record.get('person_key')) != self._identity_key(row.get('canonical_person'))
+                           for record in records)
+                    or any(str(record.get('domain') or '').lower().strip() != account for record in records)):
+                return 'identity_resolution_required'
+            contacts.update(str(record['hubspot_contact_id']) for record in records
+                            if record.get('hubspot_contact_id') is not None)
+            confirmed.update(matched)
+        if not required <= confirmed or len(contacts) > 1 or (len(required) > 1 and not contacts):
+            return 'identity_resolution_required'
+        return None
 
     def canonical_catalog(self) -> dict[str, Any]:
         try:
@@ -305,17 +360,85 @@ class ThunderService:
         evidence = result.get("evidence")
         if not isinstance(evidence, list) or not evidence:
             raise ContractError("result evidence required")
-        item = self._item(item_id)
-        failure = result.get("dependency_failure")
-        target = WorkStatus.NEEDS_HUMAN if failure else WorkStatus.SUCCEEDED
-        updated = transition(item, expected_version, target)
-        next_action = f"revisar dependência: {failure}" if failure else "resultado disponível"
-        updated = replace(updated, actor=actor, result=dict(result), next_action=next_action)
-        return self.repository.save_with_event(
-            updated,
-            expected_version,
-            "work_needs_human" if failure else "work_succeeded",
-        )
+        with self.repository.transaction():
+            item = self._item(item_id)
+            failure = result.get("dependency_failure")
+            verification = self._validate_effect_result(item, result) if not failure else None
+            target = WorkStatus.NEEDS_HUMAN if failure else WorkStatus.SUCCEEDED
+            updated = transition(item, expected_version, target)
+            next_action = f"revisar dependência: {failure}" if failure else "resultado disponível"
+            stored_result = {**dict(result), **({'verification': verification} if verification else {})}
+            updated = replace(updated, actor=actor, result=stored_result, next_action=next_action)
+            return self.repository.save_with_event(
+                updated,
+                expected_version,
+                "work_needs_human" if failure else "work_succeeded",
+            )
+
+    @staticmethod
+    def _receipt_conflict(cadence, effect):
+        step_id = effect['payload'].get('step', {}).get('id')
+        step = next((step for step in cadence.get('steps', []) if step.get('id') == step_id), {})
+        return (effect.get('state') == 'sent'
+                and step.get('status') in {'failed', 'uncertain', 'needs_reconciliation'})
+
+    def _validate_effect_result(self, item, result):
+        operational = (item.context.get('effect_id') is not None or 'effect_id' in result
+                       or result.get('status') in {'sent', 'verified', 'executed', 'confirmed', 'delivered'}
+                       or any(key in result for key in ('receipt_ref', 'provider_receipt', 'readback')))
+        if not operational:
+            return
+        effect_id = item.context.get('effect_id')
+        if not isinstance(effect_id, str) or result.get('effect_id') != effect_id:
+            raise ContractError('effect result binding required')
+        effect = self.repository.effect(effect_id)
+        if not effect or effect.get('state') != 'sent' or not effect.get('receipt_ref'):
+            raise ContractError('effect receipt not confirmed')
+        payload = effect['payload']
+        step = payload.get('step', {})
+        cadence_id, channel = payload.get('cadence_id'), step.get('channel')
+        if (not cadence_id or item.context.get('cadence_id') != cadence_id
+                or result.get('cadence_id') != cadence_id or item.context.get('channel') != channel
+                or result.get('channel') != channel or result.get('receipt_ref') != effect['receipt_ref']
+                or result.get('status') not in {'sent', 'verified'}):
+            raise ContractError('effect result scope mismatch')
+        cadence = self.repository.get_state('cadence', cadence_id)
+        if not cadence or self._receipt_conflict(cadence, effect):
+            raise ContractError('effect receipt conflicts with cadence')
+        for declared in (item.context, result):
+            if (('account_id' in declared and declared['account_id'] != cadence['account_id'])
+                    or ('person_key' in declared and declared['person_key'] != cadence['person_key'])
+                    or ('recipient' in declared and declared['recipient'] != step.get('recipient'))):
+                raise ContractError('effect result identity mismatch')
+        expected = {'target': step.get('recipient'), 'content': step.get('content'), 'effect_id': step.get('id')}
+        if channel == 'email':
+            expected['subject'] = step.get('subject')
+        if result.get('readback') != expected:
+            raise ContractError('effect readback required')
+        reader = self._effect_readers.get(channel)
+        if reader is None or not callable(getattr(reader, 'readback', None)):
+            raise ContractError('effect readback unavailable')
+        try:
+            binding = self.campaign_registry.binding(cadence['execution_context']['campaign_id'])
+            provider = cadence['execution_context']['providers'].get(channel)
+            if (reader.provider_name != provider or not reader.account_id
+                    or binding['provider_accounts'].get(channel) != reader.account_id):
+                raise ContractError('effect readback account mismatch')
+            observed = reader.readback(effect['receipt_ref'])
+        except ContractError:
+            raise
+        except Exception as exc:
+            raise ContractError('effect readback unavailable') from exc
+        if observed != expected:
+            raise ContractError('effect readback mismatch')
+        if (self.repository.effect(effect_id) != effect
+                or self.repository.get_state('cadence', cadence_id) != cadence
+                or self.campaign_registry.binding(cadence['execution_context']['campaign_id']) != binding):
+            raise ContractError('effect changed during readback')
+        return {'source': 'configured_provider_readback', 'effect_id': effect_id,
+                'receipt_ref': effect['receipt_ref'], 'channel': channel,
+                'provider': provider, 'account_id': reader.account_id,
+                'scope': 'message_in_sender_account_not_delivery'}
 
     def _item(self, item_id: str) -> WorkItem:
         item = self.repository.get_work(item_id)
@@ -424,6 +547,9 @@ class ThunderService:
             raise ContractError("global pause active")
         request = self.campaign_execution_review(cadence)
         confirmation = confirm_execution(execution_confirmation, request, actor, now + timedelta(days=14), now)
+        identity_error = self.identity_execution_error(cadence)
+        if identity_error:
+            raise ContractError(identity_error)
         sent_ids = {effect["payload"].get("step", {}).get("id") for effect in self.repository.effects()
                     if effect["payload"].get("cadence_id") == cadence_id and effect["state"] == "sent"}
         scoped_steps = [self._approval_step(step) for step in cadence["steps"] if step["id"] not in sent_ids]
@@ -474,6 +600,9 @@ class ThunderService:
             })
             raise ContractError("approval expired; review required")
         self.validate_campaign_execution(cadence, approval)
+        identity_error = self.identity_execution_error(cadence)
+        if identity_error:
+            raise ContractError(identity_error)
         step = next((value for value in cadence["steps"] if value["id"] == step_id), None)
         if not step:
             raise ContractError("cadence step not found")
@@ -847,7 +976,7 @@ class ThunderService:
             raise ContractError("invalid identity record")
         domains = {str(record.get("domain") or "").lower().strip() for record in data["records"]} - {""}
         people = {str(record.get("person_key") or "").lower().strip() for record in data["records"]} - {""}
-        resolved = len(domains) == 1 and len(people) == 1
+        resolved = self._identity_records_match(data['records'])
         return self.repository.put_state("identity", str(data["id"]), {
             "records": [dict(record) for record in data["records"]], "actor": actor,
             "status": "canonical" if resolved else "identity_resolution",
@@ -876,19 +1005,76 @@ class ThunderService:
             "receipt_ref": result.receipt_ref, "next_action": "histórico atualizado" if result.status == "confirmed" else "reconciliar HubSpot",
         })
 
-    def retry_effect(self, effect_id: str, actor: str) -> dict[str, Any]:
-        if actor != "ygor":
-            raise ContractError("manual retry requires Ygor")
+    def _retry_scope(self, effect_id):
         effect = self.repository.effect(effect_id)
         if not effect:
             raise ContractError("effect not found")
         if effect["state"] != "failed" or effect["error_code"] not in self.SAFE_RETRY_ERRORS:
             raise RepositoryConflict("effect is not safely retryable")
-        # A restart needs a new batch confirmation; old approval cannot authorize retry.
-        raise ApprovalError("campaign_restart_confirmation_required")
-        if self.ledger:
-            self.ledger.release_failed_for_retry(effect["effect_key"])
-        return self.repository.retry_effect(effect_id)
+        cadence = self.repository.get_state('cadence', effect['payload'].get('cadence_id', ''))
+        if not cadence or cadence.get('status') not in {'approved', 'ready_for_review'} or self.global_paused():
+            raise ContractError('cadence is paused or awaiting review')
+        identity_error = self.identity_execution_error(cadence)
+        if identity_error:
+            raise ContractError(identity_error)
+        research = self.current_research(str(cadence['account_id']))
+        if cadence.get('research_hash') != payload_hash({'version': research['version'], 'facts': research['facts']}):
+            raise ContractError('research changed; review cadence before dispatch')
+        step = next((step for step in cadence.get('steps', [])
+                     if step.get('id') == effect['payload'].get('step', {}).get('id')), None)
+        if (step is None or _step_hash(self._approval_step(step)) != effect['effect_key']
+                or effect['payload'].get('approval_hash') != effect['effect_key']):
+            raise ApprovalError('campaign_confirmation_scope_changed')
+        context = self._campaign_context(cadence)
+        if step['channel'] not in context['providers']:
+            raise ApprovalError('campaign_provider_mismatch')
+        due = effective_due(step, self.repository.effects(), cadence['id'])
+        if due is None or due > datetime.now(timezone.utc):
+            raise ContractError('step is not due or predecessor confirmation time is missing')
+        control = self.repository.get_state('control', 'global') or {}
+        request = execution_request(context, cadence['id'], cadence['version'],
+                                    {step['id']: effect['effect_key']}, control.get('version', 0))
+        return effect, cadence, step, research, request
+
+    def retry_execution_review(self, effect_id):
+        """Read-only preview using the existing exact execution confirmation contract."""
+        return self._retry_scope(effect_id)[4]
+
+    def retry_effect(self, effect_id: str, actor: str, *, execution_confirmation=None) -> dict[str, Any]:
+        if actor != 'ygor':
+            raise ContractError('manual retry requires Ygor')
+        with self.repository.transaction():
+            effect, cadence, step, research, request = self._retry_scope(effect_id)
+            if execution_confirmation is None:
+                raise ApprovalError('campaign_restart_confirmation_required')
+            now = datetime.now(timezone.utc)
+            confirmation = confirm_execution(execution_confirmation, request, actor, now + timedelta(days=14), now)
+            previous = self.repository.get_state('approval', cadence['id'])
+            if (not previous or previous.get('execution_confirmation', {}).get('request') == request
+                    or not self.ledger):
+                raise ApprovalError('campaign_restart_confirmation_required')
+            preflight = self.ledger.preflight(effect['effect_key'], step, raise_blocked=True)
+            if preflight.get('duplicate') and preflight['duplicate']['status'] != 'failed':
+                raise RepositoryConflict('effect is not safely retryable')
+            pack = ApprovalService(self.global_paused).approve_pack(
+                cadence['id'], cadence['version'], [self._approval_step(step)], actor,
+                now + timedelta(days=14), now)
+            review_hash = self.cadence_review_hash(cadence)
+            approval_payload = {'actor': actor, 'cadence_version': pack.cadence_version,
+                'step_ids': list(pack.step_ids), 'step_hashes': dict(pack.step_hashes),
+                'expires_at': pack.expires_at.isoformat(), 'status': pack.status,
+                'review_hash': review_hash, 'execution_confirmation': confirmation}
+            cadence_payload = {key: value for key, value in cadence.items()
+                               if key not in {'id', 'version', 'updated_at'}}
+            cadence_payload.update(status='approved', steps=[
+                {**value, 'status': 'approved' if value['id'] == step['id']
+                 else ('draft' if value.get('status') == 'approved' else value.get('status', 'draft'))}
+                for value in cadence['steps']])
+            self.repository.approve_cadence_atomic(
+                cadence['id'], cadence['version'], review_hash, approval_payload, cadence_payload,
+                review_hasher=self.cadence_review_hash, research_version=research['version'])
+            self.ledger.release_failed_for_retry(effect['effect_key'])
+            return self.repository.requeue_confirmed_effect(effect, payload_hash(confirmation))
 
     def propose_learning(self, data: Mapping[str, Any], actor: str) -> dict[str, Any]:
         required = {"records", "hypothesis", "population", "review_at"}
@@ -961,7 +1147,10 @@ class ThunderService:
             **self.campaign_review_view(cadence),
             "steps": [{**step,
                        "effective_due_at": (due.isoformat() if (due := effective_due(step, values["effects"], cadence["id"])) is not None else None),
-                       **({"status": effect_by_step[(cadence["id"], step["id"])]["state"],
+                       **({"status": ('needs_reconciliation' if self._receipt_conflict(cadence, effect_by_step[(cadence['id'], step['id'])])
+                                      else effect_by_step[(cadence["id"], step["id"])]["state"]),
+                           **({'recorded_step_status': step['status'], 'error_code': 'receipt_card_conflict'}
+                              if self._receipt_conflict(cadence, effect_by_step[(cadence['id'], step['id'])]) else {}),
                            "receipt_ref": effect_by_step[(cadence["id"], step["id"])].get("receipt_ref")}
                           if (cadence["id"], step.get("id")) in effect_by_step else {})}
                       for step in cadence.get("steps", [])],

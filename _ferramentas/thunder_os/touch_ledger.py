@@ -65,6 +65,31 @@ class TouchLedger:
     def validate_identity(self, step: Mapping[str, Any]) -> str:
         return self._scope(step, "identity-check")[2]
 
+    def duplicate_evidence(
+        self, effect_key: str, step: Mapping[str, Any], *, limit: int = 20,
+    ) -> dict[str, Any] | None:
+        """Read bounded confirmed history for one registered effect's exact scope."""
+        if type(limit) is not int or not 2 <= limit <= 100:
+            raise ValueError("duplicate evidence limit must be between 2 and 100")
+        channel, action, person, target = self._scope(step, effect_key)
+        with self._banco() as (connection, marker):
+            cursor = connection.cursor()
+            cursor.execute(
+                "SELECT id,provider_id FROM toques WHERE canal=" + marker
+                + " AND acao=" + marker + " AND pessoa_chave=" + marker
+                + " AND alvo=" + marker + " AND status='feito' ORDER BY id LIMIT " + marker,
+                (channel, action, person, target, limit + 1),
+            )
+            rows = cursor.fetchall()
+        if len(rows) < 2:
+            return None
+        return {
+            "channel": channel, "action": action, "identity": person, "target": target,
+            "touches": [{"touch_id": str(row[0]), "status": "sent", "receipt_ref": row[1]}
+                        for row in rows[:limit]],
+            "truncated": len(rows) > limit,
+        }
+
     @staticmethod
     def identity_destination(person: str) -> tuple[str, str] | None:
         matches = []

@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
+import re
 import sqlite3
 from threading import local
 from typing import Any, Iterator
@@ -347,7 +348,8 @@ class Repository:
             if changed != 1:
                 return None
             result = dict(row)
-            result.update(payload=json.loads(row["payload"]), lease_owner=claim_owner, lease_until=lease_until)
+            result.update(payload=json.loads(row["payload"]), lease_owner=claim_owner,
+                          lease_until=lease_until, updated_at=now.isoformat())
             return result
 
     @property
@@ -409,6 +411,89 @@ class Repository:
         with self._connect() as con:
             rows = con.execute("SELECT * FROM thunder_effect_jobs ORDER BY rowid").fetchall()
         return [{**dict(row), "payload": json.loads(row["payload"]), **({"sent_at": row["updated_at"]} if row["state"] == "sent" else {})} for row in rows]
+
+    def reconciliation_effects(self, *, after_rowid: int = 0, limit: int = 100) -> list[dict[str, Any]]:
+        """Page registered effects, including consumed jobs, without loading all history."""
+        if type(after_rowid) is not int or after_rowid < 0:
+            raise ValueError("invalid effect cursor")
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("effect limit must be between 1 and 100")
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT rowid AS reconciliation_cursor,* FROM thunder_effect_jobs "
+                "WHERE rowid>? ORDER BY rowid LIMIT ?", (after_rowid, limit),
+            ).fetchall()
+        return [{**dict(row), "payload": json.loads(row["payload"])} for row in rows]
+
+    def mark_effect_reconciliation(self, snapshot: dict[str, Any], evidence: dict[str, Any]) -> bool:
+        """CAS one observed effect and append its incident atomically, retaining receipts."""
+        touches = evidence.get("touches", [])
+        if (len({touch.get("touch_id") for touch in touches}) < 2
+                or any(touch.get("status") != "sent" or not touch.get("touch_id") for touch in touches)):
+            raise ValueError("two confirmed touches required")
+        alert_id = "duplicate-effect:" + snapshot["id"]
+        code = "duplicate_consumed_effect"
+        with self.transaction() as con:
+            current = self.effect(snapshot["id"])
+            fields = ("id", "effect_key", "payload", "state", "updated_at", "lease_owner",
+                      "lease_until", "receipt_ref", "error_code")
+            if not current or any(current[field] != snapshot[field] for field in fields):
+                raise RepositoryConflict("effect changed during reconciliation")
+            alert = self.get_state("operator_alert", alert_id)
+            if current["state"] == "needs_reconciliation" and current["error_code"] == code and alert:
+                return False
+            changed = con.execute(
+                "UPDATE thunder_effect_jobs SET state='needs_reconciliation',error_code=?,"
+                "lease_owner=NULL,lease_until=NULL,updated_at=? "
+                "WHERE id=? AND effect_key=? AND state=? AND updated_at=? "
+                "AND lease_owner IS ? AND lease_until IS ?",
+                (code, datetime.now(timezone.utc).isoformat(), current["id"], current["effect_key"],
+                 current["state"], current["updated_at"], current["lease_owner"], current["lease_until"]),
+            ).rowcount
+            if changed != 1:
+                raise RepositoryConflict("effect changed during reconciliation")
+            if not alert:
+                self.append_state("operator_alert", alert_id, {
+                    "active": True, "priority": "high", "owner": "ygor", "code": code,
+                    "reason": code, "effect_id": current["id"], "effect_key": current["effect_key"],
+                    "cadence_id": current["payload"].get("cadence_id"),
+                    "step_id": current["payload"].get("step", {}).get("id"),
+                    "title": "Reconciliar execucoes duplicadas",
+                    "message": "Dois ou mais toques confirmados no mesmo escopo. Historico preservado.",
+                    "next_action": "Ygor: conferir os recibos e reconciliar o incidente sem novo envio.",
+                    "duplicate_evidence": evidence,
+                })
+        return True
+
+    def requeue_confirmed_effect(self, snapshot: dict[str, Any], confirmation_hash: str) -> dict[str, Any]:
+        """CAS a safely failed effect after the caller persists fresh campaign authority."""
+        if not isinstance(confirmation_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", confirmation_hash):
+            raise ValueError("invalid execution confirmation hash")
+        with self.transaction() as con:
+            current = self.effect(snapshot["id"])
+            fields = ("id", "effect_key", "payload", "state", "updated_at", "lease_owner",
+                      "lease_until", "receipt_ref", "error_code")
+            if not current or any(current[field] != snapshot[field] for field in fields):
+                raise RepositoryConflict("effect changed during confirmed retry")
+            if current["state"] != "failed" or current["error_code"] not in {
+                "provider_rejected", "email_rejected", "hubspot_rejected", "channel_not_configured"
+            }:
+                raise RepositoryConflict("effect is not safely retryable")
+            if confirmation_hash == current["payload"].get("execution_confirmation_hash"):
+                raise RepositoryConflict("fresh campaign confirmation required")
+            payload = {**current["payload"], "execution_confirmation_hash": confirmation_hash}
+            changed = con.execute(
+                "UPDATE thunder_effect_jobs SET payload=?,state='pending',lease_owner=NULL,"
+                "lease_until=NULL,error_code=NULL,receipt_ref=NULL,updated_at=? "
+                "WHERE id=? AND effect_key=? AND state='failed' AND updated_at=? "
+                "AND error_code=? AND lease_owner IS ? AND lease_until IS ?",
+                (json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                 datetime.now(timezone.utc).isoformat(), current["id"], current["effect_key"],
+                 current["updated_at"], current["error_code"], current["lease_owner"], current["lease_until"]),
+            ).rowcount
+            if changed != 1:
+                raise RepositoryConflict("effect changed during confirmed retry")
+            return self.effect(current["id"])
 
     def retry_effect(self, job_id: str) -> dict[str, Any]:
         now = datetime.now(timezone.utc).isoformat()
