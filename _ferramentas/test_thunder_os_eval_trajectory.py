@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from copy import deepcopy
 import hashlib
 import json
+import os
 from pathlib import Path
 import sqlite3
 import sys
@@ -16,6 +17,7 @@ from thunder_os.approvals import ApprovalError, _step_hash
 from thunder_os.db import Repository, RepositoryConflict
 from thunder_os.models import ContractError, payload_hash
 from thunder_os.providers.email import EmailAdapter
+from thunder_os.reply_control import ReplyControl
 from thunder_os.service import ThunderService
 from thunder_os.touch_ledger import TouchBlocked, TouchLedger
 from thunder_os import touch_ledger
@@ -313,6 +315,355 @@ class EvalTrajectoryTests(unittest.TestCase):
         manifest = json.loads((Path(__file__).resolve().parents[1] / 'runtime/dependencies.json').read_text())
         actual = hashlib.sha256(Path(touch_ledger.toques.__file__).read_bytes()).hexdigest()
         self.assertEqual(actual, manifest['dependencies']['toques.py']['sha256'])
+
+    def fixture(self, ident):
+        directory = os.environ.get('THUNDER_EVAL_DIR')
+        self.assertTrue(directory, 'THUNDER_EVAL_DIR must name the canonical offline eval directory')
+        rows = [json.loads(line) for line in (Path(directory) / 'cases-person-suppression.jsonl').read_text().splitlines()]
+        self.assertEqual(len(rows), 6)
+        return next(row for row in rows if row['id'] == ident)
+
+    def canonical_reply(self, classification='negative', content='Nao me contate novamente.', fixture=None):
+        initial = fixture['estado_inicial'] if fixture else {}
+        person = initial.get('email', 'person@example.invalid')
+        account = self.research['account']['domain']
+        self.service.resolve_identity({'id': 'person', 'records': [
+            {'domain': account, 'person_key': person, 'hubspot_contact_id': '123', 'source': 'email'},
+            {'domain': account, 'person_key': person, 'hubspot_contact_id': '123', 'source': 'hubspot'},
+        ]}, 'ygor')
+        linkedin = {'id': 'LI0', 'recipient': initial.get('linkedin', 'https://www.linkedin.com/in/eval-person'),
+                    'channel': 'linkedin', 'content': 'Convite sintetico pendente',
+                    'order': 1, 'interval_hours': 0}
+        self.service.resolve_identity({'id': 'person-linkedin', 'records': [
+            {'domain': account, 'person_key': linkedin['recipient'], 'hubspot_contact_id': '123', 'source': 'linkedin'},
+            {'domain': account, 'person_key': linkedin['recipient'], 'hubspot_contact_id': '123', 'source': 'hubspot'},
+        ]}, 'ygor')
+        self.service.create_cadence({'id': 'linkedin-pending', 'account_id': account,
+            'person_key': person, 'objective': 'offline evaluation',
+            'execution_context': self.context, 'steps': [linkedin]}, 'ygor')
+        if initial.get('pending_invite'):
+            with self.database() as (connection, _):
+                connection.execute("INSERT INTO toques(canal,acao,pessoa_chave,alvo,status) VALUES (?,?,?,?,?)",
+                    ('linkedin', 'convite', self.ledger.validate_identity(linkedin), 'perfil', 'reservado'))
+        self.approve()
+        self.queue()
+        self.assertTrue(self.worker.process_one())
+        touch = self.ledger.preflight('unused', self.repo.get_state('cadence', 'batch')['steps'][0])['duplicate']
+        reply = self.service.record_reply({'id': 'canonical-reply', 'channel': 'email',
+            'content': content, 'classification': classification, 'cadence_id': 'batch',
+            'account_id': account, 'person_key': person,
+            'preceding_touch_id': touch['touch_id']}, 'ygor')
+        return reply, linkedin
+
+    def test_email_refusal_suppresses_canonical_linkedin_pending(self):
+        fixture = self.fixture('os-eval-031')
+        reply, linkedin = self.canonical_reply(fixture['estado_inicial']['classification'], fixture['entrada'], fixture)
+        self.assertEqual(reply['state'], 'classified')
+        with self.assertRaisesRegex(TouchBlocked, '^suppressed$'):
+            self.ledger.reserve('pending-linkedin', 'LI0', linkedin)
+        self.assertEqual(self.ledger.preflight('unused', linkedin)['blocked'], 'suppressed')
+        self.assertEqual(self.repo.get_state('cadence', 'linkedin-pending')['status'], 'paused_reply')
+        alert = self.repo.get_state('operator_alert', 'canonical-reply')
+        self.assertEqual(alert['owner'], 'ygor')
+        self.assertIn('Pausa externa nao confirmada', alert['message'])
+        self.assertEqual(len(self.mailbox.commands), 1)
+        self.assertNotEqual(linkedin['recipient'], fixture['estado_inicial']['email'])
+        with self.database() as (connection, _):
+            self.assertEqual(connection.execute("SELECT status FROM toques WHERE acao='convite'").fetchall(), [('reservado',)])
+        trace = self.capture(fixture['id'])
+        self.assertEqual(len(trace['provider_commands']), 1)  # Only E1 preceding the reply.
+
+    def assert_human_handoff(self, ident):
+        fixture = self.fixture(ident)
+        reply, _ = self.canonical_reply(fixture['estado_inicial']['classification'], fixture['entrada'], fixture)
+        self.assertEqual(reply['content'], fixture['entrada'])
+        for cadence in self.repo.list_state('cadence'):
+            self.assertEqual(cadence['status'], 'paused_reply')
+        alert = self.repo.get_state('operator_alert', 'canonical-reply')
+        self.assertEqual(alert['owner'], 'ygor')
+        self.assertTrue(alert['active'])
+        self.assertIn('Ygor', alert['next_action'])
+        self.assertIn('Pausa externa nao confirmada', alert['message'])
+        self.assertFalse(self.worker.process_one())
+        with self.assertRaisesRegex(ContractError, 'paused'):
+            self.queue()
+        self.assertEqual(len(self.repo.effects()), 1)
+        self.assertEqual(len(self.mailbox.commands), 1)  # Zero after inbound.
+        self.assertEqual(self.repo.list_state('copy'), [])
+        self.assertEqual(self.repo.list_state('contact'), [])
+        self.assertEqual(self.repo.list_state('meeting'), [])
+        self.assertEqual({c['person_key'] for c in self.repo.list_state('cadence')}, {'person@example.invalid'})
+        self.capture(fixture['id'])
+
+    def test_case_032_referral_pauses_sender_without_preparing_third_party(self):
+        self.assert_human_handoff('os-eval-032')
+
+    def test_case_033_schedule_request_hands_off_to_ygor_without_autosend(self):
+        self.assert_human_handoff('os-eval-033')
+
+    def test_case_034_price_request_hands_off_to_ygor_without_autosend(self):
+        self.assert_human_handoff('os-eval-034')
+
+    def test_case_035_edited_approved_text_requires_new_approval(self):
+        fixture = self.fixture('os-eval-035')
+        self.approve()
+        self.queue()
+        cadence = self.repo.get_state('cadence', 'batch')
+        cadence['steps'][0]['content'] = fixture['estado_inicial']['edited_content']
+        self.repo.put_state('cadence', 'batch', cadence)
+        self.assertTrue(self.worker.process_one())
+        self.assertEqual(self.repo.effects()[0]['error_code'], 'campaign_confirmation_scope_changed')
+        self.assertEqual(self.mailbox.commands, [])
+        with self.assertRaisesRegex(ApprovalError, 'campaign_confirmation_scope_changed'):
+            self.service.campaign_execution_review(self.repo.get_state('cadence', 'batch'),
+                approval=self.repo.get_state('approval', 'batch'))
+        self.assertEqual(self.capture(fixture['id'])['touches'], [])
+
+    def test_case_036_timeout_after_start_never_repeats(self):
+        fixture = self.fixture('os-eval-036')
+        self.mailbox.mode = fixture['estado_inicial']['provider_mode']
+        self.approve()
+        self.queue()
+        self.assertTrue(self.worker.process_one())
+        self.queue()
+        self.assertFalse(self.worker.process_one())
+        restarted = WorkerRuntime(self.repo, self.ledger, {'email': self.adapter},
+            worker_id='restarted', health_path=self.root / 'restart.json',
+            revision='offline-eval', approved_catalog=CATALOG)
+        self.assertFalse(restarted.process_one())
+        with self.assertRaisesRegex(RepositoryConflict, 'not safely retryable'):
+            self.repo.retry_effect(self.repo.effects()[0]['id'])
+        trace = self.capture(fixture['id'])
+        self.assertEqual(len(trace['provider_commands']), 1)
+        self.assertEqual(len(self.mailbox.messages), 1)
+        self.assertEqual(trace['receipt'], [None])
+        self.assertEqual(trace['finalstate'], [{'state': 'uncertain', 'error_code': 'provider_timeout'}])
+        self.assertEqual(trace['touches'][0]['status'], 'incerto')
+
+    def test_opt_out_suppresses_canonical_linkedin(self):
+        _, linkedin = self.canonical_reply('opt_out')
+        with self.assertRaisesRegex(TouchBlocked, '^suppressed$'):
+            self.ledger.reserve('pending-linkedin', 'LI0', linkedin)
+
+    def test_risk_suppresses_canonical_linkedin(self):
+        _, linkedin = self.canonical_reply('risk')
+        with self.assertRaisesRegex(TouchBlocked, '^suppressed$'):
+            self.ledger.reserve('pending-linkedin', 'LI0', linkedin)
+
+    def test_reclassification_suppresses_canonical_linkedin(self):
+        _, linkedin = self.canonical_reply('positive')
+        self.service.classify_reply('canonical-reply', 'negative', 1.0, 'Ygor confirmou recusa', 'ygor')
+        with self.assertRaisesRegex(TouchBlocked, '^suppressed$'):
+            self.ledger.reserve('pending-linkedin', 'LI0', linkedin)
+
+    def test_mendel_reply_control_to_service_negative_suppresses_confirmed_person(self):
+        self.canonical_reply('positive')
+        result = ReplyControl(self.repo, self.service.campaign_registry).ingest({
+            'id': 'manual-synthetic', 'channel': 'email', 'content': 'Synthetic refusal',
+            'received_at': '2026-10-22T12:00:00+00:00', 'hubspot_contact_id': '123',
+            'campaign_id': 'eval-mexico', 'human_reply': True, 'identity_verified': True,
+            'source': {'provider': 'manual', 'account_id': 'ygor',
+                       'provider_message_id': 'manual-synthetic'}}, 'ygor')
+        reply = self.service.classify_reply(result['reply']['id'], 'negative', 1.0,
+                                             'Synthetic refusal', 'ygor')
+        self.assertEqual(reply['classification'], 'negative')
+        self.assertEqual(reply['state'], 'classified')
+        for step in ({'channel': 'email', 'recipient': 'person@example.invalid', 'subject': 'Other'},
+                     {'channel': 'linkedin', 'recipient': 'https://www.linkedin.com/in/eval-person'}):
+            self.assertEqual(self.ledger.preflight('unused', step)['blocked'], 'suppressed')
+            with self.assertRaisesRegex(TouchBlocked, '^suppressed$'):
+                self.ledger.reserve('mendel-blocked', 'step', step)
+        alert = self.repo.get_state('operator_alert', result['reply']['id'])
+        self.assertEqual(alert['owner'], 'ygor')
+        self.assertIn('Pausa externa nao confirmada', alert['message'])
+        self.assertEqual(len(self.mailbox.commands), 1)
+
+    def test_mendel_unapproved_cadence_cannot_bind_unrelated_recipient(self):
+        unrelated = {'id': 'LI0', 'channel': 'linkedin',
+                     'recipient': 'https://www.linkedin.com/in/synthetic-unrelated',
+                     'content': 'Unapproved unrelated draft', 'order': 1, 'interval_hours': 0}
+        self.service.create_cadence({'id': 'mistagged-draft',
+            'account_id': self.research['account']['domain'], 'person_key': 'person@example.invalid',
+            'objective': 'offline evaluation', 'execution_context': self.context,
+            'steps': [unrelated]}, 'ygor')
+        self.assertEqual(self.repo.get_state('cadence', 'mistagged-draft')['status'], 'ready_for_review')
+        self.canonical_reply()
+        self.assertIsNone(self.ledger.preflight('unrelated', unrelated)['blocked'])
+        self.assertTrue(self.ledger.reserve('unrelated', 'LI0', unrelated)[0])
+
+    def test_mendel_reply_control_channel_table_uses_confirmed_destinations(self):
+        for channel in ('email', 'linkedin', 'phone', 'chattie'):
+            with self.subTest(channel=channel):
+                scenario = EvalTrajectoryTests()
+                try:
+                    scenario.setUp()
+                    scenario.canonical_reply('positive')
+                    result = ReplyControl(scenario.repo, scenario.service.campaign_registry).ingest({
+                        'id': 'manual-channel', 'channel': channel, 'content': 'Synthetic refusal',
+                        'received_at': '2026-10-22T12:00:00+00:00', 'hubspot_contact_id': '123',
+                        'campaign_id': 'eval-mexico', 'human_reply': True, 'identity_verified': True,
+                        'source': {'provider': 'manual', 'account_id': 'ygor',
+                                   'provider_message_id': 'manual-channel'}}, 'ygor')
+                    self.assertEqual(result['reply']['cadence_id'], 'batch')
+                    self.assertEqual(scenario.repo.get_state('cadence', 'batch')['steps'][0]['channel'], 'email')
+                    reply = scenario.service.classify_reply(result['reply']['id'], 'negative', 1.0,
+                                                             'Synthetic refusal', 'ygor')
+                    self.assertEqual(reply['state'], 'classified')
+                    self.assertEqual(reply['classification'], 'negative')
+                    for step in ({'channel': 'email', 'recipient': 'person@example.invalid', 'subject': 'Other'},
+                                 {'channel': 'linkedin', 'recipient': 'https://www.linkedin.com/in/eval-person'}):
+                        self.assertEqual(scenario.ledger.preflight('unused', step)['blocked'], 'suppressed')
+                        with self.assertRaisesRegex(TouchBlocked, '^suppressed$'):
+                            scenario.ledger.reserve('channel-blocked', 'step', step)
+                    with scenario.database() as (connection, _):
+                        self.assertEqual(connection.execute('SELECT canal FROM thunder_suppressions ORDER BY canal').fetchall(),
+                                         [('email',), ('linkedin',)])
+                    self.assertEqual(len(scenario.mailbox.commands), 1)
+                    alert = scenario.repo.get_state('operator_alert', result['reply']['id'])
+                    self.assertIn('Pausa externa nao confirmada', alert['message'])
+                finally:
+                    scenario.doCleanups()
+
+    def test_mendel_confirmed_alias_outside_steps_is_suppressed(self):
+        self.canonical_reply('positive')
+        alias = 'alias@example.invalid'
+        self.service.resolve_identity({'id': 'confirmed-alias', 'records': [
+            {'domain': self.research['account']['domain'], 'person_key': alias,
+             'hubspot_contact_id': '123', 'source': source} for source in ('email', 'hubspot')]}, 'ygor')
+        self.service.classify_reply('canonical-reply', 'negative', 1.0, 'Synthetic refusal', 'ygor')
+        step = {'channel': 'email', 'recipient': alias, 'subject': 'Outside cadence'}
+        self.assertEqual(self.ledger.preflight('alias', step)['blocked'], 'suppressed')
+        with self.assertRaisesRegex(TouchBlocked, '^suppressed$'):
+            self.ledger.reserve('alias', 'outside', step)
+
+    def test_negative_without_identity_registry_preserves_known_channel_stop(self):
+        unrelated = {'id': 'LI0', 'channel': 'linkedin',
+                     'recipient': 'https://www.linkedin.com/in/synthetic-unrelated',
+                     'content': 'Unapproved unrelated draft', 'order': 1, 'interval_hours': 0}
+        self.service.create_cadence({'id': 'unrelated-draft',
+            'account_id': self.research['account']['domain'], 'person_key': 'person@example.invalid',
+            'objective': 'offline evaluation', 'execution_context': self.context,
+            'steps': [unrelated]}, 'ygor')
+        self.approve()
+        self.queue()
+        self.assertTrue(self.worker.process_one())
+        step = self.repo.get_state('cadence', 'batch')['steps'][0]
+        touch = self.ledger.preflight('unused', step)['duplicate']
+        self.assertEqual(self.repo.list_state('identity'), [])
+        reply = self.service.record_reply({'id': 'legacy-negative', 'channel': 'email',
+            'content': 'Nao me contate novamente.', 'classification': 'negative',
+            'cadence_id': 'batch', 'account_id': self.research['account']['domain'],
+            'person_key': 'person@example.invalid', 'preceding_touch_id': touch['touch_id']}, 'ygor')
+        self.assertEqual(reply['classification'], 'negative')
+        self.assertEqual(self.repo.get_state('cadence', 'batch')['status'], 'paused_reply')
+        self.assertEqual(self.ledger.preflight('legacy', step)['blocked'], 'suppressed')
+        with self.assertRaisesRegex(TouchBlocked, '^suppressed$'):
+            self.ledger.reserve('legacy', 'E1', step)
+        self.assertIsNone(self.ledger.preflight('unrelated', unrelated)['blocked'])
+        self.assertTrue(self.ledger.reserve('unrelated', 'LI0', unrelated)[0])
+
+    def test_reclassification_without_identity_registry_uses_confirmed_touch(self):
+        self.approve()
+        self.queue()
+        self.assertTrue(self.worker.process_one())
+        step = self.repo.get_state('cadence', 'batch')['steps'][0]
+        touch = self.ledger.preflight('unused', step)['duplicate']
+        self.service.record_reply({'id': 'legacy-positive', 'channel': 'email',
+            'content': 'Resposta sintetica', 'classification': 'positive', 'cadence_id': 'batch',
+            'account_id': self.research['account']['domain'], 'person_key': 'person@example.invalid',
+            'preceding_touch_id': touch['touch_id']}, 'ygor')
+        self.assertEqual(self.repo.list_state('identity'), [])
+        self.assertEqual(self.ledger.preflight('legacy', step)['blocked'], 'has_reply')
+        reply = self.service.classify_reply('legacy-positive', 'negative', 1.0, 'Recusa confirmada', 'ygor')
+        self.assertEqual(reply['classification'], 'negative')
+        self.assertEqual(self.ledger.preflight('legacy', step)['blocked'], 'suppressed')
+        with self.assertRaisesRegex(TouchBlocked, '^suppressed$'):
+            self.ledger.reserve('legacy', 'E1', step)
+
+    def test_mendel_conflicting_alias_contact_ids_fail_before_suppression(self):
+        self.canonical_reply('positive')
+        for contact in ('123', '999'):
+            self.service.resolve_identity({'id': 'alias-' + contact, 'records': [
+                {'domain': self.research['account']['domain'], 'person_key': 'alias@example.invalid',
+                 'hubspot_contact_id': contact, 'source': source} for source in ('email', 'hubspot')]}, 'ygor')
+        with self.assertRaisesRegex(ContractError, '^reply identity conflict$'):
+            self.service.classify_reply('canonical-reply', 'negative', 1.0, 'Refusal', 'ygor')
+        with self.database() as (connection, _):
+            self.assertEqual(connection.execute('SELECT COUNT(*) FROM thunder_suppressions').fetchone()[0], 0)
+        self.assertEqual(self.repo.get_state('reply', 'canonical-reply')['classification'], 'positive')
+
+    def test_mendel_conflicting_record_contact_ids_fail_before_suppression(self):
+        self.canonical_reply('positive')
+        self.service.resolve_identity({'id': 'conflicting-records', 'records': [
+            {'domain': self.research['account']['domain'], 'person_key': 'alias@example.invalid',
+             'hubspot_contact_id': contact} for contact in ('123', '999')]}, 'ygor')
+        with self.assertRaisesRegex(ContractError, '^reply identity conflict$'):
+            self.service.classify_reply('canonical-reply', 'negative', 1.0, 'Refusal', 'ygor')
+        with self.database() as (connection, _):
+            self.assertEqual(connection.execute('SELECT COUNT(*) FROM thunder_suppressions').fetchone()[0], 0)
+
+    def test_mendel_reply_control_invalid_context_never_suppresses(self):
+        self.canonical_reply('positive')
+        result = ReplyControl(self.repo, self.service.campaign_registry).ingest({
+            'id': 'manual-invalid', 'channel': 'email', 'content': 'Synthetic refusal',
+            'received_at': '2026-10-22T12:00:00+00:00', 'hubspot_contact_id': '123',
+            'campaign_id': 'eval-mexico', 'human_reply': True, 'identity_verified': True,
+            'source': {'provider': 'manual', 'account_id': 'ygor',
+                       'provider_message_id': 'manual-invalid'}}, 'ygor')
+        for change, error in (({'account_slug': 'other.invalid'}, 'reply identity mismatch'),
+                              ({'human_reply': False}, 'reply identity unresolved'),
+                              ({'identity_confirmed': False}, 'reply identity unresolved'),
+                              ({'hubspot_contact_id': '999'}, 'reply identity conflict'),
+                              ({'paused_cadence_ids': []}, 'reply identity unresolved')):
+            with self.subTest(change=change):
+                self.repo.put_state('reply', result['reply']['id'], {**result['reply'], **change})
+                with self.assertRaisesRegex(ContractError, '^' + error + '$'):
+                    self.service.classify_reply(result['reply']['id'], 'negative', 1.0, 'Refusal', 'ygor')
+                with self.database() as (connection, _):
+                    self.assertEqual(connection.execute('SELECT COUNT(*) FROM thunder_suppressions').fetchone()[0], 0)
+
+    def test_mendel_reclassification_rejects_changed_unconfirmed_cadence_destination(self):
+        self.canonical_reply('positive')
+        cadence = self.repo.get_state('cadence', 'batch')
+        cadence['steps'][0]['recipient'] = 'unrelated@example.invalid'
+        self.repo.put_state('cadence', 'batch', cadence)
+        with self.assertRaisesRegex(ContractError, '^reply destination unconfirmed$'):
+            self.service.classify_reply('canonical-reply', 'negative', 1.0, 'Refusal', 'ygor')
+        with self.database() as (connection, _):
+            self.assertEqual(connection.execute('SELECT COUNT(*) FROM thunder_suppressions').fetchone()[0], 0)
+
+    def test_unresolved_identity_does_not_suppress_unrelated_linkedin(self):
+        self.canonical_reply()
+        other = {'channel': 'linkedin', 'recipient': 'https://www.linkedin.com/in/eval-other'}
+        self.assertIsNone(self.ledger.preflight('other', other)['blocked'])
+        self.assertTrue(self.ledger.reserve('other', 'LI0', other)[0])
+
+    def test_completed_cadence_history_is_preserved_on_canonical_reply(self):
+        historical = self.repo.get_state('cadence', 'batch')
+        self.repo.put_state('cadence', 'historical', {**historical, 'id': 'historical', 'status': 'completed'})
+        self.canonical_reply()
+        self.assertEqual(self.repo.get_state('cadence', 'historical')['status'], 'completed')
+
+    def test_workflow_failure_rolls_back_projection_and_keeps_ledger_suppressed(self):
+        original = self.repo.put_state
+        def fail_reply(kind, *args, **kwargs):
+            if kind == 'reply':
+                raise RuntimeError('synthetic workflow failure')
+            return original(kind, *args, **kwargs)
+        with patch.object(self.repo, 'put_state', side_effect=fail_reply):
+            with self.assertRaisesRegex(RuntimeError, 'synthetic workflow failure'):
+                self.canonical_reply()
+        self.assertEqual(self.repo.list_state('reply'), [])
+        self.assertEqual(self.repo.list_state('operator_alert'), [])
+        self.assertTrue(all(c['status'] != 'paused_reply' for c in self.repo.list_state('cadence')))
+        linkedin = {'channel': 'linkedin', 'recipient': 'https://www.linkedin.com/in/eval-person'}
+        self.assertEqual(self.ledger.preflight('unused', linkedin)['blocked'], 'suppressed')
+
+    def test_fail_on_socket_guard_is_active(self):
+        import socket
+        for call in (lambda: socket.socket(), lambda: socket.create_connection(('example.invalid', 443))):
+            with self.assertRaisesRegex(AssertionError, 'eval network forbidden'):
+                call()
 
 
 def copy_probes():

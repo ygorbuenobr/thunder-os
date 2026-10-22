@@ -66,6 +66,16 @@ class TouchLedger:
         return self._scope(step, "identity-check")[2]
 
     @staticmethod
+    def identity_destination(person: str) -> tuple[str, str] | None:
+        matches = []
+        for channel in ("email", "linkedin", "whatsapp"):
+            try:
+                matches.append((channel, toques.normalizar_pessoa(channel, person)))
+            except ValueError:
+                continue
+        return matches[0] if len(matches) == 1 else None
+
+    @staticmethod
     def _lock(connection: Any, marker: str, channel: str, person: str) -> None:
         if marker == "?":
             connection.execute("BEGIN IMMEDIATE")
@@ -204,27 +214,45 @@ class TouchLedger:
             cursor.execute("DELETE FROM thunder_effect_touches WHERE effect_key=" + marker, (effect_key,))
             return {"touch_id": str(row[0]), "status": "released"}
 
-    def suppress(self, channel: str, person: str, reason: str) -> None:
-        person_key = toques.normalizar_pessoa(channel, person)
-        with self._banco() as (connection, marker):
-            self._lock(connection, marker, channel, person_key)
-            connection.cursor().execute(
+    @staticmethod
+    def _suppression_scope(channel, person, identities):
+        return sorted({(channel, toques.normalizar_pessoa(channel, person))} | {
+            (c, toques.normalizar_pessoa(c, p)) for c, p in identities})
+
+    @staticmethod
+    def _write_suppressions(cursor, marker, identities, reason):
+        for channel, person in identities:
+            cursor.execute(
                 "INSERT INTO thunder_suppressions(canal,pessoa_chave,reason) VALUES ("
                 + ",".join([marker] * 3) + ") ON CONFLICT(canal,pessoa_chave) DO UPDATE SET reason=excluded.reason",
-                (channel, person_key, reason),
+                (channel, person, reason),
             )
+
+    def suppress(self, channel: str, person: str, reason: str, *, identities=()) -> None:
+        scope = self._suppression_scope(channel, person, identities)
+        with self._banco() as (connection, marker):
+            self._lock_scope(connection, marker, scope)
+            self._write_suppressions(connection.cursor(), marker, scope, reason)
+
+    def _lock_scope(self, connection, marker, scope):
+        # SQLite has one write lock; PostgreSQL takes person locks in stable order.
+        for index, (channel, person) in enumerate(scope):
+            if marker != "?" or index == 0:
+                self._lock(connection, marker, channel, person)
 
     def record_reply(
         self, channel: str, person: str, classification: str, summary: str, reference: str,
         preceding_touch_id: str,
+        *, identities=(),
     ) -> int:
         mapped = {
             "positive": "positiva", "objection": "objecao", "negative": "negativa",
             "opt_out": "negativa", "risk": "negativa", "unrelated": "neutra",
         }[classification]
         person_key = toques.normalizar_pessoa(channel, person)
+        scope = self._suppression_scope(channel, person, identities)
         with self._banco() as (connection, marker):
-            self._lock(connection, marker, channel, person_key)
+            self._lock_scope(connection, marker, scope)
             cursor = connection.cursor()
             cursor.execute(
                 "SELECT id FROM toques WHERE id=" + marker + " AND canal=" + marker
@@ -247,10 +275,5 @@ class TouchLedger:
             )
             reply_id = int(cursor.fetchone()[0])
             if classification in {"negative", "opt_out", "risk"}:
-                cursor.execute(
-                    "INSERT INTO thunder_suppressions(canal,pessoa_chave,reason) VALUES ("
-                    + ",".join([marker] * 3)
-                    + ") ON CONFLICT(canal,pessoa_chave) DO UPDATE SET reason=excluded.reason",
-                    (channel, person_key, classification),
-                )
+                self._write_suppressions(cursor, marker, scope, classification)
             return reply_id

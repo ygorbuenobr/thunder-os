@@ -593,6 +593,79 @@ class ThunderService:
         }, expected_version))
         return self.repository.put_states_atomic(updates)[-1]
 
+    def _reply_cadence(self, data):
+        cadence = self.repository.get_state('cadence', str(data.get('cadence_id', '')))
+        if not cadence:
+            raise ContractError('cadence not found')
+        account = data.get('account_id', data.get('account_slug'))
+        person = cadence.get('person_key') or (
+            'hubspot:' + str(cadence['hubspot_contact_id']) if cadence.get('hubspot_contact_id') else None)
+        if (not account or cadence.get('account_id') != account
+                or (data.get('account_slug') is not None and data['account_slug'] != account)
+                or person != data.get('person_key')):
+            raise ContractError('reply identity mismatch')
+        if data.get('control_source') == 'reply_control':
+            if (data.get('identity_confirmed') is not True or data.get('human_reply') is not True
+                    or not data.get('hubspot_contact_id')
+                    or cadence['id'] not in data.get('paused_cadence_ids', [])
+                    or cadence.get('reply_id') != data.get('id')):
+                raise ContractError('reply identity unresolved')
+        if (data.get('hubspot_contact_id') and cadence.get('hubspot_contact_id')
+                and data['hubspot_contact_id'] != cadence['hubspot_contact_id']):
+            raise ContractError('reply identity conflict')
+        return cadence
+
+    def _reply_cadences(self, cadence, people):
+        return [row for row in self.repository.list_state('cadence')
+                if row['id'] == cadence['id'] or (
+                    row.get('person_key') in people
+                    and row.get('account_id') == cadence['account_id']
+                    and row.get('hubspot_contact_id') in (None, cadence.get('hubspot_contact_id')))]
+
+    def _reply_suppression_identities(self, data, cadence):
+        rows = [row for row in self.repository.list_state('identity')
+                if row.get('status') == 'canonical' and row.get('actor') == 'ygor']
+        def contacts(row):
+            records = row.get('records')
+            if not isinstance(records, list) or not all(isinstance(r, Mapping) for r in records):
+                raise ContractError('reply identity conflict')
+            return {r.get('hubspot_contact_id') for r in records if r.get('hubspot_contact_id') is not None}
+        contact = data.get('hubspot_contact_id') or cadence.get('hubspot_contact_id')
+        person = str(data['person_key']).lower().strip()
+        seeds = [row for row in rows if row.get('canonical_person') == person
+                 or (contact is not None and contact in contacts(row))]
+        if not seeds:
+            return set(), set()
+        ids = {ident for row in seeds for ident in contacts(row)} | ({contact} if contact else set())
+        if len(ids) > 1:
+            raise ContractError('reply identity conflict')
+        selected = [row for row in rows if row in seeds or bool(contacts(row) & ids)]
+        people = {row.get('canonical_person') for row in selected}
+        if (person not in people and person not in {contact, 'hubspot:' + str(contact)}):
+            raise ContractError('reply identity mismatch')
+        # Only Ygor-confirmed identity rows establish destinations; drafts never do.
+        for row in rows:
+            if row.get('canonical_person') in people:
+                records = row.get('records', [])
+                domains = {str(r.get('domain') or '').lower().strip() for r in records}
+                keys = {str(r.get('person_key') or '').lower().strip() for r in records}
+                if (row.get('canonical_account') != cadence['account_id']
+                        or domains != {cadence['account_id']} or keys != {row.get('canonical_person')}
+                        or contacts(row) != ids):
+                    raise ContractError('reply identity conflict')
+        identities = {destination for person in people
+                      if (destination := TouchLedger.identity_destination(person)) is not None}
+        return identities, people
+
+    @staticmethod
+    def _reply_recipient(data, cadences):
+        recipients = {step['recipient'] for row in cadences if row['id'] == data['cadence_id']
+                      for step in row['steps'] if step.get('channel') == data['channel']
+                      and isinstance(step.get('recipient'), str) and step['recipient']}
+        if len(recipients) != 1:
+            raise ContractError('reply channel identity mismatch')
+        return next(iter(recipients))
+
     def record_reply(self, data: Mapping[str, Any], actor: str) -> dict[str, Any]:
         base = {"id", "channel", "content"}
         allowed = base | {"cadence_id", "account_id", "person_key", "classification", "confidence", "justification", "preceding_touch_id"}
@@ -607,32 +680,40 @@ class ThunderService:
         classification = data.get("classification")
         if classification not in {"positive", "objection", "negative", "opt_out", "risk", "unrelated"}:
             raise ContractError("valid classification required")
+        cadence = self._reply_cadence(data)
+        negative = classification in {'negative', 'opt_out', 'risk'}
+        identities, people = self._reply_suppression_identities(data, cadence)
+        cadences = self._reply_cadences(cadence, people)
+        recipient = self._reply_recipient(data, [cadence])
+        if negative and identities and TouchLedger.identity_destination(recipient) not in identities:
+            raise ContractError('reply destination unconfirmed')
         if self.ledger:
             self.ledger.record_reply(
-                str(data["channel"]), str(data["person_key"]), str(classification),
+                str(data["channel"]), recipient, str(classification),
                 str(data["content"]), str(data["id"]), str(data["preceding_touch_id"]),
+                identities=identities,
             )
-        cadence = self.repository.get_state("cadence", str(data["cadence_id"]))
-        if not cadence:
-            raise ContractError("cadence not found")
-        sent_step_ids = {
-            effect["payload"]["step"]["id"] for effect in self.today()["effects"]
-            if effect["state"] == "sent" and effect["payload"].get("cadence_id") == data["cadence_id"]
-        }
-        steps = [dict(step) if step.get("id") in sent_step_ids else {**step, "status": "skipped_reply"}
-                 for step in cadence["steps"]]
-        self.repository.put_state(
-            "cadence", str(data["cadence_id"]),
-            {k: v for k, v in cadence.items() if k not in {"version", "updated_at"}} |
-            {"steps": steps, "status": "paused_reply", "pause_reason": "resposta recebida"},
-        )
+        from .reply_control import _CadenceBridge
         next_action = "decidir próximo passo comercial" if classification == "positive" else "contato suprimido" if classification in {"negative", "opt_out", "risk"} else "revisar resposta"
         history = [{"classification": classification, "confidence": data.get("confidence", 1.0),
                     "justification": data.get("justification", "classificação informada"), "actor": actor}]
-        return self.repository.put_state(
-            "reply", str(data["id"]), {**dict(data), "actor": actor, "state": "classified",
-                                        "classification_history": history, "next_action": next_action}
-        )
+        with self.repository.transaction():
+            pending = [row for row in cadences if row.get('status') in {
+                'draft', 'ready_for_review', 'approved', 'active', 'blocked',
+                'needs_channel_decision', 'paused_reply'}]
+            _CadenceBridge(self.repository, pending).pause_for_reply(str(data['person_key']), str(data['id']))
+            self.repository.put_state('operator_alert', str(data['id']), {
+                'reply_id': str(data['id']), 'active': True, 'priority': 'high', 'owner': 'ygor',
+                'reason': 'external_pause_off', 'code': 'external_pause_off',
+                'title': 'Revisar resposta e parada dos canais',
+                'message': 'Resposta registrada. Pausa externa nao confirmada; revisar canais.',
+                'next_action': 'Ygor: revisar a conversa e decidir o proximo passo comercial.',
+                'external_pauses_enabled': False,
+            })
+            return self.repository.put_state(
+                "reply", str(data["id"]), {**dict(data), "actor": actor, "state": "classified",
+                                            "classification_history": history, "next_action": next_action}
+            )
 
     def classify_reply(self, reply_id: str, classification: str, confidence: float, justification: str, actor: str) -> dict[str, Any]:
         reply = self.repository.get_state("reply", reply_id)
@@ -645,11 +726,29 @@ class ThunderService:
                         "justification": justification, "actor": actor})
         next_action = "decidir próximo passo comercial" if classification == "positive" else "contato suprimido" if classification in {"negative", "opt_out", "risk"} else "revisar resposta"
         if classification in {"negative", "opt_out", "risk"} and self.ledger:
-            self.ledger.suppress(str(reply["channel"]), str(reply["person_key"]), classification)
+            cadence = self._reply_cadence(reply)
+            identities, _people = self._reply_suppression_identities(reply, cadence)
+            channel = str(reply['channel'])
+            if reply.get('control_source') == 'reply_control':
+                if not identities:
+                    raise ContractError('reply identity unconfirmed')
+                channel, recipient = min(identities)
+            else:
+                recipient = self._reply_recipient(reply, [cadence])
+            if identities and TouchLedger.identity_destination(recipient) not in identities:
+                raise ContractError('reply destination unconfirmed')
+            if not identities:
+                if not reply.get('preceding_touch_id'):
+                    raise ContractError('reply identity unconfirmed')
+                self.ledger.record_reply(str(reply['channel']), recipient, classification,
+                    str(reply['content']), reply_id, str(reply['preceding_touch_id']))
+            else:
+                self.ledger.suppress(channel, recipient, classification, identities=identities)
         return self.repository.put_state("reply", reply_id, {
             **{k: v for k, v in reply.items() if k not in {"id", "version", "updated_at"}},
             "classification": classification, "confidence": confidence, "justification": justification,
             "classification_history": history, "actor": actor, "next_action": next_action,
+            "state": "classified",
         })
 
     def resolve_reply_identity(self, reply_id: str, data: Mapping[str, Any], actor: str) -> dict[str, Any]:
