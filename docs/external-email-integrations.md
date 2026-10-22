@@ -1,5 +1,60 @@
 # External email integrations: A/B before T4
 
+## Capture-Only Registration (2026-10-21)
+
+The user approved receiving Instantly events before the one-lead CRM canary.
+The exact public route is
+`https://painel.r3xdigital.tech/api/os/v1/integrations/instantly/events`.
+Authentication is the custom header `X-Thunder-Instantly-Secret`; the value is
+kept in `/etc/thunder-os/instantly_webhook_secret` (root, mode0600), never Git,
+URL parameters, access logs or chat. This is not an Instantly API key.
+The root-only0600 `/etc/thunder-os/instantly_webhook_auth.conf` include checks the
+same header in Nginx's rewrite phase, before request body handling. Request
+buffering is OFF for the exact route. The backend independently checks the header
+again, including duplicates. Never print `nginx -T` or the private include.
+
+`InstantlyCapture` has no provider/CRM port. The server authenticates before
+parsing the body. It accepts only the pinned workspace/campaign below and the
+three event types `email_sent`, `reply_received`, `auto_reply_received`. It
+persists only allowlisted IDs, sender/lead addresses and event timestamp in the
+existing Repository `thunder_state` kind `instantly_webhook_inbox`. Text, HTML,
+subject and arbitrary webhook fields are not retained or trusted. A duplicate
+identity returns202 without another insert; conflicting metadata returns409.
+`provider_verified=false`, `email_logged=false`, `writer_enabled=false` and
+`external_platforms_stopped=false` remain explicit. Received does not mean logged.
+
+The fixed private secret file is the explicit capture-only opt-in. Without it,
+startup leaves capture disabled; unsafe/missing secret at request time fails
+closed. Removing the opt-in from runtime configuration and restarting ONLY the
+panel disables ingress; archive/rename the known secret rather than deleting it
+when performing an authorized rollback. No gateway, bot or campaign restart.
+
+Operator helper `scripts/provision_instantly_ingress.py` is VPS/root/hostname
+pinned, uses the existing panel promotion lock, checks the exact Nginx digest,
+preserves one original configuration, and never rotates an existing secret.
+Run `prepare --expected-config-sha256 HASH` before the panel promotion. Run
+`expose --expected-config-sha256 HASH --expected-source-sha SHA` only after the
+reviewed panel release is active: it checks current/health SHA and an authenticated
+invalid-payload422 locally, then adds an exact Nginx location, `nginx -t` and
+reload (not restart). All other panel paths retain their current login. It strips
+the human actor header; the webhook never gains a human session or nonce.
+
+Rollback: helper `rollback --expected-config-sha256 CURRENT_HASH` restores the
+original Nginx file and reloads; separately restore the panel release symlink
+using the existing release rollback procedure. Nginx backup:
+`/opt/thunder-os/staging/panel-cadencias/instantly-ingress-config/nginx-before.conf`.
+Do not overwrite unrelated Nginx edits if its digest changed. This helper creates
+no webhook subscription, EMAIL activity, queue, new database or scheduled worker.
+Rollback does not require the secret or private auth include: revoking credentials
+must never prevent removing exposure. Both private files stay outside the release
+and Git, and are retained for authorized recovery rather than automatically deleted.
+
+After the user manually registers the URL/header for BR-INSTANTLY-01, verify one
+real event and its provider email UUID, then perform only the authorized one-lead
+CRM canary with canonical API readback and EMAIL permission. Capture tests using
+synthetic `.invalid` identities are not that canary and are not commercial facts.
+No external pause, send or cohort import follows from successful event delivery.
+
 Local implementation on `codex/cadencias-readonly`, base
 `8f1255184a0a5a00f867f54d45812e5818dcc349`. No activation, deployment,
 provider write, enrichment or real CRM write belongs to this slice.

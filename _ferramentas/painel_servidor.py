@@ -1393,9 +1393,16 @@ class Handler(BaseHTTPRequestHandler):
         if rota.path == instantly_event_path:
             if self.command != 'POST' or rota.query:
                 raise Erro('Evento inválido.', 405)
-            from thunder_os.instantly_webhook import InstantlyWebhook
-            result = InstantlyWebhook(enabled=False).handle({}, None)
-            return self.responder(410, result)
+            receiver = getattr(self.server, 'thunder_instantly_capture', None)
+            if receiver is None:
+                return self.responder(410, {'status':'disabled','persisted':False,
+                    'provider_verified':False,'email_logged':False,'writes':0})
+            denied = receiver.authenticate(self.headers)
+            if denied is not None:
+                self.close_connection = True
+                return self.responder(denied['http_status'], denied)
+            result = receiver.capture(self.corpo())
+            return self.responder(result['http_status'], result)
         if rota.path == external_email_base + '/status':
             if self.thunder_proxy_actor() != 'ygor':
                 raise Erro('Somente Ygor pode consultar integrações.', 403)
@@ -1403,9 +1410,13 @@ class Handler(BaseHTTPRequestHandler):
                 raise Erro('Disponibilidade permite apenas consulta.', 405)
             from thunder_os.apollo_readonly import contract_status as apollo_status
             from thunder_os.instantly_webhook import contract_status as instantly_status
+            receiver = getattr(self.server, 'thunder_instantly_capture', None)
+            capture_enabled = receiver is not None and receiver.enabled is True
             return self.responder(200, {'schema_version':1,'read_only':True,
                 'automatic_reader_enabled':False,'crm_import_enabled':False,
-                'webhook_enabled':False,'apollo':apollo_status(),'instantly':instantly_status()})
+                'webhook_enabled':capture_enabled,'webhook_mode':'capture_only' if capture_enabled else 'disabled',
+                'apollo':apollo_status(),'instantly':{**instantly_status(),
+                    'capture_enabled':capture_enabled,'writer_enabled':False}})
         membership_base = '/api/os/v1/campaign-membership/'
         if rota.path.startswith(membership_base):
             actor = self.thunder_proxy_actor()
@@ -2020,6 +2031,11 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
                 from thunder_os.connectsafely_runtime import ExistingRepository
                 repository = ExistingRepository(banco.arquivo)
             servidor.thunder_service = ThunderService(repository, ledger, knowledge_store=KnowledgeStore(RAIZ if runtime is None else runtime['panel_root']))
+            if runtime is None:
+                from thunder_os.instantly_webhook import (InstantlyCapture,
+                    INSTANTLY_CAPTURE_SECRET_FILE, load_capture_secret)
+                servidor.thunder_instantly_capture = InstantlyCapture(repository,
+                    load_capture_secret, enabled=Path(INSTANTLY_CAPTURE_SECRET_FILE).is_file())
             from thunder_os.reply_control import ReplyControl
             from thunder_os.campaign_registry import CampaignRegistry
             servidor.thunder_reply_control = ReplyControl(repository, CampaignRegistry(repository),

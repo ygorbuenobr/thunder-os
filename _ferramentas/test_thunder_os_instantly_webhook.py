@@ -1,12 +1,22 @@
 """Instantly simulation and canonical provider readback over synthetic HTTP."""
 from copy import deepcopy
+from concurrent.futures import ThreadPoolExecutor
+from email.message import Message
 import json
+import os
+from pathlib import Path
+import tempfile
+from threading import Barrier
 import unittest
 from unittest.mock import Mock, patch
 
-from thunder_os.external_email_import import INSTANTLY_CAMPAIGN, INSTANTLY_WORKSPACE
-from thunder_os.instantly_webhook import (HEADER_NAME, InstantlyReadOnly, InstantlyWebhook,
-                                          contract_status, dry_run)
+from thunder_os.db import Repository, RepositoryConflict
+from thunder_os.external_email_import import (ExternalEmailError, INSTANTLY_CAMPAIGN,
+                                              INSTANTLY_WORKSPACE)
+from thunder_os.instantly_webhook import (HEADER_NAME, INSTANTLY_CAPTURE_SECRET_FILE,
+    InstantlyCapture, InstantlyReadOnly, InstantlyWebhook, contract_status, dry_run,
+    load_capture_secret)
+from thunder_os.models import payload_hash
 
 
 def payload(kind='email_sent'):
@@ -154,6 +164,276 @@ class InstantlyWebhookTests(unittest.TestCase):
         self.assertEqual(result['http_status'], 503)
         self.assertNotIn('PRIVATE', json.dumps(result))
         self.assertEqual(request.call_count, 1)
+
+
+class InstantlyCaptureTests(unittest.TestCase):
+    secret = 'synthetic-capture-secret-32-characters'
+    kind = 'instantly_webhook_inbox'
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = Path(self.temp.name) / 'capture.db'
+        self.repo = Repository(self.path)
+        self.headers = {HEADER_NAME: self.secret}
+        self.receiver = InstantlyCapture(self.repo, lambda: self.secret, enabled=True)
+
+    def assert_held(self, result):
+        for flag in ('provider_verified', 'email_logged', 'external_platforms_stopped', 'writer_enabled'):
+            self.assertIs(result[flag], False)
+
+    def test_disabled_before_secret_input_or_database(self):
+        repo, secret = Mock(), Mock()
+        class Unreadable:
+            def __getattribute__(self, name):
+                raise AssertionError('input must remain unread')
+        receiver = InstantlyCapture(repo, secret)
+        for result in (receiver.authenticate(Unreadable()),
+                       receiver.handle(Unreadable(), Unreadable()), receiver.capture(Unreadable())):
+            self.assertEqual(result['http_status'], 410)
+            self.assertEqual(result['writes'], 0)
+            self.assertFalse(result['persisted'])
+            self.assert_held(result)
+        secret.assert_not_called()
+        self.assertEqual(repo.mock_calls, [])
+
+    def test_authentication_precedes_payload_and_database(self):
+        repo = Mock()
+        receiver = InstantlyCapture(repo, lambda: self.secret, enabled=True)
+        class Unreadable(dict):
+            def get(self, *args):
+                raise AssertionError('body inspected before authentication')
+        for headers in ({}, {HEADER_NAME: 'wrong'}, {HEADER_NAME: [self.secret]},
+                        {HEADER_NAME: self.secret, HEADER_NAME.lower(): self.secret}):
+            result = receiver.handle(headers, Unreadable())
+            self.assertEqual(result['http_status'], 401)
+            self.assertEqual(result['writes'], 0)
+        self.assertIsNone(receiver.authenticate(self.headers))
+        self.assertEqual(repo.mock_calls, [])
+
+    def test_message_headers_case_insensitive_and_duplicate_rejected(self):
+        headers = Message()
+        headers[HEADER_NAME.lower()] = self.secret
+        self.assertIsNone(self.receiver.authenticate(headers))
+        headers[HEADER_NAME.upper()] = self.secret
+        self.assertEqual(self.receiver.authenticate(headers)['http_status'], 401)
+        self.assertEqual(self.repo.list_state(self.kind), [])
+
+    def test_secret_errors_are_sanitized_and_strong(self):
+        repo = Mock()
+        for loader in (None, lambda: '', lambda: 'short', lambda: 'x' * 4097,
+                       lambda: 'x' * 32 + ' space', lambda: '\u00e9' * 32,
+                       Mock(side_effect=OSError('PRIVATE SECRET'))):
+            receiver = InstantlyCapture(repo, loader, enabled=True)
+            result = receiver.handle(self.headers, payload())
+            self.assertEqual(result['http_status'], 503)
+            self.assertNotIn('PRIVATE', json.dumps(result))
+            self.assertFalse(result['persisted'])
+        self.assertEqual(repo.mock_calls, [])
+
+    def test_pinned_identity_and_malformed_payload_before_database(self):
+        repo = Mock()
+        receiver = InstantlyCapture(repo, lambda: self.secret, enabled=True)
+        invalid = [None, [], 'body']
+        for field in ('workspace', 'campaign_id', 'event_type', 'email_id',
+                      'lead_email', 'email_account', 'timestamp'):
+            invalid.extend([{**payload(), field: 'wrong'}, {**payload(), field: None}])
+        invalid.append({**payload(), 'timestamp': '9999-12-31T23:59:59-23:59'})
+        for value in invalid:
+            with self.subTest(value=value):
+                self.assertEqual(receiver.handle(self.headers, value)['http_status'], 422)
+        self.assertEqual(repo.mock_calls, [])
+
+    def test_capture_retains_only_normalized_metadata_and_held_flags(self):
+        value = {**payload(), 'lead_email': ' PAVLACK@example.invalid ',
+                 'email_account': ' SENDER@example.invalid ',
+                 'timestamp': '2026-10-21T09:00:00-03:00',
+                 'provider_verified': True, 'email_logged': True,
+                 'body': {'secret': 'PRIVATE'}, 'delivery_id': 'retry-1'}
+        result = self.receiver.handle(self.headers, value)
+        self.assertEqual(result['http_status'], 202)
+        self.assertEqual(result['status'], 'awaiting_provider_readback')
+        self.assertEqual(result['writes'], 1)
+        self.assertTrue(result['persisted'])
+        self.assertFalse(result['deduplicated'])
+        self.assert_held(result)
+        rows = self.repo.list_state(self.kind)
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        metadata = {key: payload()[key] for key in ('workspace', 'campaign_id', 'event_type',
+                    'email_id', 'lead_email', 'email_account', 'timestamp')}
+        metadata['timestamp'] = '2026-10-21T12:00:00.000Z'
+        self.assertEqual({key: row[key] for key in metadata}, metadata)
+        self.assertEqual(row['payload_hash'], payload_hash(metadata))
+        self.assertEqual(row['id'], payload_hash({key: metadata[key] for key in
+                                               ('workspace', 'event_type', 'email_id')}))
+        self.assertEqual(set(row), set(metadata) | {'payload_hash', 'status', 'persisted',
+            'provider_verified', 'email_logged', 'external_platforms_stopped', 'writer_enabled',
+            'id', 'version', 'updated_at'})
+        self.assertEqual(row['status'], 'awaiting_provider_readback')
+        self.assertTrue(row['persisted'])
+        self.assert_held(row)
+        self.assertNotIn('PRIVATE', json.dumps(row))
+
+    def test_restart_duplicate_ignores_raw_body_and_extra_fields(self):
+        first = self.receiver.handle(self.headers, payload())
+        before = self.repo.list_state(self.kind)
+        restarted_repo = Repository(self.path)
+        restarted = InstantlyCapture(restarted_repo, lambda: self.secret, enabled=True)
+        value = {**payload(), 'email_text': 'DIFFERENT PRIVATE BODY',
+                 'extra': object(), 'lead_email': ' PAVLACK@example.invalid ',
+                 'timestamp': '2026-10-21T09:00:00-03:00'}
+        with patch.object(restarted_repo, 'append_state', wraps=restarted_repo.append_state) as append:
+            again = restarted.handle(self.headers, value)
+        self.assertEqual(again['http_status'], 202)
+        self.assertTrue(again['deduplicated'])
+        self.assertEqual(again['writes'], 0)
+        self.assertTrue(again['persisted'])
+        self.assertEqual(again['id'], first['id'])
+        append.assert_not_called()
+        self.assertEqual(restarted_repo.list_state(self.kind), before)
+
+    def test_same_key_conflicting_metadata_is_not_overwritten(self):
+        self.receiver.handle(self.headers, payload())
+        before = self.repo.list_state(self.kind)
+        for field, value in (('lead_email', 'other@example.invalid'),
+                             ('email_account', 'other@example.invalid'),
+                             ('timestamp', '2026-10-22T12:00:00Z')):
+            result = self.receiver.handle(self.headers, {**payload(), field: value})
+            self.assertEqual(result['http_status'], 409)
+            self.assertEqual(result['writes'], 0)
+            self.assertFalse(result['persisted'])
+        self.assertEqual(self.repo.list_state(self.kind), before)
+
+    def test_racing_insert_reconciles_identical_or_conflicting_readback(self):
+        for conflict in (False, True):
+            with self.subTest(conflict=conflict):
+                repo = Repository(Path(self.temp.name) / ('race-' + str(conflict) + '.db'))
+                observer = Repository(repo.path)
+                receiver = InstantlyCapture(repo, lambda: self.secret, enabled=True)
+                def race(kind, key, row):
+                    winner = {**row, 'lead_email': 'other@example.invalid'} if conflict else row
+                    observer.append_state(kind, key, winner)
+                    raise RepositoryConflict('PRIVATE race details')
+                with patch.object(repo, 'append_state', side_effect=race):
+                    result = receiver.handle(self.headers, payload())
+                self.assertEqual(result['http_status'], 409 if conflict else 202)
+                self.assertEqual(result['writes'], 0)
+                self.assertEqual(result['deduplicated'], not conflict)
+                self.assertNotIn('PRIVATE', json.dumps(result))
+                self.assertEqual(len(observer.list_state(self.kind)), 1)
+
+    def test_database_failures_are_sanitized(self):
+        for failure in ('read', 'append', 'race_read', 'race_missing'):
+            repo = Mock()
+            repo.get_state.return_value = None
+            if failure == 'read':
+                repo.get_state.side_effect = OSError('PRIVATE read')
+            elif failure == 'append':
+                repo.append_state.side_effect = OSError('PRIVATE write')
+            else:
+                repo.append_state.side_effect = RepositoryConflict('PRIVATE conflict')
+                if failure == 'race_read':
+                    repo.get_state.side_effect = [None, OSError('PRIVATE readback')]
+            result = InstantlyCapture(repo, lambda: self.secret, enabled=True).handle(self.headers, payload())
+            self.assertEqual(result['http_status'], 503)
+            self.assertNotIn('PRIVATE', json.dumps(result))
+            self.assertFalse(result['persisted'])
+
+    def test_concurrent_receivers_use_immutable_repository_constraint(self):
+        for conflict in (False, True):
+            with self.subTest(conflict=conflict):
+                barrier = Barrier(2)
+                class RacingRepository(Repository):
+                    def append_state(self, kind, key, row):
+                        barrier.wait(timeout=5)
+                        return super().append_state(kind, key, row)
+                path = Path(self.temp.name) / ('concurrent-' + str(conflict) + '.db')
+                receivers = [InstantlyCapture(RacingRepository(path), lambda: self.secret,
+                                             enabled=True) for _ in range(2)]
+                values = [payload(), {**payload(), 'lead_email': 'other@example.invalid'}
+                          if conflict else payload()]
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    futures = [pool.submit(receiver.handle, self.headers, value)
+                               for receiver, value in zip(receivers, values)]
+                    results = [future.result(timeout=10) for future in futures]
+                self.assertEqual(sorted(result['http_status'] for result in results),
+                                 [202, 409] if conflict else [202, 202])
+                self.assertEqual(sum(result['writes'] for result in results), 1)
+                self.assertEqual(sum(result['deduplicated'] for result in results),
+                                 0 if conflict else 1)
+                self.assertEqual(len(Repository(path).list_state(self.kind)), 1)
+
+    def test_event_types_capture_out_of_order_without_provider_or_crm(self):
+        with patch('socket.socket', side_effect=AssertionError('network forbidden')), \
+             patch.object(InstantlyReadOnly, 'read_event', side_effect=AssertionError('provider forbidden')), \
+             patch('thunder_os.external_email_import.ExternalEmailImport.execute',
+                   side_effect=AssertionError('CRM forbidden')) as crm:
+            for kind in ('reply_received', 'email_sent', 'auto_reply_received'):
+                result = self.receiver.capture(payload(kind))
+                self.assertEqual(result['http_status'], 202)
+                self.assert_held(result)
+            crm.assert_not_called()
+        self.assertEqual(len(self.repo.list_state(self.kind)), 3)
+        self.assertEqual(self.repo.list_state('hubspot_attempt'), [])
+
+
+class CaptureSecretTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = Path(self.temp.name) / 'secret'
+        self.secret = 'synthetic-capture-secret-32-characters'
+
+    def load(self):
+        with patch('thunder_os.instantly_webhook.INSTANTLY_CAPTURE_SECRET_FILE', str(self.path)):
+            return load_capture_secret()
+
+    def write(self, data, mode=0o600):
+        self.path.write_bytes(data)
+        self.path.chmod(mode)
+
+    def test_fixed_path_private_ascii_secret_and_trailing_newline(self):
+        self.assertEqual(INSTANTLY_CAPTURE_SECRET_FILE, '/etc/thunder-os/instantly_webhook_secret')
+        self.write((self.secret + '\n').encode())
+        self.assertEqual(self.load(), self.secret)
+
+    def test_missing_symlink_group_readable_or_nonregular_rejected(self):
+        with self.assertRaises(ExternalEmailError):
+            self.load()
+        target = Path(self.temp.name) / 'target'
+        target.write_text(self.secret)
+        target.chmod(0o600)
+        self.path.symlink_to(target)
+        with self.assertRaises(ExternalEmailError):
+            self.load()
+        self.path.unlink()
+        self.write(self.secret.encode(), 0o640)
+        with self.assertRaises(ExternalEmailError):
+            self.load()
+        self.path.unlink()
+        self.path.mkdir(mode=0o700)
+        with self.assertRaises(ExternalEmailError):
+            self.load()
+
+    def test_malformed_or_oversized_secret_rejected(self):
+        for data in (b'', b'x' * 31, b'x' * 4097, b'x' * 32 + b' space',
+                     b'x' * 32 + b'\x00', b'\xff' * 32):
+            self.write(data)
+            with self.subTest(data=data[:40]), self.assertRaises(ExternalEmailError):
+                self.load()
+        for count in (32, 4096):
+            self.write(b'x' * count)
+            self.assertEqual(self.load(), 'x' * count)
+
+    def test_unrelated_owner_rejected(self):
+        self.write(self.secret.encode())
+        observed = os.stat(self.path)
+        with patch('thunder_os.instantly_webhook.os.fstat', return_value=Mock(
+                st_uid=max(0, os.getuid()) + 100000, st_mode=observed.st_mode,
+                st_size=observed.st_size)):
+            with self.assertRaises(ExternalEmailError):
+                self.load()
 
 
 if __name__ == '__main__':

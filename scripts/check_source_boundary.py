@@ -6,6 +6,7 @@ from pathlib import PurePosixPath
 
 
 ALLOWED_FILES = {
+    "scripts/provision_instantly_ingress.py",
     "scripts/mexico_e1_runner.cjs",
     "scripts/mexico_toques_bridge.py",
     "scripts/recover_mexico_runner.cjs",
@@ -62,6 +63,7 @@ ALLOWED_FILES = {
     "_ferramentas/painel_modelo.html",
 }
 ALLOWED_TESTS = {
+    "test_thunder_os_instantly_ingress.py",
     "test_thunder_os_eval_trajectory.py",
     "test_thunder_os_campaign_scoreboard.py",
     "test_thunder_os_panel_verification.py",
