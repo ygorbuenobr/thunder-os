@@ -1341,10 +1341,105 @@ class Handler(BaseHTTPRequestHandler):
             raise Erro('Ingresso Agenttrail inválido', 401)
         return actor
 
+    def new_journey_api(self, rota):
+        if self.thunder_proxy_actor() != 'ygor':
+            raise Erro('Somente Ygor pode preparar uma jornada.', 403)
+        if rota.query:
+            raise Erro('Parâmetros de jornada inválidos.')
+        wizard = getattr(self.server, 'thunder_new_journey', None)
+        if wizard is None:
+            raise Erro('Preparação de jornada indisponível.', 503)
+        prefix = '/api/os/v1/new-journey/'
+        target = rota.path[len(prefix):] if rota.path.startswith(prefix) else ''
+        try:
+            if self.command == 'GET':
+                if target == 'catalog':
+                    return self.responder(200, wizard.catalog())
+                if not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', target):
+                    raise Erro('Jornada não encontrada.', 404)
+                return self.responder(200, wizard.get(target, 'ygor'))
+            if self.command != 'POST':
+                raise Erro('Método de jornada não permitido.', 405)
+            actor = self.thunder_actor()
+            if actor != 'ygor':
+                raise Erro('Somente Ygor pode preparar uma jornada.', 403)
+            body = self.corpo()
+            if not isinstance(body, dict):
+                raise Erro('Dados de jornada inválidos.')
+            if target == 'create':
+                if set(body) != {'campaign_id', 'name'}:
+                    raise Erro('Dados de jornada inválidos.')
+                return self.responder(200, wizard.create(body, actor))
+            match = re.fullmatch(r'([A-Za-z0-9_-]{1,100})/(source|check|sequences|sequence|approve-step|export|reconcile)', target)
+            if not match:
+                raise Erro('Operação de jornada não encontrada.', 404)
+            ident, action = match.groups()
+            if type(body.get('expected_version')) is not int or body['expected_version'] < 1:
+                raise Erro('Versão de jornada inválida.')
+            version = body['expected_version']
+            required = {'expected_version'}
+            if action == 'source':
+                mode = body.get('mode')
+                fields = {'csv': {'mode', 'csv_text'},
+                          'apollo_people': {'mode', 'filters', 'page'},
+                          'apollo_contacts': {'mode', 'query', 'page'}}.get(mode)
+                if fields is None or set(body) != required | fields:
+                    raise Erro('Fonte de jornada inválida.')
+                result = wizard.source(ident, {k: v for k, v in body.items() if k != 'expected_version'},
+                                       actor, expected_version=version)
+            elif action == 'sequences':
+                if set(body) != required | {'query'}:
+                    raise Erro('Consulta de sequências inválida.')
+                result = wizard.sequences(ident, body['query'], actor, expected_version=version)
+            elif action == 'sequence':
+                selection = {'apollo_sequence_id', 'apollo_sequence_query'}
+                if set(body) not in (required | {'steps'}, required | {'steps'} | selection):
+                    raise Erro('Sequência inválida.')
+                args = {key: body[key] for key in selection if key in body}
+                result = wizard.revise_sequence(ident, body['steps'], actor, expected_version=version, **args)
+            elif action in {'approve-step', 'export'}:
+                fields = required | {'review_hash'} | ({'step_id'} if action == 'approve-step' else set())
+                if (set(body) != fields or not isinstance(body.get('review_hash'), str)
+                        or not re.fullmatch(r'[a-f0-9]{64}', body['review_hash'])):
+                    raise Erro('Revisão de jornada inválida.')
+                args = {'expected_version': version, 'review_hash': body['review_hash']}
+                result = (wizard.approve_step(ident, body['step_id'], actor, **args)
+                          if action == 'approve-step' else wizard.export(ident, actor, **args))
+            else:
+                if set(body) != required:
+                    raise Erro('Consulta de jornada inválida.')
+                operation = wizard.check if action == 'check' else wizard.reconcile
+                result = operation(ident, actor, expected_version=version)
+            return self.responder(200, result)
+        except Erro:
+            raise
+        except RepositoryConflict:
+            raise Erro('A jornada mudou. Atualize antes de continuar.', 409) from None
+        except (ContractError, ValueError) as error:
+            status = getattr(error, 'status', 409)
+            if status not in {400, 404, 409, 503}:
+                status = 409
+            public_errors = {
+                'journey_apollo_permission_denied': 'A chave do Apollo não permite esta consulta. Confira o escopo de leitura indicado na etapa.',
+                'journey_apollo_credential_unavailable': 'A credencial privada do Apollo não está disponível para o painel.',
+                'journey_apollo_credential_rejected': 'O Apollo recusou a credencial configurada.',
+                'journey_apollo_rate_limited': 'O Apollo limitou as consultas. Nenhum reenvio ou tentativa paga foi realizado.',
+                'journey_apollo_timeout': 'O Apollo não respondeu a tempo. A consulta não foi repetida automaticamente.',
+                'journey_sheet_incomplete': 'A ficha está incompleta. A pesquisa continua disponível, mas o texto não pode ser aprovado.',
+                'journey_sheet_changed': 'A ficha mudou. Atualize a checagem e aprove novamente o texto exato.',
+                'journey_checks_changed': 'As evidências mudaram. Refaça a checagem antes de aprovar ou exportar.',
+                'journey_no_eligible_rows': 'Nenhum contato passou por todas as checagens. Confira os motivos por pessoa.',
+                'journey_review_conflict': 'A revisão mudou. Atualize antes de aprovar ou exportar.',
+            }
+            raise Erro(public_errors.get(getattr(error, 'code', ''),
+                'Não foi possível concluir: confira os dados, as fontes e a revisão atual.'), status) from None
+
     def thunder_api(self, rota):
         service = getattr(self.server, 'thunder_service', None)
         if service is None:
             raise Erro('Thunder OS indisponível', 503)
+        if rota.path == '/api/os/v1/new-journey' or rota.path.startswith('/api/os/v1/new-journey/'):
+            return self.new_journey_api(rota)
         journey_step_action = re.fullmatch(r'/api/os/v1/journey/steps/(review|approve|revise|discard)', rota.path)
         if not journey_step_action and (rota.path == '/api/os/v1/journey' or rota.path.startswith('/api/os/v1/journey/')):
             if self.thunder_proxy_actor() != 'ygor':
@@ -2249,6 +2344,18 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
             servidor.thunder_journey_readonly = JourneyReadonly(servidor.thunder_today_readonly,
                 cadence_reader=getattr(servidor, 'thunder_cadence_readonly', None),
                 accounts=servidor.thunder_account_cadence_readonly)
+            from thunder_os.apollo_prospect_readonly import ApolloProspectReadonly
+            from thunder_os.instantly_reader import private_text
+            from thunder_os.new_journey import NewJourney
+            from thunder_os.new_journey_checks import NewJourneyChecks
+            apollo_prospects = ApolloProspectReadonly(
+                credential_loader=lambda: private_text('/root/.config/thunder/credentials/apollo_api_key.txt'),
+                enabled=runtime is None, timeout=8)
+            servidor.thunder_new_journey = NewJourney(servidor.thunder_service,
+                apollo=apollo_prospects if runtime is None else None,
+                checker=NewJourneyChecks(servidor.thunder_service,
+                    hubspot=HubSpotHTTP(systemd_hubspot_credential, timeout=4)
+                    if runtime is None and crm_read else None))
             servidor.thunder_origin = os.environ.get(
                 'THUNDER_OS_ORIGIN', 'https://painel.r3xdigital.tech')
             if runtime is not None:servidor.thunder_origin = runtime['public_origin']

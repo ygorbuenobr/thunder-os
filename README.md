@@ -393,3 +393,37 @@ request may use the existing tool-free Hermes Codex OAuth child on the
 server-resolved message context; there is no paid API fallback, provider tool
 execution or agent activation. A draft is not approval or an outbound message.
 Existing approval, exact-text and uncertain-no-retry protections remain in force.
+
+## New Journey: Manual Apollo Handoff
+
+Nova jornada follows the approved five-step flow: campaign sheet, source,
+checks, exact sequence review and manual CSV handoff. It uses a current registered
+Brazil Apollo campaign as the source of rules; a draft name never creates or
+enrolls a campaign in Apollo. Drafts live in the existing `thunder_state` store
+as `journey_draft`, with existing ApprovalPack hashes. No new table, outbox,
+dispatch job or provider writer is introduced.
+
+Four free Apollo data operations are available: people search, saved
+contacts search, sequence search and credit usage. One additional fixed free
+GET reads the current API user profile to verify the key's team before binding
+a sequence. Its private cache is bound to the credential and never returned as
+an approval or exposed key. People search does not reveal
+email or phone. Permission failures remain visible; enrichment, contact creation,
+sequence mutation and automatic enrollment are absent from the adapter. The
+runtime reads the existing private Apollo credential file without copying it
+into the repository or returning it to the browser. CSV import and local CSV
+download do not consume Apollo credits; the file cannot prove the cost of an
+earlier Apollo export.
+
+Each row needs source-backed ICP, exclusions, client, open-deal, refusal and
+cross-campaign checks. Missing or partial evidence means retained, not clear.
+CSV fields cannot attest their own eligibility. An exact reviewed text and
+current complete campaign sheet are required before approval or export. Editing
+the source, list, sequence or context invalidates earlier approval; export
+rechecks server evidence and is not proof of enrollment or delivery.
+
+`/api/os/v1/new-journey/catalog` and draft reads require the authenticated Ygor
+identity. Create, source, check, sequence, approve-step, export and reconcile
+operations also require the existing one-use nonce and same-origin boundary.
+Reconciliation is a read of Apollo membership, not enrollment. The automatic
+enrollment capability remains disabled and has no execution endpoint.

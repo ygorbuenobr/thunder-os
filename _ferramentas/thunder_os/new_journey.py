@@ -1,0 +1,691 @@
+"""Internal journey drafts and exact human review; manual CSV handoff only.
+
+Uses the existing repository and ApprovalPack. Injected synchronous read adapters
+own their timeouts; HTTP composition must run this service outside its event loop.
+No cadence, outbox, external writer, paid lookup or enrollment port exists here.
+"""
+from collections import Counter
+from collections.abc import Mapping
+from copy import deepcopy
+from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
+import csv
+import io
+import json
+import re
+from urllib.parse import urlsplit
+from uuid import uuid4
+
+from .approvals import ApprovalError, ApprovalPack, ApprovalService
+from .db import RepositoryConflict
+from .models import payload_hash
+
+
+CHECK_KEYS = ('icp', 'exclusions', 'client', 'open_deal', 'refusal', 'membership')
+MAX_ROWS = 200
+MAX_BYTES = 100 * 1024
+_META = {'id', 'version', 'updated_at'}
+_UNSET = object()
+_ACCOUNT_PROOFS = {'injected', 'verified', 'verified_profile',
+                   'provider_contact_team', 'provider_response_team'}
+_EMAIL = re.compile(r"[A-Za-z0-9.!#$%&'+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+\Z")
+_ID = re.compile(r'[A-Za-z0-9_-]{1,128}\Z')
+
+
+class NewJourneyError(ValueError):
+    def __init__(self, code, status=400):
+        self.code, self.status = code, status
+        super().__init__(code)
+
+
+def _require(condition, code, status=400):
+    if not condition:
+        raise NewJourneyError(code, status)
+
+
+def _text(value, limit=500, *, empty=False, multiline=False):
+    return (isinstance(value, str) and len(value) <= limit
+            and (empty or bool(value.strip()))
+            and not any((ord(c) < 32 and not (multiline and c in '\n\r\t'))
+                        or ord(c) == 127 or 0xD800 <= ord(c) <= 0xDFFF for c in value))
+
+
+def _valid_email(value):
+    return (isinstance(value, str) and len(value) <= 254 and bool(_EMAIL.fullmatch(value))
+            and len(value.split('@')[0]) <= 64 and '..' not in value
+            and not value.startswith('.') and '.@' not in value
+            and value.lower() != 'email_not_unlocked@domain.com')
+
+
+def _linkedin(value):
+    if not value:
+        return ''
+    try:
+        url = urlsplit(value if '://' in value else 'https://' + value)
+        if (url.scheme != 'https' or url.hostname not in ('linkedin.com', 'www.linkedin.com')
+                or url.username or url.password or url.port or url.query or url.fragment
+                or not re.fullmatch(r'/in/[A-Za-z0-9_%.-]+/?', url.path)):
+            return None
+        return 'https://www.linkedin.com' + url.path.rstrip('/').lower()
+    except ValueError:
+        return None
+
+
+def _safe_cell(value):
+    value = '' if value is None else str(value)
+    return "'" + value if value.lstrip().startswith(('=', '+', '-', '@')) or value.startswith(('\t', '\r', '\n')) else value
+
+
+def _require_exact_copy(step):
+    _require(all(_safe_cell(step.get(field)) == (step.get(field) or '')
+                 for field in ('subject', 'content')), 'journey_csv_copy_unsafe')
+
+
+class NewJourney:
+    def __init__(self, service, apollo=None, checker=None, clock=None):
+        self.service, self.repo = service, service.repository
+        self.apollo, self.checker = apollo, checker
+        self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.approval_service = ApprovalService(service.global_paused)
+
+    def _now(self):
+        now = self.clock()
+        _require(isinstance(now, datetime) and now.tzinfo is not None,
+                 'journey_clock_invalid', 503)
+        return now
+
+    @staticmethod
+    def _actor(actor):
+        _require(actor == 'ygor', 'journey_human_authority_required', 403)
+
+    def _running(self):
+        _require(not self.service.global_paused(), 'journey_global_paused', 409)
+
+    def _read(self, ident, expected_version=_UNSET):
+        _require(isinstance(ident, str) and bool(_ID.fullmatch(ident)), 'journey_id_invalid')
+        row = self.repo.get_state('journey_draft', ident)
+        _require(row is not None, 'journey_missing', 404)
+        if expected_version is not _UNSET:
+            _require(type(expected_version) is int and expected_version >= 1,
+                     'journey_version_invalid')
+            _require(row['version'] == expected_version, 'journey_version_conflict', 409)
+        return row
+
+    def _campaign(self, campaign_id):
+        _require(isinstance(campaign_id, str) and campaign_id.startswith('BR-'),
+                 'journey_campaign_invalid')
+        try:
+            context = self.service.campaign_registry.load(campaign_id)
+            _require(context['platform'] == 'apollo', 'journey_campaign_invalid')
+            sheet = self.service.campaign_sheet_view(campaign_id)
+        except ApprovalError:
+            raise NewJourneyError('journey_campaign_unavailable', 409) from None
+        return context, sheet
+
+    @staticmethod
+    def _sheet_hash(sheet):
+        def stable(value):
+            if isinstance(value, Mapping):
+                return {k: stable(v) for k, v in value.items() if k != 'source_updated_at'}
+            if isinstance(value, list):
+                return [stable(v) for v in value]
+            return value
+        return payload_hash(stable(sheet))
+
+    def catalog(self):
+        campaigns = []
+        for item in self.service.campaign_registry.list_campaigns():
+            if item['active'] and item['platform'] == 'apollo' and item['id'].startswith('BR-'):
+                _, sheet = self._campaign(item['id'])
+                campaigns.append({**item, 'campaign_id': item['id'], 'sheet': sheet})
+        drafts = sorted(self.repo.list_state('journey_draft'),
+                        key=lambda row: row['updated_at'], reverse=True)[:20]
+        return {'campaigns': campaigns, 'drafts': [{key: row[key] for key in
+                ('id', 'name', 'campaign_id', 'version', 'updated_at')} for row in drafts],
+                'enrollment_enabled': False,
+                'external_writes': 0, 'credits': 0, 'check_keys': list(CHECK_KEYS)}
+
+    def _save(self, row, expected_version):
+        try:
+            return self.repo.put_states_atomic([('journey_draft', row['id'],
+                {key: value for key, value in row.items() if key not in _META}, expected_version)])[0]
+        except RepositoryConflict:
+            raise NewJourneyError('journey_version_conflict', 409) from None
+
+    def create(self, data, actor):
+        self._actor(actor)
+        _require(isinstance(data, Mapping) and set(data) == {'campaign_id', 'name'}
+                 and _text(data['name'], 160), 'journey_input_invalid')
+        with self.repo.transaction():
+            self._running()
+            context, sheet = self._campaign(data['campaign_id'])
+            row = self._save({'id': 'journey-' + uuid4().hex, 'name': data['name'],
+                'campaign_id': data['campaign_id'], 'actor': actor, 'source': None,
+                'rows': [], 'checks': [], 'steps': [], 'approvals': {},
+                'campaign_context': context, 'sheet_hash': self._sheet_hash(sheet),
+                'sequence': None, 'reconciliation': None}, 0)
+            return self._view(row)
+
+    def get(self, ident, actor):
+        self._actor(actor)
+        with self.repo.transaction():
+            return self._view(self._read(ident))
+
+    def _scope(self, row):
+        return payload_hash({key: row[key] for key in ('name', 'campaign_id', 'source',
+            'rows', 'checks', 'steps', 'sequence', 'campaign_context', 'sheet_hash')})
+
+    def _review_hash(self, row, context, sheet):
+        return payload_hash({'id': row['id'], 'version': row['version'],
+            'scope_hash': self._scope(row), 'context': context, 'sheet_hash': self._sheet_hash(sheet),
+            'approvals': row['approvals']})
+
+    def _eligible(self, row):
+        checks = {item['source_key']: item['checks'] for item in row['checks']}
+        return [item for item in row['rows'] if not item['blockers']
+                and _valid_email(item['email']) and len(checks.get(item['source_key'], [])) == 6
+                and all(c['status'] == 'pass' for c in checks[item['source_key']])]
+
+    def _view(self, row):
+        try:
+            context, sheet = self._campaign(row['campaign_id'])
+        except NewJourneyError:
+            context, sheet = None, self.service.campaign_sheet_view(row['campaign_id'])
+        blockers = []
+        if context != row['campaign_context']:
+            blockers.append('journey_campaign_changed')
+        if sheet.get('status') != 'complete':
+            blockers.append('journey_sheet_incomplete')
+        if self._sheet_hash(sheet) != row['sheet_hash']:
+            blockers.append('journey_sheet_changed')
+        if self.service.global_paused():
+            blockers.append('journey_global_paused')
+        if self.checker is None:
+            blockers.append('journey_checker_unavailable')
+        eligible = self._eligible(row)
+        if not eligible:
+            blockers.append('journey_no_eligible_rows')
+        if not any(step['channel'] == 'email' for step in row['steps']):
+            blockers.append('journey_email_steps_required')
+        if not row.get('sequence'):
+            blockers.append('journey_sequence_required')
+        steps = []
+        for step in row['steps']:
+            status = 'pending'
+            if step['id'] in row['approvals']:
+                try:
+                    self._authorize(row, step, eligible)
+                    status = 'approved'
+                except (NewJourneyError, ApprovalError):
+                    status = 'invalidated'
+            if status != 'approved':
+                blockers.append('journey_step_approval_required')
+            step_blockers = [b for b in blockers if b != 'journey_step_approval_required']
+            if step['channel'] == 'linkedin' and any(not lead['linkedin_url'] for lead in eligible):
+                step_blockers.append('journey_recipient_required')
+            steps.append({**step, 'approval_status': status,
+                'can_approve': not step_blockers, 'blockers': sorted(set(step_blockers))})
+        checks_by_key = {item['source_key']: item['checks'] for item in row['checks']}
+        rows = [{**item, 'checks': checks_by_key.get(item['source_key'], self._unknown()),
+                 'eligible': item['source_key'] in {lead['source_key'] for lead in eligible}}
+                for item in row['rows']]
+        return {**deepcopy(row), 'rows': rows, 'steps': steps, 'sheet': sheet,
+            'review_hash': self._review_hash(row, context, sheet),
+            'expected_version': row['version'], 'blockers': sorted(set(blockers)),
+            'counts': {'total': len(rows), 'eligible': len(eligible),
+                       'retained': len(rows) - len(eligible)},
+            'cost': {'credits': 0, 'paid_lookup_enabled': False}, 'credits': 0,
+            'enrollment_enabled': False, 'external_writes': 0, 'manual_export': True,
+            'can_export': not blockers, 'check_keys': list(CHECK_KEYS)}
+
+    @staticmethod
+    def _unknown(reason='check_not_observed'):
+        return [{'key': key, 'status': 'unknown', 'reason': reason, 'source': None}
+                for key in CHECK_KEYS]
+
+    @staticmethod
+    def _rows(raw, mode):
+        _require(isinstance(raw, list) and len(raw) <= MAX_ROWS, 'journey_rows_invalid')
+        result, keys = [], set()
+        for index, item in enumerate(raw):
+            _require(isinstance(item, Mapping), 'journey_row_invalid')
+            def value(*names):
+                v = next((item[name] for name in names if item.get(name) is not None), '')
+                _require(_text(v, 2000, empty=True, multiline=True), 'journey_row_invalid')
+                return v
+            person_id = value('apollo_person_id', 'person_id')
+            contact_id = value('apollo_contact_id')
+            if mode == 'apollo_people':
+                person_id, contact_id = value('id'), ''
+            elif mode == 'apollo_contacts':
+                contact_id = value('id')
+            source_key = (mode + ':' + (person_id if mode == 'apollo_people' else contact_id)
+                          if mode != 'csv' else 'csv:' + str(index + 1))
+            _require(source_key not in keys and (mode == 'csv' or bool(_ID.fullmatch(
+                person_id if mode == 'apollo_people' else contact_id))), 'journey_source_id_invalid')
+            keys.add(source_key)
+            address = value('email', 'email_address').strip()
+            if mode == 'apollo_people':
+                address = ''
+            profile = value('linkedin_url', 'linkedin')
+            normalized_profile = _linkedin(profile)
+            name = value('name')
+            # Do not reconstruct an obfuscated surname or infer an identity.
+            company = value('company', 'organization_name', 'company_name')
+            if not company and isinstance(item.get('organization'), Mapping):
+                company = item['organization'].get('name', '')
+                _require(_text(company, 2000, empty=True), 'journey_row_invalid')
+            variables = item.get('variables', {})
+            _require(isinstance(variables, Mapping) and len(variables) <= 30
+                and all(isinstance(k, str) and bool(_ID.fullmatch(k))
+                        and _text(v, 2000, empty=True, multiline=True) for k, v in variables.items()),
+                'journey_variables_invalid')
+            blockers = []
+            if not _valid_email(address):
+                blockers.append('email_required' if not address else 'email_invalid')
+            elif address.startswith(('=', '+', '-', '@')):
+                blockers.append('email_csv_unsafe')
+            if normalized_profile is None:
+                blockers.append('linkedin_invalid')
+            if item.get('email_unsubscribed') is True:
+                blockers.append('email_unsubscribed')
+            result.append({'source_key': source_key, 'name': name,
+                'first_name': value('first_name'), 'last_name': value('last_name'),
+                'company': company, 'email': address, 'linkedin_url': normalized_profile or profile,
+                'apollo_person_id': person_id, 'apollo_contact_id': contact_id,
+                'hubspot_id': value('hubspot_id', 'hubspot_contact_id'),
+                'variables': dict(variables), 'blockers': blockers,
+                'source_record_hash': payload_hash(dict(item))})
+        for field in ('email', 'linkedin_url'):
+            duplicates = Counter(row[field].lower() for row in result if row[field])
+            for row in result:
+                if row[field] and duplicates[row[field].lower()] > 1:
+                    row['blockers'].append('duplicate_' + field)
+        return result
+
+    @staticmethod
+    def _csv(text):
+        _require(isinstance(text, str), 'journey_csv_invalid')
+        try:
+            _require(len(text.encode('utf-8')) <= MAX_BYTES, 'journey_source_too_large')
+            text = text.removeprefix('\ufeff')
+            first = next(csv.reader(io.StringIO(text, newline=''), delimiter=';'), [])
+            delimiter = ';' if len(first) > 1 else ','
+            reader = csv.DictReader(io.StringIO(text, newline=''), delimiter=delimiter, strict=True)
+            fields = reader.fieldnames
+            _require(fields and len(fields) <= 60, 'journey_csv_headers_invalid')
+            fields = [field.strip().lower().replace(' ', '_') for field in fields]
+            _require(len(set(fields)) == len(fields) and all(fields)
+                and ('email' in fields or 'email_address' in fields), 'journey_csv_email_required')
+            reader.fieldnames = fields
+            result = []
+            for item in reader:
+                _require(None not in item and all(v is not None for v in item.values()),
+                         'journey_csv_row_invalid')
+                variables = {k[4:]: v for k, v in item.items() if k.startswith('var_')}
+                result.append({**item, 'variables': variables})
+                _require(len(result) <= MAX_ROWS, 'journey_source_too_large')
+            return result
+        except (csv.Error, UnicodeError):
+            raise NewJourneyError('journey_csv_invalid') from None
+
+    def _provider(self, method, **kwargs):
+        _require(self.apollo is not None and callable(getattr(self.apollo, method, None)),
+                 'journey_apollo_unavailable', 503)
+        try:
+            response = getattr(self.apollo, method)(**kwargs)
+        except Exception:
+            raise NewJourneyError('journey_apollo_unavailable', 503) from None
+        if isinstance(response, Mapping) and response.get('status') == 'error':
+            reason = response.get('reason')
+            if reason in {'permission_denied', 'credential_unavailable', 'credential_rejected',
+                          'disabled', 'configuration_pending', 'rate_limited', 'timeout'}:
+                raise NewJourneyError('journey_apollo_' + reason, 503)
+        _require(isinstance(response, Mapping) and response.get('status') in ('ok', 'partial')
+            and response.get('credit_cost') == 0 and isinstance(response.get('items'), list),
+            'journey_apollo_unavailable', 503)
+        return response
+
+    def source(self, ident, data, actor, expected_version):
+        self._actor(actor)
+        _require(isinstance(data, Mapping), 'journey_source_invalid')
+        mode = data.get('mode')
+        fields = {'csv': {'mode', 'csv_text'}, 'apollo_people': {'mode', 'filters', 'page'},
+                  'apollo_contacts': {'mode', 'query', 'page'}}
+        _require(isinstance(mode, str) and mode in fields and set(data) == fields[mode],
+                 'journey_source_invalid')
+        with self.repo.transaction():
+            self._running()
+            self._read(ident, expected_version)
+        if mode == 'csv':
+            raw = self._csv(data['csv_text'])
+            descriptor = {'mode': mode, 'content_hash': payload_hash({'text': data['csv_text']})}
+        else:
+            _require(type(data['page']) is int and 1 <= data['page'] <= 500,
+                     'journey_page_invalid')
+            key, method = ('filters', 'people_search') if mode == 'apollo_people' else ('query', 'contacts_search')
+            _require((isinstance(data[key], Mapping) if key == 'filters' else _text(data[key])),
+                     'journey_source_invalid')
+            if mode == 'apollo_people':
+                filters = data['filters']
+                def explicit_list(name):
+                    values = filters.get(name)
+                    return (isinstance(values, list) and bool(values)
+                            and all(_text(value, 200) for value in values))
+                _require(any(explicit_list(name) for name in
+                             ('person_locations', 'organization_locations')),
+                         'journey_geography_required')
+                _require(any(explicit_list(name) for name in
+                             ('person_titles', 'organization_num_employees_ranges'))
+                         or _text(filters.get('q_keywords')), 'journey_business_filter_required')
+            response = self._provider(method, **{key: data[key], 'page': data['page'], 'per_page': 100})
+            raw = response['items']
+            descriptor = {**deepcopy(dict(data)), 'provider_source': response.get('source'),
+                'complete': response.get('complete') is True, 'reason': response.get('reason')}
+        rows = self._rows(raw, mode)
+        _require(len(json.dumps(rows).encode('utf-8')) <= MAX_BYTES, 'journey_source_too_large')
+        with self.repo.transaction():
+            self._running()
+            row = self._read(ident, expected_version)
+            context, sheet = self._campaign(row['campaign_id'])
+            row.update(source=descriptor, rows=rows, checks=[], approvals={}, reconciliation=None,
+                       campaign_context=context, sheet_hash=self._sheet_hash(sheet))
+            return self._view(self._save(row, expected_version))
+
+    def _run_checks(self, row):
+        observed = []
+        if self.checker is not None:
+            try:
+                observed = self.checker(deepcopy(row['rows']), row['campaign_id'])
+            except Exception:
+                observed = []
+        if not isinstance(observed, list):
+            observed = []
+        by_key = {}
+        for item in observed:
+            if isinstance(item, Mapping) and isinstance(item.get('source_key'), str):
+                by_key.setdefault(item['source_key'], []).append(item)
+        result = []
+        for lead in row['rows']:
+            matches = by_key.get(lead['source_key'], [])
+            evidence = matches[0].get('checks', []) if len(matches) == 1 else []
+            if not isinstance(evidence, list):
+                evidence = []
+            normalized = self._unknown()
+            for target in normalized:
+                matches = [c for c in evidence if isinstance(c, Mapping) and c.get('key') == target['key']]
+                if len(matches) == 1:
+                    check = matches[0]
+                    if (check.get('status') in ('pass', 'blocked', 'unknown')
+                            and _text(check.get('reason'), 2000)
+                            and _text(check.get('source'), 2000)):
+                        target.update({key: check[key] for key in ('status', 'reason', 'source')})
+                        # Stable coverage/revision fingerprints are review inputs;
+                        # consultation times do not make an unchanged check stale.
+                        stable = {k: v for k, v in check.items() if k not in ('checked_at', 'observed_at')}
+                        try:
+                            encoded = json.dumps(stable, allow_nan=False)
+                            if len(encoded) > 16384:
+                                raise ValueError('evidence too large')
+                            target['evidence_hash'] = payload_hash(stable)
+                        except (TypeError, ValueError):
+                            target.update(status='unknown', reason='check_evidence_invalid', source=None)
+            result.append({'source_key': lead['source_key'], 'checks': normalized})
+        return result
+
+    def check(self, ident, actor, expected_version):
+        self._actor(actor)
+        with self.repo.transaction():
+            self._running()
+            row = self._read(ident, expected_version)
+            context, sheet = self._campaign(row['campaign_id'])
+        checks = self._run_checks(row)
+        with self.repo.transaction():
+            self._running()
+            self._read(ident, expected_version)
+            _require(self._campaign(row['campaign_id']) == (context, sheet),
+                     'journey_context_changed', 409)
+            row.update(checks=checks, approvals={}, campaign_context=context,
+                       sheet_hash=self._sheet_hash(sheet))
+            return self._view(self._save(row, expected_version))
+
+    def sequences(self, ident, query, actor, expected_version):
+        self._actor(actor)
+        _require(_text(query, empty=True), 'journey_sequence_query_invalid')
+        with self.repo.transaction():
+            self._running()
+            row = self._read(ident, expected_version)
+        response = self._provider('sequences_search', query=query, page=1, per_page=100)
+        with self.repo.transaction():
+            self._running()
+            self._read(ident, expected_version)
+        return {**deepcopy(response), 'journey_id': row['id'], 'version': row['version'],
+                'enrollment_enabled': False, 'external_writes': 0, 'credits': 0}
+
+    def _sequence(self, campaign_id, ident, query):
+        _require(isinstance(ident, str) and bool(_ID.fullmatch(ident)) and _text(query, empty=True),
+                 'journey_sequence_invalid')
+        if callable(getattr(self.apollo, 'profile', None)):
+            profile = self._provider('profile')
+            _require(profile.get('status') == 'ok' and profile.get('complete') is True,
+                     'journey_apollo_configuration_pending', 503)
+        response = self._provider('sequences_search', query=query, page=1, per_page=100)
+        matches = [item for item in response['items'] if isinstance(item, Mapping) and item.get('id') == ident]
+        _require(len(matches) == 1, 'journey_sequence_unverified', 409)
+        item, source = matches[0], response.get('source') or {}
+        account_id = source.get('account_id')
+        _require(_text(account_id) and source.get('identity_source') in _ACCOUNT_PROOFS
+            and _text(item.get('user_id')), 'journey_sequence_owner_unverified', 409)
+        from .external_email_import import SOURCES
+        known = next((account for account, _, campaign in SOURCES.values() if campaign == campaign_id), None)
+        _require(known is None or known == account_id, 'journey_apollo_account_mismatch', 409)
+        _require(item.get('archived') is False, 'journey_sequence_archived', 409)
+        activity = ('active' if item.get('active') is True else
+                    'inactive' if item.get('active') is False else 'unknown')
+        return {'apollo_sequence_id': ident, 'query': query, 'account_id': account_id,
+            'owner_id': item['user_id'], 'item': dict(item), 'activity_status': activity,
+            'source': {key: source.get(key) for key in
+                       ('provider', 'operation', 'endpoint', 'account_id', 'identity_source')}}
+
+    def revise_sequence(self, ident, steps, actor, expected_version,
+                        apollo_sequence_id=None, apollo_sequence_query=None):
+        self._actor(actor)
+        _require(isinstance(steps, list) and 1 <= len(steps) <= 20, 'journey_steps_invalid')
+        seen, orders = set(), set()
+        for step in steps:
+            _require(isinstance(step, Mapping) and set(step) == {
+                'id', 'channel', 'subject', 'content', 'order', 'interval_hours'}, 'journey_step_invalid')
+            _require(isinstance(step['id'], str) and bool(_ID.fullmatch(step['id']))
+                and step['id'] not in seen and step['channel'] in ('email', 'linkedin')
+                and _text(step['content'], 20000, multiline=True)
+                and type(step['order']) is int and 1 <= step['order'] <= 20
+                and step['order'] not in orders and type(step['interval_hours']) is int
+                and 0 <= step['interval_hours'] <= 8760, 'journey_step_invalid')
+            _require((_text(step['subject'], 998) if step['channel'] == 'email'
+                     else step['subject'] in ('', None)), 'journey_subject_invalid')
+            _require(not any('{{' in (step.get(field) or '') or '}}' in (step.get(field) or '')
+                             for field in ('subject', 'content')), 'journey_unresolved_variables')
+            _require_exact_copy(step)
+            seen.add(step['id']); orders.add(step['order'])
+        _require(orders == set(range(1, len(steps) + 1)), 'journey_step_order_invalid')
+        _require((apollo_sequence_id is None) == (apollo_sequence_query is None),
+                 'journey_sequence_pair_required')
+        with self.repo.transaction():
+            self._running()
+            row = self._read(ident, expected_version)
+        selected = (self._sequence(row['campaign_id'], apollo_sequence_id, apollo_sequence_query)
+                    if apollo_sequence_id is not None else row.get('sequence'))
+        with self.repo.transaction():
+            self._running()
+            row = self._read(ident, expected_version)
+            row.update(steps=deepcopy(sorted(steps, key=lambda step: step['order'])),
+                       sequence=selected, approvals={})
+            return self._view(self._save(row, expected_version))
+
+    def _preflight(self, ident, actor, expected_version, review_hash):
+        self._actor(actor)
+        with self.repo.transaction():
+            self._running()
+            row = self._read(ident, expected_version)
+            context, sheet = self._campaign(row['campaign_id'])
+            _require(sheet['status'] == 'complete', 'journey_sheet_incomplete', 409)
+            _require(isinstance(review_hash, str) and review_hash == self._review_hash(row, context, sheet),
+                     'journey_review_conflict', 409)
+            _require(context == row['campaign_context'], 'journey_campaign_changed', 409)
+            _require(self._sheet_hash(sheet) == row['sheet_hash'], 'journey_sheet_changed', 409)
+        checks = self._run_checks(row)
+        _require(self.checker is not None and checks == row['checks'], 'journey_checks_changed', 409)
+        _require(bool(self._eligible(row)), 'journey_no_eligible_rows', 409)
+        _require(bool(row.get('sequence')), 'journey_sequence_required', 409)
+        selected = row['sequence']
+        _require(self._sequence(row['campaign_id'], selected['apollo_sequence_id'], selected['query']) == selected,
+                 'journey_sequence_changed', 409)
+        return row, context, sheet
+
+    def _revalidate(self, row, context, sheet):
+        self._running()
+        self._read(row['id'], row['version'])
+        _require(self._campaign(row['campaign_id']) == (context, sheet),
+                 'journey_context_changed', 409)
+
+    @staticmethod
+    def _recipient_step(step, lead):
+        _require_exact_copy(step)
+        recipient = lead['email'] if step['channel'] == 'email' else lead['linkedin_url']
+        _require(bool(recipient), 'journey_recipient_required', 409)
+        return {'id': step['id'] + ':' + lead['source_key'], 'recipient': recipient,
+            **{key: step[key] for key in ('channel', 'content', 'order', 'interval_hours')},
+            **({'subject': step['subject']} if step['channel'] == 'email' else {})}
+
+    def approve_step(self, ident, step_id, actor, expected_version, review_hash):
+        row, context, sheet = self._preflight(ident, actor, expected_version, review_hash)
+        step = next((s for s in row['steps'] if s['id'] == step_id), None)
+        _require(step is not None, 'journey_step_missing', 404)
+        targets = [self._recipient_step(step, lead) for lead in self._eligible(row)]
+        with self.repo.transaction():
+            self._revalidate(row, context, sheet)
+            now = self._now()
+            try:
+                pack = self.approval_service.approve_pack(row['id'], row['version'], targets,
+                    actor, now + timedelta(hours=24), now)
+            except ApprovalError:
+                raise NewJourneyError('journey_approval_denied', 409) from None
+            payload = asdict(pack)
+            payload.update(approved_at=pack.approved_at.isoformat(), expires_at=pack.expires_at.isoformat())
+            row['approvals'][step_id] = {'scope_hash': self._scope(row), 'pack': payload}
+            return self._view(self._save(row, expected_version))
+
+    def _authorize(self, row, step, eligible):
+        record = row['approvals'].get(step['id'])
+        _require(isinstance(record, Mapping) and record.get('scope_hash') == self._scope(row),
+                 'journey_approval_scope_changed', 409)
+        try:
+            data = dict(record['pack'])
+            data['approved_at'] = datetime.fromisoformat(data['approved_at'])
+            data['expires_at'] = datetime.fromisoformat(data['expires_at'])
+            data['step_hashes'] = tuple(tuple(item) for item in data['step_hashes'])
+            data['invalidated_step_ids'] = tuple(data['invalidated_step_ids'])
+            pack = ApprovalPack(**data)
+            targets = [self._recipient_step(step, lead) for lead in eligible]
+            _require(pack.actor == 'ygor' and pack.cadence_id == row['id']
+                and pack.approved_at <= self._now() and set(pack.step_ids) == {s['id'] for s in targets},
+                'journey_approval_scope_changed', 409)
+            for target in targets:
+                self.approval_service.authorize_step(target, pack, self._now())
+        except (KeyError, ValueError, TypeError, ApprovalError):
+            raise NewJourneyError('journey_approval_invalid', 409) from None
+
+    def export(self, ident, actor, expected_version, review_hash):
+        row, context, sheet = self._preflight(ident, actor, expected_version, review_hash)
+        with self.repo.transaction():
+            self._revalidate(row, context, sheet)
+            eligible = self._eligible(row)
+            emails = [s for s in row['steps'] if s['channel'] == 'email']
+            _require(bool(emails), 'journey_email_steps_required', 409)
+            for step in row['steps']:
+                self._authorize(row, step, eligible)
+            columns = ['name', 'first_name', 'last_name', 'company', 'email', 'linkedin_url',
+                'apollo_person_id', 'apollo_contact_id', 'hubspot_id', 'source_key',
+                'campaign_id', 'journey_id', 'scope_hash', 'apollo_sequence_id']
+            variables = sorted({key for lead in eligible for key in lead['variables']})
+            columns += ['var_' + key for key in variables]
+            for step in row['steps']:
+                columns += [step['id'] + '_' + field for field in
+                            ('channel', 'subject', 'content', 'order', 'interval_hours')]
+            exact_columns = {'email', 'linkedin_url'} | {
+                step['id'] + '_' + field for step in row['steps'] for field in ('subject', 'content')}
+            stream = io.StringIO(newline='')
+            writer = csv.DictWriter(stream, fieldnames=columns, lineterminator='\r\n')
+            writer.writerow({key: _safe_cell(key) for key in columns})
+            for lead in eligible:
+                values = {key: lead.get(key, '') for key in columns}
+                values.update(campaign_id=row['campaign_id'], journey_id=ident, scope_hash=self._scope(row))
+                values['apollo_sequence_id'] = row['sequence']['apollo_sequence_id']
+                values.update({'var_' + key: lead['variables'].get(key, '') for key in variables})
+                for step in row['steps']:
+                    values.update({step['id'] + '_' + field: step[field] for field in
+                                   ('channel', 'subject', 'content', 'order', 'interval_hours')})
+                writer.writerow({key: value if key in exact_columns else _safe_cell(value)
+                                 for key, value in values.items()})
+            return {'filename': ident + '.csv', 'csv_text': '\ufeff' + stream.getvalue(),
+                'rows': len(eligible), 'credits': 0, 'external_writes': 0,
+                'enrollment_enabled': False, 'manual_export': True, 'version': row['version'],
+                'review_hash': review_hash, 'scope_hash': self._scope(row),
+                'csv_formula_escaped': True, 'reconciliation_required': True}
+
+    def reconcile(self, ident, actor, expected_version):
+        """Bounded observation after manual enrollment; never registers contacts."""
+        self._actor(actor)
+        with self.repo.transaction():
+            self._running()
+            row = self._read(ident, expected_version)
+            context, sheet = self._campaign(row['campaign_id'])
+        selected = row.get('sequence') or {}
+        sequence_id, account_id = selected.get('apollo_sequence_id'), selected.get('account_id')
+        configured = (isinstance(sequence_id, str) and bool(_ID.fullmatch(sequence_id))
+                      and _text(account_id))
+        observations, requests = [], 0
+        for lead in row['rows']:
+            observation = {'source_key': lead['source_key'], 'status': 'unknown',
+                'reason': 'configuration_pending' if not configured else 'provider_unavailable'}
+            if configured and self.apollo is not None and _valid_email(lead['email']):
+                observation['reason'] = 'request_budget_exhausted'
+                if requests < 10:
+                    requests += 1
+                    try:
+                        response = self._provider('contacts_search', query=lead['email'], page=1, per_page=100)
+                        provider_source = response.get('source') or {}
+                        _require(provider_source.get('account_id') == account_id
+                            and provider_source.get('identity_source') in _ACCOUNT_PROOFS,
+                            'journey_apollo_account_mismatch', 409)
+                        contacts = [item for item in response['items'] if isinstance(item, Mapping)
+                            and str(item.get('email', '')).lower() == lead['email'].lower()
+                            and (not lead['apollo_contact_id'] or item.get('id') == lead['apollo_contact_id'])]
+                        observation['reason'] = 'membership_unverified'
+                        if len(contacts) == 1:
+                            statuses = contacts[0].get('contact_campaign_statuses')
+                            if (isinstance(statuses, list)
+                                    and contacts[0].get('contact_campaign_statuses_complete') is True
+                                    and response.get('complete') is True):
+                                matching = [s for s in statuses if isinstance(s, Mapping)
+                                    and s.get('emailer_campaign_id') == sequence_id]
+                                if len(matching) == 1:
+                                    membership = matching[0]
+                                    observation.update(sequence_id=sequence_id, contact_id=contacts[0].get('id'),
+                                        provider_state=membership.get('state'), provider_status=membership.get('status'))
+                                    # Literal recognized active states only. Missing or
+                                    # conflicting semantics remain unknown.
+                                    signals = [membership[key] for key in ('state', 'status') if key in membership]
+                                    if signals and all(s in ('active', 'in_progress') for s in signals):
+                                        observation.update(status='enrolled', reason='sequence_membership_observed')
+                    except NewJourneyError as exc:
+                        observation['reason'] = exc.code
+            observations.append(observation)
+        reconciliation = {'observed_at': self._now().isoformat(), 'current': False,
+            'status': 'observed' if configured and self.apollo is not None else 'configuration_pending',
+            'sequence_id': sequence_id if configured else None, 'request_count': requests,
+            'request_budget': 10, 'rows': observations, 'external_writes': 0, 'credits': 0}
+        with self.repo.transaction():
+            self._revalidate(row, context, sheet)
+            row['reconciliation'] = reconciliation
+            return self._view(self._save(row, expected_version))

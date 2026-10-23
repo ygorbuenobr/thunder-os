@@ -33,7 +33,7 @@ getNode('cad-read-campaigns').querySelectorAll = selector => {
   assert.equal(selector, '[data-cad-sheet]');
   return [target];
 };
-const calls = [], timers = [];
+const calls = [], timers = [], newJourneyRoutes = [];
 let response = envelope([record]);
 const cadenceSnapshot = {campaigns: [
   {id: 'SYNTHETIC', tasks: [{title: 'Tarefa preservada', outcome: 'sent_with_receipt', receipt: {id: 'receipt:synthetic'}}]},
@@ -41,7 +41,7 @@ const cadenceSnapshot = {campaigns: [
 ], coverage: {complete: false}, today: {}};
 const ctx = {
   // This harness isolates Campaigns; Jornada is covered by its browser harness.
-  journeyMode: 'legacy', journeyTheme() {},
+  journeyMode: 'legacy', journeyTheme() {}, njRoute(route) { newJourneyRoutes.push(route); },
   $: getNode,
   document: {hidden: false, body: {dataset: {aba: 'cadencias'}}},
   apiServidor: async (...args) => {
@@ -174,6 +174,7 @@ const noWrites = markup => assert.doesNotMatch(markup, /<(?:button|input|textare
   await refreshing;
   response = envelope([record]);
   ctx.mostrarAba('cadencias', {registrar: false});
+  assert.equal(newJourneyRoutes.at(-1), null, 'Campaigns must leave the new-journey view');
   await new Promise(resolve => setImmediate(resolve));
   const poll = timers.find(timer => timer.delay === 60000);
   assert(poll, 'existing Cadências timer must poll at 60s');

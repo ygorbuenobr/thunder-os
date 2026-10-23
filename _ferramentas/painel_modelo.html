@@ -375,6 +375,36 @@ body[data-aba="jornada"] h1,body[data-journey-ready="true"][data-aba="contas"] h
 @media(max-width:860px){.journey-stages{grid-template-columns:repeat(4,minmax(0,1fr))}.journey-bottom{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:560px){.journey-account-header{grid-template-columns:minmax(0,1fr)}.journey-account-header>aside{border-inline-start:0;border-top:1px solid var(--line);padding-inline-start:0;padding-top:16px}}
 @media(max-width:560px){body[data-aba="jornada"] h1,body[data-journey-ready="true"][data-aba="contas"] h1{font-size:28px}.journey-metric strong{font-size:36px}.journey-stages{grid-template-columns:repeat(2,minmax(0,1fr))}.journey-row{grid-template-columns:minmax(0,1fr)}.journey-row .btn{justify-self:start}.journey-tools,.journey-field{width:100%}.journey-dossier{grid-template-columns:minmax(0,1fr)}.journey-drawer{padding:16px}.journey-drawer .conta-topo{top:-16px}.journey-head{align-items:start}}
+/* Nova jornada: locked five-step composition, using the existing panel tokens. */
+.new-journey{display:grid;gap:20px;min-width:0}
+.new-journey h2{font-size:26px}.new-journey h3{font-size:18px}
+.new-journey .nj-steps{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}
+.nj-steps li{min-width:0}.nj-steps button{display:grid;align-content:center;gap:4px;width:100%;min-height:76px;min-width:0;padding:12px;text-align:left;font:600 14px var(--body);color:var(--text);background:var(--surface);border:1px solid var(--line);border-radius:8px;cursor:pointer;overflow-wrap:anywhere}
+.nj-steps button[aria-current="step"]{border-color:var(--mostarda);background:var(--surface2);box-shadow:inset 0 0 0 1px var(--mostarda)}
+.nj-steps small{font:12px var(--mono);color:var(--muted)}
+.new-journey section{margin:0;padding-block:20px;border-block:1px solid var(--line);min-width:0}
+.nj-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px 24px;min-width:0}
+.nj-grid>*{min-width:0}.nj-fields{display:grid;gap:14px}.nj-fields label{display:grid;gap:6px;margin:0;font-size:13px;font-weight:500;color:var(--muted)}
+.new-journey input,.new-journey select,.new-journey textarea{width:100%;min-width:0;background:var(--surface2);color:var(--text);border-color:var(--muted);border-radius:6px;font:14px/1.5 var(--body)}
+.new-journey textarea{min-height:140px;resize:vertical;white-space:pre-wrap}.new-journey textarea[data-nj-field="content"]{min-height:260px}
+.new-journey input[type="radio"]{width:18px;min-height:18px;accent-color:var(--mostarda)}
+.nj-sources{border:0;padding:0;margin:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.nj-sources legend{padding:0 0 12px;font-weight:600}.nj-sources label{display:flex;align-items:center;gap:8px;min-width:0;min-height:64px;padding:12px;border:1px solid var(--line);border-radius:8px;font-size:14px;cursor:pointer}
+.nj-sources label:has(:checked){border-color:var(--mostarda);background:var(--surface2)}
+.nj-cost{display:flex;flex-wrap:wrap;gap:12px 28px;padding-block:16px;border-block:1px solid var(--line)}
+.nj-cost>div{flex:1 1 180px;min-width:0}.nj-cost dt{font-size:12px;color:var(--muted)}.nj-cost dd{margin:4px 0 0;font:600 16px var(--body)}
+.nj-sheet{margin:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 24px}.nj-sheet>div{min-width:0;padding:16px 0;border-bottom:1px solid var(--line)}
+.nj-sheet dt{font-size:13px;color:var(--mostarda)}.nj-sheet dd{margin:6px 0;white-space:pre-wrap;overflow-wrap:anywhere;font-size:14px}.nj-sheet small{display:block;color:var(--muted);font:12px/1.6 var(--mono);overflow-wrap:anywhere}
+.nj-actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px}.nj-actions .btn,.new-journey>.journey-head .btn{white-space:normal;max-width:100%;height:auto;line-height:1.5;min-height:44px}
+.nj-bottom{display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px}.nj-step-editor{padding:20px 0;border-bottom:1px solid var(--line);display:grid;gap:14px;min-width:0}
+.nj-step-editor header{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:12px}.nj-step-editor h4{font-size:16px}
+.new-journey .nj-warning{border-inline-start:3px solid var(--mostarda);padding:8px 14px;color:var(--text)}
+.new-journey .btn:disabled{opacity:1;color:var(--muted);background:var(--surface2);border-style:dashed;cursor:default}
+body:has(#new-journey:not([hidden])) #hoje-pedido{display:none}
+.nj-state{color:var(--roxo);font-size:13px}.nj-record{padding:14px 0;border-bottom:1px solid var(--line);min-width:0}.nj-record p,.nj-record li{white-space:pre-wrap;overflow-wrap:anywhere}.nj-record ul{padding-inline-start:20px}
+.nj-manual{border-inline-start:2px solid var(--mostarda);padding-inline-start:20px;display:grid;gap:10px;align-content:start}.nj-manual p{font-size:14px}
+@media(max-width:700px){.nj-steps{grid-template-columns:repeat(3,minmax(0,1fr))!important}.nj-grid,.nj-sheet,.nj-sources{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:380px){.nj-steps{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
 </style>
 
 <header class="topo">
@@ -392,9 +422,20 @@ body[data-aba="jornada"] h1,body[data-journey-ready="true"][data-aba="contas"] h
 </nav>
 
 <main class="journey" id="sec-jornada" data-painel="jornada" hidden>
-  <header class="journey-head"><h2>Jornada</h2><div class="journey-tools"><label class="journey-field" for="journey-campaign">Campanha<select id="journey-campaign"><option value="">Todas · BR</option></select></label><button type="button" class="btn" id="journey-refresh">Atualizar</button></div></header>
+  <div id="journey-overview">
+  <header class="journey-head"><h2>Jornada</h2><div class="journey-tools"><button type="button" class="btn pri" id="journey-new">+ Nova jornada</button><label class="journey-field" for="journey-campaign">Campanha<select id="journey-campaign"><option value="">Todas · BR</option></select></label><button type="button" class="btn" id="journey-refresh">Atualizar</button></div></header>
   <p class="msg" id="journey-status" role="status" aria-live="polite">Consultando jornada…</p>
   <div id="journey-content" aria-busy="true"><p class="journey-loading">Carregando indicadores e etapas…</p></div>
+  </div>
+  <div class="new-journey" id="new-journey" hidden aria-labelledby="nj-title">
+    <header class="journey-head"><h2 id="nj-title" tabindex="-1">Nova jornada</h2><button class="btn" type="button" id="nj-back">← Voltar para a Jornada</button></header>
+    <ol class="nj-steps" aria-label="Passos da nova jornada" id="nj-steps"></ol>
+    <p class="nj-state" id="nj-state"></p>
+    <p class="msg" id="nj-status" role="status" aria-live="polite"></p>
+    <div class="nj-actions"><button class="btn" type="button" id="nj-reload" hidden>Recarregar rascunho</button><button class="btn" type="button" id="nj-retry" hidden>Tentar novamente</button></div>
+    <div id="nj-body" aria-busy="false"></div>
+    <nav class="nj-bottom" aria-label="Navegar pelos passos"><button class="btn" type="button" id="nj-prev">Voltar</button><button class="btn pri" type="button" id="nj-next">Continuar</button></nav>
+  </div>
 </main>
 <p class="msg" id="journey-legacy-notice" data-painel="hoje" role="status" hidden>Jornada indisponível neste servidor. Exibindo a consulta Hoje anterior.</p>
 <main class="journey" id="journey-accounts" data-painel="contas" hidden>
@@ -2336,6 +2377,251 @@ $('journey-accounts').addEventListener('keydown',event=>{
 });
 setInterval(()=>{if(!document.hidden&&document.body.dataset.aba==='jornada')carregarJourney(true);},60000);
 /* JOURNEY_END */
+/* NEW_JOURNEY_BEGIN: manual preparation only; no dispatch/provider write routes. */
+const njBase='/api/os/v1/new-journey';
+const njLabels=['Ficha','Fonte','Checagem','Sequência','Ativar manual'];
+const njCheckLabels={icp:'ICP',exclusions:'Exclusões',client:'Cliente',open_deal:'Negócio aberto',refusal:'Recusa anterior',membership:'Uma campanha por pessoa'};
+const njStatusLabels={pass:'Verificado',blocked:'Barrado',unknown:'Desconhecido · retido'};
+const njReasonLabels={
+  identity_unlinked:'A identidade desta pessoa ainda não foi vinculada às fontes canônicas.',identity_ambiguous:'Há mais de uma identidade possível. Revise o vínculo desta pessoa.',
+  four_provider_membership_coverage_unavailable:'Não foi possível conferir a participação nas quatro plataformas.',structured_account_icp_proof_unavailable:'Falta prova estruturada de que esta conta atende ao ICP.',
+  canonical_refusal_all_channels:'Há uma recusa registrada para esta pessoa. Todos os canais permanecem bloqueados.',exclusions_coverage_unavailable:'A cobertura das exclusões está incompleta.',
+  client_coverage_unavailable:'A condição de cliente ainda não foi confirmada.',account_open_deal_coverage_unavailable:'Não foi possível confirmar se há negócio aberto para esta conta.',
+  cross_channel_reply_coverage_unavailable:'O histórico de respostas entre canais está incompleto.',hubspot_membership_property_missing:'Faltam os campos de campanha ou executor no HubSpot.',
+  protected_client_literal_requires_review:'O nome sugere um cliente protegido. Revise a identidade antes de prosseguir.',loa_approval_required:'Esta conta exige revisão e aprovação específica.',
+  fixed_exclusion_literal:'Foi encontrada uma correspondência com uma exclusão fixa.',hubspot_current_customer:'Cliente atual confirmado no HubSpot.',
+  hubspot_email_optout_person_requires_review:'Há recusa de e-mail no HubSpot. Revise a pessoa antes de qualquer contato.',hubspot_disqualified_contact:'Contato desqualificado no HubSpot.',
+  hubspot_current_campaign_membership:'Esta pessoa já possui campanha ativa no HubSpot.',hubspot_open_deal:'Há um negócio aberto no HubSpot.',
+  human_reply_requires_conversation_review:'Há resposta humana. A conversa precisa de revisão.',canonical_cadence_paused_reply:'A cadência está pausada por resposta.',
+  existing_canonical_cadence:'Esta pessoa já possui uma cadência canônica em andamento ou revisão.',canonical_research_stale:'A pesquisa canônica está desatualizada.',
+  current_campaign_sheet_incomplete:'A ficha atual da campanha está incompleta.',current_campaign_sheet_unavailable:'A ficha atual da campanha não pôde ser consultada.',
+  check_not_observed:'Esta checagem ainda não foi observada.',email_required:'Falta um endereço de e-mail revelado.',email_invalid:'O endereço de e-mail não é válido.',
+  duplicate_email:'O e-mail se repete nesta seleção.',duplicate_linkedin_url:'O perfil LinkedIn se repete nesta seleção.',linkedin_invalid:'O endereço do perfil LinkedIn não é válido.'
+};
+const njReason=value=>njReasonLabels[value]||value||'Sem prova disponível nesta leitura.';
+const nj={catalog:null,draft:null,id:null,step:1,busy:false,loading:false,stale:false,error:'',message:'',sequence:null,sequenceDirty:false,sourceDirty:false,
+  name:'',campaign:'',mode:'csv',csv:'',titles:'',locations:'',companyLocations:'',sizes:'',keywords:'',query:'',page:1,request:0,createUncertain:false,
+  sequences:[],sequenceId:'',sequenceQuery:'',sequenceResultsQuery:'',exported:null};
+const njRows=value=>Array.isArray(value)?value:[];
+const njText=value=>typeof value==='string'?value:'';
+const njDirty=()=>nj.sequenceDirty||nj.sourceDirty;
+const njPath=()=>njBase+'/'+encodeURIComponent(nj.id);
+function njRoutePath(step=nj.step){return 'jornada/nova'+(nj.id?'/'+encodeURIComponent(nj.id):'')+'/'+step;}
+function njGo(step){mostrarAba(njRoutePath(Math.max(1,Math.min(5,step))));$('nj-heading')?.focus();}
+function njDraft(value){
+  if(!value||typeof value.id!=='string'||!value.id||!Number.isInteger(value.version)||value.version<1||typeof value.review_hash!=='string'||!Array.isArray(value.rows)||!Array.isArray(value.steps)||nj.id&&value.id!==nj.id)throw Error('Rascunho inválido. Recarregue para conferir o estado salvo.');
+  nj.id=value.id;nj.draft=value;nj.stale=false;
+  if(!nj.sequenceDirty){
+    nj.sequence=value.steps.map(step=>({id:step.id,channel:step.channel,subject:step.subject??'',content:step.content??'',order:step.order,interval_hours:step.interval_hours}));
+    nj.sequenceId=value.sequence?.apollo_sequence_id||'';nj.sequenceQuery=value.sequence?.query||'';
+  }
+}
+function njSheet(){return nj.draft?.sheet||njRows(nj.catalog?.campaigns).find(c=>c.id===nj.campaign)?.sheet;}
+function njBlockers(){return njRows(nj.draft?.blockers).map(value=>typeof value==='string'?value:value?.reason).filter(Boolean);}
+function njCanApprove(id){return !!(nj.draft&&njRows(nj.draft.steps).some(s=>(!id||s.id===id)&&s.can_approve===true)&&njSheet()?.status==='complete'&&!njDirty()&&!nj.stale&&!nj.busy);}
+function njCanExport(){return !!(nj.draft&&nj.draft.can_export===true&&!njDirty()&&!nj.stale&&!nj.busy);}
+function njApproved(id){return njRows(nj.draft?.steps).some(s=>s.id===id&&s.approval_status==='approved');}
+function njField(label,id,value,attrs=''){return `<label for="${id}">${label}<input id="${id}" value="${esc(value)}" ${attrs}></label>`;}
+function njCosts(){
+  const source=nj.draft?.source,observed=nj.draft?nj.draft.rows.length:null;
+  return `<dl class="nj-cost"><div><dt>Contatos nesta seleção</dt><dd>${observed===null?'Não consultado':esc(observed)}</dd></div><div><dt>Créditos nesta operação OS</dt><dd>0 · leitura / arquivo local</dd></div><div><dt>Custo da exportação original no Apollo</dt><dd>Desconhecido</dd></div></dl>${source&&source.mode!=='csv'?`<p class="msg">${source.complete===true?'Cobertura completa da busca retornada.':'Cobertura parcial ou desconhecida da busca.'}${source.reason?' '+esc(source.reason):''}</p>`:''}`;
+}
+function njSheetHTML(){
+  const sheet=njSheet();
+  const provenance=source=>`<p class="msg">${esc(source.path||'Fonte não informada')} · ${esc(source.status||'unknown')}</p><small>Seção: ${esc(source.section||'não informada pelo servidor')}</small><small>SHA-256 esperado: ${esc(source.expected_sha256||'desconhecido')}</small><small>SHA-256 observado: ${esc(source.observed_sha256||'desconhecido')}</small><small>Atualizada em: ${esc(source.source_updated_at||'data desconhecida')}</small>`;
+  return `<p class="${sheet?.status==='complete'?'msg':'nj-warning'}">${sheet?.status==='complete'?'Ficha completa nesta leitura.':'Ficha incompleta ou desconhecida. A busca continua disponível; a aprovação fica bloqueada.'}</p><p class="msg">Versão da ficha: ${esc(sheet?.version||'desconhecida')}</p><dl class="nj-sheet">${njRows(sheet?.fields).map(field=>`<div><dt>${esc(field.label||field.key)}</dt><dd>${esc(field.content||'Conteúdo não disponível.')}</dd>${provenance(field)}${njRows(field.sources).length?`<details><summary>${field.sources.length} fontes deste campo</summary>${field.sources.map(provenance).join('')}</details>`:''}</div>`).join('')||'<div><dt>Contexto</dt><dd>Sem ficha verificável nesta leitura.</dd></div>'}</dl>`;
+}
+function njRenderSource(){
+  const types=[['csv','Importar CSV do Apollo'],['apollo_people','Buscar pessoas no Apollo'],['apollo_contacts','Buscar contatos salvos']];
+  let fields='';
+  if(nj.mode==='csv')fields=`<label for="nj-file">Arquivo CSV (até 100 KB / 200 contatos)<input type="file" id="nj-file" accept=".csv,text/csv"></label><label for="nj-csv">Conteúdo CSV<textarea id="nj-csv" spellcheck="false" maxlength="102400">${esc(nj.csv)}</textarea></label><p class="msg" id="nj-csv-preview"></p><button class="btn pri" type="submit">Importar lista no rascunho</button>`;
+  else if(nj.mode==='apollo_people')fields=`<div class="nj-grid">${njField('Cargos (separados por ;)','nj-titles',nj.titles,'maxlength="2000"')}${njField('Localização da pessoa (separada por ;)','nj-locations',nj.locations,'maxlength="2000"')}${njField('Localização da empresa (separada por ;)','nj-company-locations',nj.companyLocations,'maxlength="2000"')}${njField('Faixas de funcionários (mínimo,máximo; separadas por ;)','nj-sizes',nj.sizes,'placeholder="11,50;51,200" maxlength="500"')}${njField('Palavras-chave','nj-keywords',nj.keywords,'maxlength="500"')}${njField('Página','nj-page',nj.page,'type="number" min="1" max="500" step="1" required')}</div><p class="msg">Use os filtros que você confirmou. A busca gratuita de pessoas não revela e-mail nem telefone.</p><button class="btn pri" type="submit">Buscar pessoas · 0 créditos</button>`;
+  else fields=`${njField('Busca de contatos salvos','nj-query',nj.query,'maxlength="500" required')}${njField('Página','nj-page',nj.page,'type="number" min="1" max="500" step="1" required')}<button class="btn pri" type="submit">Buscar contatos salvos · 0 créditos</button>`;
+  return `<p class="msg">A importação substitui a seleção do rascunho e exige novas checagens e aprovações. Nenhum contato é inscrito no Apollo.</p><fieldset class="nj-sources"><legend>De onde vêm os leads</legend>${types.map(([id,label])=>`<label><input type="radio" name="nj-source" value="${id}" ${nj.mode===id?'checked':''}>${label}</label>`).join('')}</fieldset>${njCosts()}<form id="nj-source-form" class="nj-fields">${fields}</form><p class="msg">Vagas abertas: coletor desligado. Engajadores de posts: fonte indisponível.</p>${nj.draft?.rows.length?`<p class="msg">${esc(nj.draft.rows.length)} registros retornados pelo servidor. A checagem determina quais ficam retidos.</p>`:'<p class="vazio">Nenhum contato nesta seleção.</p>'}`;
+}
+function njRenderChecks(){
+  const rows=njRows(nj.draft?.rows),checks=njRows(nj.draft?.checks);
+  return `<p>Cada contato precisa de prova para ICP, exclusões, cliente, negócio aberto, recusa e campanha única. Estado desconhecido permanece retido.</p><div class="nj-actions"><button class="btn pri" type="button" data-nj-action="check" ${!rows.length||njDirty()||nj.stale?'disabled':''}>Conferir seleção</button></div>${rows.map(row=>{
+    const result=checks.find(c=>c.source_key===row.source_key),list=njRows(result?.checks||row.checks);
+    const primary=list.find(c=>c.status==='blocked')||list.find(c=>c.status!=='pass');
+    const reason=njRows(row.blockers)[0]||primary?.reason;
+    return `<article class="nj-record"><header class="journey-row-head"><div><h4>${esc(row.name||[row.first_name,row.last_name].filter(Boolean).join(' ')||row.email||row.source_key||'Identidade não informada')}</h4><p class="msg">${esc(row.company||row.organization_name||'Empresa não informada')} · ${esc(row.email||'E-mail não revelado')}</p></div><span class="nj-state">${row.eligible===true?'Liberado pelas checagens do servidor':'Retido'}</span></header><p>${esc(reason?njReason(reason):row.eligible===true?'As seis checagens foram confirmadas pelo servidor.':'Sem prova disponível nesta leitura.')}</p><details><summary>Ver checagens e fontes</summary><ul>${Object.entries(njCheckLabels).map(([key,label])=>{const c=list.find(c=>c.key===key);return `<li><b>${label}: ${esc(njStatusLabels[c?.status]||njStatusLabels.unknown)}</b><p>${esc(njReason(c?.reason))}</p>${c?.source?`<p class="msg">Fonte: ${esc(typeof c.source==='string'?c.source:JSON.stringify(c.source))}</p>`:''}${c?.proof_path?`<p class="msg">${esc(c.proof_path)}</p>`:''}${c?.checked_at||c?.date?`<p class="msg">Conferida em: ${esc(c.checked_at||c.date)}</p>`:''}${c?.coverage?`<p class="msg">Cobertura: ${esc(JSON.stringify(c.coverage))}</p>`:''}</li>`;}).join('')}</ul></details></article>`;
+  }).join('')||'<p class="vazio">Importe uma lista ou busque contatos para iniciar a checagem.</p>'}`;
+}
+function njRenderSequence(){
+  const options=nj.sequences,selected=options.some(s=>s.id===nj.sequenceId);
+  return `<p>A aprovação libera somente o texto exato para uso manual no Apollo. O Thunder OS não envia nem inscreve contatos.</p><div class="nj-fields"><div class="nj-grid">${njField('Nome da sequência no Apollo','nj-sequence-query',nj.sequenceQuery,'maxlength="500"')}<label for="nj-sequence-id">Sequência retornada pelo Apollo<select id="nj-sequence-id"><option value="">Selecione após consultar</option>${options.map(s=>`<option value="${esc(s.id)}" ${s.id===nj.sequenceId?'selected':''}>${esc(s.name||s.id)}</option>`).join('')}${nj.sequenceId&&!selected?`<option selected value="${esc(nj.sequenceId)}">ID salvo: ${esc(nj.sequenceId)}</option>`:''}</select></label></div><div class="nj-actions"><button class="btn" type="button" data-nj-action="sequences">Consultar sequências · 0 créditos</button></div><p class="msg">${nj.sequenceId?'Sequência selecionada: '+esc(nj.sequenceId):'Nenhuma sequência selecionada. Sem ID verificado, a exportação fica bloqueada.'}</p></div><div class="nj-actions"><button class="btn" type="button" data-nj-action="add-step">+ Adicionar passo</button><button class="btn pri" type="button" data-nj-action="save-sequence">Salvar sequência</button></div><p class="nj-warning" id="nj-sequence-status"></p>${njRows(nj.sequence).map((step,index)=>`<article class="nj-step-editor" data-nj-index="${index}"><header><h4>Passo ${index+1}</h4><button class="btn" type="button" data-nj-remove="${index}" aria-label="Remover passo ${index+1}">Remover</button></header><div class="nj-fields"><div class="nj-grid"><label for="nj-channel-${index}">Canal<select id="nj-channel-${index}" data-nj-field="channel"><option value="email" ${step.channel==='email'?'selected':''}>E-mail</option><option value="linkedin" ${step.channel==='linkedin'?'selected':''}>LinkedIn manual</option></select></label><label for="nj-interval-${index}">Intervalo em horas<input type="number" id="nj-interval-${index}" data-nj-field="interval_hours" min="0" max="8760" step="1" value="${esc(step.interval_hours)}"></label></div><label for="nj-subject-${index}" ${step.channel==='email'?'':'hidden'}>Assunto<input id="nj-subject-${index}" data-nj-field="subject" maxlength="998" value="${esc(step.subject)}"></label><label for="nj-content-${index}">Texto integral<textarea id="nj-content-${index}" data-nj-field="content" maxlength="20000">${esc(step.content)}</textarea></label></div><div class="nj-actions"><span class="nj-state" data-nj-approval-state="${index}"></span><button class="btn" type="button" data-nj-approve="${index}" disabled>Aprovar texto exato para Apollo manual</button></div></article>`).join('')||'<p class="vazio">Nenhum passo salvo. Adicione o texto original para revisão.</p>'}`;
+}
+function njRenderManual(){
+  const d=nj.draft,r=d?.reconciliation,observed=njRows(r?.rows).filter(row=>row.status==='enrolled');
+  const enrollment=!r?'Inscrição não observada.':!r.sequence_id?'Desconhecido · sequência Apollo não configurada.':observed.length?`${observed.length} inscrições observadas pelo servidor; isso não confirma envio.`:'Nenhuma inscrição confirmada nesta leitura.';
+  return `${njCosts()}<div class="nj-grid"><div class="nj-manual"><h3>Inscrição manual no Apollo</h3><p>O arquivo contém apenas os contatos liberados pelas checagens e pelos textos aprovados. A inscrição na sequência é feita por você dentro do Apollo.</p>${nj.exported?`<p class="nj-state">Arquivo exportado nesta sessão: ${esc(nj.exported.filename)} · ${esc(nj.exported.rows)} contatos. Inscrição ainda precisa ser conferida.</p>`:''}<p class="nj-warning" id="nj-export-reason"></p><button class="btn pri" type="button" data-nj-action="export" disabled>Baixar lista aprovada · 0 créditos OS</button><button class="btn" type="button" data-nj-action="reconcile" ${!d||njDirty()||nj.stale?'disabled':''}>Conferir inscrição no Apollo</button><p id="nj-enrollment">${esc(enrollment)}</p>${r?`<p class="msg">${esc(r.observed_at||'Data não informada')} · Sequência: ${esc(r.sequence_id||'não configurada')}</p>${njRows(r.rows).map(row=>`<p class="msg">${esc(row.source_key)} · ${row.status==='enrolled'?'Inscrição observada':'Desconhecido · retido'} · ${esc(row.reason||'Sem prova nesta leitura.')}</p>`).join('')}`:''}</div><div><h3>Inscrição automática: OFF</h3><p class="msg">Desligada nesta jornada.</p><p class="msg">Aprovar texto e baixar arquivo não executam envios, pausas ou escrita no HubSpot.</p></div></div>`;
+}
+function njGuards(){
+  const d=nj.draft,dirty=njDirty();
+  $('nj-state').textContent=!d?'Rascunho ainda não criado.':`${d.name} · versão ${d.version} · ${dirty?'Alterações locais não salvas':nj.stale?'Estado salvo precisa ser conferido':'Rascunho salvo no OS'}`;
+  $('nj-status').textContent=nj.error||nj.message||'';$('nj-status').className=nj.error?'msg erro':'msg';
+  $('nj-reload').hidden=!nj.id;$('nj-reload').disabled=nj.busy;
+  $('nj-retry').hidden=!nj.error||!!nj.id;$('nj-retry').disabled=nj.busy;
+  $('nj-body').setAttribute('aria-busy',String(nj.busy));
+  $('nj-body').querySelectorAll('input,textarea,select,button').forEach(el=>{if(nj.busy){if(!el.disabled)el.dataset.njBusyDisabled='true';el.disabled=true;}else if(el.dataset.njBusyDisabled){el.disabled=false;delete el.dataset.njBusyDisabled;}});
+  const blockerLabels={journey_sheet_incomplete:'Ficha incompleta',journey_sheet_changed:'A ficha mudou; refaça a checagem',journey_campaign_changed:'A campanha mudou; refaça a checagem',journey_global_paused:'Controle global pausado',journey_checker_unavailable:'Checador indisponível; contatos retidos',journey_no_eligible_rows:'Nenhum contato liberado pelas checagens',journey_email_steps_required:'Adicione pelo menos um passo de e-mail',journey_step_approval_required:'Aprove cada texto salvo',journey_sequence_required:'Selecione e salve uma sequência real do Apollo'};
+  const reason=dirty?'Há alterações locais. Salve a fonte e a sequência antes de aprovar ou exportar.':nj.stale?'Recarregue o rascunho para conferir a versão salva.':njSheet()?.status!=='complete'?'Ficha incompleta ou desconhecida. Aprovação bloqueada.':njBlockers().map(b=>blockerLabels[b]||b).join(' · ')||'Aguarde a liberação das checagens e aprove os textos salvos.';
+  if($('nj-sequence-status'))$('nj-sequence-status').textContent=njCanApprove()?'Sequência salva. Revise cada texto integral antes de aprovar.':reason;
+  $('nj-body').querySelectorAll('[data-nj-approve]').forEach(b=>{const step=njRows(nj.sequence)[Number(b.dataset.njApprove)],approved=!dirty&&!nj.stale&&njApproved(step?.id);b.disabled=!njCanApprove(step?.id)||approved;b.textContent=approved?'Texto aprovado para Apollo manual':'Aprovar texto exato para Apollo manual';});
+  $('nj-body').querySelectorAll('[data-nj-approval-state]').forEach(el=>{const step=njRows(nj.sequence)[Number(el.dataset.njApprovalState)];el.textContent=dirty?'Aprovação invalidada por edição local':njApproved(step?.id)&&!nj.stale?'Aprovado no servidor':'Aguardando aprovação';});
+  const exp=$('nj-body').querySelector('[data-nj-action="export"]');if(exp)exp.disabled=!njCanExport();
+  if($('nj-export-reason'))$('nj-export-reason').textContent=njCanExport()?'Lista liberada pelo servidor para exportação manual. Nenhuma inscrição automática.':reason;
+  const create=$('nj-create');if(create)create.disabled=nj.busy||nj.createUncertain||!njRows(nj.catalog?.campaigns).some(c=>c.id===nj.campaign&&c.active===true&&c.platform==='apollo');
+  const preview=$('nj-csv-preview');if(preview){const count=njCsvCount(nj.csv);preview.textContent=nj.csv?`${new TextEncoder().encode(nj.csv).length} bytes · ${count===null?'CSV incompleto; confira as aspas':count+' contatos na prévia local'} · 0 créditos OS`:'Nenhum CSV selecionado. Custo OS: 0 créditos; custo anterior no Apollo: desconhecido.';}
+}
+function njRender(focus=false){
+  $('nj-steps').innerHTML=njLabels.map((label,index)=>`<li><button type="button" data-nj-step="${index+1}" aria-current="${nj.step===index+1?'step':'false'}" aria-controls="nj-body"><small>${String(index+1).padStart(2,'0')}</small>${label}</button></li>`).join('');
+  $('nj-prev').textContent=nj.step===1?'Voltar para Jornada':'Voltar';$('nj-next').hidden=nj.step===5;
+  let content='';
+  if(nj.loading)content='<p class="journey-loading">Carregando rascunho e ficha…</p>';
+  else if(!nj.catalog)content='<p class="vazio">Catálogo indisponível. Tente novamente para consultar as campanhas do Registry.</p>';
+  else if(nj.step===1){
+    const campaigns=njRows(nj.catalog.campaigns).filter(c=>c.platform==='apollo'&&/^BR(?:[-_]|$)/i.test(c.id));
+    const drafts=njRows(nj.catalog.drafts).filter(d=>typeof d.id==='string'&&typeof d.name==='string');
+    const resume=drafts.length?`<div><h3>Rascunhos salvos</h3>${drafts.map(d=>`<div class="journey-row"><div><p>${esc(d.name)}</p><p class="msg">${esc(d.campaign_id)} · versão ${esc(d.version)} · ${esc(d.updated_at||'Data não informada')}</p></div><button type="button" class="btn" data-nj-resume="${esc(d.id)}" aria-label="Retomar ${esc(d.name)}">Retomar</button></div>`).join('')}</div>`:'';
+    content=nj.draft?`<p>${esc(nj.draft.name)} · ${esc(nj.draft.campaign_id)}</p>${njSheetHTML()}`:`${resume}<form id="nj-create-form" class="nj-fields"><div class="nj-grid">${njField('Nome da nova jornada','nj-name',nj.name,'maxlength="160" required autocomplete="off"')}<label for="nj-campaign">Campanha de referência<select id="nj-campaign" required><option value="">Selecione uma campanha Apollo BR</option>${campaigns.map(c=>`<option value="${esc(c.id)}" ${c.id===nj.campaign?'selected':''} ${c.active===true?'':'disabled'}>${esc(c.id)}${c.active===true?'':' · inativa'}</option>`).join('')}</select></label></div><div class="nj-actions"><button class="btn pri" type="submit" id="nj-create">Criar rascunho no OS</button></div></form>${campaigns.length?'':'<p class="vazio">Nenhuma campanha Apollo BR disponível no Registry.</p>'}${njSheetHTML()}`;
+  }else if(!nj.draft)content='<p class="nj-warning">Crie o rascunho na Ficha para salvar contatos, checagens e sequência.</p><button class="btn" type="button" data-nj-step="1">Voltar à Ficha</button>';
+  else content=nj.step===2?njRenderSource():nj.step===3?njRenderChecks():nj.step===4?njRenderSequence():njRenderManual();
+  $('nj-body').innerHTML=`<section aria-labelledby="nj-heading"><h3 id="nj-heading" tabindex="-1">${nj.step} · ${njLabels[nj.step-1]}</h3>${content}</section>`;njGuards();if(focus)$('nj-heading').focus();
+}
+// Preview only: the server remains responsible for parsing, bounds and validation.
+function njCsvCount(text){
+  if(!text.trim())return 0;let quoted=false,nonempty=false,records=0;
+  for(let i=0;i<text.length;i++){const c=text[i];if(c==='"'){if(quoted&&text[i+1]==='"')i++;else quoted=!quoted;nonempty=true;}else if(!quoted&&(c==='\n'||c==='\r')){if(nonempty)records++;nonempty=false;if(c==='\r'&&text[i+1]==='\n')i++;}else if(!/\s/.test(c))nonempty=true;}
+  return quoted?null:Math.max(0,records+(nonempty?1:0)-1);
+}
+async function njLoad(){
+  if(nj.busy)return;const request=++nj.request;nj.busy=true;nj.loading=true;nj.error='';njRender();
+  try{
+    if(!apiServidor)throw Error('Consulta indisponível nesta visualização.');
+    const catalog=await apiServidor(njBase+'/catalog');
+    if(!catalog||!Array.isArray(catalog.campaigns)||catalog.enrollment_enabled!==false)throw Error('Catálogo inválido. Nenhuma operação foi liberada.');
+    if(request!==nj.request)return;nj.catalog=catalog;
+    if(nj.id){const data=await apiServidor(njPath());if(request!==nj.request)return;njDraft(data);nj.message='Rascunho consultado no servidor.';}
+  }catch(error){if(request===nj.request){nj.error=error.message||'Falha na consulta. Tente novamente.';nj.stale=!!nj.id;}}
+  finally{if(request===nj.request){nj.busy=false;nj.loading=false;njRender();}}
+}
+function njRoute(raw){
+  $('new-journey').hidden=!raw;$('journey-overview').hidden=!!raw;if(!raw)return;
+  const match=raw.match(/^jornada\/nova(?:\/([^/]+))?(?:\/([1-5]))?$/);if(!match){mostrarAba('jornada');return;}
+  let id=null,step=Number(match[2]||1);
+  if(match[1]){if(!match[2]&&/^[1-5]$/.test(match[1]))step=Number(match[1]);else try{id=decodeURIComponent(match[1]);}catch(error){nj.error='Referência de rascunho inválida.';}}
+    if(id!==nj.id){++nj.request;nj.id=id;nj.draft=null;nj.sequence=null;nj.sequenceDirty=false;nj.sourceDirty=false;nj.sequences=[];nj.sequenceId='';nj.sequenceQuery='';nj.sequenceResultsQuery='';nj.csv='';nj.exported=null;nj.error='';nj.message='';nj.stale=false;nj.busy=false;}
+  nj.step=step;njRender();if(!nj.catalog||nj.id&&!nj.draft)njLoad();
+}
+async function njWrite(operation,body,success){
+  if(nj.busy||!apiServidor||!nj.draft||nj.stale)return;
+  const path=njPath(),id=nj.id,request=++nj.request;nj.busy=true;nj.error='';nj.message='Salvando…';njGuards();
+  try{
+    const result=await apiServidor(path+'/'+operation,'POST',{expected_version:nj.draft.version,...body});if(nj.id!==id||request!==nj.request)return;
+    if(operation==='export'){
+      if(typeof result.filename!=='string'||typeof result.csv_text!=='string'||!Number.isInteger(result.rows)||result.credits!==0)throw Error('Arquivo inválido. Recarregue para conferir o resultado.');
+      const blob=new Blob([result.csv_text],{type:'text/csv;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=result.filename.split(/[\\/]/).at(-1);a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+      nj.exported=result;nj.message=`Arquivo exportado: ${result.rows} contatos · 0 créditos OS. Inscrição no Apollo ainda não confirmada.`;
+    }else{
+      njDraft(result);
+      if(operation==='sequence'){nj.sequenceDirty=false;njDraft(result);}
+      if(operation==='source')nj.sourceDirty=false;
+      if(['source','check','sequence'].includes(operation))nj.exported=null;
+      nj.message=success;
+      history.replaceState(null,'','#'+njRoutePath());
+    }
+  }catch(error){if(nj.id===id){nj.error=(error.status===403?'Sem permissão para esta operação. ':error.status===409?'A versão mudou. ':'')+(error.message||'Resultado não confirmado.');nj.stale=true;nj.message='Recarregue o rascunho antes de repetir a operação.';}}
+  finally{if(request===nj.request){nj.busy=false;njRender();}}
+}
+$('journey-new').addEventListener('click',()=>{if(nj.busy)return;nj.catalog=null;nj.id=null;nj.draft=null;nj.sequence=null;nj.sequenceDirty=false;nj.sourceDirty=false;nj.csv='';nj.name='';nj.campaign='';nj.sequences=[];nj.sequenceId='';nj.sequenceQuery='';nj.sequenceResultsQuery='';nj.exported=null;nj.createUncertain=false;nj.error='';nj.message='';mostrarAba('jornada/nova');$('nj-title').focus();});
+$('nj-back').addEventListener('click',()=>{mostrarAba('jornada');$('journey-new').focus();});
+$('nj-prev').addEventListener('click',()=>nj.step===1?$('nj-back').click():njGo(nj.step-1));
+$('nj-next').addEventListener('click',()=>njGo(nj.step+1));
+$('nj-reload').addEventListener('click',njLoad);$('nj-retry').addEventListener('click',njLoad);
+$('new-journey').addEventListener('click',event=>{
+  const resume=event.target.closest('[data-nj-resume]');if(resume&&!nj.busy){mostrarAba('jornada/nova/'+encodeURIComponent(resume.dataset.njResume)+'/1');$('nj-title').focus();return;}
+  const step=event.target.closest('[data-nj-step]');if(step){njGo(Number(step.dataset.njStep));return;}
+  const approve=event.target.closest('[data-nj-approve]');if(approve){const s=nj.sequence[Number(approve.dataset.njApprove)];if(njCanApprove(s?.id))njWrite('approve-step',{step_id:s.id,review_hash:nj.draft.review_hash},'Texto exato aprovado para uso manual no Apollo. Nenhum envio executado.');return;}
+  const remove=event.target.closest('[data-nj-remove]');if(remove&&!nj.busy){nj.sequence.splice(Number(remove.dataset.njRemove),1);nj.sequence.forEach((s,i)=>s.order=i+1);nj.sequenceDirty=true;njRender();return;}
+  const action=event.target.closest('[data-nj-action]')?.dataset.njAction;if(nj.busy)return;
+  if(action==='sequences'){njSearchSequences();return;}
+  if(action==='add-step'){nj.sequence=nj.sequence||[];let i=nj.sequence.length+1;while(nj.sequence.some(s=>s.id==='step-'+i))i++;nj.sequence.push({id:'step-'+i,channel:'email',subject:'',content:'',order:nj.sequence.length+1,interval_hours:0});nj.sequenceDirty=true;njRender();$('nj-content-'+(nj.sequence.length-1))?.focus();}
+  if(action==='save-sequence'){
+    if(!nj.sequence?.length){nj.error='Adicione pelo menos um passo.';njGuards();return;}
+    const bad=nj.sequence.findIndex(s=>!s.content.trim()||s.channel==='email'&&!s.subject.trim()||!Number.isInteger(s.interval_hours)||s.interval_hours<0);
+    if(bad>=0){nj.error='Confira assunto, texto e intervalo de cada passo.';njGuards();$('nj-content-'+bad)?.focus();return;}
+    const steps=nj.sequence.map(s=>({...s,subject:s.channel==='email'?s.subject:null}));
+    const selection=nj.sequenceId&&nj.sequenceQuery?{apollo_sequence_id:nj.sequenceId,apollo_sequence_query:nj.sequenceQuery}:{};
+    njWrite('sequence',{steps,...selection},'Sequência salva no OS. Revise os textos antes de aprovar.');
+  }
+  if(action==='check'&&!njDirty())njWrite('check',{},'Checagens salvas. Contatos sem prova continuam retidos.');
+  if(action==='export'&&njCanExport())njWrite('export',{review_hash:nj.draft.review_hash});
+  if(action==='reconcile'&&!njDirty())njWrite('reconcile',{},'Leitura de inscrição concluída. Confira o estado observado abaixo.');
+});
+$('nj-steps').addEventListener('keydown',event=>{
+  const buttons=[...$('nj-steps').querySelectorAll('button')],index=buttons.indexOf(event.target);if(index<0||!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;
+  event.preventDefault();const next=event.key==='Home'?0:event.key==='End'?4:(index+(event.key==='ArrowRight'?1:-1)+5)%5;njGo(next+1);$('nj-steps').querySelectorAll('button')[next].focus();
+});
+$('new-journey').addEventListener('input',event=>{
+  const el=event.target;if(nj.busy)return;
+  if(el.dataset.njField){const index=Number(el.closest('[data-nj-index]').dataset.njIndex),field=el.dataset.njField;nj.sequence[index][field]=field==='interval_hours'?Number(el.value):el.value;nj.sequenceDirty=true;}
+  if(el.id==='nj-sequence-query'){nj.sequenceQuery=el.value;nj.sequenceId='';nj.sequences=[];nj.sequenceDirty=true;$('nj-sequence-id').innerHTML='<option value="">Selecione após consultar</option>';}
+  const fields={'nj-name':'name','nj-csv':'csv','nj-titles':'titles','nj-locations':'locations','nj-company-locations':'companyLocations','nj-sizes':'sizes','nj-keywords':'keywords','nj-query':'query','nj-page':'page'};
+  if(fields[el.id]){nj[fields[el.id]]=el.id==='nj-page'?Number(el.value):el.value;if(el.id!=='nj-name')nj.sourceDirty=true;}
+  nj.exported=null;nj.error='';njGuards();
+});
+$('new-journey').addEventListener('change',async event=>{
+  const el=event.target;if(nj.busy)return;
+  if(el.id==='nj-campaign'){nj.campaign=el.value;njRender();}
+  if(el.id==='nj-sequence-id'){if(nj.sequences.some(s=>s.id===el.value)&&nj.sequenceResultsQuery===nj.sequenceQuery){nj.sequenceId=el.value;nj.sequenceDirty=true;}else nj.sequenceId='';njRender();}
+  if(el.name==='nj-source'){nj.mode=el.value;nj.sourceDirty=true;njRender();}
+  if(el.dataset.njField==='channel')njRender();
+  if(el.id==='nj-file'){
+    const file=el.files?.[0];if(!file)return;
+    nj.sourceDirty=true;nj.exported=null;
+    if(file.size>100000){nj.error='O CSV excede 100 KB. Escolha um arquivo menor.';njGuards();return;}
+    const request=++nj.request;nj.busy=true;nj.error='';nj.message='Lendo arquivo CSV…';njGuards();
+    try{const text=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(await file.arrayBuffer());if(request===nj.request){nj.csv=text;nj.message='Arquivo lido localmente. Confira a prévia antes de importar.';}}
+    catch(error){if(request===nj.request)nj.error='Não foi possível ler este CSV em UTF-8. Tente novamente.';}
+    finally{if(request===nj.request){nj.busy=false;njRender();}}
+  }
+});
+$('new-journey').addEventListener('submit',async event=>{
+  event.preventDefault();if(nj.busy||!apiServidor)return;
+  if(event.target.id==='nj-create-form'){
+    if(!event.target.reportValidity()||$('nj-create').disabled)return;nj.busy=true;nj.error='';nj.message='Criando rascunho…';njGuards();
+    try{njDraft(await apiServidor(njBase+'/create','POST',{campaign_id:nj.campaign,name:nj.name}));nj.message='Rascunho criado no OS. Nenhuma campanha externa foi criada.';history.replaceState(null,'','#'+njRoutePath());}
+    catch(error){nj.error=error.message||'Criação não confirmada.';if(!error.status){nj.createUncertain=true;nj.error+=' Não repita a criação sem conferir o resultado no servidor.';}}
+    finally{nj.busy=false;njRender();}return;
+  }
+  if(event.target.id!=='nj-source-form'||!event.target.reportValidity())return;
+  let body={mode:nj.mode};
+  if(nj.mode==='csv'){
+    const count=njCsvCount(nj.csv);if(!nj.csv.trim()||new TextEncoder().encode(nj.csv).length>100000||count===null||count>200){nj.error='Confira o CSV: até 100 KB e 200 contatos, com aspas completas.';njGuards();$('nj-csv').focus();return;}body.csv_text=nj.csv;
+  }else if(nj.mode==='apollo_people'){
+    const filters={};for(const [key,value,separator] of [['person_titles',nj.titles,/[;\n]/],['person_locations',nj.locations,/[;\n]/],['organization_locations',nj.companyLocations,/[;\n]/],['organization_num_employees_ranges',nj.sizes,/;/]]){const values=value.split(separator).map(v=>v.trim()).filter(Boolean);if(values.length)filters[key]=values;}
+    if(nj.keywords.trim())filters.q_keywords=nj.keywords.trim();
+    if(!(filters.person_locations?.length||filters.organization_locations?.length)||!(filters.person_titles?.length||filters.organization_num_employees_ranges?.length||filters.q_keywords)){
+      nj.error='Informe filtros explícitos: localização da pessoa ou empresa e pelo menos cargo, porte ou palavra-chave.';njGuards();$('nj-locations').focus();return;
+    }body={...body,filters,page:nj.page};
+  }else body={...body,query:nj.query,page:nj.page};
+  njWrite('source',body,nj.mode==='csv'?'Lista importada no rascunho. Execute a checagem antes de aprovar.':'Busca gratuita concluída. Confira a seleção e as limitações retornadas.');
+});
+async function njSearchSequences(){
+  if(!nj.id||nj.busy||nj.stale||!apiServidor)return;
+  if(!nj.sequenceQuery.trim()){nj.error='Informe o nome da sequência para consultar.';njGuards();$('nj-sequence-query').focus();return;}
+  const id=nj.id,request=++nj.request;nj.busy=true;nj.error='';nj.message='Consultando sequências…';njGuards();
+  try{
+    const query=nj.sequenceQuery,result=await apiServidor(njPath()+'/sequences','POST',{expected_version:nj.draft.version,query});
+    if(nj.id!==id||request!==nj.request)return;
+    if(!Array.isArray(result.items)||!['ok','partial'].includes(result.status)||result.credit_cost!==0||result.journey_id!==id||result.version!==nj.draft.version)throw Error('Consulta de sequências indisponível. Nenhuma sequência foi selecionada.');
+    nj.sequences=result.items.filter(s=>typeof s.id==='string'&&s.id);nj.sequenceResultsQuery=query;nj.message=nj.sequences.length?'Sequências retornadas pelo Apollo. Selecione e salve.':'Nenhuma sequência encontrada para esta consulta.';
+  }catch(error){if(request===nj.request){nj.error=(error.status===403?'Sem permissão para consultar sequências. ':'')+(error.message||'Consulta indisponível.');nj.sequences=[];nj.sequenceId='';if(error.status===409)nj.stale=true;}}
+  finally{if(request===nj.request){nj.busy=false;njRender();}}
+}
+/* NEW_JOURNEY_END */
 function atualizarHojeVazio(){
   const vazio=Object.values(hojeContagens).every(n=>n===0)&&!Object.values(hojeFalhas).some(Boolean);
   $('hoje-vazio').hidden=!vazio;
@@ -2621,12 +2907,15 @@ $('sec-cadencias').addEventListener('click',event=>{const b=event.target.closest
 function mostrarAba(aba,{registrar=true}={}){
   const previous=document.body.dataset.aba;
   const journeyInstalled=typeof journeyMode!=='undefined',mode=journeyInstalled?journeyMode:'legacy';
+  const newJourneyRoute=typeof aba==='string'&&aba.startsWith('jornada/nova')?aba:null;
+  if(newJourneyRoute)aba='jornada';
   aba=({campanhas:'cadencias',agentes:'sistema',conversas:'sistema',aprovar:'sistema'})[aba]||aba;
   if(aba==='hoje'&&mode!=='legacy')aba='jornada';
   if(!['jornada','hoje','cadencias','contas','sistema'].includes(aba)) aba=mode==='legacy'?'hoje':'jornada';
   if(document.body)document.body.dataset.aba=aba;
   if(journeyInstalled){
     $('sec-jornada').hidden=aba!=='jornada';$('sec-hoje').hidden=aba!=='hoje';
+    njRoute(aba==='jornada'?newJourneyRoute:null);
     $('journey-accounts').hidden=aba!=='contas'||mode!=='ready';
     if(mode==='ready')$('sec-quentes').hidden=true;
     journeyTheme();
@@ -2652,12 +2941,14 @@ function mostrarAba(aba,{registrar=true}={}){
   $('abas').querySelectorAll('button').forEach(b=>{const ativa=b.dataset.aba===aba;b.setAttribute('aria-selected',String(ativa));b.tabIndex=ativa?0:-1;});
   $('abas').querySelector('[aria-selected="true"]')?.scrollIntoView({block:'nearest',inline:'nearest'});
   try{localStorage.setItem('painel-aba',aba)}catch(e){}
-  if(registrar&&location.hash!=='#'+aba)history.pushState(null,'','#'+aba);
+  const hashTarget=newJourneyRoute||aba;
+  if(registrar&&location.hash!=='#'+hashTarget)history.pushState(null,'','#'+hashTarget);
 }
 function iniciarAbas(){
   $('abas').hidden=false;
   let aba='jornada';
   const hash=location.hash.slice(1);if(['jornada','hoje','conversas','cadencias','campanhas','aprovar','contas','agentes','sistema'].includes(hash))aba=hash;
+  if(hash.startsWith('jornada/nova'))aba=hash;
   for(const id of ['cad-email-integrations','cad-reply-control','cad-linkedin-preparation','cad-source-list']){
     const section=$(id)?.closest('.cad-read-section');if(section)$('system-campaign-tools').append(section);
   }

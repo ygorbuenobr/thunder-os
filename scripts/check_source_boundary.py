@@ -10,6 +10,7 @@ ALLOWED_FILES = {
     "scripts/test_campaign_sheet_panel.cjs",
     "scripts/test_today_panel.cjs",
     "scripts/test_journey_panel.cjs",
+    "scripts/test_new_journey_panel.cjs",
     "requirements-test.txt",
     "_ferramentas/chief_briefing.py",
     "_ferramentas/chief_briefing_runner.py",
@@ -79,6 +80,10 @@ ALLOWED_FILES = {
     "_ferramentas/painel_modelo.html",
 }
 ALLOWED_TESTS = {
+    "test_thunder_os_apollo_prospect_readonly.py",
+    "test_thunder_os_new_journey.py",
+    "test_thunder_os_new_journey_checks.py",
+    "test_thunder_os_new_journey_http.py",
     "test_thunder_os_journey_http.py",
     "test_thunder_os_journey_readonly.py",
     "test_thunder_os_account_cadence_readonly.py",
