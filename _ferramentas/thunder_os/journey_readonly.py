@@ -318,7 +318,8 @@ class JourneyReadonly:
             country = next((f.get('content') for f in view.get('fields', [])
                             if f.get('key') == 'country' and f.get('status') == 'ok'), None)
             country = country.strip().casefold() if isinstance(country, str) else None
-            if country not in {'br', 'brasil', 'brazil'} and not (country is None and cid.startswith('BR-')):
+            brazil = isinstance(country, str) and re.fullmatch(r'(?:br|brasil|brazil)\s*\.?', country)
+            if not brazil and not (country is None and cid.startswith('BR-')):
                 omitted_campaigns += 1
                 sources.pop('sheet:' + cid, None)
                 continue
@@ -733,8 +734,16 @@ class JourneyReadonly:
                     if e.get('direction') == 'incoming' else 'Registro',
                 'summary': plain_text(e.get('subject')) or 'Mensagem observada', 'detail_id': did})
         timeline['events'].sort(key=lambda e: (e['date'] or '~', e['id']))
-        log = [{'date': s.get('collected_at'), 'message': s['id'] + ': ' + s.get('status', 'unknown')}
-               for s in sources.values()]
+        source_names = {'today': 'Consulta de hoje', 'cadence': 'Cadencias HubSpot',
+            'hubspot_tasks': 'Tarefas HubSpot', 'hubspot_emails': 'E-mails HubSpot',
+            'gmail': 'Historico local do Gmail', 'instantly': 'Instantly',
+            'linkedin': 'Historico salvo do LinkedIn', 'seqd': 'Gmail pela ponte SEQD',
+            'hubspot_deals': 'Negocios HubSpot'}
+        source_status = {'ok': 'leitura disponivel', 'partial': 'leitura parcial',
+                         'offline': 'leitura indisponivel', 'stale': 'leitura desatualizada'}
+        log = [{'date': sources[key].get('collected_at'),
+                'message': label + ': ' + source_status.get(sources[key].get('status'), 'estado desconhecido') + '.'}
+               for key, label in source_names.items() if key in sources]
         sources['brazil_scope'] = {'id': 'brazil_scope', 'status': 'partial' if any(omitted.values()) else 'ok',
             'collected_at': collected, 'omitted': omitted,
             'reason': 'Validated Brazil campaigns; explicit indexed visitor drafts are account documents only. Unknown regions omitted.',

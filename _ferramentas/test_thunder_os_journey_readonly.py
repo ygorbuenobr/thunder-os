@@ -155,6 +155,30 @@ class JourneyTests(unittest.TestCase):
         self.assertFalse(detail['approval_available'])
         self.runner.assert_not_called()
 
+    def test_prose_country_marker_matches_real_sheet_without_broad_inference(self):
+        self.register('CHATTIE-01')
+        self.register('MX27-CDMX')
+        for literal in ('BR.', 'Brasil.', 'Brazil.', 'BR'):
+            with patch.object(self.adapter.service, 'campaign_sheet_view', return_value={
+                    'status': 'complete', 'fields': [{'key': 'country', 'label': 'Pais',
+                        'status': 'ok', 'content': literal}]}):
+                snapshot = self.adapter.snapshot()
+            self.assertEqual({r['id'] for r in snapshot['campaigns']}, {BR, OTHER, 'CHATTIE-01'})
+        for literal in ('MX.', 'BR. texto livre', 'BR..', 'desconhecido'):
+            with patch.object(self.adapter.service, 'campaign_sheet_view', return_value={
+                    'status': 'complete', 'fields': [{'key': 'country', 'label': 'Pais',
+                        'status': 'ok', 'content': literal}]}):
+                self.assertEqual(self.adapter.snapshot()['campaigns'], [])
+
+    def test_source_log_uses_read_status_labels_not_internal_identifiers(self):
+        self.today._gmail = Mock(side_effect=RuntimeError('isolated source'))
+        snapshot = self.adapter.snapshot()
+        messages = [row['message'] for row in snapshot['log']]
+        self.assertIn('Historico local do Gmail: leitura indisponivel.', messages)
+        self.assertIn('Cadencias HubSpot: leitura parcial.', messages)
+        self.assertTrue(all('local:' not in text and 'hubspot_' not in text for text in messages))
+        self.assertFalse(any('envio' in text.lower() or 'executou' in text.lower() for text in messages))
+
     def test_sent_only_thread_is_observed_and_not_pending(self):
         self.add_thread([message('out-only', 12, True, 'Original sent-only body')])
         today = self.today.snapshot()
