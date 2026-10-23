@@ -6,7 +6,6 @@ paid API, model, CRM, or outbound provider. Extracted text remains untrusted dat
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from copy import deepcopy
 from datetime import date, datetime, timezone
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
@@ -29,7 +28,6 @@ from .research import SOURCE_AREAS
 
 MAX_RESPONSE_BYTES = 512_000
 MAX_FACTS = 40
-MAX_MODEL_FACTS = 12
 MAX_SEEDS_PER_AREA = 6
 MAX_REQUESTS = 24
 REQUEST_TIMEOUT = 8.0
@@ -257,39 +255,15 @@ class _HTMLMetadata(HTMLParser):
         self._skip_depth = 0
         self._capture_jsonld = False
         self._jsonld_parts: list[str] = []
-        self._heading_count = 0
-        self._pre_heading_dates: list[tuple[str, tuple[int, ...]]] = []
-        self.article_paragraphs: list[str] = []
-        self._containers: list[tuple[str, int]] = []
-        self._container_sequence = 0
-        self._heading_scope: tuple[int, ...] = ()
-        self._heading_date_scope: tuple[int, ...] = ()
-
-    def _scope(self):
-        return tuple(number for _, number in self._containers)
-
-    def _chrome(self):
-        return any(tag in {'header', 'footer', 'nav', 'aside'} for tag, _ in self._containers)
-
-    def _date_scope(self):
-        semantic = tuple(number for tag, number in self._containers if tag in {'article', 'main', 'section'})
-        return semantic or self._scope()
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]):
         values = {key.lower(): (value or "") for key, value in attrs}
-        if tag in {'div', 'article', 'main', 'section', 'header', 'footer', 'nav', 'aside'}:
-            self._container_sequence += 1
-            self._containers.append((tag, self._container_sequence))
         if tag in {"script", "style", "noscript", "svg"}:
             self._skip_depth += 1
             if tag == "script" and values.get("type", "").lower().split(";", 1)[0].strip() == "application/ld+json":
                 self._capture_jsonld = True
                 self._jsonld_parts = []
-        elif tag == "h1" and not self._skip_depth and not self._chrome():
-            self._heading_count += 1
-            self._heading_scope = self._scope()
-            self._heading_date_scope = self._date_scope()
-        elif tag == "p" and not self._skip_depth and not self._chrome():
+        elif tag == "p" and not self._skip_depth:
             self._in_paragraph = True
             self._paragraph_parts = []
         elif tag == "title":
@@ -301,7 +275,7 @@ class _HTMLMetadata(HTMLParser):
                 self.description = content
             if name in {"article:published_time", "datepublished", "date", "pubdate"} and content and not self.published_at:
                 self.published_at = _date_from_text(content)
-        elif tag == "time" and not self._chrome():
+        elif tag == "time":
             value = values.get("datetime", "").strip()
             if value:
                 self._times.append(value)
@@ -320,9 +294,6 @@ class _HTMLMetadata(HTMLParser):
             text = _clean_text(" ".join(self._paragraph_parts))
             if len(text) >= 45 and text not in self.paragraphs:
                 self.paragraphs.append(text)
-                if (self._heading_count == 1 and not self._chrome()
-                        and self._scope()[:len(self._heading_scope)] == self._heading_scope):
-                    self.article_paragraphs.append(text)
             self._in_paragraph = False
             self._paragraph_parts = []
         elif tag == "title":
@@ -333,10 +304,6 @@ class _HTMLMetadata(HTMLParser):
                 self.links.append((self._anchor_href, text[:240]))
             self._anchor_href = None
             self._anchor_text = []
-        for index in range(len(self._containers) - 1, -1, -1):
-            if self._containers[index][0] == tag:
-                del self._containers[index:]
-                break
 
     def handle_data(self, data: str):
         value = " ".join(data.split())
@@ -346,16 +313,11 @@ class _HTMLMetadata(HTMLParser):
             self._jsonld_parts.append(data)
         if self._skip_depth:
             return
-        if (not self._heading_count and not self._in_title and not self._anchor_href and not self._chrome()
-                and re.fullmatch(r"\d{1,2}\s+de\s+[A-Za-zçÇ]+\s+de\s+\d{4}", value)):
-            parsed_date = _date_from_text(value)
-            if parsed_date:
-                self._pre_heading_dates.append((parsed_date, self._date_scope()))
         if self._in_title:
             self.title_parts.append(value)
         if self._anchor_href:
             self._anchor_text.append(value)
-        if self._in_paragraph and not self._chrome():
+        if self._in_paragraph:
             self._paragraph_parts.append(value)
 
     def _read_jsonld_dates(self, raw: str):
@@ -387,32 +349,17 @@ class _HTMLMetadata(HTMLParser):
             values.append(self.title)
         if self.description:
             values.append(self.description)
-        paragraphs = self.article_paragraphs if self._heading_count == 1 else self.paragraphs
-        values.extend(paragraphs[:4])
+        values.extend(self.paragraphs[:4])
         return list(dict.fromkeys(_clean_text(value) for value in values if _clean_text(value)))
 
     @property
     def page_date(self) -> str | None:
-        explicit = self.published_at or next((value for item in self._times if (value := _date_from_text(item))), None)
-        if explicit:
-            return explicit
-        if self._heading_count == 1 and len(self._pre_heading_dates) == 1:
-            value, scope = self._pre_heading_dates[0]
-            if scope == self._heading_date_scope:
-                return value
-        return None
+        return self.published_at or next((value for item in self._times if (value := _date_from_text(item))), None)
 
 
 def _date_from_text(value: str) -> str | None:
     if not value:
         return None
-    months = ("janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro")
-    portuguese = re.fullmatch(r"\s*(\d{1,2})\s+de\s+([A-Za-zçÇ]+)\s+de\s+(\d{4})\s*", value, re.I)
-    if portuguese and portuguese[2].lower() in months:
-        try:
-            return date(int(portuguese[3]), months.index(portuguese[2].lower()) + 1, int(portuguese[1])).isoformat()
-        except ValueError:
-            return None
     match = re.search(r"\b([0-3]?\d)/([01]?\d)/(\d{4})\b", value)
     if match:
         try:
@@ -551,7 +498,7 @@ def research_request_from_brain(brain: str, account_id: str) -> ResearchRequest:
     # context. They are not public evidence and may contain CRM/contact history.
     content = re.split(r"(?im)^##\s+Hist[oó]rico operacional\s*$", content, maxsplit=1)[0]
     name = re.search(r"(?m)^#\s+(.+?)\s*$", content).group(1).split("|", 1)[0].strip()
-    sector_match = re.search(r"(?im)^\s*-\s*(?:Setor|Segmento|Indústria|Industria)(?:\s*/\s*porte(?:\s*/\s*faturamento\s*\(fonte\))?)?\s*:\s*([^\n]+)", content)
+    sector_match = re.search(r"(?im)^\s*-\s*(?:Setor|Segmento|Indústria|Industria)(?:\s*/\s*porte)?\s*:\s*([^\n]+)", content)
     sector = sector_match.group(1).split(". ", 1)[0].strip() if sector_match else ""
     if not sector:
         industry = re.search(r"(?i)\bind[uú]stria\s+brasileira\s+de\s+([^,.;]+)", content)
@@ -599,27 +546,6 @@ def research_request_from_brain(brain: str, account_id: str) -> ResearchRequest:
                "website_url": website, "account_source_file": relative}
     return ResearchRequest(target, name, website, sector, {key: tuple(value) for key, value in public.items()}, context,
                            decision_maker_name)
-
-
-def select_model_evidence(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Bound model output while retaining source diversity and dated evidence."""
-    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    for fact in facts:
-        groups.setdefault((fact["source_area"], fact["source"]), []).append(fact)
-    for rows in groups.values():
-        rows.sort(key=lambda row: (not bool(row.get("published_at")), -len(row["statement"])))
-    priority = {area: index for index, area in enumerate((
-        "company_news", "company_site", "decision_maker", "hiring", "company_social", "sector"))}
-    buckets = sorted(groups.values(), key=lambda rows: (
-        not any(row.get("published_at") for row in rows), priority.get(rows[0]["source_area"], 10), rows[0]["source"]))
-    selected = []
-    for offset in range(max((len(rows) for rows in buckets), default=0)):
-        for rows in buckets:
-            if offset < len(rows):
-                selected.append(rows[offset])
-                if len(selected) == MAX_MODEL_FACTS:
-                    return selected
-    return selected
 
 
 class PublicResearchProducer:
@@ -1056,7 +982,6 @@ class PublicResearchProducer:
                     rows[area]["discovered_urls"].append(candidate)
         for area in ("company_site", "company_news", "hiring", "company_social"):
             combined = direct[area] + discovered[area]
-            article_links = 0
             seen = set(rows[area]["planned_urls"])
             for url in combined:
                 if url not in seen and len(rows[area]["attempted_urls"]) < self.max_pages_per_area:
@@ -1068,24 +993,6 @@ class PublicResearchProducer:
                     break
                 self._record_page(area, url, planned=rows[area], facts=facts,
                                   observed_at=today)
-                # One bounded hop from a fetched newsroom index to its articles.
-                if area == "company_news" and _collection_page(url) and article_links < 2:
-                    cached = self._fetch_cache.get(_normalize_https_url(url))
-                    page = self._html(cached[0]) if cached and cached[0] else None
-                    for href, label in page.links if page else ():
-                        try:
-                            article = _normalize_https_url(_strip_url_trailing(urljoin(url, href)))
-                        except (ValueError, UnicodeError):
-                            continue
-                        if (not _same_site(article, site_host) or article in combined
-                                or _collection_page(article) or not _NEWS_TOPIC.search(urlsplit(article).path)
-                                or "/category/" in article or "/tag/" in article):
-                            continue
-                        combined.append(article)
-                        rows[area]["discovered_urls"].append(article)
-                        article_links += 1
-                        if article_links >= 2:
-                            break
 
         # Public news, hiring and sector search use a bounded unauthenticated RSS
         # feed. Search attempts are recorded independently of returned articles.
@@ -1103,7 +1010,7 @@ class PublicResearchProducer:
             self._record_rss("decision_maker", decision_url, planned=rows["decision_maker"], facts=facts,
                              company_name=request.decision_maker_name or request.company_name,
                              observed_at=today, match_company=True)
-        for area in ("decision_maker", "other_public_source", "sector"):
+        for area in ("decision_maker", "other_public_source"):
             for url in direct[area][:self.max_pages_per_area]:
                 self._record_page(area, url, planned=rows[area], facts=facts, observed_at=today)
         for area, url in (("google_ads", google_ads), ("meta_ads", meta_ads)):
@@ -1118,9 +1025,7 @@ class PublicResearchProducer:
                 date.fromisoformat(fact["published_at"])
             except ValueError:
                 fact["published_at"] = None
-        collected = deepcopy(facts)
-        collected_coverage = deepcopy(self._finish_coverage(rows, facts))
-        facts = select_model_evidence(facts)
+        facts = facts[:MAX_FACTS]
         coverage = self._finish_coverage(rows, facts)
         context = dict(request.account_context)
         context.setdefault("name", request.company_name)
@@ -1128,10 +1033,8 @@ class PublicResearchProducer:
         context.setdefault("sector", request.sector or "Não verificado")
         context.setdefault("website_url", site)
         return {"account_id": domain, "account": context, "research_evidence": facts,
-                "collected_evidence": collected, "collected_coverage": collected_coverage,
                 "source_coverage": coverage, "angle_ids": [], "producer": {
-                    "name": "thunder_os.public_research", "version": 2,
-                    "collected_records": len(collected), "model_records": len(facts),
+                    "name": "thunder_os.public_research", "version": 1,
                     "collected_at": self.clock().isoformat(), "request_count": self.request_count,
                     "max_requests": self.max_requests, "public_get_only": True,
                     "credentials_used": False, "model_calls": 0,

@@ -24,13 +24,13 @@ from .connection_backfill import DAILY_RESEARCH_LIMIT
 from .connection_intake import PROVIDER_CALENDAR
 from .connection_work import CONNECTION_ACTOR, WORK_LINK_KIND, canonical_connection_request
 from .db import Repository, RepositoryConflict
-from .hermes_text_adapter import LIMIT, bounded_process_transport, load_catalog_context, text_deadline
+from .hermes_text_adapter import LIMIT, bounded_process_transport, load_catalog_context
 from .knowledge import KnowledgeStore
 from .service import ThunderService
 from .email_readback import configured_email_readers
 from .models import ContractError, WorkStatus
 from .research import COVERAGE_STATUSES, SOURCE_AREAS
-from .research_producer import MAX_COLLECTION_SECONDS, PublicResearchProducer, ResearchCollectionError
+from .research_producer import PublicResearchProducer, ResearchCollectionError
 
 
 def utcnow():
@@ -124,8 +124,6 @@ class TrustedEvidence:
                 raise InternalExecutionError('trusted_source_coverage_incomplete')
             account = {key: account[key] for key in ('name', 'domain', 'sector')}
             return {'account_id': domain, 'research_evidence': evidence, 'source_coverage': coverage,
-                'collected_evidence': packet.get('collected_evidence', evidence),
-                'collected_coverage': packet.get('collected_coverage', coverage),
                 'research_account': account, 'research_producer': packet.get('producer', {}), 'angle_ids': []}
         bundle = {}
         path = self.bundle_root / (domain + '.json')
@@ -338,9 +336,7 @@ class EligibleRepository:
 
 
 class GuardedRunner:
-    # AgentWorker leases the complete collection + inference interval, plus its
-    # own persistence margin. Per-capability HTTP/process deadlines stay below.
-    timeout_seconds = MAX_COLLECTION_SECONDS + text_deadline('research')
+    timeout_seconds = 120
     max_attempts = 1
 
     def __init__(self, owner):
@@ -348,7 +344,6 @@ class GuardedRunner:
 
     def run(self, job):
         owner, repo = self.owner, self.owner.repository
-        deadline = text_deadline(job.type)
         if repo.get_state('agent_attempt', job.id):
             owner.usage(job.id, 'needs_human', 'interrupted_attempt', attempted=True)
             return AgentResult('needs_human', error_code='interrupted_attempt')
@@ -369,13 +364,13 @@ class GuardedRunner:
                 if reason:
                     return AgentResult('needs_human', error_code=reason)
                 repo.append_state('agent_attempt', job.id, {'started_at': owner.clock().isoformat(),
-                    'status': 'consumed', 'max_attempts': 1, 'timeout_seconds': deadline, 'external_effects_enabled': False})
+                    'status': 'consumed', 'max_attempts': 1, 'timeout_seconds': 120, 'external_effects_enabled': False})
                 owner.usage(job.id, 'running', None, attempted=True)
         except RepositoryConflict:
             return AgentResult('needs_human', error_code='interrupted_attempt')
         try:
             transport = owner.transport_factory(job, evidence, lambda: bool(owner.job_block(job.id)))
-            result = AgentRunner(transport, timeout_seconds=deadline, max_attempts=1).run(job)
+            result = AgentRunner(transport, timeout_seconds=120, max_attempts=1).run(job)
         except InternalExecutionError as exc:
             result = AgentResult('needs_human', error_code=exc.code)
         except InterruptedError:

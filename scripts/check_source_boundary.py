@@ -6,6 +6,7 @@ from pathlib import PurePosixPath
 
 
 ALLOWED_FILES = {
+    "scripts/test_agent_compat.py",
     "requirements-test.txt",
     "_ferramentas/chief_briefing.py",
     "_ferramentas/chief_briefing_runner.py",
