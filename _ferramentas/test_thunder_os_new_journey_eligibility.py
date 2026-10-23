@@ -181,6 +181,33 @@ class CanonicalEligibilityTests(unittest.TestCase):
         props['hs_linkedin_url'] = props['linkedin_url'] = None
         self.assertEqual(self.check(linkedin_url='')['refusal']['status'], 'unknown')
 
+    def test_missing_alias_property_or_schema_retains_refusal_and_membership(self):
+        del self.http.contacts['123']['properties']['hs_additional_emails']
+        for key in ('refusal', 'membership'):
+            self.assertEqual(self.check()[key]['status'], 'unknown')
+        self.http.contacts['123']['properties']['hs_additional_emails'] = ''
+        self.http.schemas['contacts']['results'] = [p for p in self.http.schemas['contacts']['results']
+                                                   if p['name'] != 'hs_additional_emails']
+        self.assertEqual(self.check()['membership']['status'], 'unknown')
+
+    def test_missing_company_name_or_invalid_schema_retains_protected_checks(self):
+        del self.http.companies['500']['properties']['name']
+        for key in ('client', 'exclusions'):
+            self.assertEqual(self.check()[key]['status'], 'unknown')
+        self.http.companies['500']['properties']['name'] = 'Synthetic B2B'
+        next(p for p in self.http.schemas['companies']['results'] if p['name'] == 'name')['type'] = 'number'
+        self.assertEqual(self.check()['exclusions']['status'], 'unknown')
+
+    def test_membership_empty_fields_need_current_string_schema(self):
+        for field in ('campanha_ativa', 'executor'):
+            prop = next(p for p in self.http.schemas['contacts']['results'] if p['name'] == field)
+            prop['type'] = 'number'
+            self.assertEqual(self.check()['membership']['status'], 'unknown')
+            prop['type'] = 'string'
+        self.http.schemas['contacts']['results'] = [p for p in self.http.schemas['contacts']['results']
+                                                   if p['name'] not in ('campanha_ativa', 'executor')]
+        self.assertEqual(self.check()['membership']['status'], 'unknown')
+
     def test_apollo_instantly_or_alias_membership_blocks_and_partial_is_unknown(self):
         self.apollo_occupied = True
         self.assertEqual(self.check()['membership']['status'], 'blocked')
@@ -241,6 +268,42 @@ class CanonicalEligibilityHTTPTests(http_fixture.NewJourneyBoundHTTPTests):
         existing = self.server.thunder_new_journey
         self.server.thunder_new_journey = NewJourney(self.service, apollo=existing.apollo,
                                                     checker=checker, clock=lambda: NOW)
+
+    def test_incomplete_alias_name_or_membership_schema_cannot_approve_or_export(self):
+        contacts, companies, schemas = deepcopy(self.http.contacts), deepcopy(self.http.companies), deepcopy(self.http.schemas)
+        for gap in ('aliases', 'company_name', 'membership_schema'):
+            with self.subTest(gap=gap):
+                self.http.contacts, self.http.companies, self.http.schemas = deepcopy(contacts), deepcopy(companies), deepcopy(schemas)
+                if gap == 'aliases':
+                    del self.http.contacts['123']['properties']['hs_additional_emails']
+                elif gap == 'company_name':
+                    del self.http.companies['500']['properties']['name']
+                else:
+                    self.http.schemas['contacts']['results'] = [p for p in self.http.schemas['contacts']['results']
+                                                               if p['name'] not in ('campanha_ativa', 'executor')]
+                status, draft = self.request('create', method='POST', nonce=True,
+                    body={'campaign_id': 'BR-APOLLO-FIXTURE', 'name': 'Isolated missing-data draft'})
+                self.assertEqual(status, 200)
+                ident = draft['id']
+
+                def post(action, **body):
+                    return self.request(ident + '/' + action, method='POST', nonce=True,
+                                        body={'expected_version': draft['version'], **body})
+
+                status, draft = post('source', mode='csv', csv_text='name,company,email\nAna,Fixture,ana@example.invalid\n')
+                self.assertEqual(status, 200)
+                status, draft = post('check')
+                self.assertEqual(status, 200)
+                self.assertEqual(draft['counts']['eligible'], 0)
+                status, draft = post('sequence', steps=[{'id': 'E1', 'channel': 'email',
+                    'subject': 'Fixture', 'content': 'Exact fixture text', 'order': 1, 'interval_hours': 0}],
+                    apollo_sequence_id='sequence-fixture', apollo_sequence_query='Fixture sequence')
+                self.assertEqual(status, 200)
+                self.assertFalse(draft['steps'][0]['can_approve'])
+                self.assertEqual(post('approve-step', step_id='E1', review_hash=draft['review_hash'])[0], 409)
+                self.assertEqual(post('export', review_hash=draft['review_hash'])[0], 409)
+                self.assertEqual(self.repo.effects(), [])
+                self.assertEqual(self.repo.outbox(), [])
 
 
 if __name__ == '__main__':

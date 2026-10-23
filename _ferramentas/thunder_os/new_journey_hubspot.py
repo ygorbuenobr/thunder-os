@@ -246,6 +246,9 @@ class HubSpotEligibilityRead:
         if not self._schema_complete.get(kind) or not self._schema_valid.get(kind, {}).get(key):
             return False
         schema = self._schemas[kind][key]
+        if (kind == 'contacts' and key in ('hs_additional_emails', 'campanha_ativa', 'executor')
+                and schema['type'] == 'string' and value in ('', None)):
+            return True
         if key in BOOLS:
             return type(value) is bool or type(value) is str and value in ('true', 'false')
         if value is None or value == '' or type(value) is bool:
@@ -385,7 +388,7 @@ class HubSpotEligibilityRead:
                 contact, associations = self._record('contacts', ident)
                 result['contact'] = contact
                 properties = contact['properties']
-                property_coverage = {name: self._property_complete('contacts', name, properties.get(name))
+                property_coverage = {name: name in properties and self._property_complete('contacts', name, properties.get(name))
                                      for name in CONTACT_PROPERTIES}
                 result['coverage']['identity']['properties'] = property_coverage
                 emails, profiles, valid = [], [], True
@@ -393,6 +396,7 @@ class HubSpotEligibilityRead:
                 if primary and property_coverage['email']:
                     emails.append(primary)
                 aliases = properties.get('hs_additional_emails')
+                valid &= property_coverage['hs_additional_emails']
                 if aliases:
                     if not property_coverage['hs_additional_emails'] or len(aliases.split(';')) > 50:
                         valid = False

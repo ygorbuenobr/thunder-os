@@ -246,7 +246,8 @@ class NewJourneyChecks:
                     and math.isfinite(revenue) and revenue > 10_000_000)
                 result('icp', 'pass' if fits else 'blocked',
                        'canonical_company_icp_confirmed' if fits else 'canonical_company_outside_campaign_icp')
-        non_customer = (qualified and _property(evidence, 'companies', 'thunder_is_customer')
+        non_customer = (qualified and _property(evidence, 'companies', 'name')
+            and _property(evidence, 'companies', 'thunder_is_customer')
             and props.get('thunder_is_customer') in (False, 'false')
             and _property(evidence, 'companies', 'lifecyclestage')
             and props.get('lifecyclestage') != 'customer')
@@ -284,6 +285,7 @@ class NewJourneyChecks:
                                                'local_reply_state': source_keys}),
                     scope='registered_hubspot_toques_and_local_reply_state_not_global_inbox')
         if ('campanha_ativa' in cp and 'executor' in cp
+                and all(_property(evidence, 'contacts', key) for key in ('campanha_ativa', 'executor'))
                 and cp['campanha_ativa'] in ('', None) and cp['executor'] in ('', None)
                 and isinstance(self.membership, CrossCampaignReadOnly) and emails):
             observations = []
