@@ -172,6 +172,7 @@ textarea:focus,input[type=text]:focus{border-color:var(--mostarda);outline:none}
 .abas .qt{margin-left:6px;font-variant-numeric:tabular-nums;opacity:.8}
 .abas .qt:empty{display:none}
 body[data-aba="hoje"] [data-painel]:not([data-painel~="hoje"]),
+body[data-aba="jornada"] [data-painel]:not([data-painel~="jornada"]),
 body[data-aba="conversas"] [data-painel]:not([data-painel~="conversas"]),
 body[data-aba="aprovar"] [data-painel]:not([data-painel~="aprovar"]),
 body[data-aba="contas"] [data-painel]:not([data-painel~="contas"]),
@@ -321,21 +322,84 @@ button,.btn,select,input:not([type="hidden"]),summary {min-height:44px;}
 [data-cs-review] {overflow-wrap:anywhere;}
 [data-cs-review]:not(:empty) {border:1px solid #bbbdb5;padding:16px;margin:16px 0;border-radius:8px;}
 #abas button[aria-selected="true"] {color:#20211f;}
+/* Jornada follows the panel tokens; sections stay unframed. */
+body[data-aba="jornada"],body[data-journey-ready="true"][data-aba="contas"],.journey-drawer{
+  color-scheme:dark;--bg:#0e0d0b;--surface:#161512;--surface2:#1c1a16;--line:#3a3630;
+  --text:#f4f1ea;--muted:#b9b3a8;--faint:#b9b3a8;--roxo:#b990ed;--ok:#8fd0ad;--alerta:#ffaaa3;
+}
+html:has(body[data-aba="jornada"]),html:has(body[data-journey-ready="true"][data-aba="contas"]){background:#0e0d0b}
+body[data-aba="jornada"] .abas,body[data-journey-ready="true"][data-aba="contas"] .abas{background:var(--bg)}
+body[data-aba="jornada"] h1,body[data-journey-ready="true"][data-aba="contas"] h1{font-size:38px;letter-spacing:0}
+.journey{min-width:0;overflow-wrap:anywhere;letter-spacing:0}
+.journey h2,.journey h3,.journey h4{letter-spacing:0;text-transform:none;color:var(--text);margin:0}
+.journey h2{font-size:26px}.journey h3{font-size:18px}.journey h4{font-size:15px}
+.journey p{margin:4px 0}.journey section{margin-top:24px;padding-top:20px;border-top:1px solid var(--line)}
+.journey .msg,.journey .vazio{color:var(--muted)}
+.journey-head,.journey-row-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px}
+.journey-tools{display:flex;flex-wrap:wrap;align-items:end;gap:12px}
+.journey-field{display:grid;gap:4px;min-width:0;font-size:13px;color:var(--muted)}
+.journey-field select,.journey-field input{font:14px var(--body);background:var(--surface);color:var(--text);min-height:44px;max-width:100%;min-width:0;border:1px solid var(--muted);border-radius:6px;padding:8px}
+.journey-funnel{display:flex;flex-wrap:wrap;gap:16px 24px;padding:24px 0;border-block:1px solid var(--line);margin-top:20px}
+.journey-metric{flex:1 1 170px;min-width:0}.journey-metric strong{display:block;font:800 56px/1.2 var(--display);font-variant-numeric:tabular-nums}
+.journey-metric h3{font-size:14px}.journey-metric p{font-size:12px;color:var(--muted)}
+.journey-stages{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px;margin-top:24px}
+.journey-stage{display:flex;flex-direction:column;gap:6px;text-align:left;min-width:0;min-height:148px;padding:12px;border:1px solid var(--muted);border-radius:8px;background:var(--surface);color:var(--text);font:inherit;cursor:pointer;overflow-wrap:anywhere}
+.journey-stage[aria-pressed="true"]{border-color:var(--roxo);box-shadow:inset 0 0 0 1px var(--roxo)}
+.journey-stage strong{font-size:15px}.journey-stage b{font:700 26px var(--display);margin-top:auto}.journey-stage small{font-size:12px;color:var(--muted)}
+.journey-off{background:var(--surface2);color:var(--muted);border-style:dashed}
+.journey-row{padding:16px 0;border-bottom:1px solid var(--line);display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 16px;align-items:center;min-width:0}
+.journey-row>div{min-width:0}.journey-row p{white-space:pre-wrap;overflow-wrap:anywhere}.journey-row .btn{justify-self:end}
+.journey-bottom{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:28px}
+.journey-list{list-style:none;padding:0;margin:0;min-width:0}.journey-list li{padding:12px 0;border-bottom:1px solid var(--line);min-width:0}
+.journey-list time{font:12px var(--mono);color:var(--muted)}
+.journey-original{white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.65 var(--body);margin:8px 0}
+.journey-tabs{display:flex;flex-wrap:wrap;gap:8px;margin:20px 0}
+.journey-tabs [aria-selected="true"]{border-color:var(--roxo);background:var(--surface2);color:var(--roxo)}
+.journey-dossier{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 24px}
+.journey-touch{border-bottom:1px solid var(--line);padding:16px 0}.journey-touch summary{min-height:44px;cursor:pointer;padding:8px 0}
+.journey-edit{display:grid;gap:10px;margin-top:12px}.journey-edit textarea{background:var(--surface);color:var(--text);border-color:var(--muted);min-height:200px;white-space:pre-wrap}
+.journey-edit input[type="text"]{background:var(--surface);color:var(--text);border-color:var(--muted)}
+.journey-edit textarea[data-journey-discard-reason]{min-height:88px}
+.journey-edit textarea:focus-visible{outline:2px solid var(--roxo);outline-offset:2px}
+.journey-edit .btn:disabled{opacity:1;color:var(--muted);background:var(--surface2);border-style:dashed}
+.journey-edit .journey-local{color:var(--roxo);font-size:13px}
+.journey-drawer{max-width:680px;padding:24px}.journey-drawer .conta-topo{top:-24px}.journey-drawer section{margin-top:20px}
+.journey-drawer h2{font-size:22px}.journey-drawer .journey-source{display:block;min-height:44px;padding:10px 0}
+.journey code{overflow-wrap:anywhere;white-space:pre-wrap;font:12px var(--mono)}
+.journey-loading{min-height:148px;color:var(--muted);padding-block:20px}
+.journey :focus-visible{outline:2px solid var(--roxo)!important;outline-offset:3px}
+@media(max-width:860px){.journey-stages{grid-template-columns:repeat(4,minmax(0,1fr))}.journey-bottom{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:560px){body[data-aba="jornada"] h1,body[data-journey-ready="true"][data-aba="contas"] h1{font-size:28px}.journey-metric strong{font-size:36px}.journey-stages{grid-template-columns:repeat(2,minmax(0,1fr))}.journey-row{grid-template-columns:minmax(0,1fr)}.journey-row .btn{justify-self:start}.journey-tools,.journey-field{width:100%}.journey-dossier{grid-template-columns:minmax(0,1fr)}.journey-drawer{padding:16px}.journey-drawer .conta-topo{top:-16px}.journey-head{align-items:start}}
 </style>
 
 <header class="topo">
   <div>
-    <h1>Seu <b>Painel</b></h1>
-    <div style="color:var(--muted);margin-top:6px">O que precisa de você aparece primeiro. Você aprova, o sistema faz.</div>
+    <h1><span id="panel-brand">Seu <b>Painel</b></span><span id="journey-brand" hidden>Thunder <b>OS</b></span></h1>
+    <div id="panel-description" style="color:var(--muted);margin-top:6px">O que precisa de você aparece primeiro. Você aprova, o sistema faz.</div>
   </div>
 </header>
 <p id="external-effects-status" class="msg" data-painel="sistema" role="status" aria-live="polite" hidden>Envios desativados. As ações do painel antigo estão bloqueadas; pedidos e revisões do Thunder OS continuam disponíveis.</p>
 <nav class="abas" id="abas" role="tablist" aria-label="Seções do painel" hidden>
-  <button type="button" role="tab" data-aba="hoje" aria-selected="false">Hoje<span class="qt" id="qt-hoje"></span></button>
+  <button type="button" role="tab" data-aba="jornada" aria-selected="false">Jornada<span class="qt" id="qt-hoje"></span></button>
   <button type="button" role="tab" data-aba="cadencias" aria-selected="false">Campanhas</button>
   <button type="button" role="tab" data-aba="contas" aria-selected="false">Contas<span class="qt" id="qt-contas"></span></button>
   <button type="button" role="tab" data-aba="sistema" aria-selected="false">Sistema</button>
 </nav>
+
+<main class="journey" id="sec-jornada" data-painel="jornada" hidden>
+  <header class="journey-head"><h2>Jornada</h2><div class="journey-tools"><label class="journey-field" for="journey-campaign">Campanha<select id="journey-campaign"><option value="">Todas · BR</option></select></label><button type="button" class="btn" id="journey-refresh">Atualizar</button></div></header>
+  <p class="msg" id="journey-status" role="status" aria-live="polite">Consultando jornada…</p>
+  <div id="journey-content" aria-busy="true"><p class="journey-loading">Carregando indicadores e etapas…</p></div>
+</main>
+<p class="msg" id="journey-legacy-notice" data-painel="hoje" role="status" hidden>Jornada indisponível neste servidor. Exibindo a consulta Hoje anterior.</p>
+<main class="journey" id="journey-accounts" data-painel="contas" hidden>
+  <div id="journey-account-list"><header class="journey-head"><h2>Contas</h2><button type="button" class="btn" id="journey-accounts-refresh">Atualizar</button></header><p class="msg" id="journey-accounts-status" role="status" aria-live="polite">Aguardando consulta.</p><div id="journey-accounts-items"></div></div>
+  <div id="journey-account-detail" hidden><header class="journey-head"><button type="button" class="btn" id="journey-account-back">← Jornada</button><button type="button" class="btn" id="journey-account-list-back">Todas as contas</button></header><p class="msg" id="journey-account-status" role="status" aria-live="polite"></p><div id="journey-account-body"></div></div>
+</main>
+<dialog class="conta-painel journey journey-drawer" id="journey-dialog" aria-labelledby="journey-detail-title">
+  <header class="conta-topo"><h2 id="journey-detail-title">Mensagem original</h2><button type="button" class="btn" id="journey-close" aria-label="Fechar detalhe">×</button></header>
+  <p class="msg" id="journey-detail-status" role="status" aria-live="polite"></p><div id="journey-detail-body" aria-busy="false"></div>
+</dialog>
 
 <main id="sec-cadencias" data-painel="cadencias" hidden>
   <header class="cad-read-head"><div><h2>Campanhas</h2><p class="sub">Registro local e HubSpot · Ygor · somente leitura</p></div><button class="btn" type="button" id="cad-read-refresh">Atualizar</button></header>
@@ -1935,6 +1999,311 @@ $('today-draft-generate').addEventListener('click',async()=>{
 });
 setInterval(()=>{if(!document.hidden&&document.body.dataset.aba==='hoje')carregarHoje(true);},60000);
 /* TODAY_WORK_END */
+/* JOURNEY_BEGIN: GET projections; only explicit canonical step reviews permit POSTs. */
+let journeyMode='pending',journeySnapshot=null,journeyReadAt=0,journeyRequest=0,journeyLoading=false;
+let journeyStage='resposta',journeyDetailRequest=0,journeyDetail=null,journeyDetailFocus=null;
+let journeyAccount=null,journeyAccountRequest=0,journeyAccountsRequest=0,journeyAccountsLoading=false,journeyAccountsReadAt=0;
+let journeyAccountTab='cadence';
+const journeyEdits=new Map();
+const journeyStageDefs=[['icp','ICP'],['abordagem','Abordagem'],['resposta','Resposta'],['crm','CRM'],['linkedin','LinkedIn'],['followup','Follow-up'],['preparacao','Preparação']];
+const journeyTabDefs=[['research','Pesquisa ABM'],['dossier','Dossiê'],['context','Contexto usado'],['cadence','Cadência'],['before_approval','Antes de aprovar']];
+const journeyRows=value=>Array.isArray(value)?value:[];
+const journeyBR=id=>typeof id==='string'&&/^BR(?:[-_]|$)/i.test(id);
+const journeyVisitor=row=>row?.source_group==='visitantes-2026-10-22'&&row.campaign_id==null;
+const journeyVisibleRecord=row=>journeyBR(row?.campaign_id)||journeyVisitor(row);
+const journeyRecordLabel=row=>journeyVisitor(row)?'Visitantes · rascunhos':row?.campaign_id||'Sem vínculo';
+const journeyText=value=>typeof value==='string'?value:typeof value==='number'?String(value):'';
+const journeyDescribe=value=>typeof value==='string'?value:value&&typeof value==='object'?JSON.stringify(value):journeyText(value);
+const journeyDate=value=>value?cadReadDate(value):'Data não informada';
+const journeyCampaign=()=>$('journey-campaign').value;
+const journeyQuery=()=>journeyCampaign()?'?campaign='+encodeURIComponent(journeyCampaign()):'';
+function journeyLink(url,label){
+  if(typeof url!=='string'||/[\s\\]/.test(url))return '';
+  try{
+    const parsed=new URL(url);
+    if(parsed.protocol!=='https:'||parsed.username||parsed.password||parsed.port||parsed.pathname==='/'&&!parsed.hash)return '';
+    return `<a class="journey-source" href="${esc(parsed.href)}" target="_blank" rel="noopener noreferrer">${esc(label||parsed.hostname)} ↗</a>`;
+  }catch(error){return '';}
+}
+function journeySources(sources){
+  return journeyRows(sources).map(source=>typeof source==='string'?`<p class="msg">${esc(source)}</p>`:`<p class="msg">${esc(source?.label||source?.name||source?.id||source?.path||'Fonte')} ${esc(source?.status||'')} ${esc(source?.reason||'')}</p>${journeyLink(source?.url,source?.label||source?.name)}`).join('');
+}
+function journeyTheme(){
+  const on=document.body.dataset.aba==='jornada'||journeyMode==='ready'&&document.body.dataset.aba==='contas';
+  $('panel-brand').hidden=on;$('journey-brand').hidden=!on;$('panel-description').hidden=on;
+}
+function journeySetMode(mode){
+  journeyMode=mode;document.body.dataset.journeyReady=String(mode==='ready');
+  const tab=$('abas').querySelector('button:first-child');
+  tab.dataset.aba=mode==='legacy'?'hoje':'jornada';tab.firstChild.textContent=mode==='legacy'?'Hoje':'Jornada';
+  $('journey-legacy-notice').hidden=mode!=='legacy';
+  if(mode==='ready')$('qt-hoje').textContent='';
+  journeyTheme();
+}
+function journeyMetric(key,label){
+  const metric=journeySnapshot?.metrics?.[key];
+  const proven=typeof metric?.value==='number'&&Number.isFinite(metric.value)&&journeyRows(metric.source).length>0;
+  if(key==='cost_per_hot'&&!proven)return '';
+  const number=proven?(key==='cost_per_hot'?metric.value.toLocaleString('pt-BR',{style:'currency',currency:'BRL'}):metric.value.toLocaleString('pt-BR')):'?';
+  return `<div class="journey-metric" data-journey-metric="${key}"><h3>${label}</h3><strong>${esc(number)}</strong><p>${esc(metric?.reason||(!proven?'Sem fonte comprovada nesta consulta.':''))}</p>${journeySources(metric?.source)}${metric?.coverage!=null?`<p>Cobertura: ${esc(journeyDescribe(metric.coverage))}</p>`:''}</div>`;
+}
+function journeyValidItem(item){
+  return item&&typeof item.id==='string'&&journeyVisibleRecord(item)&&(!journeyCampaign()||item.campaign_id===journeyCampaign());
+}
+function journeyAction(action){
+  return action&&action.label==='Abrir'&&['detail','account'].includes(action.type)&&typeof action.id==='string'&&action.id.length>0;
+}
+function renderJourneyStage(){
+  const stage=journeyRows(journeySnapshot?.stages).find(row=>row.id===journeyStage);
+  const target=$('journey-stage-items');if(!target)return;
+  const label=journeyStageDefs.find(([id])=>id===journeyStage)?.[1]||'';
+  $('journey-stage-heading').textContent='Etapa '+String(journeyStageDefs.findIndex(([id])=>id===journeyStage)+1).padStart(2,'0')+' · '+label;
+  $('journey-stage-reason').textContent=[stage?.status,stage?.reason||(!stage?'Fonte indisponível nesta consulta.':'')].filter(Boolean).join(' · ');
+  const seen=new Set(),items=journeyRows(stage?.items).filter(journeyValidItem).filter(item=>!seen.has(item.id)&&seen.add(item.id));
+  const query=($('journey-filter').value||'').trim().toLocaleLowerCase('pt-BR');
+  const filtered=items.filter(item=>!query||[item.name,item.company,item.campaign_id,item.owner,item.readiness,journeyVisitor(item)&&item.reviewable!==true?'':item.summary].some(text=>journeyText(text).toLocaleLowerCase('pt-BR').includes(query)));
+  target.innerHTML=filtered.length?filtered.map(item=>`<article class="journey-row" data-journey-item="${esc(item.id)}"><div><h4>${esc(item.name||'Nome não informado')}</h4><p>${esc(item.company||'Empresa não informada')}</p><p class="msg">${esc(journeyRecordLabel(item))} · ${esc(journeyDate(item.date))} · Responsável: ${esc(item.owner||'Não informado')}</p>${item.readiness?`<p class="msg">${esc(item.readiness)}</p>`:''}<p>${esc(journeyVisitor(item)&&item.reviewable!==true?'Somente status. Revisão de cadência indisponível.':item.summary)}</p></div>${journeyAction(item.action)?`<button class="btn" type="button" data-journey-open="${esc(item.action.id)}" data-journey-kind="${item.action.type}">Abrir</button>`:'<p class="msg">Detalhe indisponível na fonte.</p>'}</article>`).join(''):`<p class="vazio">${query?'Nenhum item encontrado. Ajuste a busca.':stage?.reason||'Nenhum item nesta etapa. Use Atualizar para consultar novamente.'}</p>`;
+  $('journey-stages').querySelectorAll('button').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.journeyStage===journeyStage)));
+}
+function renderJourney(){
+  const filter=$('journey-filter')?.value||'';
+  const focus=document.activeElement,focusId=focus?.id,stageFocus=focus?.dataset?.journeyStage,openFocus=focus?.dataset?.journeyOpen;
+  const sourcesOpen=$('journey-sources')?.open||false;
+  const drawerOpen=$('journey-dialog').open;
+  $('journey-content').innerHTML=`<div class="journey-funnel" aria-label="Funil da jornada">${journeyMetric('reached','Alcançados →')}${journeyMetric('replied','Responderam →')}${journeyMetric('hot','Quentes')}${journeyMetric('cost_per_hot','Custo por lead quente')}</div>
+    <nav class="journey-stages" id="journey-stages" aria-label="Etapas da jornada">${journeyStageDefs.map(([id,label],index)=>{
+      const stage=journeyRows(journeySnapshot.stages).find(row=>row.id===id);
+      const off=!stage||['off','disabled','unavailable','missing','error','offline'].includes(stage.status);
+      return `<button class="journey-stage${off?' journey-off':''}" type="button" data-journey-stage="${id}" aria-pressed="${journeyStage===id}"><small>${String(index+1).padStart(2,'0')} · ${esc(stage?.status||'Sem fonte')}</small><strong>${label}</strong><small>${esc(stage?.reason||'')}</small><b>${off?'off':Number.isFinite(stage?.count)?esc(stage.count):'?'}</b></button>`;
+    }).join('')}</nav>
+    <section aria-labelledby="journey-stage-heading"><header class="journey-head"><h3 id="journey-stage-heading"></h3><label class="journey-field" for="journey-filter">Buscar na etapa<input type="search" id="journey-filter" maxlength="200" autocomplete="off" aria-controls="journey-stage-items"></label></header><p class="msg" id="journey-stage-reason"></p><div id="journey-stage-items"></div></section>
+    <div class="journey-bottom"><section aria-labelledby="journey-timeline-heading"><h3 id="journey-timeline-heading">Um lead, seguido pela equipe</h3><p>${esc([journeySnapshot.timeline?.name,journeySnapshot.timeline?.company].filter(Boolean).join(' · ')||'Nenhum lead nesta consulta.')}</p><ol class="journey-list">${journeyRows(journeySnapshot.timeline?.events).map(event=>`<li><time>${esc(journeyDate(event.date))}</time><p><b>${esc(event.label)}</b> · ${esc(event.summary)}</p>${typeof event.detail_id==='string'&&event.detail_id?`<button class="btn" type="button" data-journey-open="${esc(event.detail_id)}" data-journey-kind="detail" aria-label="Abrir mensagem original">Abrir</button>`:''}</li>`).join('')||'<li class="vazio">Nenhum evento disponível.</li>'}</ol></section>
+    <section aria-labelledby="journey-log-heading"><h3 id="journey-log-heading">Log dos agentes</h3><ul class="journey-list">${journeyRows(journeySnapshot.log).map(row=>`<li><time>${esc(journeyDate(row.date))}</time><p>${esc(row.message)}</p></li>`).join('')||'<li class="vazio">Nenhum registro nesta consulta.</li>'}</ul></section></div>
+    <details id="journey-sources"><summary>Fontes da consulta</summary>${journeySources(journeySnapshot.sources)||'<p class="msg">Fontes não informadas.</p>'}</details>`;
+  $('journey-filter').value=filter;$('journey-sources').open=sourcesOpen;
+  $('journey-filter').addEventListener('input',renderJourneyStage);renderJourneyStage();
+  if(drawerOpen)return;
+  if(focusId&&$(focusId))$(focusId).focus({preventScroll:true});
+  else if(stageFocus)[...$('journey-stages').querySelectorAll('button')].find(button=>button.dataset.journeyStage===stageFocus)?.focus({preventScroll:true});
+  else if(openFocus)[...$('journey-content').querySelectorAll('[data-journey-open]')].find(button=>button.dataset.journeyOpen===openFocus)?.focus({preventScroll:true});
+}
+async function carregarJourney(force=false){
+  if(!apiServidor||journeyLoading||!force&&journeySnapshot&&Date.now()-journeyReadAt<60000)return;
+  const request=++journeyRequest,campaign=journeyCampaign();journeyLoading=true;$('journey-refresh').disabled=true;
+  $('journey-content').setAttribute('aria-busy','true');$('journey-status').textContent='Consultando jornada…';
+  try{
+    const data=await apiServidor('/api/os/v1/journey'+journeyQuery());
+    if(request!==journeyRequest)return;
+    if(Array.isArray(data)&&journeyMode!=='ready'&&location.hash!=='#jornada'){
+      journeySetMode('legacy');mostrarAba('hoje',{registrar:false});return;
+    }
+    if(data?.read_only!==true||!data.collected_at||!Array.isArray(data.stages)||!data.metrics||!Array.isArray(data.campaigns))throw new Error('Contrato indisponível');
+    const campaigns=data.campaigns.filter(row=>journeyBR(row.id));
+    if(campaign&&!campaigns.some(row=>row.id===campaign))throw new Error('Campanha indisponível');
+    $('journey-campaign').innerHTML='<option value="">Todas · BR</option>'+campaigns.map(row=>`<option value="${esc(row.id)}">${esc(row.label||row.id)}</option>`).join('');
+    $('journey-campaign').value=campaign;journeySnapshot=data;journeyReadAt=Date.now();journeySetMode('ready');
+    $('sec-hoje').hidden=true;$('journey-status').textContent='Consultado em '+journeyDate(data.collected_at)+'. Somente leitura.';renderJourney();
+    if(document.body.dataset.aba==='contas'){$('journey-accounts').hidden=false;$('sec-quentes').hidden=true;carregarJourneyAccounts();}
+  }catch(error){
+    if(request!==journeyRequest)return;
+    if([404,501].includes(error.status)&&journeyMode!=='ready'&&location.hash!=='#jornada'){
+      journeySetMode('legacy');mostrarAba('hoje',{registrar:false});return;
+    }
+    journeySnapshot=null;$('journey-status').textContent='Não foi possível consultar a jornada. Use Atualizar para tentar novamente.';
+    $('journey-content').innerHTML='<p class="vazio">Indicadores e etapas indisponíveis nesta consulta.</p>';
+  }finally{if(request===journeyRequest){journeyLoading=false;$('journey-refresh').disabled=false;$('journey-content').setAttribute('aria-busy','false');}}
+}
+function journeyBinding(data,campaign){
+  const cadence=data?.canonical_cadence_id,step=data?.canonical_step_id;
+  return data?.approval_available===true&&data.reviewable!==false&&journeyBR(campaign)&&/^[A-Za-z0-9_-]{1,100}$/.test(cadence||'')&&/^[A-Za-z0-9_-]{1,100}$/.test(step||'')?
+    {cadence_id:cadence,step_id:step,campaign_id:campaign||null,subject:typeof data.subject==='string'?data.subject:null}:null;
+}
+function journeyEditor(key,original,approvalReason,binding=null){
+  if(!journeyEdits.has(key))journeyEdits.set(key,{original,text:original,originalSubject:binding?.subject??null,subject:binding?.subject??null,binding,review:null,busy:false,message:'',savedEdited:false});
+  const edit=journeyEdits.get(key),edited=edit.text!==edit.original;
+  edit.binding=binding;
+  return `<div class="journey-edit" data-journey-editor="${esc(key)}"><label>Rascunho · edição local<textarea rows="9" data-journey-text aria-label="Rascunho para revisar">${esc(edit.text)}</textarea></label>${binding?`<label data-journey-subject-field${edit.subject===null?' hidden':''}>Assunto<input type="text" data-journey-subject maxlength="1000" value="${esc(edit.subject||'')}"></label>`:''}<p class="msg" data-journey-words>${edit.text.trim()?edit.text.trim().split(/\s+/u).length:0} palavras</p><p class="journey-local" data-journey-edited>${edited?'Versão editada localmente. Não salva nem aprovada.':'Texto original. Edições ficam apenas nesta página.'}</p>${binding?`<p class="msg">Toque canônico: <b>${esc(binding.step_id)}</b> · Cadência: ${esc(binding.cadence_id)}</p><div class="acoes"><button type="button" class="btn" data-journey-review>Revisar toque para execução</button><button type="button" class="btn" data-journey-revise disabled>Salvar revisão do toque</button></div><div data-journey-review-body></div><p class="msg" role="status" aria-live="polite" data-journey-operation>${esc(edit.message)}</p>`:`<p class="msg" data-journey-approval-reason>${esc(approvalReason||'Sem vínculo canônico para aprovação. Edição apenas local.')}</p><p class="msg" data-journey-approval>${edited?'Aprovar versão editada':'Aprovar como está'} · indisponível</p>`}<div class="acoes"><button type="button" class="btn" data-journey-reset>Voltar ao original</button><button type="button" class="btn fraco" data-journey-discard>Descartar edição</button></div></div>`;
+}
+function journeySyncEditor(container){
+  const edit=journeyEdits.get(container.dataset.journeyEditor);if(!edit)return;
+  const area=container.querySelector('textarea');area.value=edit.text;
+  container.querySelector('[data-journey-words]').textContent=(edit.text.trim()?edit.text.trim().split(/\s+/u).length:0)+' palavras';
+  const edited=edit.text!==edit.original||edit.subject!==edit.originalSubject;
+  container.querySelector('[data-journey-edited]').textContent=edited?'Versão editada localmente. Não salva nem aprovada.':edit.savedEdited?'Texto salvo na cadência canônica. Autorizar execução exige conferir a revisão.':'Texto original. Edições ficam apenas nesta página.';
+  if(!edit.binding){container.querySelector('[data-journey-approval]').textContent=(edited?'Aprovar versão editada':'Aprovar como está')+' · indisponível';return;}
+  area.readOnly=edit.busy;
+  const subject=container.querySelector('[data-journey-subject]');subject.value=edit.subject||'';subject.readOnly=edit.busy;container.querySelector('[data-journey-subject-field]').hidden=edit.subject===null;
+  const review=edit.review;
+  const valid=edit.text.trim().length>0&&edit.text.length<=30000&&(edit.subject===null||edit.subject.length<=1000);
+  const same=review&&edit.text===review.content&&edit.subject===review.subject;
+  container.querySelector('[data-journey-review]').disabled=edit.busy;
+  container.querySelector('[data-journey-revise]').disabled=edit.busy||!review||!edited||!valid;
+  container.querySelector('[data-journey-operation]').textContent=edit.message;
+  for(const button of container.querySelectorAll('[data-journey-reset],[data-journey-discard]'))button.disabled=edit.busy;
+  const approve=container.querySelector('[data-journey-approve]');
+  if(approve){approve.disabled=edit.busy||!same||review?.can_approve!==true||!container.querySelector('[data-journey-confirm]').checked;approve.textContent=edited||edit.savedEdited?'Aprovar versão editada e autorizar este toque':'Aprovar como está e autorizar este toque';}
+  const discard=container.querySelector('[data-journey-discard-step]');
+  if(discard){const reason=container.querySelector('[data-journey-discard-reason]').value.trim();discard.disabled=edit.busy||!review||!reason||reason.length>1000;}
+}
+function journeyRenderReview(container){
+  const edit=journeyEdits.get(container.dataset.journeyEditor),review=edit?.review,target=container.querySelector('[data-journey-review-body]');if(!target)return;
+  if(!review){target.replaceChildren();journeySyncEditor(container);return;}
+  const confirmation=review.execution_confirmation,context=confirmation?.context;
+  target.innerHTML=`<section><h3>Revisão para executar somente ${esc(review.step_id)}</h3><p class="msg">Cadência: ${esc(review.cadence_id)} · Versão: ${esc(review.expected_version)}</p>${context?`<p>Plataforma: ${esc(context.platform)} · Campanha: ${esc(context.campaign_id)} · Versão da campanha: ${esc(context.campaign_version)} · Regras: ${esc(context.rules_version)}</p>`:''}<p class="msg">Contexto SHA256: <code>${esc(review.context_hash)}</code></p><p class="msg">Revisão SHA256: <code>${esc(review.review_hash)}</code></p><p>${esc(review.subject||'Sem assunto')}</p><pre class="journey-original">${esc(review.content)}</pre>${review.can_approve===true?`<details><summary>Escopo exato da execução</summary><pre class="journey-original">${esc(JSON.stringify(confirmation,null,2))}</pre></details><label><input type="checkbox" data-journey-confirm> Confirmo autorizar a execução somente deste toque, na campanha, versão e regras acima.</label><div class="acoes"><button type="button" class="btn pri" data-journey-approve disabled>Aprovar como está e autorizar este toque</button></div>`:`<p class="msg">Aprovação bloqueada: ${esc(journeyRows(review.blockers).map(journeyDescribe).join(' · ')||'Escopo não validado.')}</p>`}<details><summary>Descartar toque canônico</summary><label>Motivo do descarte<textarea rows="2" maxlength="1000" data-journey-discard-reason aria-label="Motivo do descarte do toque"></textarea></label><button type="button" class="btn alerta" data-journey-discard-step disabled>Descartar este toque</button></details></section>`;
+  journeySyncEditor(container);
+}
+function journeyValidateReview(data,edit){
+  const binding=edit.binding,confirmation=data?.execution_confirmation,context=confirmation?.context;
+  if(data?.cadence_id!==binding.cadence_id||data?.step_id!==binding.step_id||!Number.isInteger(data.expected_version)||data.expected_version<1||! /^[a-f0-9]{64}$/.test(data.review_hash||'')||! /^[a-f0-9]{64}$/.test(data.context_hash||'')||typeof data.content!=='string'||!(data.subject===null||typeof data.subject==='string')||typeof data.can_approve!=='boolean'||!Array.isArray(data.blockers))throw new Error('Revisão inválida. Consulte novamente antes de decidir.');
+  if(data.can_approve===true&&(!confirmation||confirmation.confirmed!==true||confirmation.batch_id!==binding.cadence_id||confirmation.batch_version!==data.expected_version||context?.platform!=='thunder_os'||!journeyBR(context?.campaign_id)||binding.campaign_id&&context.campaign_id!==binding.campaign_id))throw new Error('Escopo da execução não corresponde ao toque. Atualize a consulta.');
+  return data;
+}
+function journeyInvalidateCadence(cadence){
+  for(const edit of journeyEdits.values())if(edit.binding?.cadence_id===cadence)edit.review=null;
+  for(const container of document.querySelectorAll('[data-journey-editor]'))if(journeyEdits.get(container.dataset.journeyEditor)?.binding?.cadence_id===cadence)journeyRenderReview(container);
+}
+async function journeyStepOperation(container,operation){
+  const edit=journeyEdits.get(container.dataset.journeyEditor);if(!edit?.binding||edit.busy)return;
+  const binding=edit.binding,review=edit.review;
+  if(operation!=='review'&&!review)return;
+  if(operation==='approve'&&(review.can_approve!==true||edit.text!==review.content||edit.subject!==review.subject||!container.querySelector('[data-journey-confirm]')?.checked))return;
+  if(operation==='revise'&&(!edit.text.trim()||edit.text.length>30000||edit.subject!==null&&edit.subject.length>1000)){edit.message='Texto obrigatório, até 30.000 caracteres; assunto até 1.000.';journeySyncEditor(container);return;}
+  const reason=container.querySelector('[data-journey-discard-reason]')?.value.trim();
+  if(operation==='discard'&&(!reason||reason.length>1000))return;
+  const base={cadence_id:binding.cadence_id,step_id:binding.step_id};
+  const version=review?{...base,expected_version:review.expected_version,review_hash:review.review_hash}:base;
+  const payload=operation==='review'?base:operation==='approve'?{...version,execution_confirmation:review.execution_confirmation}:operation==='revise'?{...version,content:edit.text,subject:edit.subject}:{...version,reason};
+  edit.busy=true;edit.message=operation==='review'?'Consultando revisão canônica…':operation==='revise'?'Salvando revisão deste toque…':operation==='approve'?'Registrando autorização deste toque…':'Registrando descarte deste toque…';journeySyncEditor(container);
+  try{
+    const data=await apiServidor('/api/os/v1/journey/steps/'+operation,'POST',payload);
+    if(operation==='review'){
+      const next=journeyValidateReview(data,edit);
+      if(next.content!==edit.original)throw new Error('O texto canônico mudou. Atualize a fonte antes de aprovar; sua edição local foi preservada.');
+      if(edit.originalSubject===null&&edit.subject===null){edit.originalSubject=next.subject;edit.subject=next.subject;}
+      edit.review=next;edit.message=next.can_approve?'Revisão consultada. Confira o escopo antes de autorizar.':'Revisão consultada com bloqueios. Nenhuma autorização registrada.';journeyRenderReview(container);
+    }else{
+      if(data?.applied!==true||data.sent!==false)throw new Error('Resultado não confirmado. Consulte uma nova revisão antes de repetir.');
+      journeyInvalidateCadence(binding.cadence_id);
+      if(operation==='revise'){
+        const text=edit.text,subject=edit.subject;
+        edit.original=text;edit.originalSubject=subject;edit.savedEdited=true;
+        edit.message='Revisão salva. Consultando uma nova revisão antes de aprovar…';journeySyncEditor(container);
+        const next=journeyValidateReview(await apiServidor('/api/os/v1/journey/steps/review','POST',base),edit);
+        if(next.content!==text||next.subject!==subject)throw new Error('O texto salvo diverge da nova revisão. Consulte novamente antes de aprovar.');
+        edit.review=next;edit.message='Texto salvo e nova revisão consultada. Confira novamente antes de autorizar.';journeyRenderReview(container);
+      }else edit.message=operation==='approve'?'Autorização registrada para o toque '+binding.step_id+'. Status retornado: '+journeyText(data.status||data.cadence?.status)+'. Envio não confirmado.':'Descarte registrado para o toque '+binding.step_id+'. Nenhum envio confirmado.';
+    }
+  }catch(error){edit.review=null;edit.message=error.message||'Não foi possível confirmar. Seu texto foi preservado; consulte nova revisão.';journeyRenderReview(container);}
+  finally{edit.busy=false;journeySyncEditor(container);}
+}
+async function abrirJourneyDetail(id,trigger){
+  const request=++journeyDetailRequest,campaign=journeyCampaign();journeyDetail=null;journeyDetailFocus=trigger;
+  const dialog=$('journey-dialog');$('journey-detail-title').textContent='Mensagem original';$('journey-detail-status').textContent='Consultando texto original…';$('journey-detail-body').replaceChildren();$('journey-detail-body').setAttribute('aria-busy','true');
+  if(!dialog.open)dialog.showModal();
+  try{
+    const data=await apiServidor('/api/os/v1/journey/details/'+encodeURIComponent(id)+journeyQuery());
+    if(request!==journeyDetailRequest||!dialog.open)return;
+    if(data?.id!==id||!Array.isArray(data.blocks))throw new Error('Detalhe inválido');
+    journeyDetail=data;$('journey-detail-title').textContent=journeyText(data.title)||'Mensagem original';
+    $('journey-detail-status').textContent=journeyDescribe(data.meta);
+    $('journey-detail-body').innerHTML=data.blocks.map(block=>`<section><h3>${esc(block.label||'Texto original')}</h3><p class="msg">${esc([block.sender,block.direction,block.date?journeyDate(block.date):''].filter(Boolean).join(' · '))}</p><pre class="journey-original">${esc(block.text)}</pre></section>`).join('')||'<p class="vazio">Texto original não disponível na fonte. O resumo não substitui a mensagem.</p>';
+    const item=journeyRows(journeySnapshot?.stages).flatMap(stage=>journeyRows(stage.items)).find(row=>row.action?.id===id);
+    if(data.editable===true&&typeof data.draft?.text==='string')$('journey-detail-body').insertAdjacentHTML('beforeend',journeyEditor(JSON.stringify(['detail',campaign,id,data.draft.text]),data.draft.text,data.approval_reason,journeyBinding(data,item?.campaign_id||campaign)));
+    $('journey-detail-body').insertAdjacentHTML('beforeend',`<section><h3>Fontes originais</h3>${journeyRows(data.source_links).map(link=>journeyLink(link.url,link.label)).join('')||'<p class="vazio">Nenhum link direto válido informado pela fonte.</p>'}</section>`);
+    for(const container of $('journey-detail-body').querySelectorAll('[data-journey-editor]'))if(journeyEdits.get(container.dataset.journeyEditor)?.binding)journeyRenderReview(container);
+  }catch(error){if(request===journeyDetailRequest&&dialog.open){$('journey-detail-status').textContent='Não foi possível consultar o original. Tente novamente.';const button=document.createElement('button');button.className='btn';button.type='button';button.textContent='Tentar novamente';button.addEventListener('click',()=>abrirJourneyDetail(id,trigger));$('journey-detail-body').replaceChildren(button);}}
+  finally{if(request===journeyDetailRequest)$('journey-detail-body').setAttribute('aria-busy','false');}
+}
+async function carregarJourneyAccounts(force=false){
+  if(journeyAccountsLoading||!apiServidor||!force&&journeyAccountsReadAt&&Date.now()-journeyAccountsReadAt<60000)return;
+  const request=++journeyAccountsRequest;journeyAccountsLoading=true;$('journey-accounts-refresh').disabled=true;$('journey-accounts-status').textContent='Consultando contas…';
+  try{
+    const data=await apiServidor('/api/os/v1/journey/accounts');if(request!==journeyAccountsRequest)return;
+    if(!Array.isArray(data?.accounts))throw new Error('Contas inválidas');
+    const seen=new Set(),rows=data.accounts.filter(row=>journeyVisibleRecord(row)&&typeof row.id==='string'&&(!journeyCampaign()||row.campaign_id===journeyCampaign())).filter(row=>!seen.has(row.id)&&seen.add(row.id));
+    $('journey-accounts-items').innerHTML=rows.map(row=>`<article class="journey-row"><div><h3>${esc(row.name)}</h3><p>${esc(row.company)} · ${esc(journeyRecordLabel(row))}</p>${row.readiness?`<p class="msg">${esc(row.readiness)}</p>`:''}${journeyVisitor(row)&&row.reviewable!==true?'<p class="msg">Somente status. Revisão de cadência indisponível.</p>':''}</div><button type="button" class="btn" data-journey-account="${esc(row.id)}">Abrir</button></article>`).join('')||'<p class="vazio">Nenhuma conta nesta campanha. Consulte outra campanha na Jornada ou atualize.</p>';
+    $('journey-accounts-status').textContent=journeyRows(data.limitations).map(journeyDescribe).join(' · ')||'Consulta concluída. Somente leitura.';journeyAccountsReadAt=Date.now();
+  }catch(error){if(request===journeyAccountsRequest){$('journey-accounts-status').textContent='Não foi possível consultar as contas. Use Atualizar para tentar novamente.';$('journey-accounts-items').replaceChildren();}}
+  finally{if(request===journeyAccountsRequest){journeyAccountsLoading=false;$('journey-accounts-refresh').disabled=false;}}
+}
+function renderJourneyAccountTab(){
+  if(!journeyAccount)return;
+  const rows=journeyRows(journeyAccount.tabs?.[journeyAccountTab]),target=$('journey-account-panel');
+  target.setAttribute('aria-labelledby','journey-tab-'+journeyAccountTab);
+  const source=value=>journeyRows(value).map(item=>typeof item==='string'?journeyLink(item,item)||`<p class="msg">${esc(item)}</p>`:journeyLink(item?.url||item?.source_url,item?.label)||`<p class="msg">${esc(journeyDescribe(item))}</p>`).join('');
+  target.className=journeyAccountTab==='dossier'?'journey-dossier':'';
+  target.innerHTML=rows.map((row,index)=>{
+    if(journeyAccountTab==='research')return `<article class="journey-touch"><p class="journey-original">${esc(row.text)}</p><p class="msg">${esc(row.label)} · ${esc(journeyDate(row.published_on))}</p>${journeyLink(row.source_url,row.label)}</article>`;
+    if(journeyAccountTab==='dossier')return `<article class="journey-touch"><header class="journey-row-head"><h3>${esc(row.key)}</h3><span class="msg">${esc(row.classification)}</span></header><p class="journey-original">${esc(row.text)}</p>${source(row.sources)}</article>`;
+    if(journeyAccountTab==='context')return `<article class="journey-touch"><h3>${esc(row.path)}</h3><p class="msg">${esc(row.status)}</p><p class="journey-original">${esc(row.usage)}</p><code>SHA256: ${esc(row.sha256||'Não informado')}</code></article>`;
+    if(journeyAccountTab==='before_approval')return `<article class="journey-touch"><p class="journey-original">${esc(row.text)}</p><p class="msg">${row.blocking===true?'Bloqueante':row.blocking===false?'Não bloqueante':'Bloqueio não informado'}</p></article>`;
+    const key=JSON.stringify(['account',journeyAccount.campaign_id,journeyAccount.id,row.id||index,row.source_hash||journeyAccount.source?.sha256||'',row.text]);
+    return `<article class="journey-touch"><header class="journey-row-head"><h3>${esc(row.day)} · ${esc(row.channel)}</h3><span class="msg">${esc(row.status||'Status não informado')}</span></header><p class="msg">${esc(journeyDate(row.date))} · Munição: ${esc(journeyDescribe(row.ammunition))}</p><p>${esc(row.subject)}</p><details data-journey-touch="${esc(row.id||index)}"${index===0?' open':''}><summary>Ler texto original e editar</summary><pre class="journey-original">${esc(row.text)}</pre>${typeof row.text==='string'?journeyEditor(key,row.text,row.approval_reason||'Sem vínculo canônico para aprovação. Edição apenas local.',journeyBinding(row,journeyAccount.campaign_id)): '<p class="vazio">Texto original indisponível.</p>'}<p class="msg">Condição de parada: ${esc(row.stop_condition||'Não informada')}</p><code>Fonte SHA256: ${esc(row.source_hash||'Não informado')}</code></details></article>`;
+  }).join('')||'<p class="vazio">Nenhum registro nesta seção. Consulte as limitações da fonte.</p>';
+  for(const container of target.querySelectorAll('[data-journey-editor]'))if(journeyEdits.get(container.dataset.journeyEditor)?.binding)journeyRenderReview(container);
+  $('journey-account-tabs').querySelectorAll('[role=tab]').forEach(tab=>{const selected=tab.dataset.journeyTab===journeyAccountTab;tab.setAttribute('aria-selected',String(selected));tab.tabIndex=selected?0:-1;});
+}
+async function abrirJourneyAccount(id){
+  mostrarAba('contas');$('journey-account-list').hidden=true;$('journey-account-detail').hidden=false;
+  const request=++journeyAccountRequest;journeyAccount=null;journeyAccountTab='cadence';
+  $('journey-account-status').textContent='Consultando conta…';$('journey-account-body').replaceChildren();$('journey-account-status').focus();
+  try{
+    const data=await apiServidor('/api/os/v1/journey/accounts/'+encodeURIComponent(id));
+    if(request!==journeyAccountRequest)return;
+    if(data?.id!==id||!journeyVisibleRecord(data)||journeyCampaign()&&data.campaign_id!==journeyCampaign()||!data.tabs||typeof data.tabs!=='object')throw new Error('Conta inválida');
+    journeyAccount=data;$('journey-account-status').textContent=journeyRows(data.limitations).map(journeyDescribe).join(' · ')||'Somente leitura. Edições locais não estão salvas.';
+    $('journey-account-body').innerHTML=`<section><h2 id="journey-account-name" tabindex="-1">${esc(data.name)}</h2><p class="msg">${esc(journeyRecordLabel(data))}</p>${data.readiness?`<p>${esc(data.readiness)}</p>`:''}<p class="msg">Fonte: <code>${esc(data.source?.path||'Não informada')}</code></p><code>SHA256: ${esc(data.source?.sha256||'Não informado')}</code></section>`;
+    if(journeyVisitor(data)&&data.reviewable!==true)$('journey-account-body').insertAdjacentHTML('beforeend','<p class="msg">Somente status. Revisão de cadência indisponível para esta conta.</p>');
+    else{
+      $('journey-account-body').insertAdjacentHTML('beforeend',`<div class="journey-tabs" role="tablist" aria-label="Seções da conta" id="journey-account-tabs">${journeyTabDefs.map(([key,label])=>`<button type="button" class="btn" id="journey-tab-${key}" role="tab" data-journey-tab="${key}" aria-controls="journey-account-panel" aria-selected="${key===journeyAccountTab}" tabindex="${key===journeyAccountTab?0:-1}">${label}${key==='before_approval'?' ('+journeyRows(data.tabs.before_approval).length+')':''}</button>`).join('')}</div><div id="journey-account-panel" role="tabpanel" tabindex="0"></div>`);renderJourneyAccountTab();
+    }
+    $('journey-account-name').focus({preventScroll:true});
+  }catch(error){if(request===journeyAccountRequest){$('journey-account-status').textContent='Não foi possível consultar esta conta. Tente novamente.';const button=document.createElement('button');button.type='button';button.className='btn';button.textContent='Tentar novamente';button.addEventListener('click',()=>abrirJourneyAccount(id));$('journey-account-body').replaceChildren(button);}}
+}
+function journeyEditorEvent(event){
+  const container=event.target.closest('[data-journey-editor]');if(!container)return;
+  const edit=journeyEdits.get(container.dataset.journeyEditor);if(!edit)return;
+  if(event.type==='input'&&event.target.matches('[data-journey-text],[data-journey-subject]')){
+    if(event.target.matches('[data-journey-text]'))edit.text=event.target.value;else edit.subject=event.target.value;
+    const confirm=container.querySelector('[data-journey-confirm]');if(confirm)confirm.checked=false;journeySyncEditor(container);
+  }
+  if(event.type==='input'&&event.target.matches('[data-journey-confirm],[data-journey-discard-reason]'))journeySyncEditor(container);
+  if(event.type==='click'&&event.target.closest('[data-journey-reset],[data-journey-discard]')){edit.text=edit.original;edit.subject=edit.originalSubject;const confirm=container.querySelector('[data-journey-confirm]');if(confirm)confirm.checked=false;journeySyncEditor(container);container.querySelector('textarea').focus();}
+  if(event.type==='click'){
+    const action=event.target.closest('[data-journey-review],[data-journey-revise],[data-journey-approve],[data-journey-discard-step]');
+    if(action)journeyStepOperation(container,action.hasAttribute('data-journey-review')?'review':action.hasAttribute('data-journey-revise')?'revise':action.hasAttribute('data-journey-approve')?'approve':'discard');
+  }
+}
+for(const id of ['journey-dialog','journey-accounts']){for(const event of ['input','click'])$(id).addEventListener(event,journeyEditorEvent);}
+$('journey-close').addEventListener('click',()=>$('journey-dialog').close());
+$('journey-dialog').addEventListener('close',()=>{
+  ++journeyDetailRequest;journeyDetail=null;
+  const original=journeyDetailFocus?.isConnected?journeyDetailFocus:[...$('journey-content').querySelectorAll('[data-journey-open]')].find(button=>button.dataset.journeyOpen===journeyDetailFocus?.dataset.journeyOpen);
+  (original||$('journey-refresh')).focus({preventScroll:true});
+});
+$('journey-refresh').addEventListener('click',()=>carregarJourney(true));
+$('journey-campaign').addEventListener('change',()=>{
+  ++journeyRequest;journeyLoading=false;journeySnapshot=null;journeyReadAt=0;journeyAccountsReadAt=0;++journeyAccountRequest;
+  $('journey-content').innerHTML='<p class="journey-loading">Carregando a campanha…</p>';carregarJourney(true);
+});
+$('sec-jornada').addEventListener('click',event=>{
+  const stage=event.target.closest('[data-journey-stage]');if(stage){journeyStage=stage.dataset.journeyStage;renderJourneyStage();return;}
+  const button=event.target.closest('[data-journey-open]');if(button){if(button.dataset.journeyKind==='account')abrirJourneyAccount(button.dataset.journeyOpen);else abrirJourneyDetail(button.dataset.journeyOpen,button);}
+});
+$('journey-accounts-refresh').addEventListener('click',()=>carregarJourneyAccounts(true));
+$('journey-account-back').addEventListener('click',()=>{++journeyAccountRequest;mostrarAba('jornada');$('journey-refresh').focus();});
+$('journey-account-list-back').addEventListener('click',()=>{++journeyAccountRequest;$('journey-account-list').hidden=false;$('journey-account-detail').hidden=true;carregarJourneyAccounts(true);$('journey-accounts-refresh').focus();});
+$('journey-accounts').addEventListener('click',event=>{
+  const button=event.target.closest('[data-journey-account]');if(button)abrirJourneyAccount(button.dataset.journeyAccount);
+  const tab=event.target.closest('[data-journey-tab]');if(tab){journeyAccountTab=tab.dataset.journeyTab;renderJourneyAccountTab();}
+});
+$('journey-accounts').addEventListener('keydown',event=>{
+  const tab=event.target.closest('[data-journey-tab]');if(!tab||!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;
+  event.preventDefault();const tabs=[...$('journey-account-tabs').querySelectorAll('button')],index=tabs.indexOf(tab),next=event.key==='Home'?0:event.key==='End'?tabs.length-1:(index+(event.key==='ArrowRight'?1:-1)+tabs.length)%tabs.length;
+  journeyAccountTab=tabs[next].dataset.journeyTab;renderJourneyAccountTab();tabs[next].focus();
+});
+setInterval(()=>{if(!document.hidden&&document.body.dataset.aba==='jornada')carregarJourney(true);},60000);
+/* JOURNEY_END */
 function atualizarHojeVazio(){
   const vazio=Object.values(hojeContagens).every(n=>n===0)&&!Object.values(hojeFalhas).some(Boolean);
   $('hoje-vazio').hidden=!vazio;
@@ -2218,9 +2587,23 @@ $('cad-reply-form').addEventListener('submit',async event=>{
 for(const id of ['cad-reply-campaign','cad-reply-channel','cad-reply-text'])$(id).addEventListener('change',()=>{cadReplyRequest=null;$('cad-reply-result').textContent='';});
 $('sec-cadencias').addEventListener('click',event=>{const b=event.target.closest('[data-cad-contact]');if(b)abrirCadenciaContato(b.dataset.cadContact);});
 function mostrarAba(aba,{registrar=true}={}){
+  const previous=document.body.dataset.aba;
+  const journeyInstalled=typeof journeyMode!=='undefined',mode=journeyInstalled?journeyMode:'legacy';
   aba=({campanhas:'cadencias',agentes:'sistema',conversas:'sistema',aprovar:'sistema'})[aba]||aba;
-  if(!['hoje','cadencias','contas','sistema'].includes(aba)) aba='hoje';
+  if(aba==='hoje'&&mode!=='legacy')aba='jornada';
+  if(!['jornada','hoje','cadencias','contas','sistema'].includes(aba)) aba=mode==='legacy'?'hoje':'jornada';
   if(document.body)document.body.dataset.aba=aba;
+  if(journeyInstalled){
+    $('sec-jornada').hidden=aba!=='jornada';$('sec-hoje').hidden=aba!=='hoje';
+    $('journey-accounts').hidden=aba!=='contas'||mode!=='ready';
+    if(mode==='ready')$('sec-quentes').hidden=true;
+    journeyTheme();
+    if(aba==='jornada')carregarJourney();
+    if(aba==='contas'&&mode==='ready'){
+      if(previous!=='contas'){$('journey-account-list').hidden=false;$('journey-account-detail').hidden=true;}
+      carregarJourneyAccounts();
+    }
+  }
   $('sec-cadencias').hidden=aba!=='cadencias';
   clearInterval(cadReadPollTimer);
   if(['cadencias','sistema'].includes(aba)){
@@ -2241,12 +2624,13 @@ function mostrarAba(aba,{registrar=true}={}){
 }
 function iniciarAbas(){
   $('abas').hidden=false;
-  let aba='hoje';
-  const hash=location.hash.slice(1);if(['hoje','conversas','cadencias','campanhas','aprovar','contas','agentes','sistema'].includes(hash))aba=hash;
+  let aba='jornada';
+  const hash=location.hash.slice(1);if(['jornada','hoje','conversas','cadencias','campanhas','aprovar','contas','agentes','sistema'].includes(hash))aba=hash;
   for(const id of ['cad-email-integrations','cad-reply-control','cad-linkedin-preparation','cad-source-list']){
     const section=$(id)?.closest('.cad-read-section');if(section)$('system-campaign-tools').append(section);
   }
   mostrarAba(aba,{registrar:false});
+  if(aba!=='jornada')carregarJourney();
   if($('abas').dataset.iniciada)return;
   $('abas').dataset.iniciada='true';
   $('abas').addEventListener('click',ev=>{const b=ev.target.closest('button[data-aba]');if(b)mostrarAba(b.dataset.aba);});
@@ -2259,7 +2643,7 @@ function iniciarAbas(){
   window.addEventListener('popstate',()=>mostrarAba(location.hash.slice(1),{registrar:false}));
   window.addEventListener('hashchange',()=>mostrarAba(location.hash.slice(1),{registrar:false}));
   $('hoje-pedido').addEventListener('toggle',()=>{if($('hoje-pedido').open)carregarContatosHermes();});
-  $('sec-hoje').hidden=false;
+  const hermes=document.createElement('div');hermes.dataset.painel='hoje jornada';$('sec-hoje').after(hermes);hermes.append($('hoje-pedido'));
 }
 $('aprovar-filtros').addEventListener('click',ev=>{
   const b=ev.target.closest('[data-filtro-aprovar]');if(!b)return;const f=b.dataset.filtroAprovar;

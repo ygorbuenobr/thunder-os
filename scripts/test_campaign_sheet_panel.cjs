@@ -40,6 +40,8 @@ const cadenceSnapshot = {campaigns: [
   {id: 'UNREGISTERED', tasks: []}
 ], coverage: {complete: false}, today: {}};
 const ctx = {
+  // This harness isolates Campaigns; Jornada is covered by its browser harness.
+  journeyMode: 'legacy', journeyTheme() {},
   $: getNode,
   document: {hidden: false, body: {dataset: {aba: 'cadencias'}}},
   apiServidor: async (...args) => {

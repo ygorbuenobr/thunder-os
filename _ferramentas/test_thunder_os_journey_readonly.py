@@ -1,0 +1,539 @@
+"""Phase 1: isolated SQLite and read-port doubles; no network, model or writes."""
+from contextlib import closing
+from copy import deepcopy
+from datetime import datetime, timezone
+import json
+from pathlib import Path
+import sqlite3
+import tempfile
+from types import SimpleNamespace
+import unittest
+from unittest.mock import Mock, patch
+
+from thunder_os.db import Repository
+from thunder_os.campaign_registry import CampaignRegistry
+from thunder_os.journey_readonly import JourneyReadonly, MISSING
+from thunder_os.seqd_client import MAILBOX
+from thunder_os.service import ThunderService
+from thunder_os.today_readonly import TodayError, TodayReadonly
+
+
+NOW = datetime(2026, 10, 23, 15, tzinfo=timezone.utc)
+BR = 'BR-FIXTURE-01'
+OTHER = 'BR-FIXTURE-02'
+PEER = 'buyer@example.invalid'
+
+
+def message(ident, hour, outgoing, text, **extra):
+    return {'id': ident, 'date': f'2026-10-23T{hour:02}:00:00Z', 'outgoing': outgoing,
+        'text': text, 'sender': MAILBOX if outgoing else PEER, 'subject': 'Fixture subject',
+        'body_complete': True, 'human_reply': not outgoing, 'canonical_id': 'gmail:' + ident, **extra}
+
+
+def receipt(provider, ident):
+    return {'provider': provider, 'message_id': ident, 'verification': 'provider_read'}
+
+
+class JourneyTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = Repository(Path(self.tmp.name) / 'fixture.db')
+        with closing(sqlite3.connect(self.repo.path)) as con, con:
+            con.execute('CREATE TABLE itens(id TEXT PRIMARY KEY,dados JSON,atualizado TEXT)')
+        self.service = ThunderService(self.repo)
+        self.register(BR)
+        self.register(OTHER)
+        self.runner = Mock(side_effect=AssertionError('model forbidden'))
+        self.today = TodayReadonly(self.service, clock=lambda: NOW.timestamp(), monotonic=lambda: 0,
+                                   runner=self.runner)
+        self.rows = []
+        self.today._gmail = self.mail_threads
+        for method in ('_tasks', '_legacy', '_emails', '_instantly', '_linkedin', '_seqd', '_deals', '_approvals'):
+            setattr(self.today, method, Mock(return_value={'status': 'ok', 'respond': [], 'do': []}))
+        self.cadence = Mock()
+        self.cadence.snapshot.return_value = {'coverage': {'complete': False},
+            'collected_at': NOW.isoformat(), 'campaigns': []}
+        self.cadence.timeline.return_value = {'events': [], 'coverage': {'complete': False}}
+        self.adapter = JourneyReadonly(self.today, cadence_reader=self.cadence)
+        for target in ('socket.create_connection', 'socket.socket.connect', 'socket.getaddrinfo'):
+            p = patch(target, side_effect=AssertionError('network forbidden'))
+            port = p.start()
+            self.addCleanup(p.stop)
+            self.addCleanup(port.assert_not_called)
+
+    def add_thread(self, messages, *, ident='fixture', campaign=BR, contact='700', **extra):
+        self.rows.append({'ident': ident, 'campaign': campaign, 'contact_id': contact,
+            'source': 'gmail', 'title': 'Buyer / Fixture company', 'messages': messages,
+            'complete': True, 'person_keys': [PEER],
+            'action': {'label': 'Abrir fonte', 'url': 'https://app.hubspot.com/contacts/51412240/record/0-1/' + str(contact)},
+            **extra})
+
+    def register(self, campaign):
+        CampaignRegistry(self.repo).register({'campaign_id': campaign, 'campaign_version': '1',
+            'rules_version': '1', 'run_id': 'fixture', 'platform': 'thunder_os',
+            'providers': {'email': 'fake-email'}, 'rules': 'Synthetic isolated fixture only.',
+            'configuration': {'flow_version': '1', 'provider_accounts': {'email': 'fixture'}}}, 'ygor', 0)
+
+    def mail_threads(self):
+        result = {'status': 'ok', 'respond': [], 'do': []}
+        for row in self.rows:
+            data = self.today._thread(**row)
+            for key in ('respond', 'do'):
+                result[key].extend(data.get(key, []))
+        return result
+
+    def refresh(self):
+        self.today._cache = None
+
+    def stage(self, snapshot, key):
+        return next(s for s in snapshot['stages'] if s['id'] == key)
+
+    def database(self):
+        with closing(sqlite3.connect(self.repo.path)) as con:
+            return {table: con.execute('SELECT * FROM ' + table).fetchall()
+                    for table in ('thunder_state', 'thunder_effect_jobs', 'thunder_events', 'itens')}
+
+    def instant(self, *, status='ok', complete=True, unclassified=0):
+        self.register('BR-INSTANTLY-01')
+        self.today.instantly = SimpleNamespace(enable_check=lambda: True, clock=lambda: NOW)
+        self.repo.put_state('instantly_reader_snapshot', 'BR-INSTANTLY-01', {
+            'status': status, 'last_success_at': NOW.isoformat(), 'coverage': {'complete': complete},
+            'metrics': {'unclassified_replies': unclassified, 'human_replies': 0, 'leads_with_sent': 100,
+                        'sent_messages': 104},
+            'leads': [{'email': PEER, 'events': [{'provider_id': 'provider-first', 'event_type': 'email_sent',
+                'occurred_at': '2026-10-23T07:00:00Z', 'text': 'Original provider body',
+                'subject': 'Original provider subject', 'content_complete': True}]}]})
+
+    def test_seven_stages_exact_contract_unknown_missing_sources(self):
+        self.today._gmail = Mock(side_effect=RuntimeError('secret error'))
+        self.today._deals = Mock(side_effect=RuntimeError('secret error'))
+        snap = self.adapter.snapshot()
+        self.assertEqual([s['id'] for s in snap['stages']],
+            ['icp', 'abordagem', 'resposta', 'crm', 'linkedin', 'followup', 'preparacao'])
+        self.assertTrue(snap['read_only'])
+        self.assertEqual(set(snap['metrics']), {'reached', 'replied', 'hot', 'cost_per_hot'})
+        for metric in snap['metrics'].values():
+            self.assertEqual(set(metric), {'value', 'source', 'reason', 'coverage'})
+            self.assertIsNone(metric['value'])
+        self.assertIsNone(self.stage(snap, 'crm')['count'])
+        self.assertNotIn('secret error', json.dumps(snap))
+        self.assertEqual(snap['timeline']['events'], [])
+
+    def test_campaign_filter_and_mexico_never_enter_items_or_details(self):
+        for campaign in (BR, OTHER, 'MX27-MTY', 'CDMX-fixture', 'old-mexico'):
+            self.add_thread([message(campaign, 10, False, campaign)], ident=campaign, campaign=campaign)
+        snap = self.adapter.snapshot()
+        self.assertEqual({c['id'] for c in snap['campaigns']}, {BR, OTHER})
+        other = next(i for i in self.stage(snap, 'resposta')['items'] if i['campaign_id'] == OTHER)
+        with self.assertRaises(TodayError) as exc:
+            self.adapter.detail(other['id'], campaign=BR)
+        self.assertEqual(exc.exception.status, 404)
+        filtered = self.adapter.snapshot(campaign=BR)
+        self.assertTrue(all(i['campaign_id'] == BR for s in filtered['stages'] for i in s['items']))
+        self.assertNotIn('MX27', json.dumps(filtered))
+        self.assertEqual(self.adapter.snapshot(campaign='MX27-MTY')['timeline']['events'], [])
+
+    def test_all_observed_full_originals_survive_latest_outgoing_pending_unchanged(self):
+        bodies = [' First contact\n\nExact <literal> & text.\n', 'Human original\nSecond paragraph.',
+                  'Reply from owner', 'Followup after reply\n' + 'Full source line\n' * 2500]
+        self.add_thread([message('latest', 13, True, bodies[3]), message('first', 7, True, bodies[0]),
+                         message('human', 8, False, bodies[1]), message('owner', 9, True, bodies[2])])
+        today = self.today.snapshot()
+        self.assertEqual(today['blocks']['respond']['items'], [])
+        self.assertEqual(today['blocks']['do']['items'], [])
+        thread = today['observed_threads'][0]
+        self.assertEqual([m['text'] for m in thread['thread']['messages']], bodies)
+        self.assertEqual(thread['source']['id'], 'gmail')
+        snap = self.adapter.snapshot()
+        self.assertEqual(len(snap['timeline']['events']), 4)
+        item = self.stage(snap, 'followup')['items'][0]
+        detail = self.adapter.detail(item['id'])
+        originals = [b['text'] for b in detail['blocks'] if b['body_complete']]
+        self.assertEqual(originals, bodies)
+        self.assertFalse(detail['editable'])
+        self.assertFalse(detail['approval_available'])
+        self.runner.assert_not_called()
+
+    def test_sent_only_thread_is_observed_and_not_pending(self):
+        self.add_thread([message('out-only', 12, True, 'Original sent-only body')])
+        today = self.today.snapshot()
+        self.assertEqual(len(today['observed_threads']), 1)
+        self.assertEqual(today['blocks']['respond']['items'], [])
+        snap = self.adapter.snapshot()
+        self.assertEqual(snap['timeline']['events'][0]['label'], 'Voce')
+
+    def test_seqd_all_sent_and_sent_after_reply_reach_observed_collection(self):
+        self.repo.put_state('identity', 'fixture', {'status': 'canonical', 'actor': 'ygor',
+            'canonical_person': PEER, 'records': [{'domain': 'example.invalid', 'person_key': PEER,
+                'hubspot_contact_id': '700'} for _ in range(2)]})
+        port = Mock()
+        port.messages.return_value = {'mailbox': MAILBOX, 'messages': [{'thread_id': 'abc'}]}
+        port.conversation.return_value = {'mailbox': MAILBOX, 'thread': {'complete': True, 'truncated': False,
+            'messages': [{'id': 'one', 'from': PEER, 'to': MAILBOX, 'labelIds': ['INBOX'],
+                'internal_date': '1792742400000', 'complete': True, 'subject': 'Fixture',
+                'bodies': {'text': 'Exact received'}},
+                {'id': 'two', 'from': MAILBOX, 'to': PEER, 'labelIds': ['SENT'],
+                'internal_date': '1792746000000', 'complete': True, 'subject': 'Fixture',
+                'bodies': {'text': 'Exact latest sent'}}]}}
+        self.today.seqd = SimpleNamespace(read_enabled=True, port=port)
+        self.today._seqd = TodayReadonly._seqd.__get__(self.today)
+        snap = self.today.snapshot()
+        self.assertEqual(snap['blocks']['respond']['items'], [])
+        self.assertEqual([m['text'] for m in snap['observed_threads'][0]['thread']['messages']],
+                         ['Exact received', 'Exact latest sent'])
+        port.conversation.return_value['thread']['messages'].pop(0)
+        self.refresh()
+        self.assertEqual(len(self.today.snapshot()['observed_threads']), 1)
+
+    def test_provider_receipts_dedupe_person_across_tools_not_48_plus_100(self):
+        self.add_thread([message('a', 7, True, 'First original', receipt=receipt('apollo', 'a'))],
+                        ident='apollo', source='apollo')
+        self.add_thread([message('b', 8, True, 'Second original', receipt=receipt('instantly', 'b'))],
+                        ident='instantly', source='instantly', campaign=OTHER)
+        snap = self.adapter.snapshot()
+        self.assertEqual(snap['metrics']['reached']['value'], 1)
+        self.assertFalse(snap['metrics']['reached']['coverage']['complete'])
+        self.assertEqual(self.adapter.snapshot(campaign=OTHER)['metrics']['reached']['value'], 1)
+
+    def test_partial_reply_metrics_and_no_fake_zero_cost_or_hot(self):
+        self.instant(status='partial', complete=False, unclassified=2)
+        snap = self.adapter.snapshot(campaign='BR-INSTANTLY-01')
+        self.assertEqual(snap['metrics']['reached']['value'], 1)
+        self.assertIsNone(snap['metrics']['replied']['value'])
+        self.assertIsNone(snap['metrics']['hot']['value'])
+        self.assertIsNone(snap['metrics']['cost_per_hot']['value'])
+        self.assertNotEqual(snap['metrics']['reached']['value'], 100)
+
+    def test_complete_classified_instantly_proves_zero_humans_only_for_its_scope(self):
+        self.instant()
+        snap = self.adapter.snapshot(campaign='BR-INSTANTLY-01')
+        self.assertEqual(snap['metrics']['replied']['value'], 0)
+        self.assertTrue(snap['metrics']['replied']['coverage']['complete'])
+        self.add_thread([message('other', 10, False, 'Human body')])
+        self.refresh()
+        self.assertIsNone(self.adapter.snapshot()['metrics']['replied']['value'])
+
+    def test_no_false_receipt_from_crm_sent_or_task_completion_or_draft(self):
+        self.cadence.snapshot.return_value['campaigns'] = [{'id': BR, 'activities': [{
+            'id': 'crm-email', 'type': 'email', 'direction': 'outgoing', 'status': 'SENT',
+            'sent_evidence': True, 'crm_recorded_sent': True, 'occurred_at': '2026-10-23T10:00:00Z',
+            'contact_ids': ['700'], 'text': 'CRM original'}], 'tasks': []}]
+        self.add_thread([message('draft', 12, True, 'Draft', unsent=True, receipt=receipt('gmail', 'draft'))])
+        snap = self.adapter.snapshot()
+        self.assertIsNone(snap['metrics']['reached']['value'])
+        self.assertFalse(any('Primeiro toque' in i['summary'] for i in self.stage(snap, 'abordagem')['items']))
+
+    def test_hot_requires_explicit_classification_bound_to_exact_original(self):
+        self.add_thread([message('human', 8, False, 'Human exact original')])
+        self.repo.put_state('reply', 'unbound', {'classification': 'positive', 'state': 'classified',
+            'content': 'Signal from a job posting', 'classification_history': [{'classification': 'positive'}]})
+        self.assertIsNone(self.adapter.snapshot()['metrics']['hot']['value'])
+        self.repo.put_state('reply', 'gmail:human', {'classification': 'positive', 'state': 'classified',
+            'content': 'Human exact original', 'classification_history': [{'classification': 'positive'}]})
+        self.assertEqual(self.adapter.snapshot()['metrics']['hot']['value'], 1)
+        self.assertIsNone(self.adapter.snapshot()['metrics']['replied']['value'])
+
+    def test_unknown_ids_out_of_filter_stale_and_stable_hashes(self):
+        self.add_thread([message('human', 8, False, 'Original')])
+        snap = self.adapter.snapshot()
+        ident = self.stage(snap, 'resposta')['items'][0]['id']
+        self.assertRegex(ident, r'^j_[a-f0-9]{64}$')
+        self.assertEqual(ident, self.stage(self.adapter.snapshot(), 'resposta')['items'][0]['id'])
+        for unknown in ('700', 'gmail:human', 'j_' + '0' * 64):
+            with self.assertRaises(TodayError) as exc:
+                self.adapter.detail(unknown)
+            self.assertEqual(exc.exception.status, 404)
+        self.rows[0]['messages'][0]['text'] = 'Changed source'
+        self.refresh()
+        with self.assertRaises(TodayError) as exc:
+            self.adapter.detail(ident)
+        self.assertEqual(exc.exception.code, 'journey_detail_stale')
+
+    def test_partial_body_never_labelled_complete_and_empty_not_summary_original(self):
+        self.add_thread([message('partial', 8, False, 'Truncated...', body_complete=False)])
+        snap = self.adapter.snapshot()
+        detail = self.adapter.detail(self.stage(snap, 'resposta')['items'][0]['id'])
+        self.assertFalse(detail['blocks'][0]['body_complete'])
+        self.assertEqual(detail['blocks'][0]['text'], 'Truncated...')
+        self.assertNotEqual(detail['blocks'][0]['label'], 'Texto original')
+        self.assertFalse(self.today.snapshot()['observed_threads'][0]['thread']['complete'])
+
+    def test_detail_uses_only_observed_contact_for_crm_full_history(self):
+        self.add_thread([message('old', 8, False, 'Original received')])
+        self.cadence.timeline.return_value = {'coverage': {'complete': False}, 'events': [{
+            'id': 'email:late', 'occurred_at': '2026-10-23T12:58:00Z', 'campaign': BR,
+            'text': 'Exact late outgoing body\n\nNo rewrite.', 'direction': 'outgoing'}]}
+        snap = self.adapter.snapshot(campaign=BR)
+        detail = self.adapter.detail(self.stage(snap, 'resposta')['items'][0]['id'], campaign=BR)
+        self.cadence.timeline.assert_called_once_with('700', campaign=BR)
+        self.assertIn('Exact late outgoing body\n\nNo rewrite.', [b['text'] for b in detail['blocks']])
+        with self.assertRaises(TodayError):
+            self.adapter.detail('235718647634', campaign=BR)
+        self.assertEqual(self.cadence.timeline.call_count, 1)
+
+    def test_urls_allowlist_no_approval_and_no_db_mutation(self):
+        self.add_thread([message('human', 8, False, 'Original')],
+            action={'label': 'Injected', 'url': 'https://app.hubspot.com.evil.invalid/anything'})
+        before = self.database()
+        snap = self.adapter.snapshot()
+        for stage in snap['stages']:
+            for item in stage['items']:
+                self.assertEqual(item['action'], {'label': 'Abrir', 'type': 'detail', 'id': item['id']})
+                detail = self.adapter.detail(item['id'])
+                self.assertFalse(detail['approval_available'])
+                self.assertFalse(detail['editable'])
+                self.assertTrue(detail['blocks'])
+                self.assertEqual(detail['source_links'], [])
+        self.assertEqual(before, self.database())
+        self.runner.assert_not_called()
+        with self.assertRaises(sqlite3.OperationalError):
+            self.adapter.repo.put_state('reply', 'forbidden', {})
+
+    def test_invalid_campaign_is_rejected_before_readers(self):
+        for value in ('../MX', '', ['BR'], 'x' * 101):
+            with self.subTest(value=value), self.assertRaises(TodayError) as exc:
+                self.adapter.snapshot(value)
+            self.assertEqual(exc.exception.status, 400)
+        self.cadence.snapshot.assert_not_called()
+
+    def test_brazil_requires_valid_registry_not_name_and_account_wrappers_filter(self):
+        self.add_thread([message('unknown', 8, False, 'Unregistered BR name')],
+                        ident='unregistered', campaign='BR-UNREGISTERED')
+        self.add_thread([message('unlinked', 9, False, 'No region')], ident='unlinked', campaign=None)
+        self.register('MX27-FIXTURE')
+        self.register('GENERIC-FIXTURE')
+        accounts = Mock()
+        accounts.list_accounts.return_value = {'accounts': [
+            {'id': 'a', 'campaign_id': BR, 'name': 'Known account', 'source': {'sha256': 'abc'}},
+            {'id': 'b', 'campaign_id': 'MX27-FIXTURE'},
+            {'id': 'c', 'campaign_id': None},
+            {'id': 'd', 'campaign_id': 'BR-UNREGISTERED'},
+            {'id': 'e', 'campaign_id': 'GENERIC-FIXTURE'}], 'limitations': []}
+        accounts.account.return_value = {'id': 'a', 'campaign_id': BR, 'source': {'sha256': 'abc'},
+                                        'source_text': 'Full actual account text', 'tabs': {}}
+        adapter = JourneyReadonly(self.today, cadence_reader=self.cadence, accounts=accounts)
+        snap = adapter.snapshot()
+        self.assertEqual({c['id'] for c in snap['campaigns']}, {BR, OTHER})
+        self.assertEqual(self.stage(snap, 'resposta')['items'], [])
+        scope = next(s for s in snap['sources'] if s['id'] == 'brazil_scope')
+        self.assertEqual(scope['omitted']['threads'], 2)
+        self.assertEqual(scope['omitted']['accounts'], 4)
+        catalog = adapter.account_list()
+        self.assertEqual([r['id'] for r in catalog['accounts']], ['a'])
+        self.assertEqual(catalog['omitted_count'], 4)
+        self.assertEqual(adapter.account_detail('a')['source_text'], 'Full actual account text')
+        accounts.account.assert_called_once_with('a', campaign=BR)
+        with self.assertRaises(TodayError):
+            adapter.account_detail('b')
+        self.assertEqual(accounts.account.call_count, 1)
+
+    def test_mailbox_sender_does_not_merge_unrelated_buyers(self):
+        self.add_thread([message('first', 7, True, 'One', receipt=receipt('gmail', 'first'))],
+                        contact='700', person_keys=[MAILBOX, PEER])
+        self.add_thread([message('second', 8, True, 'Two', receipt=receipt('gmail', 'second'))],
+                        ident='second', contact='701', person_keys=[MAILBOX, 'second@example.invalid'])
+        snap = self.adapter.snapshot()
+        self.assertEqual(snap['metrics']['reached']['value'], 2)
+        self.assertNotIn(MAILBOX, self.today.snapshot()['observed_threads'][0]['person_keys'])
+
+    def test_fuller_canonical_message_observation_survives_deduplication(self):
+        self.add_thread([message('same', 8, False, 'Truncated...', body_complete=False)])
+        self.add_thread([message('same', 8, False, 'Full exact original\nLast marker')],
+                        ident='second-reader', source='seqd')
+        snap = self.adapter.snapshot()
+        self.assertEqual(len(snap['timeline']['events']), 1)
+        detail = self.adapter.detail(snap['timeline']['events'][0]['detail_id'])
+        self.assertEqual(detail['blocks'][0]['text'], 'Full exact original\nLast marker')
+        self.assertTrue(detail['blocks'][0]['body_complete'])
+
+    def test_later_crm_outgoing_removes_pending_projection_without_delivery_receipt(self):
+        self.add_thread([message('old-inbound', 8, False, 'Exact original inbound')])
+        self.cadence.snapshot.return_value['campaigns'] = [{'id': BR, 'tasks': [], 'activities': [{
+            'id': 'email:latest', 'contact_ids': ['700'], 'crm_recorded_sent': True,
+            'occurred_at': '2026-10-23T12:58:00Z', 'text': 'Exact last outbound original',
+            'subject': 'Latest CRM outgoing', 'type': 'email', 'receipt': None}]}]
+        snap = self.adapter.snapshot()
+        self.assertEqual(self.stage(snap, 'resposta')['items'], [])
+        self.assertEqual(len(self.stage(snap, 'followup')['items']), 1)
+        self.assertEqual(snap['timeline']['events'][-1]['label'], 'Voce')
+        self.assertIsNone(snap['metrics']['reached']['value'])
+
+    def test_unavailable_sqlite_dims_sources_instead_of_fabricating_zero(self):
+        with patch.object(self.adapter.repo, 'transaction', side_effect=sqlite3.OperationalError('private')):
+            snap = self.adapter.snapshot()
+        self.assertIsNone(snap['metrics']['reached']['value'])
+        self.assertIsNone(self.stage(snap, 'icp')['count'])
+        self.assertNotIn('private', json.dumps(snap))
+
+    def test_each_of_seven_stages_has_source_detail_or_explicit_missing_body(self):
+        self.add_thread([message('human', 8, False, 'Original inbound')])
+        self.add_thread([message('sent', 9, True, 'Original sent', receipt=receipt('gmail', 'sent'))],
+                        ident='outgoing')
+        self.add_thread([message('linkedin', 10, False, 'Original LinkedIn')], ident='linkedin', source='linkedin')
+        self.today._deals.return_value = {'status': 'ok', 'do': [{
+            'id': 'hubspot:deal:900', 'title': 'Recorded deal', 'campaign_id': BR,
+            'date': '2026-10-23T11:00:00Z', 'last_message': 'CRM next step, not original'}]}
+        self.repo.put_state('meeting', 'fixture', {'account_id': 'fixture-account', 'campaign_id': BR,
+            'person_key': PEER, 'occurred_at': '2026-10-24T12:00:00Z'})
+        self.repo.put_state('research', 'fixture-account', {'facts': [{'text': 'Recorded account research'}]})
+        snap = self.adapter.snapshot()
+        for stage in snap['stages']:
+            with self.subTest(stage=stage['id']):
+                self.assertTrue(stage['items'])
+                detail = self.adapter.detail(stage['items'][0]['action']['id'])
+                self.assertTrue(all(isinstance(b['text'], str) and b['text'] for b in detail['blocks']))
+                self.assertFalse(detail['approval_available'])
+        crm = self.adapter.detail(self.stage(snap, 'crm')['items'][0]['id'])
+        self.assertEqual(crm['blocks'][0]['text'], MISSING)
+        self.assertFalse(crm['blocks'][1]['body_complete'])
+
+    def test_later_inbound_invalidates_old_positive_and_stale_provider_leaves_unknown(self):
+        self.add_thread([message('positive', 8, False, 'Exact positive'),
+                         message('later', 10, False, 'New unclassified original')])
+        self.repo.put_state('reply', 'gmail:positive', {'classification': 'positive', 'state': 'classified',
+            'content': 'Exact positive', 'classification_history': [{'classification': 'positive'}]})
+        self.assertIsNone(self.adapter.snapshot()['metrics']['hot']['value'])
+        self.instant(status='stale')
+        self.assertIsNone(self.adapter.snapshot(campaign='BR-INSTANTLY-01')['metrics']['replied']['value'])
+
+    def test_registry_failure_or_unregistered_campaign_cannot_turn_partial_into_zero(self):
+        self.instant()
+        with patch.object(self.adapter.service.campaign_registry, 'list_campaigns', side_effect=ValueError('bad')):
+            snap = self.adapter.snapshot(campaign='BR-INSTANTLY-01')
+        self.assertEqual(snap['campaigns'], [])
+        self.assertIsNone(snap['metrics']['replied']['value'])
+        self.assertIsNone(snap['metrics']['reached']['value'])
+
+    def test_explicit_indexed_visitor_group_is_draft_not_campaign_and_last_four_status_only(self):
+        from thunder_os.account_cadence_readonly import AccountCadenceReadonly
+        reader = AccountCadenceReadonly(self.tmp.name)
+        ready = ['vicunha', 'kyb', 'mcassab', 'temp-log', 'swarovski', 'ponto-da-lingerie']
+        status_only = {'movida': 'warm_review', 'sansul': 'warm_review',
+                       'hidrosina': 'blocked_mexico', 'fajo': 'discarded'}
+        rows = [{'id': slug, 'name': 'Synthetic ' + slug, 'campaign_id': None,
+            'source_group': 'visitantes-2026-10-22', 'readiness': status_only.get(slug, 'ready_for_review'),
+            'source_index': {'path': '_entrada/claude/cadencias-visitantes-2026-10-22/README.md', 'sha256': 'b' * 64},
+            'reviewable': slug in ready, 'source': {'sha256': 'a' * 64,
+                'path': '_entrada/claude/cadencias-visitantes-2026-10-22/' + slug + '/cadencia.md'}}
+            for slug in ready + list(status_only)]
+        older = [{'id': 'old-' + str(i), 'campaign_id': None, 'source': {'path': 'contas/old-' + str(i) + '/cadencia.md'}}
+                 for i in range(59)]
+        details = {row['id']: {**deepcopy(row), 'source_text': 'Synthetic exact original body: ' + row['id'],
+            'tabs': {'research': [], 'dossier': [], 'context': [],
+                     'cadence': [{'text': 'Synthetic exact touch: ' + row['id']}], 'before_approval': []}}
+            for row in rows}
+        adapter = JourneyReadonly(self.today, cadence_reader=self.cadence, accounts=reader)
+        before = self.database()
+        with patch.object(reader, 'list_accounts', return_value={'accounts': rows + older, 'limitations': []}), \
+                patch.object(reader, 'account', side_effect=lambda id, campaign=None: deepcopy(details[id])):
+            snap = adapter.snapshot()
+            self.assertEqual({r['id'] for r in snap['campaigns']}, {BR, OTHER})
+            group_items = [i for i in self.stage(snap, 'icp')['items'] if i.get('source_group')]
+            self.assertEqual(len(group_items), 10)
+            self.assertTrue(all(i['campaign_id'] is None and i['approval_available'] is False for i in group_items))
+            self.assertTrue(all('nao cadastrada' in i['campaign_label'] for i in group_items))
+            catalog = adapter.account_list()
+            self.assertEqual(len(catalog['accounts']), 10)
+            self.assertEqual(catalog['omitted_count'], 59)
+            for slug in ready:
+                detail = adapter.account_detail(slug)
+                self.assertEqual(detail['source_text'], 'Synthetic exact original body: ' + slug)
+                self.assertEqual(detail['tabs']['cadence'][0]['text'], 'Synthetic exact touch: ' + slug)
+                self.assertTrue(detail['reviewable'])
+                self.assertFalse(detail['approval_available'])
+                self.assertFalse(detail['editable'])
+                self.assertNotIn('canonical_cadence_id', detail)
+            for slug in status_only:
+                detail = adapter.account_detail(slug)
+                self.assertTrue(detail['status_only'])
+                self.assertEqual(detail['source_text'], '')
+                self.assertEqual(detail['tabs']['cadence'], [])
+                self.assertFalse(detail['approval_available'])
+                self.assertNotIn('Synthetic exact touch', json.dumps(detail))
+            self.assertIsNone(snap['metrics']['reached']['value'])
+            self.assertEqual(snap['timeline']['events'], [])
+            self.assertEqual(adapter.account_list(campaign=BR)['accounts'], [])
+            with self.assertRaises(TodayError):
+                adapter.account_detail('hidrosina', campaign=BR)
+        self.assertEqual(before, self.database())
+
+    def test_source_group_claim_from_generic_reader_is_not_authority(self):
+        reader = Mock()
+        reader.list_accounts.return_value = {'accounts': [{'id': 'pretend', 'campaign_id': None,
+            'source_group': 'visitantes-2026-10-22', 'readiness': 'ready_for_review', 'reviewable': True,
+            'source': {'path': '_entrada/claude/cadencias-visitantes-2026-10-22/kyb/cadencia.md'}}], 'limitations': []}
+        adapter = JourneyReadonly(self.today, cadence_reader=self.cadence, accounts=reader)
+        self.assertEqual(adapter.account_list()['accounts'], [])
+        with self.assertRaises(TodayError):
+            adapter.account_detail('pretend')
+        reader.account.assert_not_called()
+
+    def canonical(self, **changes):
+        return self.repo.put_state('cadence', 'actual-cadence', {'account_id': 'fixture-account',
+            'person_key': PEER, 'status': 'ready_for_review',
+            'execution_context': CampaignRegistry(self.repo).load(BR),
+            'steps': [{'id': 'E1', 'recipient': PEER, 'channel': 'email',
+                       'content': ' Exact canonical draft\n\nLast line.\n', 'subject': 'Exact subject', 'status': 'draft'}],
+            **changes})
+
+    def test_canonical_steps_actual_ids_exact_draft_full_context_no_get_authority(self):
+        row = self.canonical()
+        self.add_thread([message('incoming', 8, False, 'Full original lead message\nFinal marker')])
+        before = self.database()
+        with patch.object(ThunderService, 'review_step', side_effect=AssertionError('GET review forbidden')) as review, \
+                patch.object(ThunderService, 'dispatch_step', side_effect=AssertionError('GET dispatch forbidden')) as dispatch:
+            snap = self.adapter.snapshot()
+            item = next(i for i in self.stage(snap, 'abordagem')['items'] if i['summary'].startswith('Passo canonico'))
+            detail = self.adapter.detail(item['id'])
+            self.assertEqual(detail['canonical_cadence_id'], 'actual-cadence')
+            self.assertEqual(detail['canonical_step_id'], 'E1')
+            self.assertEqual(detail['canonical_cadence_version'], row['version'])
+            self.assertEqual(detail['draft']['text'], row['steps'][0]['content'])
+            self.assertEqual(detail['draft']['subject'], 'Exact subject')
+            self.assertEqual(detail['blocks'][0]['text'], 'Full original lead message\nFinal marker')
+            self.assertTrue(detail['editable'])
+            self.assertFalse(detail['approval_available'])
+            review.assert_not_called()
+            dispatch.assert_not_called()
+        self.assertEqual(before, self.database())
+        self.assertIsNone(self.repo.get_state('approval', 'actual-cadence'))
+        self.assertIsNone(snap['metrics']['reached']['value'])
+
+    def test_canonical_sent_discarded_pending_effect_and_missing_effect_source_not_editable(self):
+        for changes in ({'status': 'sent'}, {'discarded': True}):
+            step = {'id': 'E1', 'recipient': PEER, 'channel': 'email', 'content': 'Canonical body',
+                    'status': 'draft', **changes}
+            self.canonical(steps=[step])
+            snap = self.adapter.snapshot()
+            item = next(i for i in self.stage(snap, 'abordagem')['items'] if i['summary'].startswith('Passo canonico'))
+            self.assertFalse(self.adapter.detail(item['id'])['editable'])
+        self.canonical()
+        self.repo.enqueue_effect('fixture-pending', {'cadence_id': 'actual-cadence', 'step': {'id': 'E1'}})
+        snap = self.adapter.snapshot()
+        item = next(i for i in self.stage(snap, 'abordagem')['items'] if i['summary'].startswith('Passo canonico'))
+        self.assertFalse(self.adapter.detail(item['id'])['editable'])
+        with patch.object(self.adapter, '_effects', side_effect=ValueError('unavailable')):
+            snap = self.adapter.snapshot()
+            item = next(i for i in self.stage(snap, 'abordagem')['items'] if i['summary'].startswith('Passo canonico'))
+            self.assertFalse(self.adapter.detail(item['id'])['editable'])
+
+    def test_account_adds_canonical_steps_by_account_id_never_markdown_touch_name(self):
+        self.canonical()
+        accounts = Mock()
+        account = {'id': 'fixture-account', 'campaign_id': BR, 'source': {'path': None, 'sha256': None}}
+        accounts.list_accounts.return_value = {'accounts': [account], 'limitations': []}
+        accounts.account.return_value = {**account, 'tabs': {'cadence': [{'id': 'E1', 'text': 'Different Markdown original'}]}}
+        adapter = JourneyReadonly(self.today, cadence_reader=self.cadence, accounts=accounts)
+        detail = adapter.account_detail('fixture-account', campaign=BR)
+        touches = detail['tabs']['cadence']
+        self.assertEqual(touches[0]['text'], 'Different Markdown original')
+        self.assertNotIn('canonical_cadence_id', touches[0])
+        self.assertEqual(touches[1]['canonical_cadence_id'], 'actual-cadence')
+        self.assertEqual(touches[1]['canonical_step_id'], 'E1')
+        self.assertEqual(touches[1]['source'], 'canonical_cadence_state')
+        self.assertFalse(touches[1]['approval_available'])
+
+
+if __name__ == '__main__':
+    unittest.main()

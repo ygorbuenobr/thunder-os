@@ -1345,6 +1345,39 @@ class Handler(BaseHTTPRequestHandler):
         service = getattr(self.server, 'thunder_service', None)
         if service is None:
             raise Erro('Thunder OS indisponível', 503)
+        journey_step_action = re.fullmatch(r'/api/os/v1/journey/steps/(review|approve|revise|discard)', rota.path)
+        if not journey_step_action and (rota.path == '/api/os/v1/journey' or rota.path.startswith('/api/os/v1/journey/')):
+            if self.thunder_proxy_actor() != 'ygor':
+                raise Erro('Somente Ygor pode consultar a Jornada.', 403)
+            if self.command != 'GET':
+                raise Erro('Jornada permite somente leitura nesta fase.', 405)
+            query = parse_qs(rota.query, keep_blank_values=True)
+            if (set(query) - {'campaign'} or len(query.get('campaign', [])) > 1
+                    or ('campaign' in query and not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', query['campaign'][0]))):
+                raise Erro('Filtro de campanha inválido.')
+            campaign = query.get('campaign', [None])[0]
+            journey = getattr(self.server, 'thunder_journey_readonly', None)
+            accounts = getattr(self.server, 'thunder_account_cadence_readonly', None)
+            if journey is None or accounts is None:
+                raise Erro('Leitura da Jornada indisponível.', 503)
+            from thunder_os.today_readonly import TodayError
+            try:
+                if rota.path == '/api/os/v1/journey':
+                    result = journey.snapshot(campaign=campaign)
+                elif rota.path == '/api/os/v1/journey/accounts':
+                    result = journey.account_list(campaign=campaign)
+                elif match := re.fullmatch(r'/api/os/v1/journey/details/([A-Za-z0-9:_-]{1,160})', rota.path):
+                    result = journey.detail(match.group(1), campaign=campaign)
+                elif match := re.fullmatch(r'/api/os/v1/journey/accounts/([A-Za-z0-9:_-]{1,160})', rota.path):
+                    result = journey.account_detail(match.group(1), campaign=campaign)
+                else:
+                    raise Erro('Item da Jornada não encontrado.', 404)
+            except TodayError as error:
+                status = error.status if error.status in {400, 404, 409, 503} else 503
+                raise Erro('A fonte mudou ou não está disponível; atualize a consulta.', status) from error
+            except (KeyError, ValueError) as error:
+                raise Erro('Item indisponível nesta campanha; atualize a consulta.', 404) from error
+            return self.responder(200, result)
         if rota.path == '/api/os/v1/today-work':
             if self.thunder_proxy_actor() != 'ygor':
                 raise Erro('Somente Ygor pode consultar Hoje.', 403)
@@ -1630,6 +1663,61 @@ class Handler(BaseHTTPRequestHandler):
             raise Erro('Rota Thunder OS inválida', 405)
         actor = self.thunder_actor()
         body = self.corpo()
+        if journey_step_action:
+            if actor != 'ygor':
+                raise Erro('Somente Ygor pode decidir sobre um toque.', 403)
+            action = journey_step_action.group(1)
+            base_fields = {'cadence_id', 'step_id'}
+            fields = {'review': base_fields,
+                'approve': base_fields | {'expected_version', 'review_hash', 'execution_confirmation'},
+                'revise': base_fields | {'expected_version', 'review_hash', 'content', 'subject'},
+                'discard': base_fields | {'expected_version', 'review_hash', 'reason'}}[action]
+            if (rota.query or not isinstance(body, dict) or set(body) != fields
+                    or any(not isinstance(body.get(key), str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', body[key])
+                           for key in base_fields)):
+                raise Erro('Revisão do toque inválida.')
+            cadence = service.repository.get_state('cadence', body['cadence_id'])
+            campaign_id = (cadence or {}).get('execution_context', {}).get('campaign_id', '')
+            # This surface never imports Markdown, guesses identity or operates Mexico.
+            if not cadence or not (campaign_id.startswith('BR-') or campaign_id == 'CHATTIE-01'):
+                raise Erro('Toque não pertence a uma campanha Brasil desta Jornada.', 404)
+            if action == 'review':
+                return self.responder(200, service.review_step(body['cadence_id'], body['step_id'], actor))
+            if (type(body.get('expected_version')) is not int
+                    or not isinstance(body.get('review_hash'), str)
+                    or not re.fullmatch(r'[a-f0-9]{64}', body['review_hash'])):
+                raise Erro('Versão da revisão inválida.')
+            if action == 'approve':
+                result = service.approve_cadence(body['cadence_id'], actor,
+                    expected_version=body['expected_version'], review_hash=body['review_hash'],
+                    execution_confirmation=body['execution_confirmation'], step_ids=[body['step_id']])
+                return self.responder(200, {'applied': True, 'sent': False, 'receipt': None,
+                    'status': 'approved' if result.get('status') == 'active' else result.get('status'),
+                    'approval': result,
+                    'cadence': service.repository.get_state('cadence', body['cadence_id'])})
+            if action == 'discard':
+                result = service.discard_step(body['cadence_id'], body['step_id'], actor,
+                    expected_version=body['expected_version'], review_hash=body['review_hash'], reason=body['reason'])
+                return self.responder(200, {'applied': True, 'sent': False, 'cadence': result})
+            if (cadence['version'] != body['expected_version']
+                    or service.cadence_review_hash(cadence) != body['review_hash']):
+                raise RepositoryConflict('stale cadence review')
+            if (not isinstance(body['content'], str) or not body['content'].strip()
+                    or len(body['content']) > 30000
+                    or body['subject'] is not None and (not isinstance(body['subject'], str)
+                        or len(body['subject']) > 1000)):
+                raise Erro('Texto do toque inválido.')
+            steps = [dict(step) for step in cadence['steps']]
+            selected = next((step for step in steps if step['id'] == body['step_id']), None)
+            if selected is None:
+                raise Erro('Toque não encontrado.', 404)
+            if selected['channel'] != 'email' and body['subject'] is not None:
+                raise Erro('Este canal não aceita assunto.')
+            selected['content'] = body['content']
+            if selected['channel'] == 'email':
+                selected['subject'] = body['subject']
+            result = service.revise_cadence(body['cadence_id'], steps, body['expected_version'], actor)
+            return self.responder(200, {'applied': True, 'sent': False, 'cadence': result})
         if rota.path == '/api/os/v1/today-work/draft':
             if actor != 'ygor':
                 raise Erro('Somente Ygor pode pedir rascunhos.', 403)
@@ -2151,6 +2239,13 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
                     max_pages=20, max_requests=40, budget_seconds=15) if crm_read else None,
                 deals=HubSpotHTTP(systemd_hubspot_credential, timeout=4) if crm_read else None,
                 runner=getattr(getattr(servidor, 'thunder_panel_verifier', None), 'runner', None))
+            from thunder_os.account_cadence_readonly import AccountCadenceReadonly
+            from thunder_os.journey_readonly import JourneyReadonly
+            servidor.thunder_account_cadence_readonly = AccountCadenceReadonly(
+                RAIZ, repo=servidor.thunder_today_readonly.repo)
+            servidor.thunder_journey_readonly = JourneyReadonly(servidor.thunder_today_readonly,
+                cadence_reader=getattr(servidor, 'thunder_cadence_readonly', None),
+                accounts=servidor.thunder_account_cadence_readonly)
             servidor.thunder_origin = os.environ.get(
                 'THUNDER_OS_ORIGIN', 'https://painel.r3xdigital.tech')
             if runtime is not None:servidor.thunder_origin = runtime['public_origin']

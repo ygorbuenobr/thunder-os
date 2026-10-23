@@ -9,6 +9,7 @@ ALLOWED_FILES = {
     "_ferramentas/test_campaign_sheet_support.py",
     "scripts/test_campaign_sheet_panel.cjs",
     "scripts/test_today_panel.cjs",
+    "scripts/test_journey_panel.cjs",
     "requirements-test.txt",
     "_ferramentas/chief_briefing.py",
     "_ferramentas/chief_briefing_runner.py",
@@ -78,6 +79,10 @@ ALLOWED_FILES = {
     "_ferramentas/painel_modelo.html",
 }
 ALLOWED_TESTS = {
+    "test_thunder_os_journey_http.py",
+    "test_thunder_os_journey_readonly.py",
+    "test_thunder_os_account_cadence_readonly.py",
+    "test_thunder_os_step_approval.py",
     "test_thunder_os_today_readonly.py",
     "test_thunder_os_email_context.py",
     "test_thunder_os_email_readback.py",

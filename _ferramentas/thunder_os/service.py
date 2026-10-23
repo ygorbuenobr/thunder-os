@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
+from pathlib import PurePosixPath
 import re
 import unicodedata
 from typing import Any, Mapping
@@ -19,7 +20,7 @@ from .learning import LearningEngine
 from .research import validate_artifact, research_is_current
 from .knowledge import KnowledgeStore, KnowledgeError, validate_catalog
 from .cadence import effective_due
-from .touch_ledger import TouchLedger
+from .touch_ledger import TouchLedger, TouchBlocked
 
 
 class AuthorizationError(ContractError):
@@ -123,8 +124,75 @@ class ThunderService:
             "account_id": cadence["account_id"], "person_key": cadence["person_key"],
             "objective": cadence["objective"], "research_hash": cadence.get("research_hash"),
             "execution_context": cadence.get("execution_context"),
+            **({"context_sources": cadence["context_sources"]} if "context_sources" in cadence else {}),
+            **({"discarded_step_ids": [s["id"] for s in cadence["steps"] if s.get("discarded")]}
+               if any(s.get("discarded") for s in cadence["steps"]) else {}),
             "steps": [ThunderService._approval_step(step) for step in cadence["steps"]],
         })
+
+    def _validate_context_sources(self, cadence, *, required=False):
+        sources = cadence.get("context_sources", [])
+        if required and not sources:
+            raise ApprovalError("context_sources_required")
+        if not isinstance(sources, list) or len(sources) > 32:
+            raise ApprovalError("context_sources_invalid")
+        seen = set()
+        for source in sources:
+            if (not isinstance(source, Mapping) or set(source) != {"path", "sha256"}
+                    or not isinstance(source["path"], str) or not source["path"]
+                    or not isinstance(source["sha256"], str)
+                    or not re.fullmatch(r"[a-f0-9]{64}", source["sha256"])):
+                raise ApprovalError("context_sources_invalid")
+            relative = PurePosixPath(source["path"])
+            if (relative.is_absolute() or ".." in relative.parts or "\\" in source["path"]
+                    or str(relative) != source["path"] or source["path"] in seen):
+                raise ApprovalError("context_sources_invalid")
+            seen.add(source["path"])
+            if self.knowledge_store is None:
+                raise ApprovalError("context_sources_unavailable")
+            path = self.knowledge_store.root
+            try:
+                if path.is_symlink():
+                    raise ApprovalError("context_sources_invalid")
+                for part in relative.parts:
+                    path = path / part
+                    if path.is_symlink():
+                        raise ApprovalError("context_sources_invalid")
+                snapshot = self.knowledge_store.read(source["path"])
+            except (KnowledgeError, OSError, ValueError) as exc:
+                raise ApprovalError("context_sources_unavailable") from exc
+            if not snapshot.validated:
+                raise ApprovalError("context_source_not_validated")
+            if snapshot.content_hash != source["sha256"]:
+                raise ApprovalError("context_source_changed")
+        return payload_hash(sources)
+
+    def _selected_steps(self, cadence, step_ids=None):
+        steps = cadence["steps"]
+        sent = {e["payload"].get("step", {}).get("id") for e in self.repository.effects()
+                if e["payload"].get("cadence_id") == cadence["id"] and e["state"] == "sent"}
+        available = {s["id"] for s in steps if s["id"] not in sent and not s.get("discarded")}
+        if step_ids is not None:
+            if (not isinstance(step_ids, list) or not step_ids
+                    or any(not isinstance(ident, str) or not ident for ident in step_ids)
+                    or len(set(step_ids)) != len(step_ids) or not set(step_ids) <= available):
+                raise ApprovalError("invalid_selected_steps")
+            available = set(step_ids)
+        selected = [s for s in steps if s["id"] in available]
+        if not selected:
+            raise ApprovalError("cadence has no future steps to approve")
+        return selected
+
+    def _check_prior_step_authority(self, cadence, step_ids):
+        if step_ids is None:
+            return
+        prior = self.repository.get_state("approval", cadence["id"])
+        future = {s["id"] for s in self._selected_steps(cadence)}
+        if (prior and prior.get("status") == "active"
+                and (set(prior.get("step_hashes", {})) & future) - set(step_ids)):
+            # One existing pack/confirmation per cadence: never replace another
+            # future grant implicitly or manufacture a combined human envelope.
+            raise ApprovalError("prior_approval_review_required")
 
     def campaign_sheet_view(self, campaign_id):
         from .campaign_sheet import sheet_view
@@ -156,23 +224,27 @@ class ThunderService:
         self.require_campaign_sheet(context['campaign_id'])
         return current
 
-    def campaign_execution_review(self, cadence, *, approval=None):
+    def campaign_execution_review(self, cadence, *, approval=None, step_ids=None):
+        self._validate_context_sources(cadence)
         context = self._campaign_context(cadence)
         if any(s["channel"] not in context["providers"] for s in cadence["steps"]):
             raise ApprovalError("campaign_provider_mismatch")
         hashes = {s["id"]: _step_hash(self._approval_step(s)) for s in cadence["steps"]}
         if approval is not None:
+            if step_ids is not None:
+                raise ApprovalError("invalid_selected_steps")
             approved = approval.get("step_hashes", {})
             if not approved or any(hashes.get(k) != v for k, v in approved.items()):
                 raise ApprovalError("campaign_confirmation_scope_changed")
+            if any(s.get("discarded") and s["id"] in approved for s in cadence["steps"]):
+                raise ApprovalError("step_discarded")
             hashes = {k: hashes[k] for k in approved}
             version = approval["cadence_version"]
             if cadence["version"] != version + 1:
                 raise ApprovalError("campaign_confirmation_scope_changed")
         else:
-            sent = {e["payload"].get("step", {}).get("id") for e in self.repository.effects()
-                    if e["payload"].get("cadence_id") == cadence["id"] and e["state"] == "sent"}
-            hashes = {k: v for k, v in hashes.items() if k not in sent}
+            selected = self._selected_steps(cadence, step_ids)
+            hashes = {s["id"]: hashes[s["id"]] for s in selected}
             version = cadence["version"]
         control = self.repository.get_state("control", "global") or {}
         return execution_request(context, cadence["id"], version, hashes, control.get("version", 0))
@@ -205,6 +277,9 @@ class ThunderService:
         return {**sheet_meta, "execution_confirmation": request, "execution_question": question}
 
     def validate_campaign_execution(self, cadence, approval, *, channel=None, provider=None):
+        context_hash = self._validate_context_sources(cadence)
+        if (cadence.get("context_sources") or "context_hash" in approval) and approval.get("context_hash") != context_hash:
+            raise ApprovalError("context_source_changed")
         expected = self.campaign_execution_review(cadence, approval=approval)
         validate_execution(approval.get("execution_confirmation"), expected, datetime.now(timezone.utc))
         if channel is not None and (not provider or expected["context"]["providers"].get(channel) != provider):
@@ -504,8 +579,9 @@ class ThunderService:
 
     def create_cadence(self, data: Mapping[str, Any], actor: str) -> dict[str, Any]:
         required = {"id", "account_id", "person_key", "objective", "steps"}
-        if set(data) - (required | {"execution_context"}) or not required <= set(data) or not isinstance(data.get("steps"), list) or not data["steps"]:
+        if set(data) - (required | {"execution_context", "context_sources"}) or not required <= set(data) or not isinstance(data.get("steps"), list) or not data["steps"]:
             raise ContractError("invalid cadence")
+        self._validate_context_sources(data)
         if "execution_context" in data:
             execution_context(data["execution_context"])
         research = self.current_research(str(data["account_id"]))
@@ -560,7 +636,66 @@ class ThunderService:
         fields = {"id", "recipient", "channel", "content", "order", "interval_hours", "subject"}
         return {key: value for key, value in step.items() if key in fields}
 
-    def approve_cadence(self, cadence_id: str, actor: str, *, expected_version: int, review_hash: str, execution_confirmation=None) -> dict[str, Any]:
+    def review_step(self, cadence_id: str, step_id: str, actor: str) -> dict[str, Any]:
+        if actor != "ygor":
+            raise AuthorizationError("human authority required to review a cadence")
+        cadence = self.repository.get_state("cadence", cadence_id)
+        if not cadence:
+            raise ContractError("cadence not found")
+        step = next((s for s in cadence["steps"] if s["id"] == step_id), None)
+        if not step:
+            raise ContractError("cadence step not found")
+        blockers = []
+        confirmation = None
+        try:
+            self._validate_context_sources(cadence, required=True)
+            if cadence.get("status") not in {"ready_for_review", "approved"}:
+                raise ApprovalError("cadence is paused or awaiting review")
+            if self.global_paused():
+                raise ApprovalError("global pause active")
+            selected = self._selected_steps(cadence, [step_id])
+            research = self.current_research(str(cadence["account_id"]))
+            if cadence.get("research_hash") != payload_hash({"version": research["version"], "facts": research["facts"]}):
+                raise ApprovalError("research changed; prepare a new cadence review")
+            identity_error = self.identity_execution_error(cadence)
+            if identity_error:
+                raise ApprovalError(identity_error)
+            self._check_prior_step_authority(cadence, [step_id])
+            if self._approval_preflight(selected, require_ledger=True):
+                raise ApprovalError("duplicate_touch_review_required")
+            confirmation = self.campaign_execution_review(cadence, step_ids=[step_id])
+        except (ContractError, TouchBlocked) as exc:
+            blocker = str(exc)
+            if (blocker == "campaign_context_changed"
+                    and (cadence.get("execution_context") or {}).get("platform") != "thunder_os"):
+                blocker = "external_campaign_executor_not_supported"
+            blockers.append(blocker)
+        return {"cadence_id": cadence_id, "step_id": step_id,
+                "expected_version": cadence["version"], "review_hash": self.cadence_review_hash(cadence),
+                "execution_confirmation": confirmation, "content": step["content"],
+                "subject": step.get("subject"), "context_hash": payload_hash(cadence.get("context_sources", [])),
+                "can_approve": not blockers, "blockers": blockers}
+
+    def _approval_preflight(self, steps, *, require_ledger=False):
+        duplicates = []
+        if require_ledger and self.ledger is None:
+            raise ApprovalError("touch_ledger_unavailable")
+        if self.ledger:
+            for step in steps:
+                scoped = self._approval_step(step)
+                evidence = self.ledger.preflight(_step_hash(scoped), scoped)
+                if require_ledger and evidence.get("blocked"):
+                    raise ApprovalError(str(evidence["blocked"]))
+                if evidence.get("duplicate"):
+                    duplicates.append(evidence)
+        return duplicates
+
+    def approve_cadence(self, cadence_id: str, actor: str, *, expected_version: int, review_hash: str, execution_confirmation=None, step_ids=None) -> dict[str, Any]:
+        with self.repository.transaction():
+            return self._approve_cadence(cadence_id, actor, expected_version=expected_version,
+                review_hash=review_hash, execution_confirmation=execution_confirmation, step_ids=step_ids)
+
+    def _approve_cadence(self, cadence_id, actor, *, expected_version, review_hash, execution_confirmation, step_ids):
         if actor != "ygor":
             raise AuthorizationError("human authority required to approve a cadence")
         cadence = self.repository.get_state("cadence", cadence_id)
@@ -568,6 +703,8 @@ class ThunderService:
             raise ContractError("cadence not found")
         if type(expected_version) is not int or cadence["version"] != expected_version or self.cadence_review_hash(cadence) != review_hash:
             raise RepositoryConflict("stale cadence review")
+        if step_ids is not None:
+            self._validate_context_sources(cadence, required=True)
         research = self.current_research(str(cadence["account_id"]))
         if cadence.get("research_hash") != payload_hash({"version": research["version"], "facts": research["facts"]}):
             raise RepositoryConflict("research changed; prepare a new cadence review")
@@ -576,22 +713,19 @@ class ThunderService:
         now = datetime.now(timezone.utc)
         if self.global_paused():
             raise ContractError("global pause active")
-        request = self.campaign_execution_review(cadence)
+        selected = self._selected_steps(cadence, step_ids)
+        self._check_prior_step_authority(cadence, step_ids)
+        request = self.campaign_execution_review(cadence, step_ids=step_ids)
         confirmation = confirm_execution(execution_confirmation, request, actor, now + timedelta(days=14), now)
         identity_error = self.identity_execution_error(cadence)
         if identity_error:
             raise ContractError(identity_error)
         sent_ids = {effect["payload"].get("step", {}).get("id") for effect in self.repository.effects()
                     if effect["payload"].get("cadence_id") == cadence_id and effect["state"] == "sent"}
-        scoped_steps = [self._approval_step(step) for step in cadence["steps"] if step["id"] not in sent_ids]
+        scoped_steps = [self._approval_step(step) for step in selected]
         if not scoped_steps:
             raise ContractError("cadence has no future steps to approve")
-        duplicate_evidence = []
-        if self.ledger:
-            for step in scoped_steps:
-                evidence = self.ledger.preflight(_step_hash(step), step)
-                if evidence.get("duplicate"):
-                    duplicate_evidence.append(evidence)
+        duplicate_evidence = self._approval_preflight(scoped_steps, require_ledger=step_ids is not None)
         if duplicate_evidence:
             return self.repository.put_state("approval", cadence_id, {
                 "actor": actor, "status": "needs_reconciliation", "duplicate_evidence": duplicate_evidence,
@@ -606,15 +740,42 @@ class ThunderService:
             "step_ids": list(pack.step_ids), "step_hashes": dict(pack.step_hashes),
             "expires_at": pack.expires_at.isoformat(), "status": pack.status,
             "review_hash": review_hash, "execution_confirmation": confirmation,
+            **({"context_hash": self._validate_context_sources(cadence)} if "context_sources" in cadence else {}),
         }
         cadence_payload = {k: v for k, v in cadence.items() if k not in {"id", "version", "updated_at"}}
         cadence_payload.update(status="approved", steps=[
-            {**step, "status": "sent" if step["id"] in sent_ids else "approved"}
+            {**step, "status": "sent" if step["id"] in sent_ids else
+                "approved" if step["id"] in pack.step_ids else step.get("status", "draft")}
             for step in cadence["steps"]])
         return self.repository.approve_cadence_atomic(
             cadence_id, expected_version, review_hash, approval_payload, cadence_payload,
             review_hasher=self.cadence_review_hash, research_version=research["version"],
         )
+
+    def discard_step(self, cadence_id: str, step_id: str, actor: str, *, expected_version: int,
+                     review_hash: str, reason: str) -> dict[str, Any]:
+        if actor != "ygor":
+            raise AuthorizationError("human authority required to discard a step")
+        if not isinstance(reason, str) or not reason.strip() or len(reason) > 1000:
+            raise ContractError("discard reason required")
+        with self.repository.transaction():
+            cadence = self.repository.get_state("cadence", cadence_id)
+            if (not cadence or type(expected_version) is not int or cadence["version"] != expected_version
+                    or self.cadence_review_hash(cadence) != review_hash):
+                raise RepositoryConflict("stale cadence review")
+            self._selected_steps(cadence, [step_id])
+            if cadence.get("status") not in {"ready_for_review", "approved"}:
+                raise ContractError("paused or blocked cadence cannot be changed by discard")
+            approval = self.repository.get_state("approval", cadence_id)
+            updates = []
+            if approval:
+                updates.append(("approval", cadence_id, {**approval, "status": "invalidated",
+                    "invalidated_step_ids": list(approval.get("step_ids", [])),
+                    "next_action": "review required after step discard"}, approval["version"]))
+            updates.append(("cadence", cadence_id, {**cadence, "status": "ready_for_review",
+                "steps": [{**s, "discarded": True, "discard_reason": reason.strip()} if s["id"] == step_id
+                          else s for s in cadence["steps"]], "actor": actor}, expected_version))
+            return self.repository.put_states_atomic(updates)[-1]
 
     def dispatch_step(self, cadence_id: str, step_id: str, actor: str) -> dict[str, Any]:
         cadence = self.repository.get_state("cadence", cadence_id)
@@ -696,6 +857,12 @@ class ThunderService:
         return {**job, "payload": job["payload"] if isinstance(job["payload"], dict) else __import__("json").loads(job["payload"])}
 
     def revise_cadence(self, cadence_id: str, steps: list[Mapping[str, Any]], expected_version: int, actor: str) -> dict[str, Any]:
+        if actor != "ygor":
+            raise AuthorizationError("human authority required to revise a cadence")
+        with self.repository.transaction():
+            return self._revise_cadence(cadence_id, steps, expected_version, actor)
+
+    def _revise_cadence(self, cadence_id, steps, expected_version, actor):
         cadence = self.repository.get_state("cadence", cadence_id)
         if not cadence or cadence["version"] != expected_version:
             raise ContractError("stale cadence version")
@@ -712,6 +879,8 @@ class ThunderService:
             if raw.get("order") != order or type(raw.get("interval_hours")) is not int or not 0 <= raw["interval_hours"] <= 87600:
                 raise ContractError("invalid revised step order or interval")
             original = old_steps[raw["id"]]
+            if raw.get("recipient") != original["recipient"]:
+                raise ContractError("revision must preserve recipients")
             normalized.append({**original, **scoped, "predecessor_id": steps[order - 2]["id"] if order > 1 else None})
         old = {key: _step_hash(self._approval_step(value)) for key, value in old_steps.items()}
         new = {step["id"]: _step_hash(self._approval_step(step)) for step in normalized}

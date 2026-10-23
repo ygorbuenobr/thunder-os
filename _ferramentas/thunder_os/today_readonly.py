@@ -159,6 +159,7 @@ class TodayReadonly:
         self.runner, self.clock, self.monotonic = runner, clock, monotonic
         self._lock, self._slot = threading.RLock(), threading.BoundedSemaphore(1)
         self._cache, self._expires, self._packets, self._drafts = None, 0, {}, {}
+        self._observed_threads = []
 
     def snapshot(self):
         with self._lock:
@@ -180,6 +181,7 @@ class TodayReadonly:
 
     def _build(self):
         self._packets = {}
+        self._observed_threads = []
         self._mx_codes = set()
         self._mx_contacts, self._mx_people = set(), set()
         self._crm_bindings = {}
@@ -256,10 +258,16 @@ class TodayReadonly:
                     cached = self._drafts.get(item['context_hash'])
                     if cached:
                         item.update(draft=deepcopy(cached), draft_status='available', draft_limitation=None)
+        sources = {s['id']: s for block in result['blocks'].values() for s in block['sources']}
+        result['observed_threads'] = sorted((
+            {**thread, 'source': {**deepcopy(sources.get(thread['source_ids'][0], {})),
+                                 'collected_at': thread['source_collected_at']}}
+            for thread in self._observed_threads if not self._excluded(thread)),
+            key=lambda thread: (thread['date'] or '~', thread['id']))
         return result
 
     def _thread(self, *, source, ident, title, messages, complete, action, campaign=None,
-                contact_id=None, draft=None, scope_verified=True, person_keys=()):
+                contact_id=None, draft=None, scope_verified=True, person_keys=(), source_collected_at=None):
         if not scope_verified or self._excluded({'campaign_id': campaign, 'title': title,
                                                 'contact_id': contact_id, 'person_keys': person_keys}):
             return {}
@@ -269,6 +277,32 @@ class TodayReadonly:
         if any(not m.get('date') or type(m.get('outgoing')) is not bool
                or m.get('body_complete') is not True for m in ordered):
             complete = False
+        # Preserve observations before deciding whether the lead still needs a reply.
+        # These are plain-text reader bodies, not summaries or a new drafting context.
+        observed = []
+        for m in ordered:
+            text = m.get('text') if isinstance(m.get('text'), str) else ''
+            text = re.sub(r'(?i)\bBearer\s+\S+', 'Bearer [REDACTED]', text)
+            text = re.sub(r'\bpat-[A-Za-z0-9_-]+', '[REDACTED]', text)
+            text = re.sub(r'(?i)((?:access_token|api_key|token|password)\s*[=:]\s*)[^\s&]+',
+                          r'\1[REDACTED]', text)
+            observed.append({'id': m['id'], 'date': m.get('date'), 'text': text,
+                'sender': plain_text(m.get('sender')), 'subject': plain_text(m.get('subject')),
+                'direction': 'outgoing' if m.get('outgoing') is True else
+                    'incoming' if m.get('outgoing') is False else 'unknown',
+                'body_complete': m.get('body_complete') is True and bool(text.strip()),
+                'unsent': bool(m.get('unsent')), 'automatic': _automated(m),
+                'human_reply': m.get('human_reply'),
+                'source_id': m.get('canonical_id') or source + ':' + m['id'],
+                'message_keys': m.get('message_keys') or [m.get('canonical_id') or source + ':' + m['id']],
+                'receipt': deepcopy(m.get('receipt'))})
+        self._observed_threads.append({'id': ident, 'title': plain_text(title),
+            'campaign_id': campaign, 'contact_id': contact_id,
+            'person_keys': sorted(key for key in person_keys if key and key != MAILBOX),
+            'owner': 'ygor', 'date': ordered[-1].get('date'), 'source_ids': [source],
+            'source_collected_at': source_collected_at,
+            'collected_at': _stamp(self.clock()), 'action': deepcopy(action),
+            'thread': {'complete': complete and all(m['body_complete'] for m in observed), 'messages': observed}})
         # An outgoing draft is not a sent reply. An unknown direction cannot prove silence.
         sent = [m['date'] for m in ordered if m.get('outgoing') is True and not m.get('unsent') and m.get('date')]
         last_sent = max(sent, default='')
@@ -363,6 +397,7 @@ class TodayReadonly:
                         draft = {'text': plain_text(saved['content']), 'origin': 'persisted_gmail_draft', 'source_ids': [key]}
                 data = self._thread(source='gmail', ident='gmail-thread:' + row['id'], title=raw[-1].get('subject', '') if raw else '',
                     messages=normalized, complete=row.get('complete') is True,
+                    source_collected_at=row.get('updated_at'),
                     contact_id=contact, draft=draft,
                     person_keys={m.get('sender') for m in raw if m.get('sender')},
                     campaign=self._campaign_for({m.get('sender') for m in raw}),
@@ -456,10 +491,15 @@ class TodayReadonly:
                 'outgoing': True if e['event_type'] == 'email_sent' else False,
                 'automatic': e['event_type'] != 'reply_received' and e['event_type'] != 'email_sent',
                 'body_complete': e.get('content_complete'),
+                'human_reply': True if e['event_type'] == 'reply_received' else
+                    False if e['event_type'] == 'auto_reply_received' else None,
+                'receipt': {'provider': 'instantly', 'message_id': e['provider_id'],
+                    'verification': 'provider_read'} if e['event_type'] == 'email_sent' else None,
                 'canonical_id': 'instantly:' + e['provider_id']} for e in lead.get('events', [])]
             contact = self._contact_for({lead['email']})
             data = self._thread(source='instantly', ident='instantly:' + payload_hash(lead['email']),
                 title=lead['email'], messages=messages,
+                source_collected_at=snapshot.get('last_success_at'),
                 complete=bool(contact) and any(m['outgoing'] is True for m in messages)
                     and snapshot['status'] == 'ok' and snapshot.get('coverage', {}).get('complete') is True,
                 campaign=snapshot['campaign_id'], contact_id=contact,
@@ -494,6 +534,7 @@ class TodayReadonly:
                          'body_complete': m.get('body_complete'),
                          'outgoing': m['direction'] == 'outgoing', 'canonical_id': 'linkedin:' + m['id']} for m in row['messages']]
             data = self._thread(source='linkedin', ident='linkedin-thread:' + row['id'], title=row['title'],
+                source_collected_at=_stamp(snapshot.get('updated_at')),
                 messages=messages, complete=not stale and row.get('coverage') == 'complete' and not row.get('messages_truncated')
                     and not row.get('pending') and all(not m.get('revision_pending') for m in row['messages']),
                 contact_id=self._contact_for({url, 'linkedin:' + url}), person_keys={url, 'linkedin:' + url},
@@ -566,6 +607,8 @@ class TodayReadonly:
                         'outgoing': True if outgoing else False if incoming else None,
                         'unsent': 'DRAFT' in m.get('labelIds', []),
                         'body_complete': m.get('complete'),
+                        'receipt': {'provider': 'gmail', 'message_id': m['id'],
+                            'verification': 'provider_read'} if outgoing and 'DRAFT' not in m.get('labelIds', []) else None,
                         'canonical_id': 'rfc822:' + m['message_id'].strip() if m.get('message_id') else 'gmail:' + m['id'],
                         'message_keys': ['gmail:' + m['id']] + (['rfc822:' + m['message_id'].strip()] if m.get('message_id') else [])})
                 sent = [m for m in normalized if m['outgoing'] is True and not m['unsent'] and m['date']]
@@ -574,9 +617,9 @@ class TodayReadonly:
                 last_sent = max(m['date'] for m in sent)
                 pending = [m for m in normalized if m['outgoing'] is False and not _automated(m)
                            and m['date'] and m['date'] > last_sent]
-                if not pending:
-                    continue
-                peers = set().union(*(_addresses(m.get('sender')) for m in pending))
+                peers = set().union(*(_addresses(m.get('sender')) for m in pending)) if pending else (
+                    set().union(*(_addresses(m.get('from')) | _addresses(m.get('to'))
+                                  for m in row['messages'])) - {MAILBOX})
                 candidates.append((ident, row, normalized, peers))
             except Exception:
                 result['limitations'].append('thread_unavailable')
@@ -588,6 +631,7 @@ class TodayReadonly:
                     result['unresolved_contacts'] += 1
                     continue
                 data = self._thread(source='seqd', ident='seqd-thread:' + ident,
+                    source_collected_at=_stamp(self.clock()),
                     title=row['messages'][-1].get('subject', '') if row['messages'] else '', messages=normalized,
                     complete=row.get('complete') is True and not row.get('truncated'), contact_id=contact,
                     campaign=self._campaign_for(peers), person_keys=peers,
