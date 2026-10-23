@@ -1804,7 +1804,7 @@ function todayItemHTML(item,block){
 }
 function todaySourcesHTML(sources){
   const labels={ok:'Disponível',available:'Disponível',complete:'Disponível',ready:'Disponível',partial:'Consulta parcial',empty:'Sem itens',error:'Fonte indisponível',offline:'Fonte indisponível',unavailable:'Fonte indisponível',stale:'Consulta desatualizada',missing:'Fonte ausente',disabled:'Fonte desativada'};
-  const names={gmail:'Gmail',seqd:'E-mail',linkedin:'LinkedIn',instantly:'Instantly',hubspot_tasks:'Tarefas HubSpot',hubspot_emails:'E-mails HubSpot',hubspot_deals:'Negócios HubSpot',legacy:'Contexto legado',approvals:'Revisões',campaign_bindings:'Vínculos de campanha'};
+  const names={gmail:'Gmail · histórico local',seqd:'Gmail · ponte SEQD',linkedin:'LinkedIn · histórico salvo',instantly:'Instantly',hubspot_tasks:'Tarefas HubSpot',hubspot_emails:'E-mails HubSpot',hubspot_deals:'Negócios HubSpot',legacy:'Contexto legado',approvals:'Revisões',campaign_bindings:'Vínculos de campanha'};
   const healthy=source=>['ok','available','complete','ready','empty'].includes(source?.status);
   const list=rows=>`<ul class="today-sources">${rows.map(source=>`<li${healthy(source)?'':' class="error"'}>${esc(source?.name||names[source?.id]||'Fonte')} · ${esc(labels[source?.status]||'Consulta indisponível')}${healthy(source)?'':source?.status==='partial'?'. Parte dos dados está disponível.':'. Use Atualizar para tentar novamente.'}</li>`).join('')}</ul>`;
   const failures=sources.filter(source=>!healthy(source)),success=sources.filter(healthy);
