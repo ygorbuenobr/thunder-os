@@ -36,7 +36,7 @@ const detail = id => ({id, title: 'Original integral sintético', meta: 'Origem 
   draft: {text: draft}, editable: true, approval_available: false, approval_reason: 'Sem vínculo com toque canônico. Aprovação bloqueada.'});
 const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', company: 'Empresa sintética', campaign_id: br,
   contact: 'Contato documental sintético', thesis: 'Tese documental original.\n' + attack, method: 'MÉTODO-SINTÉTICO',
-  source: {path: 'fixtures/account.md', sha256: 'a'.repeat(64)}, limitations: ['Fonte sintética sem aprovação canônica.'],
+  source: {path: 'fixtures/account.md', sha256: 'a'.repeat(64)}, limitations: ['Fonte sintética sem aprovação canônica.', ...Array.from({length: 57}, (_, i) => 'unrelated/catalog-account-' + i + '/cadencia.md')],
   tabs: {research: [{text: 'Fato original sintético. ' + attack, label: 'Fonte pública sintética', published_on: collected, source_url: source.url}],
     dossier: [{key: 'M1', classification: 'hipótese', text: 'Hipótese original sem reescrita.', sources: [source]}],
     context: [{path: 'fixtures/context.md', sha256: 'b'.repeat(64), status: 'ok', usage: 'Uso original do contexto.'}],
@@ -311,6 +311,10 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
       assert.equal(await page.locator('body').getAttribute('data-aba'), 'contas');
       assert.deepEqual(await page.locator('#journey-account-tabs button').allTextContents(), ['Pesquisa ABM', 'Dossiê', 'Contexto usado', 'Cadência', 'Antes de aprovar (2)']);
       assert.match(await page.locator('#journey-account-body').innerText(), /fixtures\/account.md/);
+      const accountStatus = await page.locator('#journey-account-status').innerText();
+      assert(accountStatus.length < 220, 'Account header remains compact despite catalog-wide diagnostics');
+      assert.match(accountStatus, /1 pendência\(s\) bloqueante\(s\) em Antes de aprovar/);
+      assert.doesNotMatch(accountStatus, /unrelated\/catalog-account/);
       await assertAccountComposition(accountState);
       await page.evaluate(() => window.scrollTo(0, 0));
       await page.screenshot({path: path.join(output, `account-header-${viewport.width}.png`)});
@@ -318,6 +322,8 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
         await page.locator(`[data-journey-tab=${key}]`).click();
         assert((await page.locator('#journey-account-panel').innerText()).includes(content));
       }
+      assert.match(await page.locator('#journey-account-panel').innerText(), /Nota contextual/);
+      assert.match(await page.locator('#journey-account-panel').innerText(), /Bloqueante/);
       await page.locator('[data-journey-tab=cadence]').click();
       for (const touch of accountState.tabs.cadence) {
         const block = page.locator(`[data-journey-touch="${touch.id}"]`);
@@ -461,7 +467,7 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
       await page.locator('[data-journey-stage=icp]').click();
       assert.equal(await page.locator('#journey-stage-items article').count(), 10);
       assert.match(await page.locator('#journey-stage-items').innerText(), /Visitantes · rascunhos/);
-      assert.equal(await page.locator('#journey-campaign option').count(), 3, 'Draft source group never becomes a campaign');
+      assert.deepEqual(await page.locator('#journey-campaign option').evaluateAll(nodes => nodes.map(node => node.value)), ['', br, other, 'CHATTIE-01'], 'Only the registered Brazil campaigns appear; the draft source group never becomes a campaign');
       assert.equal(await page.locator('#journey-stage-items article').filter({hasText: 'Do not show message for held visitors'}).count(), 6, 'Held visitors expose status only');
       await page.locator('#journey-filter').fill('Do not show message for held visitors');
       assert.equal(await page.locator('#journey-stage-items article').count(), 6, 'Search cannot expose the hidden message of a status-only visitor');
