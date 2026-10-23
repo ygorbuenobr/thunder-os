@@ -6,6 +6,8 @@ from pathlib import PurePosixPath
 
 
 ALLOWED_FILES = {
+    "_ferramentas/test_campaign_sheet_support.py",
+    "scripts/test_campaign_sheet_panel.cjs",
     "requirements-test.txt",
     "_ferramentas/chief_briefing.py",
     "_ferramentas/chief_briefing_runner.py",
@@ -96,6 +98,7 @@ ALLOWED_TESTS = {
     "test_thunder_os_cadence_readonly.py",
     "test_thunder_os_panel_discard.py",
     "test_thunder_os_campaign_registry.py",
+    "test_thunder_os_campaign_sheet.py",
     "test_thunder_os_operation_campaign.py",
     "test_thunder_os_migrated_operations.py",
     "test_thunder_os_campaign_confirmation.py",

@@ -126,6 +126,19 @@ class ThunderService:
             "steps": [ThunderService._approval_step(step) for step in cadence["steps"]],
         })
 
+    def campaign_sheet_view(self, campaign_id):
+        from .campaign_sheet import sheet_view
+        try:
+            sheet = self.campaign_registry.sheet(campaign_id)
+        except (ApprovalError, ValueError, TypeError):
+            sheet = None
+        return sheet_view(campaign_id, sheet, getattr(self, 'campaign_sheet_store', self.knowledge_store))
+
+    def require_campaign_sheet(self, campaign_id):
+        from .campaign_sheet import require_sheet
+        return require_sheet(campaign_id, self.campaign_registry.sheet(campaign_id),
+            getattr(self, 'campaign_sheet_store', self.knowledge_store))
+
     def configure_campaign(self, config, actor, *, expected_version):
         return self.campaign_registry.register(config, actor, expected_version)
 
@@ -140,6 +153,7 @@ class ThunderService:
             raise ApprovalError("campaign_context_unavailable") from exc
         if current != context or current["platform"] != "thunder_os":
             raise ApprovalError("campaign_context_changed")
+        self.require_campaign_sheet(context['campaign_id'])
         return current
 
     def campaign_execution_review(self, cadence, *, approval=None):
@@ -164,16 +178,31 @@ class ThunderService:
         return execution_request(context, cadence["id"], version, hashes, control.get("version", 0))
 
     def campaign_review_view(self, cadence):
+        context = cadence.get('execution_context') or {}
+        view = self.campaign_sheet_view(context.get('campaign_id', ''))
+        stale = any(row['status'] == 'hash_mismatch' for row in view['fields'])
+        try:
+            current = self.campaign_registry.load(context.get('campaign_id', ''))
+            stale = stale or context.get('configuration_hash') != current['configuration_hash']
+        except ApprovalError:
+            pass
+        sheet_meta = {'campaign_sheet_status': 'stale' if stale else view['status'],
+            'campaign_sheet_version': view['version'],
+            'campaign_sheet_label': 'versão anterior' if stale else
+                'ficha incompleta' if view['status'] != 'complete' else 'Ficha da campanha verificada'}
         try:
             request = self.campaign_execution_review(cadence)
-        except ApprovalError:
-            return {"execution_confirmation": None, "execution_question":
-                    "É no Chattie, Thunder OS ou Instantly? Identifique a campanha e suas regras antes de executar."}
+        except ApprovalError as exc:
+            question = ("A ficha mudou. Prepare uma nova revisão e aprove novamente."
+                if stale else "Complete e confira as fontes da ficha antes de aprovar o texto."
+                if str(exc) == 'campaign_sheet_incomplete' else
+                "É no Chattie, Thunder OS ou Instantly? Identifique a campanha e suas regras antes de executar.")
+            return {**sheet_meta, "execution_confirmation": None, "execution_question": question}
         context = request["context"]
         question = (f"Confirma executar no Thunder OS a campanha {context['campaign_id']} "
                     f"(versão {context['campaign_version']}, regras {context['rules_version']}), "
                     f"somente o lote {cadence['id']} e os destinatários/textos exibidos?")
-        return {"execution_confirmation": request, "execution_question": question}
+        return {**sheet_meta, "execution_confirmation": request, "execution_question": question}
 
     def validate_campaign_execution(self, cadence, approval, *, channel=None, provider=None):
         expected = self.campaign_execution_review(cadence, approval=approval)

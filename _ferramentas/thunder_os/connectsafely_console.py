@@ -40,10 +40,11 @@ def _exception_code(exc,default):
 
 
 class ConnectSafelyConsole:
-    def __init__(self,repository,client,ledger,*,account_id,account_public_id,writes_enabled=False,clock=time.time):
+    def __init__(self,repository,client,ledger,*,account_id,account_public_id,writes_enabled=False,clock=time.time,campaign_sheet_store=None):
         self.repo,self.client,self.ledger=repository,client,ledger
         self.account_id,self.account_public_id=account_id,account_public_id
         self.writes_enabled,self.clock=writes_enabled,clock
+        self.campaign_sheet_store=campaign_sheet_store
         self.approvals=ApprovalService(lambda: bool((self.repo.get_state('control','global') or {}).get('paused')))
 
     def _actor(self,actor):
@@ -136,7 +137,8 @@ class ConnectSafelyConsole:
         return {'status':'uncertain','retry_write':False,'error_code':_error(result.get('error_code') if isinstance(result,dict) else None,'requires_reconciliation'),**extra}
 
     def campaign_gate(self):
-        return OperationCampaign(self.repo, 'connectsafely', 'connectsafely', self.account_id, 'linkedin', clock=self.clock)
+        return OperationCampaign(self.repo, 'connectsafely', 'connectsafely', self.account_id, 'linkedin', clock=self.clock,
+                                 sheet_store=self.campaign_sheet_store)
 
     def campaign_review(self, body, actor):
         self._actor(actor)

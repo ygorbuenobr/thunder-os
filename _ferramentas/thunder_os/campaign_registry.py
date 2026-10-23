@@ -14,6 +14,7 @@ from .models import payload_hash
 
 _FIELDS = {'campaign_id', 'campaign_version', 'rules_version', 'run_id',
            'platform', 'providers', 'rules', 'configuration'}
+_OPTIONAL = {'briefing', 'batches'}
 
 
 def _text(value, limit=200):
@@ -21,7 +22,8 @@ def _text(value, limit=200):
 
 
 def _config(value):
-    if not isinstance(value, Mapping) or set(value) != _FIELDS:
+    if (not isinstance(value, Mapping) or not _FIELDS <= set(value)
+            or set(value) - _FIELDS - _OPTIONAL):
         raise ApprovalError('campaign_registry_config_invalid')
     if not isinstance(value['campaign_id'], str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,100}',value['campaign_id']):
         raise ApprovalError('campaign_registry_id_invalid')
@@ -46,6 +48,12 @@ def _config(value):
             normalized['configuration']['linkedin_policy']=validate_policy(configuration['linkedin_policy'])
         except ValueError:
             raise ApprovalError('campaign_registry_linkedin_policy_invalid') from None
+    if 'briefing' in value:
+        from .campaign_sheet import validate_sheet
+        normalized['briefing'] = validate_sheet(value['briefing'])
+    if 'batches' in value:
+        from .campaign_batches import validate_batches
+        normalized['batches'] = validate_batches(value['batches'])
     # Reuse context validation; accepting an external platform does not grant OS execution.
     _context(normalized, 1)
     return deepcopy(normalized)
@@ -57,7 +65,8 @@ def _context(config, revision):
     try:
         rules_hash = hashlib.sha256(config['rules'].encode('utf-8')).hexdigest()
         configuration_hash = payload_hash({'configuration': config['configuration'],
-                                          'providers': config['providers'], 'revision': revision})
+            'providers': config['providers'], 'revision': revision,
+            **{key: config[key] for key in _OPTIONAL if key in config}})
     except (TypeError, ValueError, UnicodeError) as exc:
         raise ApprovalError('campaign_registry_config_invalid') from exc
     return execution_context({key: config[key] for key in (
@@ -84,6 +93,16 @@ class CampaignRegistry:
         context = _context(config, expected_version + 1)
         try:
             with self.repo.transaction():
+                codes = {code for batch in config.get('batches', []) for code in batch['source_codes']}
+                if codes:
+                    for existing in self.repo.list_state('campaign_config'):
+                        if existing['id'] == config['campaign_id'] or not existing.get('active'):
+                            continue
+                        other, _ = self._read(existing['id'])
+                        claimed = {code for batch in other['config'].get('batches', [])
+                                   for code in batch['source_codes']}
+                        if codes & claimed:
+                            raise ApprovalError('campaign_batch_parent_conflict')
                 return self.repo.put_states_atomic([('campaign_config', config['campaign_id'], {
                     'config': config, 'context': context, 'active': True,
                     'authorized_by': 'ygor'}, expected_version)])[0]
@@ -139,6 +158,11 @@ class CampaignRegistry:
         with self.repo.transaction():
             row,_=self._read(ident)
             return deepcopy(row['config']['configuration'])
+
+    def sheet(self, ident):
+        with self.repo.transaction():
+            row, _ = self._read(ident)
+            return deepcopy(row['config'].get('briefing'))
 
     def revoke(self, ident, actor, expected_version):
         self._authority(actor, expected_version)

@@ -15,6 +15,7 @@ from thunder_os.models import payload_hash
 from thunder_os.service import ThunderService
 from thunder_os.worker import WorkerRuntime, EffectCoordinator, EffectBlocked
 from thunder_os.providers.result import ProviderResult
+from test_campaign_sheet_support import make_sheet
 
 
 def context(**changes):
@@ -57,6 +58,8 @@ class CampaignConfirmationTests(unittest.TestCase):
             'flow_version':'offline-v1','provider_accounts':{'email':'offline-mailbox'}})
         self.ledger = Ledger()
         self.service = ThunderService(self.repo, self.ledger)
+        self.sheet_store, self.config['briefing'] = make_sheet(Path(self.tmp.name)/'brain')
+        self.service.campaign_sheet_store = self.sheet_store
         self.service.resolve_identity({'id': 'confirmed-person', 'records': [
             {'domain': 'synthetic.invalid', 'person_key': 'synthetic@example.invalid', 'source': 'fixture:crm'},
             {'domain': 'synthetic.invalid', 'person_key': 'synthetic@example.invalid', 'source': 'fixture:mailbox'},
@@ -102,6 +105,7 @@ class CampaignConfirmationTests(unittest.TestCase):
             health_path=Path(self.tmp.name)/(worker_id+'.json'), revision='offline',
             adapter_provider_ids={'email': provider}, adapter_account_ids={'email':'offline-mailbox'})
         worker.authorization_service.current_research = lambda _: self.research
+        worker.authorization_service.campaign_sheet_store = self.sheet_store
         return worker
 
     def test_clear_context_without_confirmation_is_denied(self):

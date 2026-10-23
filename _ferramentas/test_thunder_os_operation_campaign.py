@@ -10,6 +10,7 @@ from thunder_os.approvals import ApprovalError
 from thunder_os.campaign_registry import CampaignRegistry
 from thunder_os.db import Repository
 from thunder_os.operation_campaign import OperationCampaign
+from test_campaign_sheet_support import make_sheet
 
 
 class OperationCampaignTests(unittest.TestCase):
@@ -22,11 +23,13 @@ class OperationCampaignTests(unittest.TestCase):
         self.config = {'campaign_id':'synthetic', 'campaign_version':'1', 'rules_version':'1',
             'run_id':'run1', 'platform':'thunder_os', 'providers':{'email':'seqd'},
             'rules':'Synthetic only', 'configuration':{'flow_version':'1', 'provider_accounts':{'email':'mailbox1'}}}
+        self.sheet_store, self.config['briefing'] = make_sheet(Path(self.tmp.name)/'brain')
         self.registry.register(self.config, 'ygor', 0)
         self.preview = self.repo.append_state('seqd_preview','p1', {
             'plan':{'to':'synthetic@example.invalid','body':'offline','subject':'test'},
             'content_hash':'a'*64,'state':'review_required','expires_at':self.now+300})
-        self.gate = OperationCampaign(self.repo,'seqd','seqd','mailbox1','email',clock=lambda:self.now)
+        self.gate = OperationCampaign(self.repo,'seqd','seqd','mailbox1','email',clock=lambda:self.now,
+                                      sheet_store=self.sheet_store)
 
     def body(self):
         return {'preview_id':'p1','expected_version':1,
@@ -158,7 +161,8 @@ class OperationCampaignTests(unittest.TestCase):
                          'expires_at':self.now+300,'state':'review_required'}
                 if kind=='connectsafely':preview['review_hash']='c'*64
                 self.repo.append_state(kind+'_preview','p1',preview)
-                gate=OperationCampaign(self.repo,kind,provider,account,channel,clock=lambda:self.now)
+                gate=OperationCampaign(self.repo,kind,provider,account,channel,clock=lambda:self.now,
+                                       sheet_store=self.sheet_store)
                 request=gate.review('p1',kind)
                 record=gate.approve({'preview_id':'p1','expected_version':1,'execution_confirmation':request},'ygor')
                 self.assertEqual(gate.validate(record),request)

@@ -263,12 +263,17 @@ class PanelWiringTests(unittest.TestCase):
 
     def campaign_review(self, app, preview):
         """Supply explicit synthetic campaign authority without bypassing the gate."""
+        from test_campaign_sheet_support import make_sheet
+        store, sheet = make_sheet(self.root/'sheet-brain')
+        for console in (app.direct, app.social):
+            if console is not None:console.campaign_sheet_store = store
         campaign_id = 'fixture-panel'
         if self.repo.get_state('campaign_config', campaign_id) is None:
             CampaignRegistry(self.repo).register({
                 'campaign_id': campaign_id, 'campaign_version': '1', 'rules_version': '1',
                 'run_id': 'fixture-run', 'platform': 'thunder_os',
                 'providers': {'linkedin': 'connectsafely'}, 'rules': 'Synthetic fixtures only',
+                'briefing': sheet,
                 'configuration': {'flow_version': '1', 'provider_accounts': {'linkedin': 'a' * 24}},
             }, 'ygor', 0)
         return {'preview_id': preview['id'], 'expected_version': preview['version'],

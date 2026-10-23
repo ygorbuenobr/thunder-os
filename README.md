@@ -296,3 +296,44 @@ NODE_PATH=/Users/ygorbueno/.cache/codex-runtimes/codex-primary-runtime/dependenc
   /Users/ygorbueno/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node \
   _ferramentas/test_painel_cadencias_ui.cjs
 ```
+
+## Campaign Sheet (PRD-1, Pending Publication)
+
+The panel calls this read-only projection **Ficha da campanha**, not the Hermes
+daily briefing. The existing campaign config may contain `briefing` with
+`version` and `fields`: `offer`, `icp`, `proofs`, `objective`, `restrictions`,
+`cta`, `language`, `country`. Each present field contains only `path`, `sha256`
+and `section`: a relative Markdown path in the configured Brain, the SHA-256 of
+the whole UTF-8 file's bytes, and an exact Markdown heading. Content is read
+from the Brain, not copied into the registry. Missing references are valid
+incomplete metadata, not permission to approve or send.
+
+The existing `configuration_hash` includes the sheet and optional child
+`batches` only when present; legacy configs retain their exact previous hash.
+There is no new authorization field, table or approval store. A child batch
+has `batch_id` and explicit `source_codes`; a source code cannot belong to two
+active parents. No runtime task title, receipt or contact association is
+rewritten by adding this model.
+
+`GET /api/os/v1/campaign-sheets` uses the existing authenticated Ygor gate.
+The card shows each source, expected/observed hash, modification date and section
+text. Missing, unreadable, changed or empty sections mark **ficha incompleta**.
+Research and draft preparation remain available; approval and the pre-dispatch
+checks for cadence effects and SEQD/LinkedIn previews require a current complete
+sheet. Config changes invalidate the existing scope hash; Brain byte changes
+also block execution without a new registration/review/approval. Editing a
+Brain file never silently updates its approved reference.
+
+No real sheet/batch registration or migration is part of this branch. Current
+campaigns without a sheet will display incomplete until their references are
+explicitly reviewed and registered. This branch is for panel review only:
+publishing, pushing or modifying the paused agent requires separate authority.
+The canonical preview and identity audit are in the private Brain protocol at
+`projetos/thunder-os/cadencia-multicanal/campaign-sheet/`; no CRM data is shipped
+in the source repository. Existing uncertain outcomes and receipts are retained.
+
+```sh
+PYTHONPATH=_ferramentas python3 -m unittest test_thunder_os_campaign_sheet \
+  test_thunder_os_campaign_registry test_thunder_os_approvals
+node scripts/test_campaign_sheet_panel.cjs
+```

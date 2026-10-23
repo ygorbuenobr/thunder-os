@@ -204,6 +204,17 @@ body[data-aba="cadencias"] .detalhes-sistema{display:none}
 .cad-instantly .cad-read-timeline{margin:0}.cad-instantly .cad-read-timeline li:last-child{border-bottom:0}
 #cad-reply-control{overflow-wrap:anywhere;min-width:0;max-width:100%}
 #cad-source-list{overflow-wrap:anywhere;min-width:0;max-width:100%}
+.cad-sheet{min-width:0;margin:20px 0;padding:16px 0;border-block:1px solid var(--line);overflow-wrap:anywhere}
+.cad-sheet header{display:flex;align-items:baseline;justify-content:space-between;gap:8px 16px;flex-wrap:wrap}
+.cad-sheet h4,.cad-sheet p{margin:0}.cad-sheet .cad-sheet-note{margin:8px 0}
+.cad-sheet details{min-width:0;border-top:1px solid var(--line)}
+.cad-sheet summary{cursor:pointer;min-height:44px;padding:10px 0}
+.cad-sheet summary .chip{white-space:normal;margin-inline-start:8px}
+.cad-sheet dl{margin:0 0 12px;display:grid;gap:4px;min-width:0}
+.cad-sheet dt{font-size:12px;color:var(--muted)}.cad-sheet dd{margin:0;min-width:0}
+.cad-sheet pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;margin:8px 0 16px}
+.cad-sheet code{white-space:pre-wrap;overflow-wrap:anywhere;font-family:var(--mono)}
+.cad-sheet .cad-sheet-warning{color:var(--alerta)}
 .agenttrail-head{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
 .agenttrail-hosts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:28px;margin-top:20px}
 .agenttrail-host{border-top:3px solid var(--mostarda);padding-top:14px;min-width:0}
@@ -1758,6 +1769,39 @@ async function atualizarAgenttrail(){
 $('agenttrail-atualizar').addEventListener('click',atualizarAgenttrail);
 setInterval(()=>{if(document.body.dataset.aba==='agentes')atualizarAgenttrail();},30000);
 let cadReadLoading=false,cadReadSnapshot=null,cadReadContact=null,cadReadTimelineRequest=0,cadReadPollTimer=null,cadReplyRequest=null;
+/* CAMPAIGN_SHEET_BEGIN */
+let cadSheetState='loading',cadSheetSnapshot=null;
+const cadSheetLabels={offer:'Oferta',icp:'ICP',proofs:'Provas',objective:'Objetivo',restrictions:'Restrições',cta:'CTA',language:'Idioma',country:'País'};
+const cadSheetStatuses={ok:'Fonte verificada',missing:'Referência ausente',missing_file:'Arquivo ausente',hash_mismatch:'Hash divergente',section_missing:'Seção ausente',empty:'Conteúdo vazio',unavailable:'Fonte indisponível'};
+function cadCampaignSheetHTML(campaignId){
+  const record=cadSheetSnapshot?.campaigns.find(c=>c.campaign_id===campaignId);
+  const fields=Object.keys(cadSheetLabels).map(key=>record?.fields?.find(f=>f.key===key)||{key,status:'missing'});
+  const missing=[...new Set([...(record?.missing_fields||[]),...fields.filter(f=>f.status!=='ok').map(f=>f.key)])];
+  const complete=cadSheetState==='ready'&&record?.status==='complete'&&!missing.length;
+  const label=cadSheetState==='loading'?'Carregando ficha…':complete?'Ficha completa':'ficha incompleta';
+  const note=cadSheetState==='loading'?'Consultando as fontes da campanha.':cadSheetState==='error'?'Não foi possível carregar a ficha. Fontes não verificadas. Use Atualizar para tentar novamente.':!record?'Fonte da ficha ausente: campanha sem registro nesta consulta.':!complete?'Itens pendentes: '+(missing.map(key=>cadSheetLabels[key]||key).join(', ')||'verificação da ficha pelo servidor')+'.':'';
+  return `<header><h4>Ficha da campanha</h4><span class="chip${complete?'':' cad-sheet-warning'}" role="status">${esc(label)}</span></header><p class="sub">${esc(campaignId)} · Versão: ${esc(record?.version||'não informada')}</p>${note?`<p class="cad-sheet-note" role="status">${esc(note)}</p>`:''}${fields.map(field=>{
+    const verified=cadSheetState==='ready'&&field.status==='ok';
+    const status=cadSheetState==='ready'?(cadSheetStatuses[field.status]||'Fonte não verificada'):'Fonte não verificada';
+    return `<details><summary>${esc(cadSheetLabels[field.key])}<span class="chip${verified?'':' cad-sheet-warning'}">${esc(status)}</span></summary><dl><dt>Fonte</dt><dd><code>${esc(field.path||'Referência não informada')}</code></dd><dt>Atualização da fonte</dt><dd>${esc(field.source_updated_at?cadReadDate(field.source_updated_at):'Data não informada')}</dd></dl>${!verified?'<p class="cad-sheet-note cad-sheet-warning">Referência atual não verificada.</p>':''}<pre>${esc(field.content??'Conteúdo não disponível nesta fonte.')}</pre><details><summary>Hashes da fonte</summary><dl><dt>SHA-256 esperado</dt><dd><code>${esc(field.expected_sha256||'Não informado')}</code></dd><dt>SHA-256 observado</dt><dd><code>${esc(field.observed_sha256||'Não verificado')}</code></dd></dl></details></details>`;
+  }).join('')}${record?.fingerprint?`<details><summary>Identificador da ficha</summary><code>${esc(record.fingerprint)}</code></details>`:''}`;
+}
+function renderCadCampaignSheets(){
+  $('cad-read-campaigns').querySelectorAll('[data-cad-sheet]').forEach(target=>{
+    target.setAttribute('aria-busy',String(cadSheetState==='loading'));
+    target.innerHTML=cadCampaignSheetHTML(target.dataset.cadSheet);
+  });
+}
+async function carregarFichasCampanhas(){
+  cadSheetState='loading';cadSheetSnapshot=null;renderCadCampaignSheets();
+  try{
+    const state=await apiServidor('/api/os/v1/campaign-sheets');
+    if(state?.schema_version!==1||state.read_only!==true||!Array.isArray(state.campaigns))throw new Error('Ficha indisponível');
+    cadSheetSnapshot=state;cadSheetState='ready';
+  }catch(error){cadSheetSnapshot=null;cadSheetState='error';}
+  renderCadCampaignSheets();
+}
+/* CAMPAIGN_SHEET_END */
 const cadReadNumber=v=>Number.isInteger(v)?String(v):'Não verificado';
 const cadReadOutcome={sent_with_receipt:'Enviado com recibo registrado',completed_without_receipt:'Concluída sem recibo',uncertain_no_retry:'Incerto, não repetir',blocked:'Bloqueado antes do envio',paused_reply:'Suspenso por resposta',unverified:'Resultado não verificado'};
 function cadReadDate(value){
@@ -1796,7 +1840,7 @@ function renderCadencias(data){
   const emptyLabel=c=>c.task_state==='empty'&&c.task_coverage_complete===true?'Sem tarefas ainda nesta consulta.':'Tarefas não verificadas: cobertura incompleta.';
   const campaignLabel=c=>!c.tasks?.length?emptyLabel(c):c.task_coverage_complete!==true?'Tarefas observadas; totais não verificados: cobertura incompleta.':'';
   const noCampaigns=data.coverage?.complete===true?'Nenhuma campanha ou tarefa reconhecida nesta consulta.':'Campanhas e tarefas não verificadas: cobertura incompleta.';
-  $('cad-read-campaigns').innerHTML=campaigns.length?`<div class="cad-read-table-wrap"><table class="cad-read-table"><thead><tr><th scope="col">Campanha</th><th scope="col">Contatos observados</th><th scope="col">Toques com recibo</th><th scope="col">Pendentes</th><th scope="col">Atrasados</th><th scope="col">Respostas</th><th scope="col">Reuniões</th></tr></thead><tbody>${campaigns.map(c=>`<tr><td>${esc(c.id)}${campaignLabel(c)?`<br><small>${esc(campaignLabel(c))}</small>`:''}</td>${['contacts','completed_with_receipt','pending','overdue','replies','meetings'].map(k=>`<td>${esc(cadReadNumber(c.metrics?.[k]))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`+campaigns.map(c=>`<details><summary>${esc(c.id)} · contatos e tarefas</summary>${cadReadEvidence(c)}${cadReadTasks(c.tasks,emptyLabel(c))}</details>`).join(''):`<p class="sub">${esc(noCampaigns)}</p>`;
+  $('cad-read-campaigns').innerHTML=campaigns.length?`<div class="cad-read-table-wrap"><table class="cad-read-table"><thead><tr><th scope="col">Campanha</th><th scope="col">Contatos observados</th><th scope="col">Toques com recibo</th><th scope="col">Pendentes</th><th scope="col">Atrasados</th><th scope="col">Respostas</th><th scope="col">Reuniões</th></tr></thead><tbody>${campaigns.map(c=>`<tr><td>${esc(c.id)}${campaignLabel(c)?`<br><small>${esc(campaignLabel(c))}</small>`:''}</td>${['contacts','completed_with_receipt','pending','overdue','replies','meetings'].map(k=>`<td>${esc(cadReadNumber(c.metrics?.[k]))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`+campaigns.map(c=>`<section class="cad-sheet" aria-label="Ficha da campanha" data-cad-sheet="${esc(c.id)}" aria-busy="${cadSheetState==='loading'}">${cadCampaignSheetHTML(c.id)}</section><details><summary>${esc(c.id)} · contatos e tarefas</summary>${cadReadEvidence(c)}${cadReadTasks(c.tasks,emptyLabel(c))}</details>`).join(''):`<p class="sub">${esc(noCampaigns)}</p>`;
   const today=data.today||{};
   $('cad-read-today').innerHTML=`<h4>Previsto para hoje</h4>${cadReadTasks(today.planned,'Nenhuma tarefa prevista para hoje na consulta.')}<h4>Aguardando sua aprovação</h4>${today.awaiting_approval==null?'<p class="sub">Aprovações ainda não verificadas nesta fonte.</p>':cadReadTasks(today.awaiting_approval,'Sem aprovações pendentes identificadas nesta consulta.')}<h4>Respostas sem retorno</h4>${today.unreplied==null?'<p class="sub">Respostas sem retorno ainda não verificadas nesta fonte.</p>':cadReadTasks(today.unreplied,'Nenhuma resposta sem retorno identificada nesta consulta.')}`;
   const conflicts=Array.isArray(data.contact_conflicts)?data.contact_conflicts:[];
@@ -1871,7 +1915,7 @@ async function atualizarCadencias(){
   if(cadReadLoading||!apiServidor)return;
   cadReadLoading=true;$('cad-read-refresh').disabled=true;
   $('cad-read-status').textContent=cadReadSnapshot?'Atualizando consulta…':'Consultando tarefas no HubSpot…';
-  await Promise.all([carregarIntegracoesEmail(),carregarInstantlyReader()]);
+  await Promise.all([carregarIntegracoesEmail(),carregarInstantlyReader(),carregarFichasCampanhas()]);
   await carregarControleRespostas();
   await carregarPreparacaoLinkedin();
   await carregarFontesCampanhas();
@@ -2152,8 +2196,10 @@ function cadenciaHTML(cadencia){
   const canais={linkedin:'LinkedIn',email:'E-mail',whatsapp:'WhatsApp'};
   const intervalo=h=>Number(h)===0?'no início':`${esc(h)} horas depois do contato anterior`;
   const aviso=cadencia.approval_invalidated?'A sequência mudou. Confira novamente antes de aprovar.':cadencia.reply_received?'A sequência foi pausada porque essa pessoa respondeu.':cadencia.partial_error?'Uma parte está indisponível. As demais informações continuam válidas.':'';
-  const proxima=cadencia.reply_received?'Ler a resposta e decidir o próximo passo':cadencia.approval_invalidated?'Revisar somente o que mudou':cadencia.next_action||'Aprovar a sequência completa';
-  return `<section class="cadencia-revisao" aria-label="Sequência de contatos"><div><b>Para:</b> ${esc(cadencia.recipient||'destinatário a confirmar')}</div><div><b>Objetivo:</b> ${esc(cadencia.objective||'objetivo a confirmar')}</div><div><b>Base da abordagem:</b> ${esc(cadencia.source_context||'pesquisa ainda precisa ser confirmada')}</div>${cadencia.research_hash?`<details><summary>Informações para suporte</summary><div>Referência da pesquisa: ${esc(cadencia.research_hash)}</div></details>`:''}<div><b>Consequência:</b> ${esc(cadencia.consequence||'autoriza somente estes contatos')}</div><div><b>Custo:</b> ${esc(cadencia.cost||'sem custo informado')}</div>${aviso?`<div class="alerta-humano" role="status">${esc(aviso)}</div>`:''}<ol>${passos.map(p=>`<li><b>${esc(canais[p.channel]||p.channel)} · ${intervalo(p.interval_hours)}</b>${p.subject?`<p><b>Assunto:</b> ${esc(p.subject)}</p>`:''}<p>${esc(p.content||'Conteúdo a confirmar')}</p><span class="frescor">${esc(estadoEfeitoHumano(p.status))}${p.effective_due_at?` · previsto para ${esc(p.effective_due_at)}`:p.predecessor_id?' · aguarda confirmação anterior':p.due_at?` · previsto para ${esc(p.due_at)}`:''}</span>${p.receipt_ref?`<details><summary>Confirmação registrada</summary>${esc(p.receipt_ref)}</details>`:''}</li>`).join('')}</ol>${cadencia.pause_reason?`<p>Motivo da pausa: ${esc(cadencia.pause_reason)}</p>`:''}<p>${esc(cadencia.execution_question||"Confirme plataforma, campanha e regras antes de executar.")}</p><div class="proxima-decisao">Próxima ação: ${esc(proxima)}</div>${['ready_for_review','approved'].includes(cadencia.status)&&cadencia.id&&Number.isInteger(cadencia.version)&&cadencia.review_hash&&cadencia.execution_confirmation?`<button class="btn pri" type="button" data-os-approve="${esc(cadencia.id)}" data-os-version="${esc(cadencia.version)}" data-os-review-hash="${esc(cadencia.review_hash)}" data-os-confirmation="${esc(JSON.stringify(cadencia.execution_confirmation))}" data-os-question="${esc(cadencia.execution_question)}">Confirmar campanha e lote</button>`:''}</section>`;
+  const fichaBloqueada=['incomplete','stale'].includes(cadencia.campaign_sheet_status);
+  const fichaLabel=cadencia.campaign_sheet_label||(cadencia.campaign_sheet_status==='stale'?'versão anterior':cadencia.campaign_sheet_status==='incomplete'?'ficha incompleta':'');
+  const proxima=fichaBloqueada?'Revisar a ficha da campanha antes de confirmar':cadencia.reply_received?'Ler a resposta e decidir o próximo passo':cadencia.approval_invalidated?'Revisar somente o que mudou':cadencia.next_action||'Aprovar a sequência completa';
+  return `<section class="cadencia-revisao" aria-label="Sequência de contatos"><div><b>Para:</b> ${esc(cadencia.recipient||'destinatário a confirmar')}</div><div><b>Objetivo:</b> ${esc(cadencia.objective||'objetivo a confirmar')}</div><div><b>Base da abordagem:</b> ${esc(cadencia.source_context||'pesquisa ainda precisa ser confirmada')}</div>${cadencia.research_hash?`<details><summary>Informações para suporte</summary><div>Referência da pesquisa: ${esc(cadencia.research_hash)}</div></details>`:''}<div><b>Consequência:</b> ${esc(cadencia.consequence||'autoriza somente estes contatos')}</div><div><b>Custo:</b> ${esc(cadencia.cost||'sem custo informado')}</div>${fichaLabel?`<div class="${fichaBloqueada?'alerta-humano':'frescor'}" role="status">Ficha da campanha: ${esc(fichaLabel)}${cadencia.campaign_sheet_version?` · ${esc(cadencia.campaign_sheet_version)}`:''}</div>`:''}${aviso?`<div class="alerta-humano" role="status">${esc(aviso)}</div>`:''}<ol>${passos.map(p=>`<li><b>${esc(canais[p.channel]||p.channel)} · ${intervalo(p.interval_hours)}</b>${p.subject?`<p><b>Assunto:</b> ${esc(p.subject)}</p>`:''}<p>${esc(p.content||'Conteúdo a confirmar')}</p><span class="frescor">${esc(estadoEfeitoHumano(p.status))}${p.effective_due_at?` · previsto para ${esc(p.effective_due_at)}`:p.predecessor_id?' · aguarda confirmação anterior':p.due_at?` · previsto para ${esc(p.due_at)}`:''}</span>${p.receipt_ref?`<details><summary>Confirmação registrada</summary>${esc(p.receipt_ref)}</details>`:''}</li>`).join('')}</ol>${cadencia.pause_reason?`<p>Motivo da pausa: ${esc(cadencia.pause_reason)}</p>`:''}<p>${esc(cadencia.execution_question||"Confirme plataforma, campanha e regras antes de executar.")}</p><div class="proxima-decisao">Próxima ação: ${esc(proxima)}</div>${!fichaBloqueada&&['ready_for_review','approved'].includes(cadencia.status)&&cadencia.id&&Number.isInteger(cadencia.version)&&cadencia.review_hash&&cadencia.execution_confirmation?`<button class="btn pri" type="button" data-os-approve="${esc(cadencia.id)}" data-os-version="${esc(cadencia.version)}" data-os-review-hash="${esc(cadencia.review_hash)}" data-os-confirmation="${esc(JSON.stringify(cadencia.execution_confirmation))}" data-os-question="${esc(cadencia.execution_question)}">Confirmar campanha e lote</button>`:''}</section>`;
 }
 function variantesHTML(it){
   const variantes=Array.isArray(it.variantes)?it.variantes.filter(v=>v&&typeof v.texto==='string'):[];

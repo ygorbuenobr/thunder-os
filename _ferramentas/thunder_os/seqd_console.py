@@ -77,11 +77,12 @@ def canonical_ledger_readiness():
 
 
 class SEQDConsole:
-    def __init__(self,repository,transport=None,*,read_enabled=False,send_enabled=False,clock=time.time,ledger=None,dispatch_authorized=None):
+    def __init__(self,repository,transport=None,*,read_enabled=False,send_enabled=False,clock=time.time,ledger=None,dispatch_authorized=None,campaign_sheet_store=None):
         self.repo,self.port=repository,transport or SEQDClient()
         self.ledger=ledger if ledger is not None else SEQDEmailLedger()
         self.dispatch_authorized=dispatch_authorized
         self.read_enabled,self.send_enabled,self.clock=read_enabled,send_enabled,clock
+        self.campaign_sheet_store=campaign_sheet_store
 
     def _send_allowed(self):
         control=self.repo.get_state('control','global')
@@ -150,7 +151,8 @@ class SEQDConsole:
         return {'status':'uncertain','error_code':'requires_reconciliation','retry_write':False}
 
     def campaign_gate(self):
-        return OperationCampaign(self.repo, 'seqd', 'seqd', WORKSPACE_ID + ":" + MAILBOX_ID, 'email', clock=self.clock)
+        return OperationCampaign(self.repo, 'seqd', 'seqd', WORKSPACE_ID + ":" + MAILBOX_ID, 'email', clock=self.clock,
+                                 sheet_store=self.campaign_sheet_store)
 
     def campaign_review(self, body, actor):
         self._actor(actor)

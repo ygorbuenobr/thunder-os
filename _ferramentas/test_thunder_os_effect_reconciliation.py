@@ -463,6 +463,7 @@ class EffectReconciliationTests(unittest.TestCase):
         def retry():
             service = trajectory.ThunderService(Repository(self.repo.path), self.ledger,
                                                 approved_catalog=trajectory.CATALOG)
+            service.campaign_sheet_store = self.scenario.sheet_store
             barrier.wait(timeout=5)
             try:
                 return service.retry_effect(job['id'], 'ygor', execution_confirmation=review)['state']
@@ -477,6 +478,8 @@ class EffectReconciliationTests(unittest.TestCase):
             {'email': self.scenario.adapter}, worker_id='retry-' + str(index),
             health_path=self.scenario.root / ('retry-' + str(index) + '.json'),
             revision='offline', approved_catalog=trajectory.CATALOG) for index in range(2)]
+        for worker in workers:
+            worker.authorization_service.campaign_sheet_store = self.scenario.sheet_store
         with ThreadPoolExecutor(max_workers=2) as executor:
             worked = list(executor.map(lambda worker: worker.process_one(), workers))
         self.assertCountEqual(worked, [True, False])

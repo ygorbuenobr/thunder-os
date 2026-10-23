@@ -188,6 +188,9 @@ class EvalTrajectoryTests(unittest.TestCase):
                   'providers': {'email': 'eval-mail'},
                   'configuration': {'flow_version': 'eval-1',
                                     'provider_accounts': {'email': 'eval-mailbox'}}}
+        from test_campaign_sheet_support import make_sheet
+        self.sheet_store, config['briefing'] = make_sheet(self.root/'brain')
+        self.service.campaign_sheet_store = self.sheet_store
         self.context = self.service.configure_campaign(config, 'ygor', expected_version=0)['context']
         self.research = self.service.submit_research({'dossier': base_artifact()}, 'ygor')
         self.service.resolve_identity({'id': 'person', 'records': [
@@ -198,6 +201,7 @@ class EvalTrajectoryTests(unittest.TestCase):
         self.worker = WorkerRuntime(self.repo, self.ledger, {'email': self.adapter},
                                     worker_id='eval-worker', health_path=self.root / 'health.json',
                                     revision='offline-eval', approved_catalog=CATALOG)
+        self.worker.authorization_service.campaign_sheet_store = self.sheet_store
         self.create_batch()
 
     @contextmanager

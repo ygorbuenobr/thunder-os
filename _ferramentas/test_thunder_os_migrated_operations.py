@@ -23,6 +23,7 @@ from thunder_os.hubspot_console import HubSpotConsole
 from thunder_os.integration_hubspot import PORTAL_ID, plan_record
 from thunder_os.seqd_client import MAILBOX, MAILBOX_ID, WORKSPACE_ID
 from thunder_os.seqd_console import SEQDConsole
+from test_campaign_sheet_support import make_sheet
 
 
 class FixtureLedger:
@@ -111,6 +112,7 @@ class MigratedOperationsTests(unittest.TestCase):
                     'rules': 'Synthetic fixtures only.', 'configuration': {'flow_version': '1',
                     'provider_accounts': {'linkedin': 'synthetic-cs',
                     'email': WORKSPACE_ID + ':' + MAILBOX_ID, 'hubspot': PORTAL_ID}}}
+        self.sheet_store, self.cfg['briefing'] = make_sheet(Path(temp.name)/'brain')
         self.registry.register(self.cfg, 'ygor', 0)
         # Synthetic readiness contract replaces only the external ledger probe.
         self.addCleanup(patch.stopall)
@@ -124,6 +126,7 @@ class MigratedOperationsTests(unittest.TestCase):
         if kind == 'connectsafely':
             console = ConnectSafelyConsole(self.repo, port, ledger, account_id='synthetic-cs',
                 account_public_id='synthetic-owner', writes_enabled=True, clock=clock)
+            console.campaign_sheet_store = self.sheet_store
             plan = {'account_id': 'synthetic-cs', 'account_public_id': 'synthetic-owner',
                     'action': 'dm', 'recipient_public_id': 'synthetic-recipient',
                     'recipient_profile_urn': 'urn:li:member:synthetic', 'channel': 'linkedin',
@@ -131,6 +134,7 @@ class MigratedOperationsTests(unittest.TestCase):
         elif kind == 'seqd':
             console = SEQDConsole(self.repo, port, ledger=ledger, read_enabled=True,
                                   send_enabled=True, clock=clock)
+            console.campaign_sheet_store = self.sheet_store
             plan = {'to': 'synthetic@example.invalid', 'subject': 'Offline fixture', 'body': 'Synthetic.'}
         else:
             console = HubSpotConsole(self.repo, port, read_enabled=True, write_enabled=True, clock=clock)
@@ -324,6 +328,7 @@ class MigratedOperationsTests(unittest.TestCase):
                     account_id='synthetic-cs', account_public_id='synthetic-owner',
                     writes_enabled=True, clock=lambda: self.now,
                     author_resolver=resolver, coordinator=Coordinator())
+                console.campaign_sheet_store = self.sheet_store
                 urn = 'urn:li:activity:' + str(1000 + index)
                 plan = {'account_id': 'synthetic-cs', 'account_public_id': 'synthetic-owner',
                         'action': action, 'channel': 'linkedin', 'post_urn': urn,

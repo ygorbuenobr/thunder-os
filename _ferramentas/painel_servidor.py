@@ -1453,6 +1453,14 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 raise Erro('Não foi possível verificar o vínculo no HubSpot.', 503) from None
             return self.responder(200, result)
+        if rota.path == '/api/os/v1/campaign-sheets':
+            if self.thunder_proxy_actor() != 'ygor':
+                raise Erro('Somente Ygor pode consultar as fichas.', 403)
+            if self.command != 'GET' or rota.query:
+                raise Erro('Ficha da campanha permite somente consulta.', 405)
+            campaigns = service.campaign_registry.list_campaigns()
+            return self.responder(200, {'schema_version': 1, 'read_only': True,
+                'campaigns': [service.campaign_sheet_view(row['id']) for row in campaigns]})
         cadence_base = '/api/os/v1/cadencias'
         if rota.path == cadence_base or rota.path.startswith(cadence_base + '/'):
             actor = self.thunder_proxy_actor()
@@ -2002,6 +2010,9 @@ def configure_connectsafely_server(server, repository, factory=None):
         raise ValueError('invalid_connectsafely_composition')
     composition.attach_server(server)
     server.thunder_connectsafely_composition = composition
+    for console in (composition.application.direct, composition.application.social):
+        if console is not None:
+            console.campaign_sheet_store = getattr(getattr(server, 'thunder_service', None), 'knowledge_store', None)
     from thunder_os.connectsafely_read_targets import build_read_resolver
     try:server.thunder_connectsafely_read_resolver = build_read_resolver(repository)
     except Exception:server.thunder_connectsafely_read_resolver = None
@@ -2075,7 +2086,9 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
             seqd_read = os.environ.get('THUNDER_OS_SEQD_READ_ENABLED', '') == 'true'
             seqd_send = external_effects_enabled() and os.environ.get('THUNDER_OS_SEQD_SEND_ENABLED', '') == 'true'
             servidor.thunder_seqd_console = SEQDConsole(servidor.thunder_service.repository,
-                read_enabled=seqd_read, send_enabled=seqd_send, dispatch_authorized=lambda: external_effects_enabled() and (restricted_mode() or os.environ.get('THUNDER_OS_COPILOT_MODE','') == 'human_approval'))
+                read_enabled=seqd_read, send_enabled=seqd_send,
+                campaign_sheet_store=servidor.thunder_service.knowledge_store,
+                dispatch_authorized=lambda: external_effects_enabled() and (restricted_mode() or os.environ.get('THUNDER_OS_COPILOT_MODE','') == 'human_approval'))
             crm_read = os.environ.get('THUNDER_OS_HUBSPOT_READ_ENABLED', '') == 'true'
             if crm_read:
                 from thunder_os.campaign_membership import CampaignMembership

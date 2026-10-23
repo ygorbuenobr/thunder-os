@@ -15,7 +15,7 @@ from .models import payload_hash
 
 
 class OperationCampaign:
-    def __init__(self, repo, kind, provider, account_id, channel, clock=time.time):
+    def __init__(self, repo, kind, provider, account_id, channel, clock=time.time, *, sheet_store=None):
         if not isinstance(kind, str) or kind not in {'seqd', 'hubspot', 'connectsafely'}:
             raise ApprovalError('operation_kind_invalid')
         if any(not isinstance(v, str) or not v.strip() for v in (provider, account_id, channel)):
@@ -23,6 +23,7 @@ class OperationCampaign:
         self.repo, self.kind, self.provider = repo, kind, provider
         self.account_id, self.channel, self.clock = account_id, channel, clock
         self.registry = CampaignRegistry(repo)
+        self.sheet_store = sheet_store
 
     def _preview(self, ident):
         if not isinstance(ident, str) or not ident:
@@ -48,6 +49,9 @@ class OperationCampaign:
         if (context['platform'] != 'thunder_os' or binding['providers'].get(self.channel) != self.provider
                 or binding['provider_accounts'].get(self.channel) != self.account_id):
             raise ApprovalError('operation_campaign_identity_mismatch')
+        if self.channel in {'email', 'linkedin'}:
+            from .campaign_sheet import require_sheet
+            require_sheet(campaign_id, self.registry.sheet(campaign_id), self.sheet_store)
         control = self.repo.get_state('control', 'global') or {}
         if control.get('paused'):
             raise ApprovalError('global_pause')
