@@ -381,6 +381,13 @@ or a complete trusted response is required; no default false/empty fields are
 invented for missing evidence. HTML-only mail is not verified as complete plain
 text by this reader.
 
+The independently reproduced `F-EMAIL-1` counterexample contained an approved
+plain part plus additional inline HTML. The reader now accepts only an integral
+root `text/plain` MIME message without child parts or attachments; all multipart
+structures, including `multipart/alternative`, are rejected. The same restriction
+must hold in the prepared bridge's normalized read-only response. This deliberately
+does not claim to verify HTML email or silently convert it to plain text.
+
 An in-memory, non-installed candidate probe on the VPS reused the panel's actual
 credential-file setting and attempted only `GET /v1/status`, socket timeout five
 seconds. It returned `email_read_unavailable` while the bridge was offline, with

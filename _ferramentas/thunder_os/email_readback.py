@@ -60,6 +60,9 @@ def _raw_message(message):
              and 'SENT' in labels and 'DRAFT' not in labels, 'email_sent_evidence_required')
     payload = message.get('payload')
     _require(isinstance(payload, dict))
+    # A plain alternative does not prove the complete MIME message's contents.
+    _require(payload.get('mimeType') == 'text/plain'
+             and payload.get('parts') in (None, []), 'email_mime_unsupported')
     headers = payload.get('headers')
     _require(isinstance(headers, list) and len(headers) <= 500)
     values = {}
@@ -101,13 +104,6 @@ def _raw_message(message):
             decoded += len(raw)
             _require(decoded <= 65536)
             parts.append(raw.decode('utf-8', errors='strict'))
-        elif isinstance(mime, str) and mime.startswith('multipart/'):
-            children = part.get('parts')
-            _require(isinstance(children, list) and bool(children))
-            for child in children:
-                visit(child, depth+1)
-        else:
-            _require(mime == 'text/html')
 
     visit(payload, 0)
     _require(len(parts) == 1)

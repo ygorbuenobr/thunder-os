@@ -341,6 +341,34 @@ class EmailReadbackTests(unittest.TestCase):
                     self.assertEqual(stored.result['verification']['scope'], 'message_in_sender_account_not_delivery')
                 self.assertEqual(self.repo.effects(), [job])
 
+    def test_additional_mime_content_cannot_promote_work_or_append_success(self):
+        job = self.seed()
+        service = ThunderService(self.repo, effect_readers={'email': self.reader})
+        for mime in ('multipart/mixed', 'multipart/alternative', 'text/plain'):
+            for missing in (False, True):
+                with self.subTest(mime=mime, missing_html_data=missing):
+                    response = raw_message()
+                    plain = deepcopy(response['message']['payload'])
+                    extra = {'mimeType': 'text/html', 'body': {'size': 88}}
+                    if not missing:
+                        extra['body']['data'] = base64.urlsafe_b64encode(b'x'*88).decode()
+                    response['message']['payload'] = {
+                        **plain, 'mimeType': mime, 'parts': [plain, extra]}
+                    self.client.response = response
+                    item = service.request_work({'objective': 'Verify complete synthetic message',
+                        'context': {'effect_id': job['id'], 'cadence_id': self.cadence['id'],
+                                    'channel': 'email'}}, 'ygor', 'mime-'+mime+str(missing))
+                    item = service.claim(item.id, item.version, 'ygor')
+                    before_events = self.repo.events(item.id)
+                    report = {'effect_id': job['id'], 'cadence_id': self.cadence['id'],
+                        'channel': 'email', 'status': 'sent', 'receipt_ref': RECEIPT,
+                        'readback': self.expected(), 'evidence': [{'source': 'synthetic'}]}
+                    with self.assertRaisesRegex(ContractError, 'readback unavailable'):
+                        service.record_job_result(item.id, item.version, report, 'ygor')
+                    self.assertEqual(as_payload(self.repo.get_work(item.id)), as_payload(item))
+                    self.assertEqual(self.repo.events(item.id), before_events)
+                    self.assertEqual(self.repo.effects(), [job])
+
     def test_panel_main_real_assembly_is_lazy_and_read_flag_is_independent_of_send(self):
         import painel_servidor as panel
         from thunder_os.instantly_reader import InstantlyReader
