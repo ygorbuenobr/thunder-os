@@ -27,6 +27,7 @@ from .db import Repository, RepositoryConflict
 from .hermes_text_adapter import LIMIT, bounded_process_transport, load_catalog_context, text_deadline
 from .knowledge import KnowledgeStore
 from .service import ThunderService
+from .email_readback import configured_email_readers
 from .models import ContractError, WorkStatus
 from .research import COVERAGE_STATUSES, SOURCE_AREAS
 from .research_producer import MAX_COLLECTION_SECONDS, PublicResearchProducer, ResearchCollectionError
@@ -415,7 +416,8 @@ class ContinuousConsumer:
                     **{k: v for k, v in control.items() if k not in {'id', 'version', 'updated_at'}},
                     'activation_at': self.clock().isoformat(), 'enabled': False, 'paused': True})
         self.worker_service = GatedService(EligibleRepository(self.repository, self),
-            knowledge_store=service.knowledge_store, approved_catalog=service._approved_catalog)
+            knowledge_store=service.knowledge_store, approved_catalog=service._approved_catalog,
+            effect_readers=service._effect_readers)
         self.worker = AgentWorker(self.worker_service, runner=GuardedRunner(self), actor='hermes', clock=clock)
 
     def block_reason(self):
@@ -537,7 +539,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     enforce_external_gate()
     repository = Repository(args.db)
-    service = ThunderService(repository, knowledge_store=KnowledgeStore(args.brain))
+    service = ThunderService(repository, knowledge_store=KnowledgeStore(args.brain),
+        effect_readers=configured_email_readers(repository))
     stop = threading.Event()
     consumer = ContinuousConsumer(service, evidence_loader=TrustedEvidence(service, args.brain, args.bundles),
         transport_factory=process_factory(brain=args.brain, hermes_root=args.hermes_root, profile=args.profile,

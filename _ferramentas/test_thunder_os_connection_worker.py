@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import closing
 import json
 import os
 import tempfile
@@ -33,6 +34,25 @@ class Owner:
 
 
 class ConnectionWorkerTests(unittest.TestCase):
+    def test_internal_worker_preserves_server_owned_receipt_readers(self):
+        reader = object()
+        service = ThunderService(self.repo, effect_readers={'email': reader})
+        with patch.dict(os.environ, {'THUNDER_EXTERNAL_EFFECTS_ENABLED': 'false',
+                                    'THUNDER_OS_EXTERNAL_EFFECTS_ENABLED': 'false'}):
+            consumer = ContinuousConsumer(service, evidence_loader=lambda _: None,
+                transport_factory=lambda *_: None)
+        self.assertIs(consumer.worker_service._effect_readers['email'], reader)
+        self.assertIsNot(consumer.worker_service._effect_readers, service._effect_readers)
+        self.assertEqual(self.repo.effects(), [])
+
+    def test_internal_worker_without_receipt_readers_remains_disconnected(self):
+        with patch.dict(os.environ, {'THUNDER_EXTERNAL_EFFECTS_ENABLED': 'false',
+                                    'THUNDER_OS_EXTERNAL_EFFECTS_ENABLED': 'false'}):
+            consumer = ContinuousConsumer(self.service, evidence_loader=lambda _: None,
+                transport_factory=lambda *_: None)
+        self.assertEqual(consumer.worker_service._effect_readers, {})
+        self.assertEqual(self.repo.effects(), [])
+
     def test_long_research_preserves_lease_persistence_and_ack(self):
         from test_thunder_os_research import base_artifact
         service = ThunderService(self.repo, approved_catalog={
@@ -257,7 +277,7 @@ class ConnectionWorkerTests(unittest.TestCase):
 
     def test_budget_write_failure_rolls_back_lease(self):
         self.enqueue()
-        with sqlite3.connect(self.path) as con:
+        with closing(sqlite3.connect(self.path)) as con, con:
             con.execute("""CREATE TRIGGER reject_execution_budget BEFORE INSERT ON thunder_state
                 WHEN NEW.kind='connection_research_execution_day'
                 BEGIN SELECT RAISE(ABORT, 'injected budget failure'); END""")

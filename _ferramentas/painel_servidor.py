@@ -27,6 +27,7 @@ from thunder_os.service import AuthorizationError, ThunderService
 from thunder_os.knowledge import KnowledgeStore
 from thunder_os.hubspot_console import HubSpotConsole, systemd_hubspot_credential
 from thunder_os.seqd_console import SEQDConsole
+from thunder_os.email_readback import configured_email_readers
 from thunder_os.email_canary import EmailCanary, CanaryError, restricted_mode, canary_view
 from thunder_os.seqd_client import SEQDError
 from thunder_os.hubspot_executor import HubSpotHTTPError
@@ -2047,7 +2048,10 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
             else:
                 from thunder_os.connectsafely_runtime import ExistingRepository
                 repository = ExistingRepository(banco.arquivo)
-            servidor.thunder_service = ThunderService(repository, ledger, knowledge_store=KnowledgeStore(RAIZ if runtime is None else runtime['panel_root']))
+            servidor.thunder_service = ThunderService(repository, ledger,
+                knowledge_store=KnowledgeStore(RAIZ if runtime is None else runtime['panel_root']),
+                effect_readers=configured_email_readers(repository, read_enabled=(
+                    runtime is None and os.environ.get('THUNDER_OS_SEQD_READ_ENABLED', '') == 'true')))
             if runtime is None:
                 from thunder_os.instantly_webhook import (InstantlyCapture,
                     INSTANTLY_CAPTURE_SECRET_FILE, load_capture_secret)

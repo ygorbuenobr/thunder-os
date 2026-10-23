@@ -294,3 +294,103 @@ the principal's allowlist changes. No commit, push, deploy, CRM/provider write,
 webhook subscription, secret provisioning, canary execution or outbound send.
 Review and live activation remain the principal's responsibility; these are
 builder proofs, not independent TLC verification or runtime readiness.
+
+## Email Receipt Readback: Prepared Integration, Not Activated
+
+The continuation after `992f075` wires a read-only receipt reader into the panel,
+the continuous consumer's root service and its internal `GatedService`. It reuses
+`THUNDER_OS_SEQD_READ_ENABLED=true`, the existing private `seqd_bridge` credential
+and the pinned SEQD mailbox/workspace. Construction performs no HTTP or OAuth.
+No new route, credential, table, ledger, background polling or send transport is
+introduced. The reader cannot send, reconcile a remote attempt, or retry a send.
+
+Receipt formats `gmail:<message-id>` and `email:gmail:<message-id>` are handled
+explicitly. The latter is the existing neutral email adapter envelope; neither
+format by itself proves an email exists. Confirmation requires a fresh read from
+the pinned sender account, an unambiguous single sent message, recipient, subject
+and complete plain text. Drafts, missing headers, multiple recipients and partial
+content remain blocked. Internal step IDs come from a unique persisted effect
+binding, not from Gmail. No missing identity/effect is fabricated for old mail.
+
+Research/copy work without an operational result is unaffected. A receipt reader
+does not create the missing operational work/effect producer and does not turn
+HubSpot activity logs into sender-account evidence. It establishes a message in
+the sender account, not delivery to or appearance in the recipient's inbox.
+
+### Readiness And Real-History Check
+
+The live inspection before this change found panel/main `969f8ef` and agent
+`d562788`, with distinct symlinks and intact manifests. The active database had
+zero internal cadences/identities/approvals/effect jobs; six registry entries are
+not six executable internal cadences. Existing external campaigns are not adopted
+or changed by this code.
+
+The SEQD bridge on `127.0.0.1:8792` was not listening. No service was started to
+hide this blocker. An independent Gmail connector read confirmed an existing
+historical self-test against its canonical SEQD preview and sent receipt. That
+read is evidence about the historical message, NOT proof of the panel/SEQD route
+or a production work/effect binding. Private IDs/hashes and the current review
+status belong in the Brain's `cadencia-multicanal` record, not customer fixtures.
+
+### Publication Procedure: Operator Approval Required
+
+1. Recheck the current panel and agent PID/cwd/symlinks and manifest integrity.
+   Bind the approved candidate to the exact reviewed source SHA and pinned
+   dependency in `runtime/dependencies.json`; never build the dirty main checkout.
+2. Resolve the read-backend blocker under a separate explicit operational scope.
+   Do not restart frozen GTM, campaigns, SEQD send queues or a personal bot.
+   Verify account identity and one exact historical message through the actual
+   configured reader. Keep sending flags and campaign configuration unchanged.
+3. Re-run the email reader/composition tests, all 36 eval scenarios and affected
+   regressions. Have an independent reviewer bind the result to the final diff.
+4. Panel rollout uses its existing immutable bundle/promotion procedure and retains
+   the then-active `current` as rollback. No database migration/backfill is part
+   of the reader. A panel promotion alone does NOT upgrade the agent.
+5. Do NOT promote the old agent blindly to the panel candidate. The inspected
+   `d562788..992f075` delta already contains 133 files, including previous features.
+   The operator must approve that broader source delta or a separately qualified
+   agent release. Preserve `agent-current` independently. Propagation to the
+   internal `GatedService` is required, not just the root consumer service.
+6. Verify the promoted process path/manifest, read-only history and unchanged
+   research/copy flow. Do not create real effects, approvals or CRM entries merely
+   to make a smoke test pass. No sends or retries are authorized by this runbook.
+
+### Rollback And Remaining Activation Gates
+
+- Roll back only the component just promoted to its recorded immutable previous
+  release, using the existing serialized promotion/rollback mechanism. A restart
+  is an explicit operational action, never an automatic test side effect.
+- No reversal of campaign data, identities or sent receipts is required: this
+  integration does not migrate them. Preserve any newly written work/events;
+  never restore an old database to disguise a failed read.
+- Keep previous panel `969f8ef` and agent `d562788` until fresh runtime checks
+  select the actual rollback targets; the values here are dated observations.
+- Missing backend, identity, unique sent effect, matching provider/account or
+  complete readback blocks operational verification. It must not trigger a send,
+  fallback provider, automatic retry or success claim.
+
+### Confirmed Backend Contract Blocker
+
+The inspected bridge code at
+`/var/lib/seqd-thunder-bridge/build/b6c3dd6aefe0247b50156b6dd9aeb818cd332ea3/bridge/bridge.cjs:39`
+returns only `id`, `thread_id`, `body`, `truncated`, `from`, `to`, `subject`, `date`.
+Its native helper computes `sent` but the bridge drops that field; labels and
+Cc/Bcc are also absent. Starting that old bridge alone would not qualify it.
+The reader explicitly rejects this incomplete response. Full Gmail MIME evidence
+or a complete trusted response is required; no default false/empty fields are
+invented for missing evidence. HTML-only mail is not verified as complete plain
+text by this reader.
+
+An in-memory, non-installed candidate probe on the VPS reused the panel's actual
+credential-file setting and attempted only `GET /v1/status`, socket timeout five
+seconds. It returned `email_read_unavailable` while the bridge was offline, with
+no message request, retry or state write. An earlier probe without that setting
+failed before HTTP; it is not counted as transport evidence. No token was printed,
+copied into the repository, rotated or provisioned.
+
+The prepared reader identifies provider `gmail`, account the exact mailbox in
+the Mexico registry. SEQD is its access transport. Apollo, Instantly, HubSpot
+sequences and other sender accounts are not silently mapped to Gmail. The five
+second timeout bounds each socket operation, not an absolute wall-clock deadline
+against a peer streaming arbitrarily slowly. Backend availability/schema and any
+service/credential deployment still require an explicit operational decision.

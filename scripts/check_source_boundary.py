@@ -63,6 +63,7 @@ ALLOWED_FILES = {
     "_ferramentas/painel_modelo.html",
 }
 ALLOWED_TESTS = {
+    "test_thunder_os_email_readback.py",
     "test_thunder_os_effect_reconciliation.py",
     "test_thunder_os_instantly_reader.py",
     "test_thunder_os_instantly_ingress.py",
