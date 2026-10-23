@@ -35,6 +35,7 @@ const detail = id => ({id, title: 'Original integral sintético', meta: 'Origem 
   source_links: [source, {label: 'Link inválido', url: 'javascript:alert(1)'}, {label: 'Não é registro', url: 'https://source.example.invalid/'}, {label: 'Credenciais não', url: 'https://name:pass@source.example.invalid/item'}],
   draft: {text: draft}, editable: true, approval_available: false, approval_reason: 'Sem vínculo com toque canônico. Aprovação bloqueada.'});
 const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', company: 'Empresa sintética', campaign_id: br,
+  contact: 'Contato documental sintético', thesis: 'Tese documental original.\n' + attack, method: 'MÉTODO-SINTÉTICO',
   source: {path: 'fixtures/account.md', sha256: 'a'.repeat(64)}, limitations: ['Fonte sintética sem aprovação canônica.'],
   tabs: {research: [{text: 'Fato original sintético. ' + attack, label: 'Fonte pública sintética', published_on: collected, source_url: source.url}],
     dossier: [{key: 'M1', classification: 'hipótese', text: 'Hipótese original sem reescrita.', sources: [source]}],
@@ -135,6 +136,26 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
         assert.equal(await page.locator('#journey-dialog').evaluate(node => node.open && node.scrollWidth > node.clientWidth), false);
       };
+      const assertAccountComposition = async expected => {
+        assert.equal(await page.locator('#journey-account-contact').textContent(), expected.contact);
+        assert.equal(await page.locator('#journey-account-thesis-text').textContent(), expected.thesis);
+        assert.equal(await page.locator('#journey-account-method').textContent(), expected.method);
+        const parts = await page.locator('#journey-account-header').evaluate(header => {
+          const identity = header.querySelector('#journey-account-identity'), thesis = header.querySelector('#journey-account-thesis'), tabs = document.querySelector('#journey-account-tabs');
+          return {identity: identity.getBoundingClientRect().toJSON(), thesis: thesis.getBoundingClientRect().toJSON(), header: header.getBoundingClientRect().toJSON(), tabs: tabs.getBoundingClientRect().toJSON(),
+            contained: header.contains(identity) && header.contains(thesis) && identity.contains(document.querySelector('#journey-account-name')) && identity.contains(document.querySelector('#journey-account-contact')) && thesis.contains(document.querySelector('#journey-account-thesis-text')) && thesis.contains(document.querySelector('#journey-account-method')),
+            beforeTabs: Boolean(header.compareDocumentPosition(tabs) & Node.DOCUMENT_POSITION_FOLLOWING)};
+        });
+        assert.equal(parts.contained, true, 'Identity/contact and actual thesis/method belong to the two header regions');
+        assert.equal(parts.beforeTabs, true, 'Account composition precedes the five tabs in DOM order');
+        assert(parts.header.bottom <= parts.tabs.top + 1, 'Account header cannot overlap the tabs');
+        if (viewport.width === 1440) {
+          assert(parts.thesis.left >= parts.identity.right - 1, 'Thesis/method region is beside identity on desktop');
+          assert(Math.abs(parts.thesis.top - parts.identity.top) <= 1, 'Both desktop header regions start on the same row');
+        } else assert(parts.thesis.top >= parts.identity.bottom - 1, 'Thesis/method region stacks below identity on mobile');
+        assert(parts.thesis.right <= parts.header.right + 1 && parts.identity.left >= parts.header.left - 1, 'Both regions stay inside the account header');
+        assert.equal(await page.locator('#journey-account-header img,#journey-account-header script').count(), 0, 'Documental header fields remain escaped text');
+      };
       await page.goto('https://journey-panel.test/#jornada'); await settled();
       assert.equal(await page.locator('body').getAttribute('data-aba'), 'jornada');
       assert.deepEqual(await page.locator('#abas [role=tab]').evaluateAll(nodes => nodes.map(node => node.firstChild.textContent)), ['Jornada', 'Campanhas', 'Contas', 'Sistema']);
@@ -144,7 +165,9 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
       assert.equal(await page.locator('#journey-stages button').count(), 7);
       assert.match(await page.locator('[data-journey-metric=reached]').innerText(), /12/);
       assert.match(await page.locator('[data-journey-metric=replied]').innerText(), /\?[\s\S]*Sem leitura/);
-      assert.equal(await page.locator('[data-journey-metric=cost_per_hot]').count(), 0);
+      assert.equal(await page.locator('[data-journey-metric=cost_per_hot]').count(), 1, 'J03: unknown cost remains visible');
+      assert.equal(await page.locator('[data-journey-metric=cost_per_hot] strong').textContent(), '?');
+      assert.match(await page.locator('[data-journey-metric=cost_per_hot]').innerText(), /Sem custo comprovado/);
       if (viewport.width === 1440) {
         const ys = await page.locator('#journey-stages button').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().y));
         assert.equal(new Set(ys).size, 1, 'Seven stage tiles share one desktop row');
@@ -171,6 +194,20 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
       await open.focus(); await page.keyboard.press('Enter');
       await page.waitForFunction(() => !document.querySelector('#journey-detail-body').getAttribute('aria-busy') || document.querySelector('#journey-detail-body').getAttribute('aria-busy') === 'false');
       assert.equal(await page.locator('#journey-dialog').getAttribute('open'), '');
+      const drawer = await page.locator('#journey-dialog').boundingBox();
+      assert(Math.abs(drawer.x + drawer.width - viewport.width) <= 1, 'Drawer is anchored to the viewport RIGHT edge');
+      assert(Math.abs(drawer.width - Math.min(viewport.width, 680)) <= 1, 'Drawer is bounded on desktop and fills mobile width');
+      assert(Math.abs(drawer.y) <= 1 && Math.abs(drawer.height - viewport.height) <= 1, 'Drawer occupies the viewport height');
+      const originalOrder = await page.locator('#journey-detail-body').evaluate(body => {
+        const editor = body.querySelector('[data-journey-editor]'), originals = [...body.querySelectorAll('[data-journey-original-block]')];
+        return originals.map(block => ({beforeEditor: Boolean(block.compareDocumentPosition(editor) & Node.DOCUMENT_POSITION_FOLLOWING), bottom: block.getBoundingClientRect().bottom, editorTop: editor.getBoundingClientRect().top, containsOriginal: !!block.querySelector('pre.journey-original')}));
+      });
+      assert(originalOrder.length > 0);
+      for (const block of originalOrder) {
+        assert.equal(block.beforeEditor, true, 'Conversation originals precede the editor in DOM order');
+        assert.equal(block.containsOriginal, true);
+        assert(block.bottom <= block.editorTop + 1, 'Original conversation is laid out before the editable draft');
+      }
       assert.equal(await page.locator('#journey-detail-body pre').first().textContent(), original + '\n' + attack);
       assert.equal(await page.locator('#journey-detail-body a').count(), 1);
       assert.equal(await page.locator('#journey-detail-body a').getAttribute('href'), source.url);
@@ -215,9 +252,52 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
       assert.equal(requests.filter(row => row.path.includes('/details/')).at(-1).query, '?campaign=' + br);
       await page.keyboard.press('Escape');
       state.metrics.cost_per_hot = metric(25); await refresh();
+      assert.equal(await page.locator('[data-journey-metric=cost_per_hot] strong').textContent(), '?', 'Unknown hot denominator cannot produce numeric cost');
+      assert.match(await page.locator('[data-journey-metric=cost_per_hot]').innerText(), /Quantidade positiva de leads quentes não comprovada/);
+      state.metrics.hot = metric(0); await refresh();
+      assert.equal(await page.locator('[data-journey-metric=cost_per_hot] strong').textContent(), '?', 'Zero hot leads cannot be a cost denominator');
+      state.metrics.hot = metric(2); await refresh();
       assert.match(await page.locator('[data-journey-metric=cost_per_hot]').innerText(), /25,00/);
+      state.metrics.cost_per_hot = {value: 0, source: [], reason: ''}; await refresh();
+      assert.equal(await page.locator('[data-journey-metric=cost_per_hot] strong').textContent(), '?', 'Unregistered cost never becomes a presumed zero');
+      assert.match(await page.locator('[data-journey-metric=cost_per_hot]').innerText(), /Custo não cadastrado ou sem fonte comprovada/);
       state.metrics.reached = {value: 900, source: [], reason: 'Sem comprovação.'}; await refresh();
       assert.match(await page.locator('[data-journey-metric=reached]').innerText(), /\?/);
+      const metricReasons = [
+        ['verified_cost_source_unavailable', 'Fonte de custo comprovada indisponível nesta consulta.'],
+        ['partial_human_reply_coverage', 'Leitura parcial das respostas humanas.'],
+        ['unique_people_first_observed_touch_provider_receipt', 'Pessoas únicas com primeiro toque observado e recibo da plataforma.'],
+        ['person_identity_unverified', 'Identidade das pessoas ainda não comprovada.'],
+        ['provider_receipt_unavailable', 'Recibo da plataforma indisponível nesta consulta.'],
+        ['provider_classified_humans', 'Respostas humanas classificadas pela plataforma.'],
+        ['explicit_positive_classification_bound_to_original', 'Classificação positiva explícita vinculada à mensagem original.'],
+        ['positive_classification_unavailable', 'Classificação positiva indisponível nesta consulta.']
+      ];
+      for (let start = 0; start < metricReasons.length; start += 4) {
+        const fields = ['cost_per_hot', 'replied', 'reached', 'hot'];
+        for (let i = 0; i < fields.length; i++) Object.assign(state.metrics[fields[i]], {reason: metricReasons[start + i][0], coverage: {complete: i % 2 === 0, scope: 'observed_brazil_people', observed_count: i}});
+        await refresh();
+        for (let i = 0; i < fields.length; i++) {
+          const rendered = await page.locator(`[data-journey-metric=${fields[i]}]`).innerText();
+          assert(rendered.includes(metricReasons[start + i][1]), 'Actual backend reason code renders its Portuguese explanation');
+          assert(rendered.includes((i % 2 === 0 ? 'Leitura completa' : 'Leitura parcial') + ' · ' + i + (i === 1 ? ' pessoa observada' : ' pessoas observadas')));
+          assert.doesNotMatch(rendered, /observed_brazil_people|observed_count|"complete"|"scope"|verified_cost_source_unavailable|partial_human_reply_coverage|unique_people_first_observed_touch_provider_receipt|person_identity_unverified|provider_receipt_unavailable|provider_classified_humans|explicit_positive_classification_bound_to_original|positive_classification_unavailable/);
+        }
+      }
+      const actualMetricSources = ['gmail', 'seqd', 'instantly', 'cadence', 'local:hubspot_attempt', 'local:reply'];
+      const consultedCaption = 'Fontes consultadas: Gmail · SEQD · Instantly · Cadências HubSpot · Tentativas HubSpot · Respostas registradas';
+      state.metrics.reached.source = [...actualMetricSources, source];
+      state.metrics.cost_per_hot = {value: null, source: actualMetricSources, reason: 'verified_cost_source_unavailable'};
+      await refresh();
+      for (const key of ['reached', 'cost_per_hot']) {
+        const indicator = page.locator(`[data-journey-metric=${key}]`);
+        assert.equal(await indicator.locator('[data-journey-metric-sources]').count(), 1, 'String source collection is compacted into one caption');
+        assert.equal(await indicator.locator('[data-journey-metric-sources]').textContent(), consultedCaption);
+        assert.doesNotMatch(await indicator.innerText(), /local:hubspot_attempt|local:reply|\bgmail\b|\bseqd\b|\binstantly\b|\bcadence\b/);
+      }
+      assert.equal(await page.locator('[data-journey-metric=reached] a').getAttribute('href'), source.url, 'Object source link remains unchanged alongside compact string sources');
+      assert.equal(await page.locator('[data-journey-metric=cost_per_hot] strong').textContent(), '?');
+      assert.match(await page.locator('[data-journey-metric=cost_per_hot]').innerText(), /Fonte de custo comprovada indisponível/);
       state = journey(); await refresh();
       await page.locator('[data-journey-stage=icp]').click();
       await page.locator('#journey-stage-items [data-journey-kind=account]').click();
@@ -225,6 +305,9 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
       assert.equal(await page.locator('body').getAttribute('data-aba'), 'contas');
       assert.deepEqual(await page.locator('#journey-account-tabs button').allTextContents(), ['Pesquisa ABM', 'Dossiê', 'Contexto usado', 'Cadência', 'Antes de aprovar (2)']);
       assert.match(await page.locator('#journey-account-body').innerText(), /fixtures\/account.md/);
+      await assertAccountComposition(accountState);
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await page.screenshot({path: path.join(output, `account-header-${viewport.width}.png`)});
       for (const [key, content] of [['research','Fato original sintético'], ['dossier','Hipótese original sem reescrita'], ['context','Uso original do contexto'], ['before_approval','Confirmar vínculo canônico']]) {
         await page.locator(`[data-journey-tab=${key}]`).click();
         assert((await page.locator('#journey-account-panel').innerText()).includes(content));
@@ -382,10 +465,12 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
         await page.waitForFunction(name => document.querySelector('#journey-account-name')?.textContent === name, 'Conta visitante sintética ' + i);
         if (i < 6) {
           assert.equal(await page.locator('#journey-account-tabs button').count(), 5);
+          await assertAccountComposition(account());
           assert.equal(await page.locator('#journey-account-panel [data-journey-review]').count(), 0);
           await page.locator('#journey-account-panel [data-journey-text]').first().fill('Edição visitante local.');
         } else {
           assert.equal(await page.locator('#journey-account-tabs').count(), 0);
+          assert.equal(await page.locator('#journey-account-thesis').count(), 0, 'Status-only visitors cannot expose thesis content');
           assert.equal(await page.locator('#journey-account-body textarea, #journey-account-body [data-journey-approve]').count(), 0);
           assert.match(await page.locator('#journey-account-body').innerText(), /Somente status/);
         }

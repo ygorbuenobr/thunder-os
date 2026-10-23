@@ -1368,7 +1368,7 @@ class Handler(BaseHTTPRequestHandler):
                     result = journey.account_list(campaign=campaign)
                 elif match := re.fullmatch(r'/api/os/v1/journey/details/([A-Za-z0-9:_-]{1,160})', rota.path):
                     result = journey.detail(match.group(1), campaign=campaign)
-                elif match := re.fullmatch(r'/api/os/v1/journey/accounts/([A-Za-z0-9:_-]{1,160})', rota.path):
+                elif match := re.fullmatch(r'/api/os/v1/journey/accounts/([A-Za-z0-9][A-Za-z0-9_.:@-]{0,159})', rota.path):
                     result = journey.account_detail(match.group(1), campaign=campaign)
                 else:
                     raise Erro('Item da Jornada não encontrado.', 404)
@@ -1673,7 +1673,7 @@ class Handler(BaseHTTPRequestHandler):
                 'revise': base_fields | {'expected_version', 'review_hash', 'content', 'subject'},
                 'discard': base_fields | {'expected_version', 'review_hash', 'reason'}}[action]
             if (rota.query or not isinstance(body, dict) or set(body) != fields
-                    or any(not isinstance(body.get(key), str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', body[key])
+                    or any(not isinstance(body.get(key), str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}', body[key])
                            for key in base_fields)):
                 raise Erro('Revisão do toque inválida.')
             cadence = service.repository.get_state('cadence', body['cadence_id'])

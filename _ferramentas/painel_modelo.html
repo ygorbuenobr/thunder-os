@@ -356,6 +356,10 @@ body[data-aba="jornada"] h1,body[data-journey-ready="true"][data-aba="contas"] h
 .journey-tabs{display:flex;flex-wrap:wrap;gap:8px;margin:20px 0}
 .journey-tabs [aria-selected="true"]{border-color:var(--roxo);background:var(--surface2);color:var(--roxo)}
 .journey-dossier{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 24px}
+.journey-account-header{grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:24px;align-items:start}
+.journey-account-header>div,.journey-account-header>aside{min-width:0}
+.journey-account-header>div:only-child{grid-column:1/-1}
+.journey-account-header>aside{display:grid;gap:10px;border-inline-start:1px solid var(--line);padding-inline-start:24px}
 .journey-touch{border-bottom:1px solid var(--line);padding:16px 0}.journey-touch summary{min-height:44px;cursor:pointer;padding:8px 0}
 .journey-edit{display:grid;gap:10px;margin-top:12px}.journey-edit textarea{background:var(--surface);color:var(--text);border-color:var(--muted);min-height:200px;white-space:pre-wrap}
 .journey-edit input[type="text"]{background:var(--surface);color:var(--text);border-color:var(--muted)}
@@ -369,6 +373,7 @@ body[data-aba="jornada"] h1,body[data-journey-ready="true"][data-aba="contas"] h
 .journey-loading{min-height:148px;color:var(--muted);padding-block:20px}
 .journey :focus-visible{outline:2px solid var(--roxo)!important;outline-offset:3px}
 @media(max-width:860px){.journey-stages{grid-template-columns:repeat(4,minmax(0,1fr))}.journey-bottom{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:560px){.journey-account-header{grid-template-columns:minmax(0,1fr)}.journey-account-header>aside{border-inline-start:0;border-top:1px solid var(--line);padding-inline-start:0;padding-top:16px}}
 @media(max-width:560px){body[data-aba="jornada"] h1,body[data-journey-ready="true"][data-aba="contas"] h1{font-size:28px}.journey-metric strong{font-size:36px}.journey-stages{grid-template-columns:repeat(2,minmax(0,1fr))}.journey-row{grid-template-columns:minmax(0,1fr)}.journey-row .btn{justify-self:start}.journey-tools,.journey-field{width:100%}.journey-dossier{grid-template-columns:minmax(0,1fr)}.journey-drawer{padding:16px}.journey-drawer .conta-topo{top:-16px}.journey-head{align-items:start}}
 </style>
 
@@ -2042,10 +2047,34 @@ function journeySetMode(mode){
 }
 function journeyMetric(key,label){
   const metric=journeySnapshot?.metrics?.[key];
-  const proven=typeof metric?.value==='number'&&Number.isFinite(metric.value)&&journeyRows(metric.source).length>0;
-  if(key==='cost_per_hot'&&!proven)return '';
+  const reasons={
+    person_identity_unverified:'Identidade das pessoas ainda não comprovada.',
+    unique_people_first_observed_touch_provider_receipt:'Pessoas únicas com primeiro toque observado e recibo da plataforma.',
+    provider_receipt_unavailable:'Recibo da plataforma indisponível nesta consulta.',
+    provider_classified_humans:'Respostas humanas classificadas pela plataforma.',
+    partial_human_reply_coverage:'Leitura parcial das respostas humanas.',
+    explicit_positive_classification_bound_to_original:'Classificação positiva explícita vinculada à mensagem original.',
+    positive_classification_unavailable:'Classificação positiva indisponível nesta consulta.',
+    verified_cost_source_unavailable:'Fonte de custo comprovada indisponível nesta consulta.'
+  };
+  let proven=typeof metric?.value==='number'&&Number.isFinite(metric.value)&&journeyRows(metric.source).length>0;
+  let reason=reasons[metric?.reason]||journeyText(metric?.reason);
+  if(key==='cost_per_hot'){
+    const hot=journeySnapshot?.metrics?.hot,denominator=typeof hot?.value==='number'&&Number.isFinite(hot.value)&&hot.value>0&&journeyRows(hot.source).length>0;
+    proven=proven&&metric.value>=0&&denominator;
+    if(!proven&&!reason)reason=!journeyRows(metric?.source).length?'Custo não cadastrado ou sem fonte comprovada nesta consulta.':!denominator?'Quantidade positiva de leads quentes não comprovada para calcular o custo.':'Custo indisponível nesta consulta.';
+  }
+  const coverage=metric?.coverage;
+  let coverageLabel=typeof coverage==='string'?'Cobertura: '+coverage:'';
+  if(coverage&&typeof coverage==='object'&&!Array.isArray(coverage)){
+    coverageLabel=coverage.complete===true?'Leitura completa':coverage.complete===false?'Leitura parcial':'Cobertura não informada';
+    if(Number.isInteger(coverage.observed_count)&&coverage.observed_count>=0)coverageLabel+=' · '+coverage.observed_count.toLocaleString('pt-BR')+(coverage.observed_count===1?' pessoa observada':' pessoas observadas');
+  }
+  const sources=journeyRows(metric?.source),sourceNames={gmail:'Gmail',seqd:'SEQD',instantly:'Instantly',instantly_cache:'Cache do Instantly',cadence:'Cadências HubSpot','local:hubspot_attempt':'Tentativas HubSpot','local:reply':'Respostas registradas'};
+  const consulted=[...new Set(sources.filter(source=>typeof source==='string').map(source=>Object.hasOwn(sourceNames,source)?sourceNames[source]:'Fonte não identificada'))];
+  const sourceHTML=(consulted.length?`<p class="msg" data-journey-metric-sources>Fontes consultadas: ${esc(consulted.join(' · '))}</p>`:'')+journeySources(sources.filter(source=>typeof source!=='string'));
   const number=proven?(key==='cost_per_hot'?metric.value.toLocaleString('pt-BR',{style:'currency',currency:'BRL'}):metric.value.toLocaleString('pt-BR')):'?';
-  return `<div class="journey-metric" data-journey-metric="${key}"><h3>${label}</h3><strong>${esc(number)}</strong><p>${esc(metric?.reason||(!proven?'Sem fonte comprovada nesta consulta.':''))}</p>${journeySources(metric?.source)}${metric?.coverage!=null?`<p>Cobertura: ${esc(journeyDescribe(metric.coverage))}</p>`:''}</div>`;
+  return `<div class="journey-metric" data-journey-metric="${key}"><h3>${label}</h3><strong>${esc(number)}</strong><p>${esc(reason||(!proven?'Sem fonte comprovada nesta consulta.':''))}</p>${sourceHTML}${coverageLabel?`<p>${esc(coverageLabel)}</p>`:''}</div>`;
 }
 function journeyValidItem(item){
   return item&&typeof item.id==='string'&&journeyVisibleRecord(item)&&(!journeyCampaign()||item.campaign_id===journeyCampaign());
@@ -2102,7 +2131,7 @@ async function carregarJourney(force=false){
     if(campaign&&!campaigns.some(row=>row.id===campaign))throw new Error('Campanha indisponível');
     $('journey-campaign').innerHTML='<option value="">Todas · BR</option>'+campaigns.map(row=>`<option value="${esc(row.id)}">${esc(row.label||row.id)}</option>`).join('');
     $('journey-campaign').value=campaign;journeySnapshot=data;journeyReadAt=Date.now();journeySetMode('ready');
-    $('sec-hoje').hidden=true;$('journey-status').textContent='Consultado em '+journeyDate(data.collected_at)+'. Somente leitura.';renderJourney();
+    $('sec-hoje').hidden=true;$('journey-status').textContent='Consultado em '+journeyDate(data.collected_at)+'.';renderJourney();
     if(document.body.dataset.aba==='contas'){$('journey-accounts').hidden=false;$('sec-quentes').hidden=true;carregarJourneyAccounts();}
   }catch(error){
     if(request!==journeyRequest)return;
@@ -2206,7 +2235,7 @@ async function abrirJourneyDetail(id,trigger){
     if(data?.id!==id||!Array.isArray(data.blocks))throw new Error('Detalhe inválido');
     journeyDetail=data;$('journey-detail-title').textContent=journeyText(data.title)||'Mensagem original';
     $('journey-detail-status').textContent=journeyDescribe(data.meta);
-    $('journey-detail-body').innerHTML=data.blocks.map(block=>`<section><h3>${esc(block.label||'Texto original')}</h3><p class="msg">${esc([block.sender,block.direction,block.date?journeyDate(block.date):''].filter(Boolean).join(' · '))}</p><pre class="journey-original">${esc(block.text)}</pre></section>`).join('')||'<p class="vazio">Texto original não disponível na fonte. O resumo não substitui a mensagem.</p>';
+    $('journey-detail-body').innerHTML=data.blocks.map(block=>`<section data-journey-original-block><h3>${esc(block.label||'Texto original')}</h3><p class="msg">${esc([block.sender,block.direction,block.date?journeyDate(block.date):''].filter(Boolean).join(' · '))}</p><pre class="journey-original">${esc(block.text)}</pre></section>`).join('')||'<p class="vazio">Texto original não disponível na fonte. O resumo não substitui a mensagem.</p>';
     const item=journeyRows(journeySnapshot?.stages).flatMap(stage=>journeyRows(stage.items)).find(row=>row.action?.id===id);
     if(data.editable===true&&typeof data.draft?.text==='string')$('journey-detail-body').insertAdjacentHTML('beforeend',journeyEditor(JSON.stringify(['detail',campaign,id,data.draft.text]),data.draft.text,data.approval_reason,journeyBinding(data,item?.campaign_id||campaign)));
     $('journey-detail-body').insertAdjacentHTML('beforeend',`<section><h3>Fontes originais</h3>${journeyRows(data.source_links).map(link=>journeyLink(link.url,link.label)).join('')||'<p class="vazio">Nenhum link direto válido informado pela fonte.</p>'}</section>`);
@@ -2252,7 +2281,8 @@ async function abrirJourneyAccount(id){
     if(request!==journeyAccountRequest)return;
     if(data?.id!==id||!journeyVisibleRecord(data)||journeyCampaign()&&data.campaign_id!==journeyCampaign()||!data.tabs||typeof data.tabs!=='object')throw new Error('Conta inválida');
     journeyAccount=data;$('journey-account-status').textContent=journeyRows(data.limitations).map(journeyDescribe).join(' · ')||'Somente leitura. Edições locais não estão salvas.';
-    $('journey-account-body').innerHTML=`<section><h2 id="journey-account-name" tabindex="-1">${esc(data.name)}</h2><p class="msg">${esc(journeyRecordLabel(data))}</p>${data.readiness?`<p>${esc(data.readiness)}</p>`:''}<p class="msg">Fonte: <code>${esc(data.source?.path||'Não informada')}</code></p><code>SHA256: ${esc(data.source?.sha256||'Não informado')}</code></section>`;
+    const statusOnly=journeyVisitor(data)&&data.reviewable!==true;
+    $('journey-account-body').innerHTML=`<section class="journey-account-header" id="journey-account-header" aria-label="Identidade e tese da conta"><div id="journey-account-identity"><h2 id="journey-account-name" tabindex="-1">${esc(data.name)}</h2><p class="journey-original" id="journey-account-contact">${esc(data.contact||'Contato não informado na fonte.')}</p><p class="msg">${esc(journeyRecordLabel(data))}</p>${data.readiness?`<p>${esc(data.readiness)}</p>`:''}<p class="msg">Fonte: <code>${esc(data.source?.path||'Não informada')}</code></p><code>SHA256: ${esc(data.source?.sha256||'Não informado')}</code></div>${statusOnly?'':`<aside id="journey-account-thesis" aria-labelledby="journey-account-thesis-heading"><h3 id="journey-account-thesis-heading">Tese</h3><p class="journey-original" id="journey-account-thesis-text">${esc(data.thesis||'Tese não informada na fonte.')}</p><p class="msg">Método: <b id="journey-account-method">${esc(data.method||'Não informado na fonte.')}</b></p></aside>`}</section>`;
     if(journeyVisitor(data)&&data.reviewable!==true)$('journey-account-body').insertAdjacentHTML('beforeend','<p class="msg">Somente status. Revisão de cadência indisponível para esta conta.</p>');
     else{
       $('journey-account-body').insertAdjacentHTML('beforeend',`<div class="journey-tabs" role="tablist" aria-label="Seções da conta" id="journey-account-tabs">${journeyTabDefs.map(([key,label])=>`<button type="button" class="btn" id="journey-tab-${key}" role="tab" data-journey-tab="${key}" aria-controls="journey-account-panel" aria-selected="${key===journeyAccountTab}" tabindex="${key===journeyAccountTab?0:-1}">${label}${key==='before_approval'?' ('+journeyRows(data.tabs.before_approval).length+')':''}</button>`).join('')}</div><div id="journey-account-panel" role="tabpanel" tabindex="0"></div>`);renderJourneyAccountTab();

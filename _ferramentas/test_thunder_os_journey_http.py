@@ -82,6 +82,42 @@ class JourneyHTTPTests(unittest.TestCase):
             body={**body, 'step_ids': ['D0', 'D3']}, nonce=True)
         self.assertEqual(status, 400)
 
+    def test_J06_authenticated_review_returns_exact_step_and_never_dispatches(self):
+        self.step_service()
+        expected = {'cadence_id': 'cadence-fixture', 'step_id': 'D0',
+                    'content': 'Original', 'subject': 'Topic', 'expected_version': 4,
+                    'review_hash': 'a' * 64, 'can_approve': True, 'blockers': [],
+                    'context_hash': 'b' * 64,
+                    'execution_confirmation': {'fixture': 'exact D0 envelope'}}
+        self.service.review_step.return_value = expected
+        status, value = self.request('/api/os/v1/journey/steps/review', method='POST',
+            body={'cadence_id': 'cadence-fixture', 'step_id': 'D0'}, nonce=True)
+        self.assertEqual(status, 200)
+        self.assertEqual(value, expected)
+        self.service.review_step.assert_called_once_with('cadence-fixture', 'D0', 'ygor')
+        self.service.approve_cadence.assert_not_called()
+        self.service.dispatch_step.assert_not_called()
+        self.service.control_agent.assert_not_called()
+
+    def test_J06_authenticated_discard_scopes_exact_step_without_dispatch(self):
+        self.step_service()
+        self.service.discard_step.return_value = {'id': 'cadence-fixture',
+            'version': 5, 'status': 'ready_for_review'}
+        body = {'cadence_id': 'cadence-fixture', 'step_id': 'D3',
+                'expected_version': 4, 'review_hash': 'a' * 64,
+                'reason': 'Human declined this exact touch'}
+        status, value = self.request('/api/os/v1/journey/steps/discard', method='POST',
+            body=body, nonce=True)
+        self.assertEqual(status, 200)
+        self.assertTrue(value['applied'])
+        self.assertFalse(value['sent'])
+        self.assertEqual(value['cadence']['status'], 'ready_for_review')
+        self.service.discard_step.assert_called_once_with('cadence-fixture', 'D3', 'ygor',
+            expected_version=4, review_hash='a' * 64, reason='Human declined this exact touch')
+        self.service.approve_cadence.assert_not_called()
+        self.service.dispatch_step.assert_not_called()
+        self.service.control_agent.assert_not_called()
+
     def test_J06_step_actions_require_nonce_origin_actor_and_brazil(self):
         cadence = self.step_service()
         body = {'cadence_id': 'cadence-fixture', 'step_id': 'D0'}
@@ -123,6 +159,20 @@ class JourneyHTTPTests(unittest.TestCase):
             with self.subTest(actor=actor):
                 self.assertEqual(self.request('/api/os/v1/journey', actor=actor)[0], expected)
         self.journey.snapshot.assert_not_called()
+
+    def test_J11_domain_and_namespaced_ids_remain_literal_not_file_paths(self):
+        status, _ = self.request('/api/os/v1/journey/accounts/company.example.invalid')
+        self.assertEqual(status, 200)
+        self.journey.account_detail.assert_called_once_with('company.example.invalid', campaign=None)
+        cadence = self.step_service()
+        cadence['id'] = 'cadence:company.example.invalid'
+        status, _ = self.request('/api/os/v1/journey/steps/review', method='POST', nonce=True,
+            body={'cadence_id': 'cadence:company.example.invalid', 'step_id': 'D0:email'})
+        self.assertEqual(status, 200)
+        self.service.review_step.assert_called_once_with('cadence:company.example.invalid', 'D0:email', 'ygor')
+        status, _ = self.request('/api/os/v1/journey/steps/review', method='POST', nonce=True,
+            body={'cadence_id': '../private', 'step_id': 'D0:email'})
+        self.assertEqual(status, 400)
 
     def test_J11_mutations_and_unknown_filters_are_rejected(self):
         for method in ['POST', 'PATCH', 'PUT', 'DELETE']:
