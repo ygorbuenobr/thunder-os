@@ -71,6 +71,27 @@ class CampaignSheetTests(unittest.TestCase):
         self.assertTrue(all(r['status']=='missing_file' for r in sheet_view('x',self.sheet,self.store)['fields']))
         self.assertTrue(all(r['status']=='unavailable' for r in sheet_view('x',self.sheet)['fields']))
 
+    def test_multiple_references_require_every_source_and_bind_all_hashes(self):
+        sheet = deepcopy(self.sheet)
+        other = self.store.root/'other.md'
+        other.write_text('## Policy\nOnly the approved proof.\n')
+        ref = {'path':'other.md','sha256':hashlib.sha256(other.read_bytes()).hexdigest(),
+               'section':'Policy'}
+        sheet['fields']['proofs'] = [sheet['fields']['proofs'], ref]
+        view = require_sheet('synthetic',sheet,self.store)
+        row = next(row for row in view['fields'] if row['key']=='proofs')
+        self.assertEqual(len(row['sources']),2)
+        self.assertIn('Only the approved proof.',row['content'])
+        self.assertEqual(validate_sheet(sheet),sheet)
+        other.write_text('## Policy\nChanged.\n')
+        with self.assertRaisesRegex(ApprovalError,'changed'):
+            require_sheet('synthetic',sheet,self.store)
+        row = next(row for row in sheet_view('synthetic',sheet,self.store)['fields'] if row['key']=='proofs')
+        self.assertIsNone(row['content'])
+        for invalid in ([], [ref]*7, [[ref]]):
+            sheet['fields']['proofs']=invalid
+            with self.assertRaises(ApprovalError): validate_sheet(sheet)
+
     def test_invalid_paths_and_unknown_authorization_fields_are_rejected(self):
         for path in ['/etc/a.md','../a.md','x/../a.md','x//a.md','.hidden/a.md','x\\a.md','a.env','x\na.md']:
             invalid = deepcopy(self.sheet)
@@ -224,6 +245,24 @@ class CampaignSheetApprovalTests(unittest.TestCase):
             with self.assertRaisesRegex(ApprovalError,'changed'):f.approve()
             view=f.service.campaign_review_view(f.repo.get_state('cadence','batch-1'))
             self.assertEqual(view['campaign_sheet_status'],'stale')
+
+    def test_secondary_source_change_blocks_queued_effect(self):
+        with cadence_fixture() as f:
+            path=f.sheet_store.root/'secondary.md'
+            path.write_text('## Restrictions\nNo external effects.\n')
+            sheet=deepcopy(f.config['briefing'])
+            sheet['fields']['restrictions']=[sheet['fields']['restrictions'],
+                {'path':'secondary.md','section':'Restrictions',
+                 'sha256':hashlib.sha256(path.read_bytes()).hexdigest()}]
+            f.change_config(briefing=sheet)
+            cadence=f.repo.get_state('cadence','batch-1')
+            f.repo.put_state('cadence','batch-1',{**cadence,'execution_context':f.canonical})
+            f.approve();f.queue()
+            path.write_text('## Restrictions\nChanged after approval.\n')
+            f.worker().process_one()
+            f.adapter.send.assert_not_called()
+            self.assertEqual(f.service.campaign_review_view(
+                f.repo.get_state('cadence','batch-1'))['campaign_sheet_status'],'stale')
 
     def test_manual_operation_also_revalidates_brain_before_effect(self):
         f=operation_tests.OperationCampaignTests('runTest');f.setUp()

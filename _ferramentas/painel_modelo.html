@@ -176,7 +176,8 @@ body[data-aba="conversas"] [data-painel]:not([data-painel~="conversas"]),
 body[data-aba="aprovar"] [data-painel]:not([data-painel~="aprovar"]),
 body[data-aba="contas"] [data-painel]:not([data-painel~="contas"]),
 body[data-aba="cadencias"] [data-painel]:not([data-painel~="cadencias"]),
-body[data-aba="agentes"] [data-painel]:not([data-painel~="agentes"]){display:none}
+body[data-aba="agentes"] [data-painel]:not([data-painel~="agentes"]),
+body[data-aba="sistema"] [data-painel]:not([data-painel~="sistema"]){display:none}
 body[data-aba="agentes"] .detalhes-sistema{display:none}
 body[data-aba="cadencias"] .detalhes-sistema{display:none}
 .cad-read-head{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap}
@@ -228,6 +229,27 @@ body[data-aba="cadencias"] .detalhes-sistema{display:none}
 @media(max-width:760px){.agenttrail-hosts{grid-template-columns:1fr}}
 .hoje{max-width:760px;margin-inline:auto;display:grid;gap:18px}
 .hoje>header{margin:10px 0 2px}.hoje>header p{color:var(--muted);margin:4px 0 0}
+.today-block{border-top:1px solid var(--line);padding-top:18px;margin-top:8px;min-width:0}
+.today-block h2{color:var(--text);letter-spacing:0;font-size:16px;scroll-margin-top:96px}
+.today-block .qt{font-variant-numeric:tabular-nums;color:var(--muted)}
+.today-item{border-bottom:1px solid var(--line);padding:16px 0;display:grid;gap:8px;min-width:0;overflow-wrap:anywhere}
+.today-item h3{font-size:18px;line-height:1.35;margin:0;letter-spacing:0}
+.today-item p{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.today-item .today-meta{font-size:12px;color:var(--muted)}
+.today-item .btn{justify-self:start;white-space:normal;display:inline-flex;align-items:center}
+.today-sources{font-size:13px;color:var(--muted);margin:0;padding-left:20px;overflow-wrap:anywhere}
+.today-sources .error{color:var(--alerta)}
+.today-filter{display:grid;gap:4px;max-width:420px;font-size:13px}
+.today-filter input{width:100%;min-width:0;font:inherit;padding:8px;border:1px solid var(--line);border-radius:4px;background:var(--surface)}
+.today-overview{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-block:1px solid var(--line);gap:8px;padding:10px 0}
+.today-overview button{font:inherit;text-align:left;border:0;background:transparent;color:var(--text);cursor:pointer;padding:8px 4px;min-width:0;overflow-wrap:anywhere}
+.today-overview strong{display:block;font-size:24px;line-height:1.2;font-variant-numeric:tabular-nums}
+#today-archive{margin-top:28px;overflow-wrap:anywhere;scroll-margin-top:80px}
+#today-archive summary,#hoje-pedido>summary{cursor:pointer;padding:12px 0;min-height:44px}
+#today-archive pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit}
+#today-reply-dialog pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit}
+#today-reply-thread ol{padding-left:20px;display:grid;gap:16px}
+[data-today-view]{scroll-margin-top:85px}
 [data-prioridade="dia"]{border-left:4px solid var(--mostarda)}
 [data-prioridade="dia"] .proximo{font-weight:650;margin:0}.frescor{font-size:12px;color:var(--muted)}
 .pedido-dia{display:grid;gap:8px}.pedido-dia .acoes{justify-content:flex-end}
@@ -307,18 +329,16 @@ button,.btn,select,input:not([type="hidden"]),summary {min-height:44px;}
     <div style="color:var(--muted);margin-top:6px">O que precisa de você aparece primeiro. Você aprova, o sistema faz.</div>
   </div>
 </header>
-<p id="external-effects-status" class="msg" role="status" aria-live="polite" hidden>Envios desativados. As ações do painel antigo estão bloqueadas; pedidos e revisões do Thunder OS continuam disponíveis.</p>
+<p id="external-effects-status" class="msg" data-painel="sistema" role="status" aria-live="polite" hidden>Envios desativados. As ações do painel antigo estão bloqueadas; pedidos e revisões do Thunder OS continuam disponíveis.</p>
 <nav class="abas" id="abas" role="tablist" aria-label="Seções do painel" hidden>
   <button type="button" role="tab" data-aba="hoje" aria-selected="false">Hoje<span class="qt" id="qt-hoje"></span></button>
-  <button type="button" role="tab" data-aba="conversas" aria-selected="false">Conversas<span class="qt" id="qt-conversas"></span></button>
-  <button type="button" role="tab" data-aba="cadencias" aria-selected="false">Cadências</button>
-  <button type="button" role="tab" data-aba="aprovar" aria-selected="false">Para aprovar<span class="qt" id="qt-aprovar"></span></button>
+  <button type="button" role="tab" data-aba="cadencias" aria-selected="false">Campanhas</button>
   <button type="button" role="tab" data-aba="contas" aria-selected="false">Contas<span class="qt" id="qt-contas"></span></button>
-  <button type="button" role="tab" data-aba="agentes" aria-selected="false">Agentes</button>
+  <button type="button" role="tab" data-aba="sistema" aria-selected="false">Sistema</button>
 </nav>
 
 <main id="sec-cadencias" data-painel="cadencias" hidden>
-  <header class="cad-read-head"><div><h2>Cadências</h2><p class="sub">Registro local e HubSpot · Ygor · somente leitura</p></div><button class="btn" type="button" id="cad-read-refresh">Atualizar</button></header>
+  <header class="cad-read-head"><div><h2>Campanhas</h2><p class="sub">Registro local e HubSpot · Ygor · somente leitura</p></div><button class="btn" type="button" id="cad-read-refresh">Atualizar</button></header>
   <p id="cad-read-status" role="status" aria-live="polite">Aguardando consulta.</p>
   <div id="cad-read-campaigns"></div>
   <section class="cad-read-section"><h3>Aprendizados</h3><div id="cad-learning" role="status">Não verificado.</div></section>
@@ -340,7 +360,7 @@ button,.btn,select,input:not([type="hidden"]),summary {min-height:44px;}
   </section>
 </main>
 
-<main id="sec-agentes" data-painel="agentes" hidden>
+<main id="sec-agentes" data-painel="sistema" hidden>
   <div class="agenttrail-head">
     <div><h2>Atividade dos agentes</h2><p class="sub">Sessões observadas pelo Agenttrail Kitchen em cada host. Uma tarefa concluída não comprova publicação ou envio.</p></div>
     <button class="btn" id="agenttrail-atualizar" type="button">Atualizar</button>
@@ -363,13 +383,15 @@ button,.btn,select,input:not([type="hidden"]),summary {min-height:44px;}
 </main>
 
 <main class="hoje" id="sec-hoje" data-painel="hoje" hidden>
-  <header><h2 style="font-size:26px;text-transform:none;letter-spacing:0;color:var(--text)">Hoje</h2><p>Um resumo curto para você começar pelo que importa.</p></header>
-  <section class="grupo-dia" aria-labelledby="h-hoje-briefing">
-    <h2 id="h-hoje-briefing">Prioridades do briefing</h2>
-    <div class="cards" id="hoje-briefing"><p class="vazio">Aguardando consulta.</p></div>
-  </section>
-  <section class="grupo-dia" id="hoje-pedido" aria-labelledby="h-hoje-pedido">
-    <h2 id="h-hoje-pedido">Perguntar ao Hermes</h2>
+  <header class="cad-read-head"><h2 style="font-size:26px;text-transform:none;letter-spacing:0;color:var(--text)">Hoje</h2><button class="btn" id="today-refresh" type="button">Atualizar</button></header>
+  <p id="today-status" class="frescor" role="status" aria-live="polite">Consultando trabalho do dia…</p>
+  <nav class="today-overview" aria-label="Prioridades do dia"><button type="button" data-today-jump="respond">Responder<strong id="today-overview-respond-count">...</strong></button><button type="button" data-today-jump="do">Fazer<strong id="today-overview-do-count">...</strong></button><button type="button" data-today-jump="approve">Aprovar<strong id="today-overview-approve-count">...</strong></button></nav>
+  <label class="today-filter" for="today-filter">Buscar no dia<input id="today-filter" type="search" maxlength="200" autocomplete="off" aria-controls="today-respond today-do today-approve"></label>
+  <section class="today-block" aria-labelledby="today-respond-title"><h2 id="today-respond-title">RESPONDER <span class="qt" id="today-respond-count"></span></h2><div id="today-respond-sources"></div><div id="today-respond" aria-busy="true"><p class="vazio">Carregando respostas…</p></div></section>
+  <section class="today-block" aria-labelledby="today-do-title"><h2 id="today-do-title">FAZER <span class="qt" id="today-do-count"></span></h2><div id="today-do-sources"></div><div id="today-do" aria-busy="true"><p class="vazio">Carregando tarefas…</p></div></section>
+  <section class="today-block" aria-labelledby="today-approve-title"><h2 id="today-approve-title">APROVAR <span class="qt" id="today-approve-count"></span></h2><div id="today-approve-sources"></div><div id="today-approve" aria-busy="true"><p class="vazio">Carregando revisões…</p></div></section>
+  <details id="hoje-pedido" aria-labelledby="h-hoje-pedido">
+    <summary id="h-hoje-pedido">Verificar com Hermes</summary>
     <form class="pedido-dia" id="os-pedido">
       <label for="os-pedido-tipo">Pedido</label>
       <select id="os-pedido-tipo"><option value="verify">Verificar</option><option value="research">Pesquisa de conta</option><option value="copy">Preparar rascunho</option><option disabled>Corrigir/mudar rota · desligado</option><option disabled>Enviar · desligado</option></select>
@@ -383,7 +405,13 @@ button,.btn,select,input:not([type="hidden"]),summary {min-height:44px;}
       <div class="acoes"><span class="msg" id="os-pedido-msg" role="status" aria-live="polite"></span><button class="btn pri" type="submit">Pedir</button></div>
     </form>
     <div id="os-verificacao" hidden aria-live="polite"><p id="os-verificacao-answer"></p><ul id="os-verificacao-sources"></ul><details><summary>Limites da consulta</summary><ul id="os-verificacao-limits"></ul></details><small id="os-verificacao-runtime"></small></div>
-  </section>
+  </details>
+</main>
+
+<main id="sec-sistema" data-painel="sistema" hidden>
+  <header class="cad-read-head"><h2>Sistema</h2><button class="btn" id="system-read-refresh" type="button">Atualizar leituras</button></header>
+  <div id="system-campaign-tools"></div>
+  <details id="today-archive"><summary>Arquivo legado · <span id="today-archive-count">aguardando consulta</span></summary><div id="today-archive-items"><p class="vazio">Carregando arquivo…</p></div></details>
   <section class="grupo-dia" id="hoje-thunder-os" aria-labelledby="h-hoje-thunder-os">
     <h2 id="h-hoje-thunder-os">Trabalho acompanhado</h2>
     <p id="thunder-os-status" role="status" aria-live="polite">Aguardando consulta.</p><button class="btn" type="button" id="thunder-os-refresh">Atualizar andamento</button>
@@ -488,6 +516,8 @@ button,.btn,select,input:not([type="hidden"]),summary {min-height:44px;}
       </form>
     </details>
   </section>
+  <div hidden id="today-legacy-compat">
+    <div id="hoje-briefing"></div>
   <section class="grupo-dia" id="hoje-responder" aria-labelledby="h-hoje-responder">
     <div class="grupo-topo"><h2 id="h-hoje-responder">Responder primeiro</h2><button class="ver-todas" id="hoje-responder-todas" type="button" data-ir="conversas" hidden></button></div>
     <div class="cards" id="hoje-respostas"><p class="vazio">Carregando respostas…</p></div>
@@ -507,13 +537,23 @@ button,.btn,select,input:not([type="hidden"]),summary {min-height:44px;}
     <div class="acoes"><button class="btn pri" type="button" data-sugestao="testando">Testar</button><button class="btn" type="button" data-sugestao="ignorada">Agora não</button><button class="btn fraco" type="button" id="aprendizado-entender" aria-expanded="false">Entender melhor</button><span class="msg" id="aprendizado-msg" role="status"></span></div>
   </section>
   <section class="grupo-dia tudo-dia" id="hoje-vazio" hidden><h2>Nenhuma pendência nesta consulta</h2><p>As listas serão atualizadas conforme as integrações consultarem novos dados. Consulte a disponibilidade de cada canal.</p></section>
+  </div>
 </main>
+
+<dialog class="conta-painel" id="today-reply-dialog" aria-labelledby="today-reply-title">
+  <div class="conta-topo"><h2 id="today-reply-title">Resposta</h2><button class="btn" id="today-reply-close" type="button" autofocus>Fechar</button></div>
+  <p id="today-reply-meta" class="frescor"></p>
+  <section aria-labelledby="today-thread-title"><h3 id="today-thread-title">Conversa</h3><div id="today-reply-thread"></div></section>
+  <section aria-labelledby="today-draft-title"><h3 id="today-draft-title">Rascunho</h3><div id="today-reply-draft"></div><button class="btn" id="today-draft-generate" type="button" hidden>Gerar rascunho</button><p id="today-draft-status" class="msg" role="status" aria-live="polite"></p></section>
+  <div id="today-reply-action" class="acoes"></div>
+</dialog>
 
 <section class="prospeccao" id="sec-quentes" data-painel="contas" aria-labelledby="h-quentes" hidden>
   <div class="voce-topo"><h2 id="h-quentes">Contas quentes hoje</h2><span class="estado" id="quentes-estado">Carregando contas…</span></div>
   <div class="quentes-lista" id="quentes"></div>
 </section>
 
+<div hidden id="legacy-conversations">
 <section class="prospeccao" id="sec-respostas" data-painel="conversas" aria-labelledby="h-respostas" hidden>
   <div class="voce-topo"><h2 id="h-respostas">Responderam</h2><span class="estado" id="respostas-estado" role="status">Carregando respostas…</span></div>
   <div class="porque">As respostas mais antigas aparecem primeiro. Amarelo após 4 horas úteis; vermelho após 24 horas corridas. Horas úteis: segunda a sexta, das 9h às 18h, no horário de São Paulo, sem descontar feriados.</div>
@@ -540,12 +580,13 @@ button,.btn,select,input:not([type="hidden"]),summary {min-height:44px;}
   <div class="porque">Posts recentes das pessoas que você está aquecendo. Nada é comentado sem a sua aprovação.</div>
   <div class="cards" id="comentarios"></div>
 </section>
+</div>
 <dialog class="conta-painel" id="conta-painel" aria-labelledby="conta-titulo">
   <div class="conta-topo"><h2 id="conta-titulo">Ficha da conta</h2><button class="btn" id="conta-fechar" type="button" autofocus>Fechar</button></div>
   <div id="conta-conteudo" aria-live="polite"></div>
   <button class="btn" id="conta-tentar" type="button" hidden>Tentar novamente</button>
 </dialog>
-<section class="voce" data-painel="aprovar" aria-labelledby="h-voce">
+<section class="voce" data-painel="aprovar" aria-labelledby="h-voce" hidden>
   <div class="voce-topo">
     <h2 id="h-voce">Precisa de você</h2>
     <span class="estado" id="dec-estado">carregando decisões…</span>
@@ -560,7 +601,7 @@ button,.btn,select,input:not([type="hidden"]),summary {min-height:44px;}
   <details class="resolvidos" id="resolvidos" hidden><summary>Resolvidos</summary><ul id="resolvidos-lista"></ul></details>
 </section>
 
-<details class="detalhes-sistema" id="detalhes-sistema">
+<details class="detalhes-sistema" id="detalhes-sistema" data-painel="sistema">
 <summary>Detalhes do sistema</summary>
 <div class="sync" id="sync"></div>
 <section class="abm" id="sec-abm" aria-labelledby="h-abm">
@@ -1545,7 +1586,7 @@ async function carregarThunderOS(){
   }finally{thunderOSLoading=false;}
 }
 $('thunder-os-refresh').addEventListener('click',()=>carregarThunderOS());
-setInterval(()=>{if(!document.hidden&&!$('thunder-os-readback').contains(document.activeElement))carregarThunderOS();},30000);
+setInterval(()=>{if(!document.hidden&&document.body.dataset.aba==='sistema'&&!$('thunder-os-readback').contains(document.activeElement))carregarThunderOS();},60000);
 
 /* THUNDER_WORK_RESULT_BEGIN */
 (function(root){
@@ -1718,6 +1759,182 @@ async function marcarReuniao(pessoa,conta,botao){
   }catch(e){if(botao){botao.textContent='Tentar marcar reunião';botao.disabled=false;}}
 }
 const contagemAbas={};
+/* TODAY_WORK_BEGIN */
+let todayWorkSnapshot=null,todayWorkLoading=false,todayWorkReadAt=0,todayWorkFailed=false;
+const todayRendered=new Map();
+const todayExpanded=new Set();
+const todayBlockNames={respond:'respostas',do:'tarefas',approve:'revisões'};
+const todayTargets={sistema:'sec-sistema',agentes:'sec-agentes',cadencias:'sec-cadencias',campanhas:'sec-cadencias',contas:'sec-quentes',
+  'hoje-connectsafely':'hoje-connectsafely','hoje-seqd':'hoje-seqd','hoje-hubspot':'hoje-hubspot','hoje-thunder-os':'hoje-thunder-os',
+  'cad-reply-control':'cad-reply-control','cad-source-list':'cad-source-list','today-archive':'today-archive'};
+function todayAction(action){
+  if(!action||typeof action.label!=='string'||!action.label.trim())return null;
+  const review=action.review_target;
+  if(review&&['cadence','legacy_card'].includes(review.kind)&&typeof review.id==='string'&&/^[A-Za-z0-9:_-]{1,200}$/.test(review.id))return {label:action.label,target:review.kind==='cadence'?'hoje-thunder-os':'today-archive',review};
+  if(typeof action.target==='string'){
+    const target=action.target.replace(/^#/,'');
+    if(Object.hasOwn(todayTargets,target))return {label:action.label,target:todayTargets[target]};
+  }
+  if(typeof action.url!=='string'||/[\s\\]/.test(action.url))return null;
+  if(action.url.startsWith('#'))return todayAction({label:action.label,target:action.url});
+  const account=action.url.match(/^\/api\/os\/v1\/accounts\/([A-Za-z0-9._%-]+)\/context$/);
+  if(account){try{const slug=decodeURIComponent(account[1]);if(/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(slug))return {label:action.label,account:slug};}catch(error){}return null;}
+  try{
+    const url=new URL(action.url);
+    if(url.protocol!=='https:'||url.username||url.password||url.port)return null;
+    const hubspot=/^app(?:-[a-z0-9]+)?\.hubspot\.com$/.test(url.hostname)&&/^\/(?:contacts|tasks)\/[0-9]+(?:\/|$)/.test(url.pathname);
+    const linkedin=['www.linkedin.com','linkedin.com'].includes(url.hostname)&&/^\/(?:messaging\/thread\/|in\/|sales\/inbox\/)/.test(url.pathname);
+    const gmail=url.hostname==='mail.google.com'&&/^\/mail\/u\/ygor\.bueno(?:%40|@)thundermustard\.com\/$/i.test(url.pathname)&&/^#all\/[A-Za-z0-9_-]+$/.test(url.hash)&&!url.search;
+    const instantly=url.hostname==='app.instantly.ai'&&url.pathname==='/app/unibox'&&!url.search&&!url.hash;
+    if(hubspot||linkedin||gmail||instantly)return {label:action.label,url:url.href};
+  }catch(error){}
+  return null;
+}
+function todayEligible(item){
+  return item&&typeof item.id==='string'&&item.id&&typeof item.title==='string'&&item.title.trim()&&
+    !/^MX27(?:[-_]|$)/i.test(String(item.campaign_id||''))&&todayAction(item.action);
+}
+function todayItemHTML(item,block){
+  const action=todayAction(item.action);
+  if(!action)return '';
+  const draft=item.draft,hasDraft=typeof draft?.text==='string'&&draft.text.trim()&&typeof draft.origin==='string'&&draft.origin.trim();
+  const draftHTML=block==='respond'?(hasDraft?'<p class="today-meta">Rascunho existente · '+esc(draft.origin)+'</p>':'<p class="today-meta">Rascunho indisponível nesta consulta.</p>'):'';
+  const message=String(item.last_message||''),excerpt=message.length>240?message.slice(0,240)+'…':message;
+  return `<article class="today-item" data-today-work-id="${esc(item.id)}"><h3>${esc(item.title)}</h3><p class="today-meta">Responsável: ${esc(item.owner||'Sem responsável')} · Campanha: ${esc(item.campaign_id||'Sem vínculo')} · ${esc(cadReadDate(item.date))}</p>${excerpt?`<p>${esc(excerpt)}</p>`:''}${draftHTML}${block==='respond'?`<button class="btn" type="button" data-today-open="${esc(item.id)}">Abrir resposta</button>`:action.account?`<button class="btn" type="button" data-today-account="${esc(action.account)}">${esc(action.label)}</button>`:action.url?`<a class="btn" href="${esc(action.url)}" target="_blank" rel="noopener noreferrer">${esc(action.label)}</a>`:`<a class="btn" href="#sistema" data-today-view="${esc(action.target)}"${action.review?` data-today-review="${esc(action.review.id)}"`:''}>${esc(action.label)}</a>`}</article>`;
+}
+function todaySourcesHTML(sources){
+  const labels={ok:'Disponível',available:'Disponível',complete:'Disponível',ready:'Disponível',partial:'Consulta parcial',empty:'Sem itens',error:'Fonte indisponível',offline:'Fonte indisponível',unavailable:'Fonte indisponível',stale:'Consulta desatualizada',missing:'Fonte ausente',disabled:'Fonte desativada'};
+  const names={gmail:'Gmail',seqd:'E-mail',linkedin:'LinkedIn',instantly:'Instantly',hubspot_tasks:'Tarefas HubSpot',hubspot_emails:'E-mails HubSpot',hubspot_deals:'Negócios HubSpot',legacy:'Contexto legado',approvals:'Revisões',campaign_bindings:'Vínculos de campanha'};
+  const healthy=source=>['ok','available','complete','ready','empty'].includes(source?.status);
+  const list=rows=>`<ul class="today-sources">${rows.map(source=>`<li${healthy(source)?'':' class="error"'}>${esc(source?.name||names[source?.id]||'Fonte')} · ${esc(labels[source?.status]||'Consulta indisponível')}${healthy(source)?'':source?.status==='partial'?'. Parte dos dados está disponível.':'. Use Atualizar para tentar novamente.'}</li>`).join('')}</ul>`;
+  const failures=sources.filter(source=>!healthy(source)),success=sources.filter(healthy);
+  return (failures.length?list(failures):'')+(success.length?`<details><summary>Fontes · ${success.length}</summary>${list(success)}</details>`:'');
+}
+function renderTodayWork(){
+  const query=String($('today-filter').value||'').trim().toLocaleLowerCase('pt-BR');
+  let total=0;
+  const seen=new Set();
+  for(const key of Object.keys(todayBlockNames)){
+    const block=todayWorkSnapshot?.blocks?.[key],target=$('today-'+key);
+    target.setAttribute('aria-busy',String(todayWorkLoading));
+    if(!block){
+      $('today-'+key+'-count').textContent='';
+      $('today-overview-'+key+'-count').textContent='?';
+      $('today-'+key+'-sources').innerHTML='';
+      target.innerHTML=`<p class="${todayWorkFailed||todayWorkSnapshot?'msg erro':'vazio'}">${todayWorkFailed||todayWorkSnapshot?'Não foi possível consultar '+todayBlockNames[key]+'. Use Atualizar para tentar novamente.':'Carregando '+todayBlockNames[key]+'…'}</p>`;
+      todayRendered.delete(key);
+      continue;
+    }
+    const valid=Array.isArray(block.items)&&Array.isArray(block.sources);
+    const all=valid?block.items.filter(todayEligible).filter(item=>{if(seen.has(item.id))return false;seen.add(item.id);return true;}):[];
+    const rows=all.filter(item=>!query||[item.title,item.owner,item.campaign_id,item.last_message].some(value=>String(value||'').toLocaleLowerCase('pt-BR').includes(query)));
+    const shown=todayExpanded.has(key)?rows:rows.slice(0,5);
+    total+=all.length;
+    $('today-'+key+'-count').textContent=valid?String(rows.length)+(query?' / '+all.length:''):'';
+    $('today-overview-'+key+'-count').textContent=valid?String(all.length):'?';
+    $('today-'+key+'-sources').innerHTML=valid?todaySourcesHTML(block.sources):'<p class="msg erro">Consulta deste bloco indisponível. Use Atualizar.</p>';
+    const omitted=valid?block.items.filter(item=>item&&!/^MX27(?:[-_]|$)/i.test(String(item.campaign_id||''))&&!todayEligible(item)).length:0;
+    const markup=(rows.length?shown.map(item=>todayItemHTML(item,key)).join(''):`<p class="vazio">${!valid?'Dados deste bloco indisponíveis.':query?'Nenhum item encontrado.':'Nenhuma '+todayBlockNames[key]+' pendente nesta consulta.'}</p>`)+(omitted?'<p class="msg erro">Há itens sem destino de ação válido. Revise a fonte em Sistema.</p>':'')+(rows.length>5?`<button class="btn" type="button" data-today-expand="${key}" aria-expanded="${todayExpanded.has(key)}" aria-controls="today-${key}">${todayExpanded.has(key)?'Ver menos':'Ver todos · '+rows.length}</button>`:'');
+    if(todayRendered.get(key)!==markup){
+      const focused=document.activeElement?.closest('[data-today-work-id]')?.dataset.todayWorkId;
+      const open=new Set([...target.querySelectorAll('article')].filter(article=>article.querySelector('details[open]')).map(article=>article.dataset.todayWorkId));
+      target.innerHTML=markup;todayRendered.set(key,markup);
+      for(const article of target.querySelectorAll('article')){
+        if(open.has(article.dataset.todayWorkId)&&article.querySelector('details'))article.querySelector('details').open=true;
+        if(focused===article.dataset.todayWorkId)article.querySelector('a,button')?.focus({preventScroll:true});
+      }
+    }
+  }
+  $('qt-hoje').textContent=todayWorkSnapshot?String(total):'';
+  const archive=todayWorkSnapshot?.archive;
+  const archived=Array.isArray(archive?.items)?archive.items:null;
+  $('today-archive-count').textContent=archived?String(Number.isInteger(archive.count)?archive.count:archived.length)+' itens':'consulta indisponível';
+  $('today-archive-items').innerHTML=archived?(archived.length?archived.map(item=>`<article class="today-item" data-today-archive-id="${esc(item.id)}"><h3>${esc(item.title||item.titulo||item.pessoa||item.id||'Registro legado')}</h3><p class="today-meta">${esc(item.owner||'Sem responsável')} · ${esc(item.campaign_id||'Sem vínculo')} · ${esc(cadReadDate(item.date||item.atualizado||item.criado))}</p><details><summary>Consultar registro</summary><pre>${esc(JSON.stringify(item,null,2))}</pre></details></article>`).join(''):'<p class="vazio">Nenhum registro no arquivo.</p>'):'<p class="msg erro">Arquivo indisponível nesta consulta. Use Atualizar em Hoje.</p>';
+}
+async function carregarHoje(force=false){
+  if(todayWorkLoading||!apiServidor||(!force&&todayWorkSnapshot&&Date.now()-todayWorkReadAt<60000))return;
+  todayWorkLoading=true;$('today-refresh').disabled=true;
+  $('today-status').textContent=todayWorkSnapshot?'Atualizando consulta…':'Consultando trabalho do dia…';
+  for(const key of Object.keys(todayBlockNames))$('today-'+key).setAttribute('aria-busy','true');
+  try{
+    const data=await apiServidor('/api/os/v1/today-work');
+    if(data?.read_only!==true||!data.blocks||typeof data.blocks!=='object'||Array.isArray(data.blocks)||!data.collected_at)throw new Error('Consulta inválida');
+    todayWorkSnapshot=data;todayWorkReadAt=Date.now();todayWorkFailed=false;
+    $('today-status').textContent='Consultado em '+cadReadDate(data.collected_at)+'.';
+  }catch(error){
+    todayWorkSnapshot=null;todayWorkFailed=true;
+    $('today-status').textContent='Não foi possível consultar o dia. Use Atualizar para tentar novamente.';
+  }finally{todayWorkLoading=false;$('today-refresh').disabled=false;renderTodayWork();}
+}
+$('today-refresh').addEventListener('click',()=>carregarHoje(true));
+$('today-filter').addEventListener('input',renderTodayWork);
+$('sec-hoje').addEventListener('click',async event=>{
+  const jump=event.target.closest('[data-today-jump]');
+  if(jump&&Object.hasOwn(todayBlockNames,jump.dataset.todayJump)){
+    const heading=$('today-'+jump.dataset.todayJump+'-title');
+    heading.tabIndex=-1;heading.scrollIntoView({block:'start',behavior:'auto'});heading.focus({preventScroll:true});return;
+  }
+  const expand=event.target.closest('[data-today-expand]');
+  if(expand&&Object.hasOwn(todayBlockNames,expand.dataset.todayExpand)){
+    const key=expand.dataset.todayExpand;todayExpanded.has(key)?todayExpanded.delete(key):todayExpanded.add(key);renderTodayWork();$('today-'+key).querySelector('[data-today-expand]')?.focus();return;
+  }
+  const account=event.target.closest('[data-today-account]');
+  if(account){abrirConta(account.dataset.todayAccount,'',account);return;}
+  const reply=event.target.closest('[data-today-open]');
+  if(reply){abrirTodayResposta(reply.dataset.todayOpen);return;}
+  const link=event.target.closest('[data-today-view]');
+  if(!link||!Object.values(todayTargets).includes(link.dataset.todayView))return;
+  event.preventDefault();const id=link.dataset.todayView,target=$(id);
+  if(!target)return;
+  mostrarAba(id==='sec-cadencias'?'cadencias':id==='sec-quentes'?'contas':'sistema');
+  if(link.dataset.todayReview&&id==='hoje-thunder-os')await carregarThunderOS();
+  for(let parent=target.parentElement;parent;parent=parent.parentElement)if(parent.tagName==='DETAILS')parent.open=true;
+  if(target.tagName==='DETAILS')target.open=true;
+  const review=link.dataset.todayReview;
+  const selected=review?(id==='today-archive'?[...target.querySelectorAll('[data-today-archive-id]')].find(node=>[review,'legacy:'+review].includes(node.dataset.todayArchiveId)):[...target.querySelectorAll('[data-os-approve]')].find(node=>node.dataset.osApprove===review)?.closest('.cadencia-revisao')):null;
+  if(selected?.querySelector('details'))selected.querySelector('details').open=true;
+  const focus=selected||target;focus.tabIndex=-1;focus.focus();focus.scrollIntoView({block:'start'});
+});
+let todayReplyItem=null,todayDraftLoading=false,todayDraftRequest=0;
+const todayDraftCache=new Map();
+function todayDraftHTML(draft){
+  return typeof draft?.text==='string'&&draft.text.trim()&&typeof draft.origin==='string'&&draft.origin.trim()?`<pre>${esc(draft.text)}</pre><p class="frescor">Origem: ${esc(draft.origin)}</p>`:'<p>Rascunho indisponível nesta consulta.</p>';
+}
+function abrirTodayResposta(id){
+  const item=todayWorkSnapshot?.blocks?.respond?.items?.find(row=>row.id===id&&todayEligible(row));
+  if(!item)return;
+  todayReplyItem=item;++todayDraftRequest;
+  const messages=Array.isArray(item.thread)?item.thread:Array.isArray(item.thread?.messages)?item.thread.messages:Array.isArray(item.messages)?item.messages:[];
+  $('today-reply-title').textContent=item.title;
+  $('today-reply-meta').textContent=(item.owner||'Sem responsável')+' · '+(item.campaign_id||'Sem vínculo')+' · '+cadReadDate(item.date);
+  $('today-reply-thread').innerHTML=messages.length?`<ol>${messages.map(message=>`<li><p class="frescor">${esc(message.sender||message.author||message.direction||'Mensagem')} · ${esc(cadReadDate(message.date||message.occurred_at||message.created_at))}</p><pre>${esc(message.text||message.content||message.body||'Conteúdo indisponível.')}</pre></li>`).join('')}</ol>`:`<pre>${esc(item.last_message||'Conteúdo indisponível nesta consulta.')}</pre><p class="frescor">Histórico completo indisponível nesta fonte.</p>`;
+  const draft=todayDraftCache.get(item.id+':'+item.context_hash)||item.draft;
+  $('today-reply-draft').innerHTML=todayDraftHTML(draft);
+  $('today-draft-generate').hidden=!!(draft?.text&&draft?.origin)||item.draft_request_available!==true||! /^[a-f0-9]{64}$/i.test(item.context_hash||'');
+  $('today-draft-generate').disabled=todayDraftLoading;
+  $('today-draft-status').textContent='';$('today-draft-status').className='msg';
+  const action=todayAction(item.action);
+  $('today-reply-action').innerHTML=action.url?`<a class="btn" href="${esc(action.url)}" target="_blank" rel="noopener noreferrer">${esc(action.label)}</a>`:'';
+  $('today-reply-dialog').showModal();
+}
+$('today-reply-close').addEventListener('click',()=>$('today-reply-dialog').close());
+$('today-draft-generate').addEventListener('click',async()=>{
+  if(todayDraftLoading||!todayReplyItem)return;
+  const item=todayReplyItem,request=++todayDraftRequest;
+  const current=todayWorkSnapshot?.blocks?.respond?.items?.find(row=>row.id===item.id);
+  if(!current||current.context_hash!==item.context_hash){$('today-draft-status').textContent='A conversa mudou. Feche e abra a resposta novamente.';return;}
+  todayDraftLoading=true;$('today-draft-generate').disabled=true;
+  $('today-draft-status').textContent='Preparando rascunho…';$('today-draft-status').className='msg';
+  try{
+    const result=await apiServidor('/api/os/v1/today-work/draft','POST',{item_id:item.id,context_hash:item.context_hash});
+    if(typeof result?.draft?.text!=='string'||!result.draft.text.trim()||typeof result.draft.origin!=='string'||!result.draft.origin.trim())throw new Error('Rascunho indisponível. Tente novamente mais tarde.');
+    todayDraftCache.set(item.id+':'+item.context_hash,result.draft);
+    if(request===todayDraftRequest){$('today-reply-draft').innerHTML=todayDraftHTML(result.draft);$('today-draft-generate').hidden=true;$('today-draft-status').textContent='Rascunho preparado para revisão.';}
+  }catch(error){if(request===todayDraftRequest){$('today-draft-status').textContent=error.message||'Não foi possível gerar o rascunho. Tente novamente.';$('today-draft-status').className='msg erro';}}
+  finally{todayDraftLoading=false;$('today-draft-generate').disabled=false;}
+});
+setInterval(()=>{if(!document.hidden&&document.body.dataset.aba==='hoje')carregarHoje(true);},60000);
+/* TODAY_WORK_END */
 function atualizarHojeVazio(){
   const vazio=Object.values(hojeContagens).every(n=>n===0)&&!Object.values(hojeFalhas).some(Boolean);
   $('hoje-vazio').hidden=!vazio;
@@ -1728,8 +1945,8 @@ function atualizarAbas(){
   contagemAbas.conversas=(contagemAbas.respostas||0)+(contagemAbas.aceites||0);
   contagemAbas.aprovar=(contagemAbas.mensagens||0)+(contagemAbas.comentarios||0)+(contagemAbas.decisoes||0);
   contagemAbas.contas=contagemAbas.quentes||0;
-  contagemAbas.hoje=contagemAbas.conversas+contagemAbas.aprovar;
-  for(const a of ['hoje','conversas','aprovar','contas']){const e=$('qt-'+a);if(e)e.textContent=contagemAbas[a]?String(contagemAbas[a]):'';}
+  delete contagemAbas.hoje;
+  for(const a of ['conversas','aprovar','contas']){const e=$('qt-'+a);if(e)e.textContent=contagemAbas[a]?String(contagemAbas[a]):'';}
 }
 let agenttrailLendo=false;
 function desenharAgenttrailHost(host,dados){
@@ -1767,7 +1984,7 @@ async function atualizarAgenttrail(){
   finally{agenttrailLendo=false;}
 }
 $('agenttrail-atualizar').addEventListener('click',atualizarAgenttrail);
-setInterval(()=>{if(document.body.dataset.aba==='agentes')atualizarAgenttrail();},30000);
+setInterval(()=>{if(!document.hidden&&document.body.dataset.aba==='sistema')atualizarAgenttrail();},60000);
 let cadReadLoading=false,cadReadSnapshot=null,cadReadContact=null,cadReadTimelineRequest=0,cadReadPollTimer=null,cadReplyRequest=null;
 /* CAMPAIGN_SHEET_BEGIN */
 let cadSheetState='loading',cadSheetSnapshot=null;
@@ -1783,6 +2000,10 @@ function cadCampaignSheetHTML(campaignId){
   return `<header><h4>Ficha da campanha</h4><span class="chip${complete?'':' cad-sheet-warning'}" role="status">${esc(label)}</span></header><p class="sub">${esc(campaignId)} · Versão: ${esc(record?.version||'não informada')}</p>${note?`<p class="cad-sheet-note" role="status">${esc(note)}</p>`:''}${fields.map(field=>{
     const verified=cadSheetState==='ready'&&field.status==='ok';
     const status=cadSheetState==='ready'?(cadSheetStatuses[field.status]||'Fonte não verificada'):'Fonte não verificada';
+    if(Array.isArray(field.sources))return `<details><summary>${esc(cadSheetLabels[field.key])}<span class="chip${verified?'':' cad-sheet-warning'}">${esc(status)}</span></summary>${field.sources.length?field.sources.map(source=>{
+      const sourceOK=cadSheetState==='ready'&&source.status==='ok';
+      return `<div class="cad-sheet-source"><p class="cad-sheet-note${sourceOK?'':' cad-sheet-warning'}">${esc(cadSheetStatuses[source.status]||'Fonte não verificada')}</p><dl><dt>Fonte</dt><dd><code>${esc(source.path||'Referência não informada')}</code></dd><dt>Atualização da fonte</dt><dd>${esc(source.source_updated_at?cadReadDate(source.source_updated_at):'Data não informada')}</dd></dl>${!sourceOK?'<p class="cad-sheet-note cad-sheet-warning">Referência atual não verificada.</p>':''}<pre>${esc(source.content??'Conteúdo não disponível nesta fonte.')}</pre><details><summary>Hashes da fonte</summary><dl><dt>SHA-256 esperado</dt><dd><code>${esc(source.expected_sha256||'Não informado')}</code></dd><dt>SHA-256 observado</dt><dd><code>${esc(source.observed_sha256||'Não verificado')}</code></dd></dl></details></div>`;
+    }).join(''):'<p class="cad-sheet-warning">Fonte não informada.</p>'}</details>`;
     return `<details><summary>${esc(cadSheetLabels[field.key])}<span class="chip${verified?'':' cad-sheet-warning'}">${esc(status)}</span></summary><dl><dt>Fonte</dt><dd><code>${esc(field.path||'Referência não informada')}</code></dd><dt>Atualização da fonte</dt><dd>${esc(field.source_updated_at?cadReadDate(field.source_updated_at):'Data não informada')}</dd></dl>${!verified?'<p class="cad-sheet-note cad-sheet-warning">Referência atual não verificada.</p>':''}<pre>${esc(field.content??'Conteúdo não disponível nesta fonte.')}</pre><details><summary>Hashes da fonte</summary><dl><dt>SHA-256 esperado</dt><dd><code>${esc(field.expected_sha256||'Não informado')}</code></dd><dt>SHA-256 observado</dt><dd><code>${esc(field.observed_sha256||'Não verificado')}</code></dd></dl></details></details>`;
   }).join('')}${record?.fingerprint?`<details><summary>Identificador da ficha</summary><code>${esc(record.fingerprint)}</code></details>`:''}`;
 }
@@ -1913,7 +2134,7 @@ async function carregarInstantlyReader(){
 }
 async function atualizarCadencias(){
   if(cadReadLoading||!apiServidor)return;
-  cadReadLoading=true;$('cad-read-refresh').disabled=true;
+  cadReadLoading=true;$('cad-read-refresh').disabled=true;$('system-read-refresh').disabled=true;
   $('cad-read-status').textContent=cadReadSnapshot?'Atualizando consulta…':'Consultando tarefas no HubSpot…';
   await Promise.all([carregarIntegracoesEmail(),carregarInstantlyReader(),carregarFichasCampanhas()]);
   await carregarControleRespostas();
@@ -1922,7 +2143,7 @@ async function atualizarCadencias(){
   await carregarPlacarAprendizados();
   try{cadReadSnapshot=await apiServidor('/api/os/v1/cadencias');renderCadencias(cadReadSnapshot);if(cadReadContact)await abrirCadenciaContato(cadReadContact,false);}
   catch(e){$('cad-read-status').textContent=cadReadSnapshot?'Não foi possível atualizar. Os dados abaixo são da consulta anterior.':'Não foi possível consultar o HubSpot. Tente atualizar.';}
-  finally{cadReadLoading=false;$('cad-read-refresh').disabled=false;}
+  finally{cadReadLoading=false;$('cad-read-refresh').disabled=false;$('system-read-refresh').disabled=false;}
 }
 async function carregarPlacarAprendizados(){
   const target=$('cad-learning');
@@ -1982,6 +2203,7 @@ async function abrirCadenciaContato(id,focus=true){
   }catch(e){if(request===cadReadTimelineRequest)$('cad-read-detail-status').textContent='Não foi possível consultar o histórico deste contato.';}
 }
 $('cad-read-refresh').addEventListener('click',atualizarCadencias);
+$('system-read-refresh').addEventListener('click',atualizarCadencias);
 $('cad-reply-form').addEventListener('submit',async event=>{
   event.preventDefault();const button=$('cad-reply-save');button.disabled=true;
   cadReplyRequest=cadReplyRequest||crypto.randomUUID();
@@ -1996,17 +2218,22 @@ $('cad-reply-form').addEventListener('submit',async event=>{
 for(const id of ['cad-reply-campaign','cad-reply-channel','cad-reply-text'])$(id).addEventListener('change',()=>{cadReplyRequest=null;$('cad-reply-result').textContent='';});
 $('sec-cadencias').addEventListener('click',event=>{const b=event.target.closest('[data-cad-contact]');if(b)abrirCadenciaContato(b.dataset.cadContact);});
 function mostrarAba(aba,{registrar=true}={}){
-  if(!['hoje','conversas','cadencias','aprovar','contas','agentes'].includes(aba)) aba='hoje';
+  aba=({campanhas:'cadencias',agentes:'sistema',conversas:'sistema',aprovar:'sistema'})[aba]||aba;
+  if(!['hoje','cadencias','contas','sistema'].includes(aba)) aba='hoje';
   if(document.body)document.body.dataset.aba=aba;
   $('sec-cadencias').hidden=aba!=='cadencias';
   clearInterval(cadReadPollTimer);
-  if(aba==='cadencias'){
+  if(['cadencias','sistema'].includes(aba)){
     atualizarCadencias();
-    cadReadPollTimer=setInterval(()=>{if(!document.hidden&&document.body.dataset.aba==='cadencias')atualizarCadencias();},60000);
+    cadReadPollTimer=setInterval(()=>{if(!document.hidden&&['cadencias','sistema'].includes(document.body.dataset.aba))atualizarCadencias();},60000);
   }
-  $('sec-agentes').hidden=aba!=='agentes';
-  if(aba==='agentes')atualizarAgenttrail();
-  if(aba==='hoje')carregarContatosHermes();
+  $('sec-agentes').hidden=aba!=='sistema';
+  $('sec-sistema').hidden=aba!=='sistema';
+  if(aba==='sistema'){
+    atualizarAgenttrail();
+    if(typeof carregarThunderOS==='function')carregarThunderOS();
+  }
+  if((aba==='hoje'||aba==='sistema')&&typeof carregarHoje==='function')carregarHoje();
   $('abas').querySelectorAll('button').forEach(b=>{const ativa=b.dataset.aba===aba;b.setAttribute('aria-selected',String(ativa));b.tabIndex=ativa?0:-1;});
   $('abas').querySelector('[aria-selected="true"]')?.scrollIntoView({block:'nearest',inline:'nearest'});
   try{localStorage.setItem('painel-aba',aba)}catch(e){}
@@ -2014,8 +2241,11 @@ function mostrarAba(aba,{registrar=true}={}){
 }
 function iniciarAbas(){
   $('abas').hidden=false;
-  let aba='hoje';try{aba=localStorage.getItem('painel-aba')||aba}catch(e){}
-  const hash=location.hash.slice(1);if(['hoje','conversas','cadencias','aprovar','contas','agentes'].includes(hash))aba=hash;
+  let aba='hoje';
+  const hash=location.hash.slice(1);if(['hoje','conversas','cadencias','campanhas','aprovar','contas','agentes','sistema'].includes(hash))aba=hash;
+  for(const id of ['cad-email-integrations','cad-reply-control','cad-linkedin-preparation','cad-source-list']){
+    const section=$(id)?.closest('.cad-read-section');if(section)$('system-campaign-tools').append(section);
+  }
   mostrarAba(aba,{registrar:false});
   if($('abas').dataset.iniciada)return;
   $('abas').dataset.iniciada='true';
@@ -2028,6 +2258,7 @@ function iniciarAbas(){
   });
   window.addEventListener('popstate',()=>mostrarAba(location.hash.slice(1),{registrar:false}));
   window.addEventListener('hashchange',()=>mostrarAba(location.hash.slice(1),{registrar:false}));
+  $('hoje-pedido').addEventListener('toggle',()=>{if($('hoje-pedido').open)carregarContatosHermes();});
   $('sec-hoje').hidden=false;
 }
 $('aprovar-filtros').addEventListener('click',ev=>{
@@ -2599,6 +2830,11 @@ $('pedido').addEventListener('submit', async ev => {
 
 let osPedidoPendente=null;
 let osContatosCarregados=false,osContatosCarregando=false,osVerificacaoRequest=0;
+function contatosHermesHoje(){
+  const excluded=new Set((todayWorkSnapshot?.excluded_contact_ids||[]).map(String));
+  return new Set(Object.values(todayWorkSnapshot?.blocks||{}).flatMap(block=>Array.isArray(block?.items)?block.items:[])
+    .filter(todayEligible).map(row=>String(row.contact_id||'')).filter(id=>/^[1-9][0-9]{0,29}$/.test(id)&&!excluded.has(id)));
+}
 async function carregarContatosHermes(){
   if(!apiServidor||osContatosCarregados||osContatosCarregando)return;
   osContatosCarregando=true;
@@ -2606,7 +2842,9 @@ async function carregarContatosHermes(){
     const data=await apiServidor('/api/os/v1/hermes/contacts');
     const select=$('os-pedido-contato'),selected=select.value;
     select.replaceChildren(new Option(data.complete?'Selecione o contato':'Selecione · cobertura parcial',''));
-    for(const row of data.contacts||[]){if(/^[1-9][0-9]{0,29}$/.test(row.id))select.add(new Option((row.name||'Contato')+' · '+row.id,row.id));}
+    const allowed=contatosHermesHoje();
+    for(const row of data.contacts||[]){if(allowed.has(String(row.id)))select.add(new Option((row.name||'Contato')+' · '+row.id,row.id));}
+    if(select.options.length===1)select.options[0].textContent='Nenhum contato do dia disponível nesta consulta';
     if([...select.options].some(o=>o.value===selected))select.value=selected;
     osContatosCarregados=true;
   }catch(error){$('os-pedido-contato').replaceChildren(new Option('Contatos não verificados',''));}
@@ -2638,6 +2876,7 @@ $('os-pedido').addEventListener('submit', async ev => {
   if($('os-pedido-tipo').value==='verify'){
     const contact=$('os-pedido-contato').value,question=campo.value.trim(),request=++osVerificacaoRequest;
     if(!/^[1-9][0-9]{0,29}$/.test(contact)||!question||question.length>600){mensagem.textContent='Selecione um contato e escreva uma pergunta curta.';return;}
+    if(!contatosHermesHoje().has(contact)){mensagem.textContent='Contato fora do trabalho do dia. Atualize a consulta antes de verificar.';return;}
     const button=ev.currentTarget.querySelector('button[type="submit"]');button.disabled=true;
     $('os-verificacao').hidden=true;
     mensagem.textContent='Consultando o Hermes…';mensagem.className='msg';
@@ -2708,7 +2947,6 @@ $('aprendizado').addEventListener('click',async ev=>{
       $('rodape').textContent = 'Servidor: painel.r3xdigital.tech';
       carregarQuentes();
       carregarSugestao();
-      carregarThunderOS();
     } else {
       const user = await claude.use('user');
       dono = user ? await user.isOwner() : false;

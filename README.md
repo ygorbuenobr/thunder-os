@@ -297,13 +297,14 @@ NODE_PATH=/Users/ygorbueno/.cache/codex-runtimes/codex-primary-runtime/dependenc
   _ferramentas/test_painel_cadencias_ui.cjs
 ```
 
-## Campaign Sheet (PRD-1, Pending Publication)
+## Campaign Sheet (PRD-1)
 
 The panel calls this read-only projection **Ficha da campanha**, not the Hermes
 daily briefing. The existing campaign config may contain `briefing` with
 `version` and `fields`: `offer`, `icp`, `proofs`, `objective`, `restrictions`,
 `cta`, `language`, `country`. Each present field contains only `path`, `sha256`
-and `section`: a relative Markdown path in the configured Brain, the SHA-256 of
+and `section`, or a bounded list of these references when multiple sources are
+required: a relative Markdown path in the configured Brain, the SHA-256 of
 the whole UTF-8 file's bytes, and an exact Markdown heading. Content is read
 from the Brain, not copied into the registry. Missing references are valid
 incomplete metadata, not permission to approve or send.
@@ -324,10 +325,11 @@ sheet. Config changes invalidate the existing scope hash; Brain byte changes
 also block execution without a new registration/review/approval. Editing a
 Brain file never silently updates its approved reference.
 
-No real sheet/batch registration or migration is part of this branch. Current
-campaigns without a sheet will display incomplete until their references are
-explicitly reviewed and registered. This branch is for panel review only:
-publishing, pushing or modifying the paused agent requires separate authority.
+The code does not populate real sheets or migrate batches automatically. Current
+campaigns without a sheet display incomplete until their references are reviewed
+and registered through the authenticated route. A panel publication and the six
+factual sheet registrations were separately authorized on 2026-10-23; this does
+not authorize outbound, CRM writes, batch migration or activation of the agent.
 The canonical preview and identity audit are in the private Brain protocol at
 `projetos/thunder-os/cadencia-multicanal/campaign-sheet/`; no CRM data is shipped
 in the source repository. Existing uncertain outcomes and receipts are retained.
@@ -337,3 +339,26 @@ PYTHONPATH=_ferramentas python3 -m unittest test_thunder_os_campaign_sheet \
   test_thunder_os_campaign_registry test_thunder_os_approvals
 node scripts/test_campaign_sheet_panel.cjs
 ```
+
+## Today Work (PRD-4)
+
+The four operator views are Hoje, Campanhas, Contas and Sistema. Today Work is
+a read-only projection with Responder, Fazer and Aprovar blocks. Each item
+exposes owner, campaign, date and one primary action. Mexico campaign codes and
+confirmed associated identities are excluded from Today, not from Campaigns.
+Legacy approval cards remain consultable as an archive; they do not become
+executable approvals. A historical referral is context for a human action,
+never permission to message the indicated person.
+
+`GET /api/os/v1/today-work` uses the existing authenticated Ygor boundary and
+a bounded cache. Source failures are reported independently. Replies require
+human-inbound evidence and chronology; incomplete coverage cannot prove the
+absence of a reply. Bounce, automatic mail and unverified identities do not
+silently become commercial opportunities. CRM reads never log email or create
+contacts/tasks. No new database, ledger or authorization mechanism is added.
+
+Draft generation is separate from polling. An explicit authenticated human
+request may use the existing tool-free Hermes Codex OAuth child on the
+server-resolved message context; there is no paid API fallback, provider tool
+execution or agent activation. A draft is not approval or an outbound message.
+Existing approval, exact-text and uncertain-no-retry protections remain in force.

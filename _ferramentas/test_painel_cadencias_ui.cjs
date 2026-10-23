@@ -42,8 +42,8 @@ async function testInstantlyReader(browser){
   });
   const reader=page.locator('#cad-instantly-reader'),content=page.locator('#cad-instantly-content'),status=page.locator('#cad-instantly-status');
   const settled=()=>page.waitForFunction(()=>document.querySelector('#cad-instantly-reader').getAttribute('aria-busy')==='false'&&!document.querySelector('#cad-read-refresh').disabled);
-  const refresh=async()=>{await page.locator('#cad-read-refresh').click();await settled();};
-  await page.goto('https://instantly-reader.test/#cadencias');await settled();
+  const refresh=async()=>{await page.locator('#system-read-refresh').click();await settled();};
+  await page.goto('https://instantly-reader.test/#sistema');await settled();
   assert.match(await status.innerText(),/Leitor desativado/);
   assert.equal(await content.locator('dd').count(),0);
   // Even accidental zero metrics without a successful timestamp must remain unknown.
@@ -102,7 +102,7 @@ async function testInstantlyReader(browser){
   // Hold one response while another cycle fires: no duplicate cache requests.
   state=base;hold=true;
   const pending=page.waitForRequest(r=>new URL(r.url()).pathname===readerPath);
-  await page.locator('#cad-read-refresh').click();await pending;
+  await page.locator('#system-read-refresh').click();await pending;
   await page.waitForFunction(()=>document.querySelector('#cad-instantly-reader').getAttribute('aria-busy')==='true');
   assert.match(await status.innerText(),/Atualizando leitura do cache/);
   const heldCount=requests.filter(r=>r.p===readerPath).length;
@@ -224,6 +224,10 @@ async function testInstantlyReader(browser){
      body={state:'needs_classification',external_pause_enabled:false};
     }
     else if(p==='/api/os/v1/panel-capabilities')body={legacy_mutations:false};
+    else if(p==='/api/os/v1/today-work')body={read_only:true,collected_at:'2026-10-21T12:00:00Z',blocks:{
+     respond:{items:[],sources:[]},approve:{items:[],sources:[]},do:{items:[{id:'task:99',title:'Synthetic follow-up',
+      owner:'Ygor',campaign_id:'PILOTO',contact_id:'123',date:'2026-10-21T12:00:00Z',
+      action:{label:'Abrir tarefa',url:'https://app.hubspot.com/tasks/51412240/view/all?taskId=99'}}],sources:[]}},archive:{items:[],count:0}};
     else if(p==='/api/os/v1/today')body={priorities:[],work:[],cadences:[],replies:[],controls:{},usage:[],alerts:[]};
     else if(p==='/api/os/v1/integrations/status')body={};
     else if(p==='/api/os/v1/integrations/drafts')body={drafts:[]};
@@ -238,12 +242,15 @@ async function testInstantlyReader(browser){
    assert.equal(await page.locator('#cad-read-conflicts-section').isVisible(),true);
    assert.match(await page.locator('#cad-read-conflicts').innerText(),/BR-APOLLO-01/);
    assert.equal(await page.locator('#cad-read-conflicts img').count(),0);
+   await page.getByRole('tab',{name:'Sistema',exact:true}).click();
    assert.equal(await page.locator('#cad-email-integrations').getByRole('cell',{name:'Desligado',exact:true}).count(),4);
    assert.match(await page.locator('#cad-reply-control').innerText(),/Pausas externas: desligadas/);
    assert.match(await page.locator('#cad-linkedin-preparation').innerText(),/Executor desligado/);
    assert.match(await page.locator('#cad-source-list').innerText(),/aguardando aprovação/);
    assert.equal(await page.locator('#cad-source-list img').count(),0);
    assert.equal(await page.locator('#cad-reply-control img').count(),0);
+   await page.getByRole('tab',{name:'Campanhas',exact:true}).click();
+   await page.waitForFunction(()=>!document.querySelector('#cad-read-refresh').disabled);
    const before=requests.filter(r=>r.p==='/api/os/v1/cadencias').length;
    await page.clock.runFor(60001);
    await page.waitForFunction(()=>!document.querySelector('#cad-read-refresh').disabled);
@@ -287,8 +294,9 @@ async function testInstantlyReader(browser){
    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
    await page.screenshot({path:path.join(outputDir,`cadencias-registry-nonempty-partial-${viewport.width}.png`),fullPage:true});
    registryState='evidence';await page.locator('#cad-read-refresh').click();
+   await page.waitForFunction(()=>!document.querySelector('#cad-read-refresh').disabled);
    const evidenceDetails=page.locator('#cad-read-campaigns details').filter({hasText:'PILOTO'}).first();
-   await evidenceDetails.locator('summary').first().click();
+   if(!await evidenceDetails.evaluate(el=>el.open))await evidenceDetails.locator('summary').first().click();
    await evidenceDetails.getByText('Incerto, não repetir',{exact:true}).waitFor();
    await evidenceDetails.getByText('Concluída sem recibo',{exact:true}).waitFor();
    await evidenceDetails.getByText('Enviado com recibo registrado',{exact:true}).waitFor();
@@ -325,6 +333,7 @@ async function testInstantlyReader(browser){
    assert.equal(requests.filter(r=>r.method==='POST').length,1);
    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
    await page.locator('#abas button[data-aba="hoje"]').click();
+   await page.locator('#hoje-pedido > summary').click();
    await page.locator('#os-pedido-contato option[value="123"]').waitFor({state:'attached'});
    await page.locator('#os-pedido-contato').selectOption('123');
    await page.locator('#os-pedido-texto').fill('Why E2?');

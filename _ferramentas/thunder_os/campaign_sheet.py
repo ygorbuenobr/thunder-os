@@ -48,6 +48,14 @@ def validate_sheet(value):
         raise ApprovalError('campaign_sheet_invalid')
     fields = {}
     for key, ref in value['fields'].items():
+        if isinstance(ref, list):
+            if not 1 <= len(ref) <= 6 or any(not isinstance(source, Mapping) for source in ref):
+                raise ApprovalError('campaign_sheet_reference_invalid')
+            fields[key] = [validate_sheet({'version': value['version'], 'fields': {key: source}})
+                           ['fields'][key] for source in ref]
+            if any(isinstance(source, list) for source in fields[key]):
+                raise ApprovalError('campaign_sheet_reference_invalid')
+            continue
         if not isinstance(ref, Mapping) or set(ref) != {'path', 'sha256', 'section'}:
             raise ApprovalError('campaign_sheet_reference_invalid')
         path, digest, section = ref['path'], ref['sha256'], ref['section']
@@ -82,6 +90,18 @@ def sheet_view(campaign_id, value, store=None):
     rows, cache = [], {}
     for key, label in FIELDS.items():
         ref = sheet['fields'].get(key)
+        if isinstance(ref, list):
+            sources = [sheet_view(campaign_id, {'version': sheet['version'],
+                       'fields': {key: source}}, store)['fields'][list(FIELDS).index(key)]
+                       for source in ref]
+            row = dict(sources[0], sources=sources)
+            failed = next((source for source in sources if source['status'] == 'hash_mismatch'),
+                          next((source for source in sources if source['status'] != 'ok'), None))
+            row['status'] = failed['status'] if failed else 'ok'
+            row['content'] = '\n\n'.join(source['content'] for source in sources
+                                         if source['content']) if not failed else None
+            rows.append(row)
+            continue
         row = {'key': key, 'label': label, 'status': 'missing', 'path': None,
                'expected_sha256': None, 'observed_sha256': None,
                'source_updated_at': None, 'content': None}

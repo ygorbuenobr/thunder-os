@@ -1345,6 +1345,15 @@ class Handler(BaseHTTPRequestHandler):
         service = getattr(self.server, 'thunder_service', None)
         if service is None:
             raise Erro('Thunder OS indisponível', 503)
+        if rota.path == '/api/os/v1/today-work':
+            if self.thunder_proxy_actor() != 'ygor':
+                raise Erro('Somente Ygor pode consultar Hoje.', 403)
+            if self.command != 'GET' or rota.query:
+                raise Erro('Hoje permite somente consulta sem parametros.', 405)
+            today = getattr(self.server, 'thunder_today_readonly', None)
+            if today is None:
+                raise Erro('Leitura de Hoje indisponivel.', 503)
+            return self.responder(200, today.snapshot())
         if rota.path in {'/api/os/v1/hermes/capabilities','/api/os/v1/hermes/contacts','/api/os/v1/campaign-scoreboard'}:
             if self.thunder_proxy_actor() != 'ygor':
                 raise Erro('Somente Ygor pode consultar o Hermes.',403)
@@ -1621,6 +1630,19 @@ class Handler(BaseHTTPRequestHandler):
             raise Erro('Rota Thunder OS inválida', 405)
         actor = self.thunder_actor()
         body = self.corpo()
+        if rota.path == '/api/os/v1/today-work/draft':
+            if actor != 'ygor':
+                raise Erro('Somente Ygor pode pedir rascunhos.', 403)
+            today = getattr(self.server, 'thunder_today_readonly', None)
+            if today is None:
+                raise Erro('Leitura de Hoje indisponivel.', 503)
+            from thunder_os.today_readonly import TodayError
+            try:
+                result = today.draft(body)
+            except TodayError as error:
+                return self.responder(error.status, {'read_only': True, 'applied': False,
+                    'code': error.code, 'erro': 'Rascunho indisponivel; confira o contexto ou tente novamente.'})
+            return self.responder(200, result)
         if rota.path == '/api/os/v1/hermes/verify':
             if actor != 'ygor':raise Erro('Somente Ygor pode consultar o Hermes.',403)
             if not isinstance(body,dict) or set(body)!={'contact_id','question'} or rota.query:
@@ -2119,6 +2141,16 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
                     write_authorized=crm_write, external_effects_enabled=crm_write),
                     'seqd_email': IntegrationRuntime(read_configured=seqd_read, write_configured=seqd_send,
                         write_authorized=seqd_send, external_effects_enabled=seqd_send, approval_mode_selected=copilot)})
+            from thunder_os.today_readonly import TodayReadonly
+            from thunder_os.cadence_readonly import HubSpotReadonlyAdapter
+            from thunder_os.hubspot_executor import HubSpotHTTP
+            servidor.thunder_today_readonly = TodayReadonly(servidor.thunder_service,
+                instantly=getattr(servidor, 'thunder_instantly_reader', None),
+                seqd=servidor.thunder_seqd_console,
+                hubspot=HubSpotReadonlyAdapter(systemd_hubspot_credential,
+                    max_pages=20, max_requests=40, budget_seconds=15) if crm_read else None,
+                deals=HubSpotHTTP(systemd_hubspot_credential, timeout=4) if crm_read else None,
+                runner=getattr(getattr(servidor, 'thunder_panel_verifier', None), 'runner', None))
             servidor.thunder_origin = os.environ.get(
                 'THUNDER_OS_ORIGIN', 'https://painel.r3xdigital.tech')
             if runtime is not None:servidor.thunder_origin = runtime['public_origin']
