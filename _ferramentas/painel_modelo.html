@@ -388,9 +388,14 @@ body[data-aba="jornada"] h1,body[data-journey-ready="true"][data-aba="contas"] h
 .new-journey input,.new-journey select,.new-journey textarea{width:100%;min-width:0;background:var(--surface2);color:var(--text);border-color:var(--muted);border-radius:6px;font:14px/1.5 var(--body)}
 .new-journey textarea{min-height:140px;resize:vertical;white-space:pre-wrap}.new-journey textarea[data-nj-field="content"]{min-height:260px}
 .new-journey input[type="radio"]{width:18px;min-height:18px;accent-color:var(--mostarda)}
-.nj-sources{border:0;padding:0;margin:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
-.nj-sources legend{padding:0 0 12px;font-weight:600}.nj-sources label{display:flex;align-items:center;gap:8px;min-width:0;min-height:64px;padding:12px;border:1px solid var(--line);border-radius:8px;font-size:14px;cursor:pointer}
-.nj-sources label:has(:checked){border-color:var(--mostarda);background:var(--surface2)}
+.nj-sources{border:0;padding:0;margin:0;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.nj-sources legend{padding:0 0 12px;font-weight:600}
+.nj-source{display:grid;align-content:start;gap:8px;min-width:0;padding:12px;border:1px solid var(--line);border-radius:8px;font-size:14px}
+.nj-source>label{display:flex;align-items:center;gap:8px;min-width:0;min-height:44px;cursor:pointer}.nj-source strong{font-size:14px}
+.nj-source p,.nj-source small{font-size:12px;color:var(--muted)}
+.nj-source:has(>label input:checked){border-color:var(--mostarda);background:var(--surface2)}
+.nj-source[aria-disabled="true"]{border-style:dashed;color:var(--muted)}
+.nj-apollo-modes{display:grid;gap:8px;min-width:0;border:0;padding:8px 0 0;margin:0}.nj-apollo-modes legend{font-size:12px;color:var(--muted);padding:0}.nj-apollo-modes label{display:flex;align-items:center;gap:8px;min-height:44px;cursor:pointer;font-size:13px}
 .nj-cost{display:flex;flex-wrap:wrap;gap:12px 28px;padding-block:16px;border-block:1px solid var(--line)}
 .nj-cost>div{flex:1 1 180px;min-width:0}.nj-cost dt{font-size:12px;color:var(--muted)}.nj-cost dd{margin:4px 0 0;font:600 16px var(--body)}
 .nj-sheet{margin:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 24px}.nj-sheet>div{min-width:0;padding:16px 0;border-bottom:1px solid var(--line)}
@@ -2432,12 +2437,12 @@ function njSheetHTML(){
   return `<p class="${sheet?.status==='complete'?'msg':'nj-warning'}">${sheet?.status==='complete'?'Ficha completa nesta leitura.':'Ficha incompleta ou desconhecida. A busca continua disponível; a aprovação fica bloqueada.'}</p><p class="msg">Versão da ficha: ${esc(sheet?.version||'desconhecida')}</p><dl class="nj-sheet">${njRows(sheet?.fields).map(field=>`<div><dt>${esc(field.label||field.key)}</dt><dd>${esc(field.content||'Conteúdo não disponível.')}</dd>${provenance(field)}${njRows(field.sources).length?`<details><summary>${field.sources.length} fontes deste campo</summary>${field.sources.map(provenance).join('')}</details>`:''}</div>`).join('')||'<div><dt>Contexto</dt><dd>Sem ficha verificável nesta leitura.</dd></div>'}</dl>`;
 }
 function njRenderSource(){
-  const types=[['csv','Importar CSV do Apollo'],['apollo_people','Buscar pessoas no Apollo'],['apollo_contacts','Buscar contatos salvos']];
+  const apollo=nj.mode==='apollo_people'||nj.mode==='apollo_contacts';
   let fields='';
   if(nj.mode==='csv')fields=`<label for="nj-file">Arquivo CSV (até 100 KB / 200 contatos)<input type="file" id="nj-file" accept=".csv,text/csv"></label><label for="nj-csv">Conteúdo CSV<textarea id="nj-csv" spellcheck="false" maxlength="102400">${esc(nj.csv)}</textarea></label><p class="msg" id="nj-csv-preview"></p><button class="btn pri" type="submit">Importar lista no rascunho</button>`;
   else if(nj.mode==='apollo_people')fields=`<div class="nj-grid">${njField('Cargos (separados por ;)','nj-titles',nj.titles,'maxlength="2000"')}${njField('Localização da pessoa (separada por ;)','nj-locations',nj.locations,'maxlength="2000"')}${njField('Localização da empresa (separada por ;)','nj-company-locations',nj.companyLocations,'maxlength="2000"')}${njField('Faixas de funcionários (mínimo,máximo; separadas por ;)','nj-sizes',nj.sizes,'placeholder="11,50;51,200" maxlength="500"')}${njField('Palavras-chave','nj-keywords',nj.keywords,'maxlength="500"')}${njField('Página','nj-page',nj.page,'type="number" min="1" max="500" step="1" required')}</div><p class="msg">Use os filtros que você confirmou. A busca gratuita de pessoas não revela e-mail nem telefone.</p><button class="btn pri" type="submit">Buscar pessoas · 0 créditos</button>`;
   else fields=`${njField('Busca de contatos salvos','nj-query',nj.query,'maxlength="500" required')}${njField('Página','nj-page',nj.page,'type="number" min="1" max="500" step="1" required')}<button class="btn pri" type="submit">Buscar contatos salvos · 0 créditos</button>`;
-  return `<p class="msg">A importação substitui a seleção do rascunho e exige novas checagens e aprovações. Nenhum contato é inscrito no Apollo.</p><fieldset class="nj-sources"><legend>De onde vêm os leads</legend>${types.map(([id,label])=>`<label><input type="radio" name="nj-source" value="${id}" ${nj.mode===id?'checked':''}>${label}</label>`).join('')}</fieldset>${njCosts()}<form id="nj-source-form" class="nj-fields">${fields}</form><p class="msg">Vagas abertas: coletor desligado. Engajadores de posts: fonte indisponível.</p>${nj.draft?.rows.length?`<p class="msg">${esc(nj.draft.rows.length)} registros retornados pelo servidor. A checagem determina quais ficam retidos.</p>`:'<p class="vazio">Nenhum contato nesta seleção.</p>'}`;
+  return `<p class="msg">A importação substitui a seleção do rascunho e exige novas checagens e aprovações. Nenhum contato é inscrito no Apollo.</p><fieldset class="nj-sources"><legend>De onde vêm os leads</legend><div class="nj-source" data-nj-source="apollo"><label><input type="radio" name="nj-source" value="apollo_people" ${apollo?'checked':''}><strong>Buscar no Apollo</strong></label><p>Busque pessoas com filtros explícitos ou consulte contatos já salvos.</p><small>Consulta gratuita · sem revelar e-mail ou telefone</small><fieldset class="nj-apollo-modes" id="nj-apollo-modes" ${apollo?'':'hidden'}><legend>Tipo de busca no Apollo</legend><label><input type="radio" name="nj-apollo-mode" value="apollo_people" ${nj.mode==='apollo_people'?'checked':''}>Pessoas novas</label><label><input type="radio" name="nj-apollo-mode" value="apollo_contacts" ${nj.mode==='apollo_contacts'?'checked':''}>Contatos salvos</label></fieldset></div><div class="nj-source" data-nj-source="csv"><label><input type="radio" name="nj-source" value="csv" ${nj.mode==='csv'?'checked':''}><strong>Importar lista do Apollo</strong></label><p>Importe o arquivo que você já exportou do Apollo.</p><small>CSV local · 0 créditos OS</small></div><div class="nj-source" data-nj-source="jobs" aria-disabled="true"><strong>Vagas abertas</strong><p>Empresas contratando marketing ou comercial.</p><small>Coletor desligado</small></div><div class="nj-source" data-nj-source="engagers" aria-disabled="true"><strong>Engajadores de posts</strong><p>Pessoas que curtem e comentam posts.</p><small>Fonte indisponível</small></div></fieldset>${njCosts()}<form id="nj-source-form" class="nj-fields">${fields}</form>${nj.draft?.rows.length?`<p class="msg">${esc(nj.draft.rows.length)} registros retornados pelo servidor. A checagem determina quais ficam retidos.</p>`:'<p class="vazio">Nenhum contato nesta seleção.</p>'}`;
 }
 function njRenderChecks(){
   const rows=njRows(nj.draft?.rows),checks=njRows(nj.draft?.checks);
@@ -2455,7 +2460,7 @@ function njRenderSequence(){
 function njRenderManual(){
   const d=nj.draft,r=d?.reconciliation,observed=njRows(r?.rows).filter(row=>row.status==='enrolled');
   const enrollment=!r?'Inscrição não observada.':!r.sequence_id?'Desconhecido · sequência Apollo não configurada.':observed.length?`${observed.length} inscrições observadas pelo servidor; isso não confirma envio.`:'Nenhuma inscrição confirmada nesta leitura.';
-  return `${njCosts()}<div class="nj-grid"><div class="nj-manual"><h3>Inscrição manual no Apollo</h3><p>O arquivo contém apenas os contatos liberados pelas checagens e pelos textos aprovados. A inscrição na sequência é feita por você dentro do Apollo.</p>${nj.exported?`<p class="nj-state">Arquivo exportado nesta sessão: ${esc(nj.exported.filename)} · ${esc(nj.exported.rows)} contatos. Inscrição ainda precisa ser conferida.</p>`:''}<p class="nj-warning" id="nj-export-reason"></p><button class="btn pri" type="button" data-nj-action="export" disabled>Baixar lista aprovada · 0 créditos OS</button><button class="btn" type="button" data-nj-action="reconcile" ${!d||njDirty()||nj.stale?'disabled':''}>Conferir inscrição no Apollo</button><p id="nj-enrollment">${esc(enrollment)}</p>${r?`<p class="msg">${esc(r.observed_at||'Data não informada')} · Sequência: ${esc(r.sequence_id||'não configurada')}</p>${njRows(r.rows).map(row=>`<p class="msg">${esc(row.source_key)} · ${row.status==='enrolled'?'Inscrição observada':'Desconhecido · retido'} · ${esc(row.reason||'Sem prova nesta leitura.')}</p>`).join('')}`:''}</div><div><h3>Inscrição automática: OFF</h3><p class="msg">Desligada nesta jornada.</p><p class="msg">Aprovar texto e baixar arquivo não executam envios, pausas ou escrita no HubSpot.</p></div></div>`;
+  return `${njCosts()}<div class="nj-grid" id="nj-activation"><div class="nj-manual" id="nj-manual" role="region" aria-labelledby="nj-manual-heading"><h3 id="nj-manual-heading">Inscrição manual no Apollo</h3><p>O arquivo contém apenas os contatos liberados pelas checagens e pelos textos aprovados. A inscrição na sequência é feita por você dentro do Apollo.</p>${nj.exported?`<p class="nj-state">Arquivo exportado nesta sessão: ${esc(nj.exported.filename)} · ${esc(nj.exported.rows)} contatos. Inscrição ainda precisa ser conferida.</p>`:''}<p class="nj-warning" id="nj-export-reason"></p><button class="btn pri" type="button" data-nj-action="export" disabled>Baixar lista aprovada · 0 créditos OS</button><button class="btn" type="button" data-nj-action="reconcile" ${!d||njDirty()||nj.stale?'disabled':''}>Conferir inscrição no Apollo</button><p id="nj-enrollment">${esc(enrollment)}</p>${r?`<p class="msg">${esc(r.observed_at||'Data não informada')} · Sequência: ${esc(r.sequence_id||'não configurada')}</p>${njRows(r.rows).map(row=>`<p class="msg">${esc(row.source_key)} · ${row.status==='enrolled'?'Inscrição observada':'Desconhecido · retido'} · ${esc(row.reason||'Sem prova nesta leitura.')}</p>`).join('')}`:''}</div><div id="nj-automatic" role="region" aria-labelledby="nj-automatic-heading"><h3 id="nj-automatic-heading">Inscrição automática: OFF</h3><p class="msg">Desligada nesta jornada.</p><p class="msg">Aprovar texto e baixar arquivo não executam envios, pausas ou escrita no HubSpot.</p></div></div>`;
 }
 function njGuards(){
   const d=nj.draft,dirty=njDirty();
@@ -2477,7 +2482,7 @@ function njGuards(){
 }
 function njRender(focus=false){
   $('nj-steps').innerHTML=njLabels.map((label,index)=>`<li><button type="button" data-nj-step="${index+1}" aria-current="${nj.step===index+1?'step':'false'}" aria-controls="nj-body"><small>${String(index+1).padStart(2,'0')}</small>${label}</button></li>`).join('');
-  $('nj-prev').textContent=nj.step===1?'Voltar para Jornada':'Voltar';$('nj-next').hidden=nj.step===5;
+  $('nj-prev').textContent=nj.step===1?'Voltar para Jornada':'Voltar';$('nj-next').textContent=nj.step===5?'Concluir':'Continuar';
   let content='';
   if(nj.loading)content='<p class="journey-loading">Carregando rascunho e ficha…</p>';
   else if(!nj.catalog)content='<p class="vazio">Catálogo indisponível. Tente novamente para consultar as campanhas do Registry.</p>';
@@ -2488,7 +2493,7 @@ function njRender(focus=false){
     content=nj.draft?`<p>${esc(nj.draft.name)} · ${esc(nj.draft.campaign_id)}</p>${njSheetHTML()}`:`${resume}<form id="nj-create-form" class="nj-fields"><div class="nj-grid">${njField('Nome da nova jornada','nj-name',nj.name,'maxlength="160" required autocomplete="off"')}<label for="nj-campaign">Campanha de referência<select id="nj-campaign" required><option value="">Selecione uma campanha Apollo BR</option>${campaigns.map(c=>`<option value="${esc(c.id)}" ${c.id===nj.campaign?'selected':''} ${c.active===true?'':'disabled'}>${esc(c.id)}${c.active===true?'':' · inativa'}</option>`).join('')}</select></label></div><div class="nj-actions"><button class="btn pri" type="submit" id="nj-create">Criar rascunho no OS</button></div></form>${campaigns.length?'':'<p class="vazio">Nenhuma campanha Apollo BR disponível no Registry.</p>'}${njSheetHTML()}`;
   }else if(!nj.draft)content='<p class="nj-warning">Crie o rascunho na Ficha para salvar contatos, checagens e sequência.</p><button class="btn" type="button" data-nj-step="1">Voltar à Ficha</button>';
   else content=nj.step===2?njRenderSource():nj.step===3?njRenderChecks():nj.step===4?njRenderSequence():njRenderManual();
-  $('nj-body').innerHTML=`<section aria-labelledby="nj-heading"><h3 id="nj-heading" tabindex="-1">${nj.step} · ${njLabels[nj.step-1]}</h3>${content}</section>`;njGuards();if(focus)$('nj-heading').focus();
+  $('nj-body').innerHTML=`<section id="nj-panel-${nj.step}" aria-labelledby="nj-heading"><h3 id="nj-heading" tabindex="-1">${nj.step} · ${njLabels[nj.step-1]}</h3>${content}</section>`;njGuards();if(focus)$('nj-heading').focus();
 }
 // Preview only: the server remains responsible for parsing, bounds and validation.
 function njCsvCount(text){
@@ -2538,7 +2543,7 @@ async function njWrite(operation,body,success){
 $('journey-new').addEventListener('click',()=>{if(nj.busy)return;nj.catalog=null;nj.id=null;nj.draft=null;nj.sequence=null;nj.sequenceDirty=false;nj.sourceDirty=false;nj.csv='';nj.name='';nj.campaign='';nj.sequences=[];nj.sequenceId='';nj.sequenceQuery='';nj.sequenceResultsQuery='';nj.exported=null;nj.createUncertain=false;nj.error='';nj.message='';mostrarAba('jornada/nova');$('nj-title').focus();});
 $('nj-back').addEventListener('click',()=>{mostrarAba('jornada');$('journey-new').focus();});
 $('nj-prev').addEventListener('click',()=>nj.step===1?$('nj-back').click():njGo(nj.step-1));
-$('nj-next').addEventListener('click',()=>njGo(nj.step+1));
+$('nj-next').addEventListener('click',()=>nj.step===5?$('nj-back').click():njGo(nj.step+1));
 $('nj-reload').addEventListener('click',njLoad);$('nj-retry').addEventListener('click',njLoad);
 $('new-journey').addEventListener('click',event=>{
   const resume=event.target.closest('[data-nj-resume]');if(resume&&!nj.busy){mostrarAba('jornada/nova/'+encodeURIComponent(resume.dataset.njResume)+'/1');$('nj-title').focus();return;}
@@ -2576,7 +2581,7 @@ $('new-journey').addEventListener('change',async event=>{
   const el=event.target;if(nj.busy)return;
   if(el.id==='nj-campaign'){nj.campaign=el.value;njRender();}
   if(el.id==='nj-sequence-id'){if(nj.sequences.some(s=>s.id===el.value)&&nj.sequenceResultsQuery===nj.sequenceQuery){nj.sequenceId=el.value;nj.sequenceDirty=true;}else nj.sequenceId='';njRender();}
-  if(el.name==='nj-source'){nj.mode=el.value;nj.sourceDirty=true;njRender();}
+  if(el.name==='nj-source'||el.name==='nj-apollo-mode'){nj.mode=el.value;nj.sourceDirty=true;njRender();}
   if(el.dataset.njField==='channel')njRender();
   if(el.id==='nj-file'){
     const file=el.files?.[0];if(!file)return;

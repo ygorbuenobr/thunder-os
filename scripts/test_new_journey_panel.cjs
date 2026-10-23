@@ -2,6 +2,8 @@
 // Prototype owns header/back, five numbered steps, source choices, checks, full
 // sequence review and manual handoff. Panel owns dark canvas, mustard CTA,
 // purple review state, system fonts, <=8px radius and unframed sections.
+// F2-2: exact trail/source order, per-screen containment, two activation regions
+// and local completion are asserted below; this does not resolve real checker P1.
 // Product/API constraints replace sample facts and activation claims. No DC code,
 // framework, fonts, provider credentials or external network are used here.
 // This is browser fixture evidence, not live provider/integration verification.
@@ -133,12 +135,74 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
       const settled=()=>page.waitForFunction(()=>document.querySelector('#nj-body').getAttribute('aria-busy')==='false');
       const go=async step=>{await page.locator('#nj-steps [data-nj-step="'+step+'"]').click();await settled();assert.equal(await page.locator('#nj-steps [aria-current=step]').getAttribute('data-nj-step'),String(step));};
       const click=async selector=>{await page.locator(selector).click();await settled();};
+      const composition=async()=>{
+        const result=await page.locator('#new-journey').evaluate(root=>{
+          const failures=[],check=(ok,label)=>{if(!ok)failures.push(label);};
+          const before=(a,b)=>!!(a&&b&&(a.compareDocumentPosition(b)&Node.DOCUMENT_POSITION_FOLLOWING));
+          const contains=(parent,...nodes)=>!!parent&&nodes.every(n=>n&&parent.contains(n));
+          const fits=(parent,child)=>{if(!parent||!child)return false;const p=parent.getBoundingClientRect(),c=child.getBoundingClientRect();return c.left>=p.left-1&&c.right<=p.right+1&&c.top>=p.top-1&&c.bottom<=p.bottom+1;};
+          const header=root.querySelector(':scope > header'),trail=root.querySelector('#nj-steps'),body=root.querySelector('#nj-body'),footer=root.querySelector('.nj-bottom');
+          const current=trail.querySelector('[aria-current="step"]'),step=Number(current.dataset.njStep),panel=body.firstElementChild;
+          check(JSON.stringify([...trail.querySelectorAll('button')].map(n=>n.innerText.replace(/\s+/g,' ').trim()))===JSON.stringify(['01 Ficha','02 Fonte','03 Checagem','04 Sequência','05 Ativar manual']),'literal five-step trail order');
+          check(contains(header,root.querySelector('#nj-title'),root.querySelector('#nj-back')),'header owns title and return');
+          check(before(header,trail)&&before(trail,body)&&before(body,footer),'header, trail, screen, footer order');
+          check(body.children.length===1&&panel.id==='nj-panel-'+step&&panel.firstElementChild.id==='nj-heading','one named region for the selected screen');
+          check(fits(root,header)&&fits(root,trail)&&fits(root,body)&&fits(root,footer)&&fits(body,panel),'primary regions remain contained');
+          check(!panel.contains(footer)&&contains(footer,root.querySelector('#nj-prev'),root.querySelector('#nj-next')),'navigation stays outside screen content');
+          if(step===1){
+            const form=panel.querySelector('#nj-create-form'),sheet=panel.querySelector('.nj-sheet');
+            check(contains(panel,sheet),'Ficha owns source-backed facts');
+            if(form)check(contains(form,form.querySelector('.nj-grid'),form.querySelector('#nj-name'),form.querySelector('#nj-campaign'))&&before(form,sheet),'Ficha identification and reference precede facts');
+            check([...sheet.children].every(n=>n.querySelector('dt')&&n.querySelector('dd')&&fits(sheet,n)),'fact/source groups stay within Ficha');
+          }
+          if(step===2){
+            const sources=panel.querySelector('.nj-sources'),blocks=[...sources.querySelectorAll(':scope > .nj-source')],cost=panel.querySelector('.nj-cost'),form=panel.querySelector('#nj-source-form');
+            check(JSON.stringify(blocks.map(n=>n.querySelector('strong').textContent))===JSON.stringify(['Buscar no Apollo','Importar lista do Apollo','Vagas abertas','Engajadores de posts']),'four literal source blocks in binding order');
+            check(blocks.every(n=>n.querySelector('p')&&n.querySelector('small')&&fits(sources,n)),'every source owns title, description and availability');
+            check(contains(blocks[0],panel.querySelector('#nj-apollo-modes'))&&panel.querySelectorAll('[name="nj-source"]').length===2,'saved contacts belong inside Apollo, not another source');
+            check(blocks.slice(2).every(n=>n.getAttribute('aria-disabled')==='true'&&!n.querySelector('button,input,a,select,[tabindex]')),'unavailable sources have no action');
+            check(contains(panel,sources,cost,form)&&before(sources,cost)&&before(cost,form),'source selection, count/cost, input order and containment');
+          }
+          if(step===3){
+            const intro=panel.querySelector(':scope > p'),records=[...panel.querySelectorAll('.nj-record')];
+            check(records.length>0&&before(intro,records[0]),'check introduction precedes the people');
+            for(const record of records){
+              const h=record.querySelector(':scope > header'),identity=h.firstElementChild,verdict=h.querySelector(':scope > .nj-state'),reason=record.querySelector(':scope > p'),details=record.querySelector(':scope > details');
+              check(contains(h,identity.querySelector('h4'),identity.querySelector('.msg'),verdict)&&!identity.contains(verdict)&&before(h,reason)&&before(reason,details),'person owns identity, separate verdict, primary reason and proof details');
+              check(fits(record,h)&&fits(h,identity)&&fits(h,verdict),'identity and verdict stay in their record header');
+              check(JSON.stringify([...details.querySelectorAll('li > b')].map(n=>n.textContent.split(':')[0]))===JSON.stringify(['ICP','Exclusões','Cliente','Negócio aberto','Recusa anterior','Uma campanha por pessoa']),'six checks preserve literal order');
+            }
+          }
+          if(step===4){
+            const selection=panel.querySelector('#nj-sequence-id'),editors=[...panel.querySelectorAll('.nj-step-editor')];
+            check(contains(panel,selection,panel.querySelector('#nj-sequence-query'))&&editors.length>0&&before(selection,editors[0]),'Apollo executor selection precedes sequence steps');
+            for(const editor of editors){
+              const h=editor.querySelector(':scope > header'),fields=editor.querySelector(':scope > .nj-fields'),approval=editor.querySelector(':scope > .nj-actions');
+              check(contains(editor,h,fields,approval)&&before(h,fields)&&before(fields,approval),'each step owns identification, full editing and review in order');
+              check(contains(fields,editor.querySelector('[data-nj-field="channel"]'),editor.querySelector('[data-nj-field="interval_hours"]'),editor.querySelector('[data-nj-field="subject"]'),editor.querySelector('[data-nj-field="content"]')),'all original step fields belong to that editor');
+              check(contains(approval,editor.querySelector('[data-nj-approval-state]'),editor.querySelector('[data-nj-approve]'))&&fits(panel,editor),'state and approval belong to the same step');
+            }
+          }
+          if(step===5){
+            const activation=panel.querySelector('#nj-activation'),manual=panel.querySelector('#nj-manual'),automatic=panel.querySelector('#nj-automatic');
+            check(activation.children.length===2&&activation.children[0]===manual&&activation.children[1]===automatic,'manual first and automatic second, exactly two regions');
+            check(contains(manual,panel.querySelector('[data-nj-action="export"]'),panel.querySelector('[data-nj-action="reconcile"]'),panel.querySelector('#nj-enrollment'))&&!automatic.querySelector('button,input,a'),'manual owns download/reconciliation, automatic has no action');
+            check(manual.getAttribute('role')==='region'&&automatic.getAttribute('role')==='region'&&automatic.textContent.includes('Inscrição automática: OFF'),'both activation regions are named, automatic stays OFF');
+            check(before(panel.querySelector('.nj-cost'),activation)&&fits(activation,manual)&&fits(activation,automatic),'cost precedes contained activation regions');
+            const m=manual.getBoundingClientRect(),a=automatic.getBoundingClientRect();
+            check(innerWidth===1440?a.left>=m.right-1&&Math.abs(a.top-m.top)<=1:a.top>=m.bottom-1,'activation regions are beside on desktop and stacked on mobile');
+            check(root.querySelector('#nj-prev').textContent==='Voltar'&&root.querySelector('#nj-next').textContent==='Concluir'&&!root.querySelector('#nj-next').hidden,'fifth footer keeps Voltar and Concluir');
+          }
+          return {step,failures};
+        });
+        assert.deepEqual(result.failures,[],'F2-2 screen '+result.step+' composition');
+      };
       const noOverflow=async()=>{
         assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
         const bad=await page.locator('#new-journey *').evaluateAll(nodes=>nodes.filter(n=>n.getClientRects().length&&getComputedStyle(n).position!=='absolute').filter(n=>n.getBoundingClientRect().right>innerWidth+1||n.getBoundingClientRect().left< -1).map(n=>n.id||n.className));
         assert.deepEqual(bad,[],'Every visible element fits, not just the clipped page');
       };
-      const shot=async name=>{await noOverflow();await page.evaluate(()=>window.scrollTo(0,0));await page.screenshot({path:path.join(output,name+'-'+viewport.width+'.png'),fullPage:true});};
+      const shot=async name=>{await composition();await noOverflow();await page.evaluate(()=>window.scrollTo(0,0));await page.screenshot({path:path.join(output,name+'-'+viewport.width+'.png'),fullPage:true});};
       await page.goto('https://new-journey.test/#jornada');
       await page.locator('#journey-new').click();await settled();
       assert.equal(await page.locator('#nj-title').evaluate(n=>n===document.activeElement),true);
@@ -186,7 +250,10 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
       await click('#nj-source-form button');assert.match(await page.locator('#nj-status').innerText(),/filtros explícitos/);
       await page.locator('#nj-titles').fill('Diretor;Gerente');await page.locator('#nj-locations').fill('Brasil');await page.locator('#nj-keywords').fill('industrial');
       await click('#nj-source-form button');assert.match(await page.locator('#nj-body').innerText(),/Cobertura parcial/);
-      await page.locator('[name=nj-source][value=apollo_contacts]').check();await page.locator('#nj-query').fill('Contato confirmado');await click('#nj-source-form button');
+      await page.locator('[name=nj-apollo-mode][value=apollo_contacts]').check();
+      assert.equal(await page.locator('#nj-apollo-modes [value=apollo_contacts]').isChecked(),true);
+      assert.equal(await page.locator('.nj-sources > .nj-source').count(),4,'Saved contacts never adds a fifth source');
+      await composition();await page.locator('#nj-query').fill('Contato confirmado');await click('#nj-source-form button');
       checker='pass';complete=true;await go(3);await click('[data-nj-action=check]');await shot('03-checagem-verificada');
       await go(4);assert.equal(await page.locator('#nj-sequence-id').inputValue(),'');
       await page.locator('#nj-sequence-query').fill('Sequência confirmada pelo usuário');
@@ -221,13 +288,18 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
       assert.equal(await page.locator('#nj-steps [aria-current=step]').getAttribute('data-nj-step'),'5','Hash restores draft and step');
       await go(4);assert.equal(await page.locator('#nj-content-0').inputValue(),original+'\nRevisão local.');
       await page.locator('#nj-steps button').first().focus();await page.keyboard.press('End');assert.equal(await page.locator('#nj-steps [aria-current=step]').getAttribute('data-nj-step'),'5');
+      await composition();const postsBeforeFinish=traffic.filter(t=>t.method==='POST').length;
+      await click('#nj-next');assert.equal(new URL(page.url()).hash,'#jornada');
+      assert.equal(await page.locator('#new-journey').isHidden(),true);
+      assert.equal(await page.locator('#journey-new').evaluate(n=>n===document.activeElement),true,'Local conclusion returns focus to Jornada');
+      assert.equal(traffic.filter(t=>t.method==='POST').length,postsBeforeFinish,'Concluir is local navigation, never an API mutation');
       for(const tab of ['cadencias','contas','sistema','jornada']){await page.locator('#abas [data-aba='+tab+']').click();assert.equal(await page.locator('#abas [aria-selected=true]').getAttribute('data-aba'),tab);}
       await page.locator('#journey-new').click();await page.reload();await settled();
       assert.equal(await page.locator('[data-nj-resume]').count(),1);await click('[data-nj-resume]');assert.match(page.url(),new RegExp(id+'/1$'));
       assert.equal(await page.locator('#new-journey img,#new-journey script').count(),0);assert.equal(await page.evaluate(()=>window.injected),undefined);
       assert.deepEqual(errors,[]);await noOverflow();
       assert.equal(traffic.filter(t=>t.method!=='GET'&&!t.path.startsWith(base+'/')).length,0,'No effect calls');
-      console.log('PASS '+viewport.width+': five steps/catalog/error+403/retry/CSV bounds+escaping/newlines/free searches/exact sequence ID/full text/save+approve/stale invalidation/export/reconcile/resume/hash/keyboard/reflow/no external network');
+      console.log('PASS '+viewport.width+': F2-2 literal trail/four sources+Apollo subtype/screen containment/manual+automatic regions/local Concluir; catalog/error+403/retry/CSV bounds+escaping/newlines/free searches/exact sequence ID/full text/save+approve/stale invalidation/export/reconcile/resume/hash/keyboard/reflow/no external network');
       await page.close();
     }
   }finally{await browser.close();}

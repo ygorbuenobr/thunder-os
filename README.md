@@ -396,6 +396,14 @@ Existing approval, exact-text and uncertain-no-retry protections remain in force
 
 ## New Journey: Manual Apollo Handoff
 
+Release status: **not published; Phase 2 acceptance is blocked**. Independent
+review of `531f826` found that the production checker has no legitimate pass
+path for its six checks. It can retain unknowns or confirm blockers only.
+Successful approval/export tests use explicit synthetic checker fixtures and
+do not demonstrate a production-ready export. Do not activate this candidate
+until canonical evidence readers complete that path and independent review
+passes. The live panel remains on `410c335`.
+
 Nova jornada follows the approved five-step flow: campaign sheet, source,
 checks, exact sequence review and manual CSV handoff. It uses a current registered
 Brazil Apollo campaign as the source of rules; a draft name never creates or
