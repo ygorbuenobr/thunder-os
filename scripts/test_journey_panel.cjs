@@ -490,6 +490,7 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
           assert.equal(await page.locator('#journey-account-thesis').count(), 0, 'Status-only visitors cannot expose thesis content');
           assert.equal(await page.locator('#journey-account-body textarea, #journey-account-body [data-journey-approve]').count(), 0);
           assert.match(await page.locator('#journey-account-body').innerText(), /Somente status/);
+          assert.equal(await page.locator('#journey-account-status').innerText(), 'Somente status. Cadência indisponível para aprovação.');
         }
         await page.locator('#journey-account-list-back').click();
         await page.waitForFunction(() => !document.querySelector('#journey-accounts-refresh').disabled);
