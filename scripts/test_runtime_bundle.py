@@ -90,6 +90,35 @@ class RuntimeBundleTest(unittest.TestCase):
             self.build()
         self.assertFalse(self.output.exists())
 
+    def test_briefing_sources_and_readonly_agent_dropin_are_bundled(self) -> None:
+        paths = [
+            '_ferramentas/chief_briefing.py',
+            '_ferramentas/chief_briefing_runner.py',
+            '_ferramentas/chief_read_snapshot.py',
+            '_ferramentas/chief_briefing_cards.py',
+            '_ferramentas/seqd_mail_readonly.py',
+            '_ferramentas/seqd_mail_readonly.cjs',
+            'runtime/systemd/thunder-os-agent-email-readonly.conf',
+            '_ferramentas/seqd_bridge/bridge.cjs',
+            '_ferramentas/seqd_bridge/native.cjs',
+            '_ferramentas/seqd_bridge/server.cjs',
+            '_ferramentas/seqd_bridge/contract.cjs',
+            '_ferramentas/seqd_bridge/journal.cjs',
+            '_ferramentas/seqd_bridge/quota.cjs',
+        ]
+        for name in paths:
+            self.write_repo_file(name, '# synthetic source only\n')
+        self.write_repo_file('_ferramentas/seqd_bridge/bridge.test.cjs', '// tests only\n')
+        self.run_git('add', '.')
+        self.run_git('commit', '-qm', 'fixture: add briefing sources')
+        manifest = self.build()
+        for name in paths:
+            self.assertIn(name, manifest['files'])
+            self.assertEqual((self.output/name).read_text(), '# synthetic source only\n')
+        self.assertFalse(any('credentials' in name or 'receipts.sqlite' in name
+                             for name in manifest['files']))
+        self.assertNotIn('_ferramentas/seqd_bridge/bridge.test.cjs',manifest['files'])
+
     def test_hermes_dropin_is_hashed_in_candidate(self) -> None:
         name = "runtime/systemd/thunder-os-agent-hermes-ro.conf"
         source = self.write_repo_file(name, "[Service]\nReadOnlyPaths=/etc/thunder-os\n")

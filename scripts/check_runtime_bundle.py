@@ -43,7 +43,18 @@ def source_path(name: str) -> bool:
         return False
     if name in PANEL_FILES:
         return True
+    if name.startswith('_ferramentas/seqd_bridge/'):
+        return len(PurePosixPath(name).parts)==3 and PurePosixPath(name).name in {
+            'bridge.cjs','native.cjs','server.cjs','contract.cjs','journal.cjs','quota.cjs',
+        }
     if name in {
+        "_ferramentas/chief_briefing.py",
+        "_ferramentas/chief_briefing_runner.py",
+        "_ferramentas/chief_read_snapshot.py",
+        "_ferramentas/chief_briefing_cards.py",
+        "_ferramentas/seqd_mail_readonly.py",
+        "_ferramentas/seqd_mail_readonly.cjs",
+        "runtime/systemd/thunder-os-agent-email-readonly.conf",
         "runtime/systemd/thunder-os-agent-pythonpath.conf",
         "runtime/systemd/thunder-os-agent-hermes-ro.conf",
         "runtime/systemd/thunder-os-connections-live.service",

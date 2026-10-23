@@ -100,6 +100,21 @@ class SEQDClient:
     def read(self, identifier):
         return self._call('GET', '/v1/messages/'+self._id(identifier))
 
+    def conversation(self, identifier):
+        if not isinstance(identifier, str) or not re.fullmatch(r'[a-f0-9]{1,64}', identifier):
+            raise SEQDError('invalid_thread_identifier')
+        result = self._call('GET', '/v1/threads/'+identifier)
+        thread = result.get('thread')
+        if (result.get('status') != 'ok' or not isinstance(thread, dict)
+                or thread.get('id') != identifier or thread.get('context_only') is not True
+                or thread.get('receipt_eligible') is not False
+                or not isinstance(thread.get('messages'), list) or len(thread['messages']) > 100
+                or type(thread.get('complete')) is not bool
+                or type(thread.get('truncated')) is not bool
+                or not isinstance(thread.get('coverage'), dict)):
+            raise SEQDError('invalid_thread_context')
+        return result
+
     def reconcile(self, key):
         self._id(key)
         return self._call('POST', '/v1/reconcile', {'idempotency_key':key})

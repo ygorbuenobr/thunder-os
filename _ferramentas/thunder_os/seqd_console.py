@@ -118,6 +118,12 @@ class SEQDConsole:
         self._actor(actor); SEQDClient._id(identifier)
         return self.port.read(identifier)
 
+    def conversation(self,identifier,actor):
+        self._actor(actor)
+        if not isinstance(identifier,str) or not re.fullmatch(r'[a-f0-9]{1,64}',identifier):
+            raise SEQDError('invalid_thread_identifier')
+        return self.port.conversation(identifier)
+
     def read_preview(self,key,actor):
         self._actor(actor); SEQDClient._id(key)
         preview=self.repo.get_state('seqd_preview',key)

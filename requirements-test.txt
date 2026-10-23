@@ -1,0 +1,2 @@
+# Match the existing Hermes runtime used by the commercial briefing.
+jsonschema==4.26.0

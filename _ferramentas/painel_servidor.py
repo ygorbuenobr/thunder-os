@@ -1570,6 +1570,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.responder(200, canary_view(service.repository,console.status(actor)))
             if rota.path == seqd_base + '/messages':
                 return self.responder(200, console.messages(actor, limit=10))
+            seqd_thread = re.fullmatch(re.escape(seqd_base) + r'/threads/([a-f0-9]{1,64})', rota.path)
+            if seqd_thread:
+                return self.responder(200, console.conversation(seqd_thread.group(1), actor))
             seqd_message = re.fullmatch(re.escape(seqd_base) + r'/messages/([A-Za-z0-9_-]{1,200})', rota.path)
             if seqd_message:
                 return self.responder(200, console.read(seqd_message.group(1), actor))

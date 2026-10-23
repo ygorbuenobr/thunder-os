@@ -6,6 +6,18 @@ from pathlib import PurePosixPath
 
 
 ALLOWED_FILES = {
+    "requirements-test.txt",
+    "_ferramentas/chief_briefing.py",
+    "_ferramentas/chief_briefing_runner.py",
+    "_ferramentas/chief_read_snapshot.py",
+    "_ferramentas/chief_briefing_cards.py",
+    "_ferramentas/seqd_mail_readonly.py",
+    "_ferramentas/seqd_mail_readonly.cjs",
+    "_ferramentas/test_chief_briefing.py",
+    "_ferramentas/test_chief_briefing_runner.py",
+    "_ferramentas/test_chief_read_snapshot.py",
+    "_ferramentas/test_chief_briefing_cards.py",
+    "runtime/systemd/thunder-os-agent-email-readonly.conf",
     "scripts/provision_instantly_ingress.py",
     "scripts/mexico_e1_runner.cjs",
     "scripts/mexico_toques_bridge.py",
@@ -63,6 +75,7 @@ ALLOWED_FILES = {
     "_ferramentas/painel_modelo.html",
 }
 ALLOWED_TESTS = {
+    "test_thunder_os_email_context.py",
     "test_thunder_os_email_readback.py",
     "test_thunder_os_effect_reconciliation.py",
     "test_thunder_os_instantly_reader.py",
@@ -147,6 +160,12 @@ def allowed(path: str) -> bool:
         return False
     if path in ALLOWED_FILES:
         return True
+    if path.startswith('_ferramentas/seqd_bridge/'):
+        return PurePosixPath(path).name in {
+            'bridge.cjs','native.cjs','server.cjs','contract.cjs','journal.cjs','quota.cjs',
+            'bridge.test.cjs','readonly.test.cjs','context.test.cjs','process-fixture.cjs',
+            'contract-vector.json',
+        } and len(parts)==3
     if path.startswith("_ferramentas/thunder_os/"):
         return "__pycache__" not in parts and path.endswith((".py", ".sql"))
     if path.startswith("_ferramentas/test_thunder_os_"):

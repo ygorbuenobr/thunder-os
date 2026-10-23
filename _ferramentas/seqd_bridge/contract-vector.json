@@ -1,0 +1,18 @@
+{
+  "credential": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "envelope": {
+    "preview_id": "preview-unicode",
+    "version": 7,
+    "content_hash": "1e0712066e33861b937176d5157d4f675864a0b8bf687009040da6ae0422036d",
+    "approved_actor": "YGOR",
+    "expires_at": "2030-01-01T00:05:00.000Z",
+    "idempotency_key": "vector-1",
+    "to": "fixture@example.invalid",
+    "subject": "Ação — café ☕",
+    "body": "Olá, Ygor!\nLinha 2: \"sim\". 🚀",
+    "thread_id": null,
+    "approval_signature": "7c49883730125a68c6ff9c2043e9434b855d5f4c26641c9aba8eb4da1b70e232"
+  },
+  "content_hash": "1e0712066e33861b937176d5157d4f675864a0b8bf687009040da6ae0422036d",
+  "approval_signature": "7c49883730125a68c6ff9c2043e9434b855d5f4c26641c9aba8eb4da1b70e232"
+}
