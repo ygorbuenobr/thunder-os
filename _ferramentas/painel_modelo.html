@@ -2013,7 +2013,7 @@ const journeyEdits=new Map();
 const journeyStageDefs=[['icp','ICP'],['abordagem','Abordagem'],['resposta','Resposta'],['crm','CRM'],['linkedin','LinkedIn'],['followup','Follow-up'],['preparacao','Preparação']];
 const journeyTabDefs=[['research','Pesquisa ABM'],['dossier','Dossiê'],['context','Contexto usado'],['cadence','Cadência'],['before_approval','Antes de aprovar']];
 const journeyRows=value=>Array.isArray(value)?value:[];
-const journeyBR=id=>typeof id==='string'&&/^BR(?:[-_]|$)/i.test(id);
+const journeyBR=id=>typeof id==='string'&&(/^BR(?:[-_]|$)/i.test(id)||id==='CHATTIE-01');
 const journeyVisitor=row=>row?.source_group==='visitantes-2026-10-22'&&row.campaign_id==null;
 const journeyVisibleRecord=row=>journeyBR(row?.campaign_id)||journeyVisitor(row);
 const journeyRecordLabel=row=>journeyVisitor(row)?'Visitantes · rascunhos':row?.campaign_id||'Sem vínculo';

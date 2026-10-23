@@ -21,7 +21,7 @@ const draft = 'Rascunho sintético para revisão local.';
 const source = {label: 'Fonte sintética', status: 'ok', url: 'https://source.example.invalid/evidence/record'};
 const metric = value => ({value, source: [source], reason: '', coverage: 'parcial'});
 const journey = () => ({read_only: true, collected_at: collected,
-  campaigns: [{id: br, label: 'Campanha BR sintética'}, {id: other, label: 'Outra campanha BR'}, {id: mx, label: 'Nunca mostrar MX'}, {id: 'unlinked', label: 'Sem vínculo'}],
+  campaigns: [{id: br, label: 'Campanha BR sintética'}, {id: other, label: 'Outra campanha BR'}, {id: 'CHATTIE-01', label: 'Chattie Brasil sintética'}, {id: mx, label: 'Nunca mostrar MX'}, {id: 'unlinked', label: 'Sem vínculo'}],
   metrics: {reached: metric(12), replied: {...metric(null), reason: 'Sem leitura de respostas humanas.'}, hot: {...metric(null), reason: 'Classificação não disponível.'}, cost_per_hot: {value: null, source: [], reason: 'Sem custo comprovado.'}},
   stages: stages.map(([id, label]) => ({id, label, count: id === 'preparacao' ? null : 1, status: id === 'preparacao' ? 'off' : 'partial',
     reason: id === 'preparacao' ? 'Fonte de preparação desligada.' : 'Cobertura parcial da fonte.',
@@ -164,7 +164,7 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
       assert.deepEqual(await page.locator('#abas [role=tab]').evaluateAll(nodes => nodes.map(node => node.firstChild.textContent)), ['Jornada', 'Campanhas', 'Contas', 'Sistema']);
       assert.equal(await page.locator('#journey-brand').isVisible(), true);
       assert.equal(await page.locator('body').evaluate(node => getComputedStyle(node).backgroundColor), 'rgb(14, 13, 11)');
-      assert.deepEqual(await page.locator('#journey-campaign option').evaluateAll(nodes => nodes.map(node => node.value)), ['', br, other]);
+      assert.deepEqual(await page.locator('#journey-campaign option').evaluateAll(nodes => nodes.map(node => node.value)), ['', br, other, 'CHATTIE-01']);
       assert.equal(await page.locator('#journey-stages button').count(), 7);
       assert.match(await page.locator('[data-journey-metric=reached]').innerText(), /12/);
       assert.match(await page.locator('[data-journey-metric=replied]').innerText(), /\?[\s\S]*Sem leitura/);
@@ -246,6 +246,9 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
       await page.locator('#journey-detail-body pre').first().waitFor(); await page.keyboard.press('Escape');
       console.log(`PASS ${viewport.width}: arrangement/seven stages/BR/unknown/safe originals/deep links/edit/reset/discard/wordcount/no approval/poll/focus/detail retry`);
 
+      await page.locator('#journey-campaign').selectOption('CHATTIE-01'); await settled();
+      assert.equal(requests.filter(row => row.path === '/api/os/v1/journey').at(-1).query, '?campaign=CHATTIE-01');
+      assert.equal(await page.locator('#journey-stage-items article').count(), 0, 'Chattie selection never inherits another campaign items');
       await page.locator('#journey-campaign').selectOption(other); await settled();
       assert.match(requests.filter(row => row.path === '/api/os/v1/journey').at(-1).query, /campaign=BR-OTHER-FIXTURE/);
       assert.equal(await page.locator('#journey-stage-items article').count(), 0);
