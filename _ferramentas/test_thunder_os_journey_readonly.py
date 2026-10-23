@@ -537,6 +537,38 @@ class JourneyTests(unittest.TestCase):
         self.assertFalse(any(row['canonical_cadence_id'] == 'invalid/path' for row in details))
         self.assertEqual(before, self.database())
 
+    def test_cold_readers_overlap_join_and_preserve_other_source_on_failure(self):
+        import threading
+        today_entered, cadence_entered = threading.Event(), threading.Event()
+        original_today = self.today.snapshot
+        original_cadence = self.cadence.snapshot.return_value
+        def today():
+            today_entered.set()
+            if not cadence_entered.wait(2):
+                raise AssertionError('cadence reader must start before Today finishes')
+            return original_today()
+        def cadence():
+            cadence_entered.set()
+            if not today_entered.wait(2):
+                raise AssertionError('Today reader must start before cadence finishes')
+            return original_cadence
+        before = self.database()
+        with patch.object(self.today, 'snapshot', side_effect=today):
+            self.cadence.snapshot.side_effect = cadence
+            snapshot = self.adapter.snapshot()
+        source = {row['id']: row for row in snapshot['sources']}
+        self.assertEqual(source['today']['status'], 'ok')
+        self.assertEqual(source['cadence']['status'], 'partial')
+        self.assertTrue(today_entered.is_set() and cadence_entered.is_set())
+        self.assertFalse(any(t.is_alive() and t.name.startswith('thunder-journey-read')
+                             for t in threading.enumerate()))
+        self.cadence.snapshot.side_effect = RuntimeError('isolated source failure')
+        degraded = self.adapter.snapshot()
+        source = {row['id']: row for row in degraded['sources']}
+        self.assertEqual(source['today']['status'], 'ok')
+        self.assertEqual(source['cadence']['status'], 'offline')
+        self.assertEqual(before, self.database())
+
     def test_account_adds_canonical_steps_by_account_id_never_markdown_touch_name(self):
         self.canonical()
         accounts = Mock()

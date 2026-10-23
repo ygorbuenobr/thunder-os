@@ -6,6 +6,7 @@ served only while its source fingerprint still matches the current projection.
 Counts describe observed rows, not an inferred population or provider totals.
 """
 from copy import copy, deepcopy
+from concurrent.futures import ThreadPoolExecutor
 import json
 import re
 import threading
@@ -249,13 +250,18 @@ class JourneyReadonly:
                                  'reason': 'source_unavailable'}
                 return deepcopy(fallback)
 
-        observed = read('today', self.today.snapshot, {})
+        # Independent bounded readers must not add their cold-start latencies.
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix='thunder-journey-read') as pool:
+            today_future = pool.submit(self.today.snapshot)
+            cadence_future = (pool.submit(self.cadence_reader.snapshot)
+                              if self.cadence_reader is not None else None)
+            observed = read('today', today_future.result, {})
+            cadence = read('cadence', cadence_future.result, {}) if cadence_future is not None else {}
         collected = observed.get('collected_at')
         sources['today']['collected_at'] = collected
         for block in observed.get('blocks', {}).values():
             for source in block.get('sources', []):
                 sources[source['id']] = deepcopy(source)
-        cadence = read('cadence', self.cadence_reader.snapshot, {}) if self.cadence_reader is not None else {}
         if not cadence:
             sources['cadence'] = {'id': 'cadence', 'status': 'offline', 'collected_at': None}
         else:
