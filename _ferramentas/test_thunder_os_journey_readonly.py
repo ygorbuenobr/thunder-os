@@ -508,6 +508,7 @@ class JourneyTests(unittest.TestCase):
             snap = self.adapter.snapshot()
             item = next(i for i in self.stage(snap, 'abordagem')['items'] if i['summary'].startswith('Passo canonico'))
             self.assertFalse(self.adapter.detail(item['id'])['editable'])
+
         self.canonical()
         self.repo.enqueue_effect('fixture-pending', {'cadence_id': 'actual-cadence', 'step': {'id': 'E1'}})
         snap = self.adapter.snapshot()
@@ -517,6 +518,24 @@ class JourneyTests(unittest.TestCase):
             snap = self.adapter.snapshot()
             item = next(i for i in self.stage(snap, 'abordagem')['items'] if i['summary'].startswith('Passo canonico'))
             self.assertFalse(self.adapter.detail(item['id'])['editable'])
+
+    def test_namespaced_canonical_ids_survive_projection_without_get_authority(self):
+        original = self.canonical()
+        payload = {k: v for k, v in original.items() if k not in {'id', 'version', 'updated_at'}}
+        payload['steps'] = [{**payload['steps'][0], 'id': 'D0:email'}]
+        self.repo.put_state('cadence', 'cadence:company.example.invalid', payload)
+        self.repo.put_state('cadence', 'invalid/path', payload)
+        before = self.database()
+        snapshot = self.adapter.snapshot()
+        details = [self.adapter.detail(row['id']) for row in self.stage(snapshot, 'abordagem')['items']
+                   if row['summary'].startswith('Passo canonico')]
+        matching = [row for row in details if row['canonical_cadence_id'] == 'cadence:company.example.invalid']
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0]['canonical_step_id'], 'D0:email')
+        self.assertTrue(matching[0]['editable'])
+        self.assertFalse(matching[0]['approval_available'])
+        self.assertFalse(any(row['canonical_cadence_id'] == 'invalid/path' for row in details))
+        self.assertEqual(before, self.database())
 
     def test_account_adds_canonical_steps_by_account_id_never_markdown_touch_name(self):
         self.canonical()

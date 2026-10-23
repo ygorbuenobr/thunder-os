@@ -2144,7 +2144,7 @@ async function carregarJourney(force=false){
 }
 function journeyBinding(data,campaign){
   const cadence=data?.canonical_cadence_id,step=data?.canonical_step_id;
-  return data?.approval_available===true&&data.reviewable!==false&&journeyBR(campaign)&&/^[A-Za-z0-9_-]{1,100}$/.test(cadence||'')&&/^[A-Za-z0-9_-]{1,100}$/.test(step||'')?
+  return data?.editable===true&&data.reviewable!==false&&journeyBR(campaign)&&/^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}$/.test(cadence||'')&&/^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}$/.test(step||'')?
     {cadence_id:cadence,step_id:step,campaign_id:campaign||null,subject:typeof data.subject==='string'?data.subject:null}:null;
 }
 function journeyEditor(key,original,approvalReason,binding=null){

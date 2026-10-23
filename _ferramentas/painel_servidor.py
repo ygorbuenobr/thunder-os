@@ -1368,8 +1368,11 @@ class Handler(BaseHTTPRequestHandler):
                     result = journey.account_list(campaign=campaign)
                 elif match := re.fullmatch(r'/api/os/v1/journey/details/([A-Za-z0-9:_-]{1,160})', rota.path):
                     result = journey.detail(match.group(1), campaign=campaign)
-                elif match := re.fullmatch(r'/api/os/v1/journey/accounts/([A-Za-z0-9][A-Za-z0-9_.:@-]{0,159})', rota.path):
-                    result = journey.account_detail(match.group(1), campaign=campaign)
+                elif match := re.fullmatch(r'/api/os/v1/journey/accounts/([^/]{1,480})', rota.path):
+                    account_id = unquote(match.group(1))
+                    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}', account_id):
+                        raise Erro('Identificador de conta inválido.', 404)
+                    result = journey.account_detail(account_id, campaign=campaign)
                 else:
                     raise Erro('Item da Jornada não encontrado.', 404)
             except TodayError as error:

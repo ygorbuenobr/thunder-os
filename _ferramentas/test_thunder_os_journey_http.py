@@ -164,6 +164,11 @@ class JourneyHTTPTests(unittest.TestCase):
         status, _ = self.request('/api/os/v1/journey/accounts/company.example.invalid')
         self.assertEqual(status, 200)
         self.journey.account_detail.assert_called_once_with('company.example.invalid', campaign=None)
+        status, _ = self.request('/api/os/v1/journey/accounts/account%3Acompany.example.invalid')
+        self.assertEqual(status, 200)
+        self.journey.account_detail.assert_called_with('account:company.example.invalid', campaign=None)
+        for invalid in ('..%2Fprivate', 'account%252Fprivate', '%2Fprivate'):
+            self.assertEqual(self.request('/api/os/v1/journey/accounts/' + invalid)[0], 404)
         cadence = self.step_service()
         cadence['id'] = 'cadence:company.example.invalid'
         status, _ = self.request('/api/os/v1/journey/steps/review', method='POST', nonce=True,

@@ -51,15 +51,17 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
       const page = await browser.newPage({viewport});
       const requests = [], errors = [];
       let state = journey(), accountState = account(), fail = false, detailFail = false, accountFail = false, listFail = false, hold = false, release;
-      let canonical = false, canonicalBlocked = false, reviewFail = false, visitorMode = false;
+      let canonical = false, canonicalBlocked = false, canonicalBadId = false, reviewFail = false, visitorMode = false;
       let version = 5;
       const stepText = {D0: draft, D3: 'Outro toque sintético original.'}, approved = new Set(), discarded = new Set();
       const visitors = Array.from({length: 10}, (_, i) => ({id: 'visitor-' + i, name: 'Conta visitante sintética ' + i, company: 'Empresa visitante sintética', campaign_id: null, source_group: 'visitantes-2026-10-22', reviewable: i < 6, readiness: i < 6 ? 'Pronto para revisão local' : i === 8 ? 'Bloqueado por região' : i === 9 ? 'Descartado' : 'Aguardar manhã'}));
-      const reviewFor = step => ({cadence_id: 'canonical-fixture', step_id: step, expected_version: version, review_hash: String(version).repeat(64).slice(0, 64),
+      const wireStep = step => step + ':email';
+      const localStep = step => step.replace(/:email$/, '');
+      const reviewFor = wire => { const step = localStep(wire); return ({cadence_id: 'cadence:company.example.invalid', step_id: wireStep(step), expected_version: version, review_hash: String(version).repeat(64).slice(0, 64),
         context_hash: 'c'.repeat(64), content: stepText[step], subject: 'Assunto canônico ' + step,
         can_approve: !canonicalBlocked, blockers: canonicalBlocked ? ['Controle global pausado na fixture.'] : [],
-        execution_confirmation: canonicalBlocked ? null : {confirmed: true, batch_id: 'canonical-fixture', batch_version: version, control_version: 0, scope_hash: (step === 'D0' ? 'd' : 'e').repeat(64),
-          context: {platform: 'thunder_os', campaign_id: br, campaign_version: 'fixture-v1', rules_version: 'rules-fixture-v1', rules_hash: 'a'.repeat(64), configuration_hash: 'b'.repeat(64), run_id: 'fixture-run', providers: {email: 'fixture_only'}}}});
+        execution_confirmation: canonicalBlocked ? null : {confirmed: true, batch_id: 'cadence:company.example.invalid', batch_version: version, control_version: 0, scope_hash: (step === 'D0' ? 'd' : 'e').repeat(64),
+          context: {platform: 'thunder_os', campaign_id: br, campaign_version: 'fixture-v1', rules_version: 'rules-fixture-v1', rules_hash: 'a'.repeat(64), configuration_hash: 'b'.repeat(64), run_id: 'fixture-run', providers: {email: 'fixture_only'}}}}); };
       await page.clock.install();
       page.on('pageerror', error => errors.push(error.message));
       await page.route('**/*', async route => {
@@ -74,8 +76,9 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
           assert.equal(request.method(), 'POST');
           assert.equal(request.headers()['x-thunder-nonce'], 'fixture-nonce');
           const body = request.postDataJSON(), operation = url.pathname.split('/').at(-1);
-          assert.equal(body.cadence_id, 'canonical-fixture');
-          assert(['D0', 'D3'].includes(body.step_id));
+          assert.equal(body.cadence_id, 'cadence:company.example.invalid');
+          assert(['D0:email', 'D3:email'].includes(body.step_id));
+          const step = localStep(body.step_id);
           const review = reviewFor(body.step_id);
           const fields = ['cadence_id', 'step_id'];
           if (operation !== 'review') fields.push('expected_version', 'review_hash');
@@ -86,12 +89,12 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
           if (operation === 'review') { if (reviewFail) return route.fulfill({status: 503, contentType: 'application/json', body: JSON.stringify({erro: 'Revisão sintética indisponível. Tente novamente.'})}); return send(review); }
           assert.equal(body.expected_version, review.expected_version);
           assert.equal(body.review_hash, review.review_hash);
-          if (operation === 'approve') { assert.deepEqual(body.execution_confirmation, review.execution_confirmation); approved.add(body.step_id); }
-          else if (operation === 'revise') { stepText[body.step_id] = body.content; assert.equal(body.subject, review.subject); }
-          else if (operation === 'discard') { assert(body.reason.trim()); discarded.add(body.step_id); }
+          if (operation === 'approve') { assert.deepEqual(body.execution_confirmation, review.execution_confirmation); approved.add(step); }
+          else if (operation === 'revise') { stepText[step] = body.content; assert.equal(body.subject, review.subject); }
+          else if (operation === 'discard') { assert(body.reason.trim()); discarded.add(step); }
           else assert.fail('No dispatch or other operation is allowed');
           version++;
-          return send({applied: true, sent: false, status: operation === 'approve' ? 'approved' : 'ready_for_review', cadence: {id: 'canonical-fixture', version, steps: ['D0', 'D3'].map(id => ({id, content: stepText[id], status: approved.has(id) ? 'approved' : 'draft'}))}});
+          return send({applied: true, sent: false, status: operation === 'approve' ? 'approved' : 'ready_for_review', cadence: {id: 'cadence:company.example.invalid', version, steps: ['D0', 'D3'].map(id => ({id: wireStep(id), content: stepText[id], status: approved.has(id) ? 'approved' : 'draft'}))}});
         }
         assert.equal(request.method(), 'GET', 'All other traffic is read-only');
         if (url.pathname === '/api/os/v1/journey') {
@@ -108,7 +111,7 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
           data = detail(decodeURIComponent(url.pathname.slice('/api/os/v1/journey/details/'.length)));
           if (canonical) {
             const step = data.id.includes('followup') ? 'D3' : 'D0';
-            Object.assign(data, {canonical_cadence_id: 'canonical-fixture', canonical_step_id: step, approval_available: true, subject: 'Assunto canônico ' + step, draft: {text: stepText[step]}});
+            Object.assign(data, {canonical_cadence_id: canonicalBadId ? 'invalid/path' : 'cadence:company.example.invalid', canonical_step_id: wireStep(step), approval_available: false, editable: true, subject: 'Assunto canônico ' + step, draft: {text: stepText[step]}});
           }
         } else if (url.pathname === '/api/os/v1/journey/accounts') {
           if (listFail) return failure();
@@ -119,7 +122,7 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
           data = accountState;
           if (canonical) {
             data = structuredClone(accountState);
-            data.tabs.cadence.forEach(row => { if (['D0', 'D3'].includes(row.day)) Object.assign(row, {canonical_cadence_id: 'canonical-fixture', canonical_step_id: row.day, approval_available: true, text: stepText[row.day], subject: 'Assunto canônico ' + row.day}); });
+            data.tabs.cadence.forEach(row => { if (['D0', 'D3'].includes(row.day)) Object.assign(row, {canonical_cadence_id: 'cadence:company.example.invalid', canonical_step_id: wireStep(row.day), approval_available: false, editable: true, text: stepText[row.day], subject: 'Assunto canônico ' + row.day}); });
           }
           if (visitorMode) data = {...account(), ...visitors.find(row => row.id === decodeURIComponent(url.pathname.split('/').at(-1)))};
         } else if (url.pathname === '/api/os/v1/session') data = {actor: 'ygor', nonce: 'fixture-nonce'};
@@ -375,6 +378,11 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
       // Canonical fixture: explicit user actions authorize only D0, never D3 or a whole pack.
       canonical = true;
       await page.locator('[data-journey-stage=resposta]').click();
+      canonicalBadId = true;
+      await page.locator('#journey-stage-items [data-journey-open]').click();
+      await page.locator('#journey-detail-body [data-journey-editor]').waitFor();
+      assert.equal(await page.locator('#journey-detail-body [data-journey-review]').count(), 0, 'A path is never a review binding');
+      await page.keyboard.press('Escape'); canonicalBadId = false;
       await page.locator('#journey-stage-items [data-journey-open]').click();
       const canonicalEditor = page.locator('#journey-detail-body [data-journey-editor]');
       await canonicalEditor.locator('[data-journey-review]').waitFor();
@@ -400,7 +408,7 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
       assert.match(await canonicalEditor.locator('[data-journey-operation]').innerText(), /Autorização registrada para o toque D0[\s\S]*Envio não confirmado/);
       assert.deepEqual([...approved], ['D0']);
       assert.equal(mutations().filter(row => row.path.endsWith('/approve')).length, 1);
-      assert.equal(mutations().find(row => row.path.endsWith('/approve')).body.step_id, 'D0');
+      assert.equal(mutations().find(row => row.path.endsWith('/approve')).body.step_id, 'D0:email');
       await page.keyboard.press('Escape');
       await page.locator('[data-journey-stage=followup]').click();
       await page.locator('#journey-stage-items [data-journey-open]').click();
@@ -415,7 +423,7 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
       await canonicalEditor.locator('[data-journey-revise]').click();
       await page.waitForFunction(() => !document.querySelector('#journey-detail-body [data-journey-review]').disabled);
       assert.deepEqual(mutations().slice(sequenceStart).map(row => row.path.split('/').at(-1)), ['revise', 'review'], 'Persisted edit requires a fresh review before another approval');
-      assert.equal(mutations().slice(sequenceStart)[0].body.step_id, 'D3');
+      assert.equal(mutations().slice(sequenceStart)[0].body.step_id, 'D3:email');
       assert.equal(stepText.D3, 'D3 editado localmente para revisão exata.');
       assert.equal(await canonicalEditor.locator('[data-journey-approve]').isDisabled(), true, 'Fresh explicit confirmation required after revise');
       assert.match(await canonicalEditor.locator('[data-journey-approve]').innerText(), /versão editada/);

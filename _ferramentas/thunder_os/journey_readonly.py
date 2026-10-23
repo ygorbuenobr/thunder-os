@@ -521,7 +521,7 @@ class JourneyReadonly:
             canonical_id = cadence_row['id']
             row = {**cadence_row, 'campaign_id': cid, 'person_keys': [cadence_row.get('person_key')]}
             if (not selected(row) or not isinstance(canonical_id, str)
-                    or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', canonical_id)):
+                    or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}', canonical_id)):
                 continue
             steps = cadence_row.get('steps', [])
             step_ids = [s.get('id') for s in steps if isinstance(s, dict)]
@@ -530,7 +530,7 @@ class JourneyReadonly:
                 continue
             for step in steps:
                 sid = step.get('id')
-                if (not isinstance(sid, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', sid)
+                if (not isinstance(sid, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}', sid)
                         or not isinstance(step.get('content'), str)):
                     continue
                 peers = {p for p in (cadence_row.get('person_key'), step.get('recipient')) if isinstance(p, str)}
