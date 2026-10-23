@@ -2348,6 +2348,9 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
             from thunder_os.instantly_reader import private_text
             from thunder_os.new_journey import NewJourney
             from thunder_os.new_journey_checks import NewJourneyChecks
+            from thunder_os.new_journey_membership import CrossCampaignReadOnly, InstantlyMembershipReadOnly
+            from thunder_os.new_journey_refusal import RegisteredRefusalRead
+            from thunder_os.external_email_import import APOLLO_TEAM
             apollo_prospects = ApolloProspectReadonly(
                 credential_loader=lambda: private_text('/root/.config/thunder/credentials/apollo_api_key.txt'),
                 enabled=runtime is None, timeout=8)
@@ -2355,7 +2358,11 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
                 apollo=apollo_prospects if runtime is None else None,
                 checker=NewJourneyChecks(servidor.thunder_service,
                     hubspot=HubSpotHTTP(systemd_hubspot_credential, timeout=4)
-                    if runtime is None and crm_read else None))
+                    if runtime is None and crm_read else None,
+                    membership=CrossCampaignReadOnly(apollo_prospects,
+                        InstantlyMembershipReadOnly(), apollo_account_id=APOLLO_TEAM)
+                    if runtime is None else None,
+                    refusals=RegisteredRefusalRead() if runtime is None else None))
             servidor.thunder_origin = os.environ.get(
                 'THUNDER_OS_ORIGIN', 'https://painel.r3xdigital.tech')
             if runtime is not None:servidor.thunder_origin = runtime['public_origin']

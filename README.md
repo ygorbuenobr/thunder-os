@@ -396,13 +396,14 @@ Existing approval, exact-text and uncertain-no-retry protections remain in force
 
 ## New Journey: Manual Apollo Handoff
 
-Release status: **not published; Phase 2 acceptance is blocked**. Independent
-review of `531f826` found that the production checker has no legitimate pass
-path for its six checks. It can retain unknowns or confirm blockers only.
-Successful approval/export tests use explicit synthetic checker fixtures and
-do not demonstrate a production-ready export. Do not activate this candidate
-until canonical evidence readers complete that path and independent review
-passes. The live panel remains on `410c335`.
+Release status: **not published; final review and runtime validation pending**.
+The rejected `531f826` checker had no pass path. Its replacement reads existing
+HubSpot qualification/schema, exact company/deal associations, registered
+refusals through the readonly pinned touch ledger, and current Apollo/Instantly
+memberships. An HTTP integration test now uses this real checker and real SQLite,
+with synthetic provider transports rather than a callback returning six passes.
+This proves the contract, not eligibility of any real prospect. The live panel
+remains on `410c335` until recoverable promotion and authenticated readback.
 
 Nova jornada follows the approved five-step flow: campaign sheet, source,
 checks, exact sequence review and manual CSV handoff. It uses a current registered
@@ -425,6 +426,13 @@ earlier Apollo export.
 
 Each row needs source-backed ICP, exclusions, client, open-deal, refusal and
 cross-campaign checks. Missing or partial evidence means retained, not clear.
+Ygor excluded Chattie and the Laura cold-call list from this phase on 2026-10-23.
+The membership scope is HubSpot, Apollo and Instantly only, across linked email
+aliases and all campaigns in those provider accounts. No claim about the excluded
+lists is made and their operations are unchanged. Refusal evidence covers explicit
+CRM flags, canonical local replies and registered touch-ledger suppressions/replies;
+it is not a complete Gmail/LinkedIn inbox scan or permission to bypass send-time
+checks. Missing aliases, flags, schema or ledger reads cannot produce a pass.
 CSV fields cannot attest their own eligibility. An exact reviewed text and
 current complete campaign sheet are required before approval or export. Editing
 the source, list, sequence or context invalidates earlier approval; export

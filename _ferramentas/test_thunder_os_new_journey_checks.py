@@ -143,11 +143,11 @@ class NewJourneyCheckTests(unittest.TestCase):
         self.assertEqual(checks['membership']['reason'], 'hubspot_membership_property_missing')
         self.assertFalse(checks['membership']['coverage']['complete'])
 
-    def test_current_hubspot_empty_membership_is_not_all_four_sources(self):
+    def test_current_hubspot_empty_membership_is_not_provider_coverage(self):
         checker, _, _ = self.port(props={'campanha_ativa': '', 'executor': ''})
         check = self.check(checker=checker)['membership']
         self.assertEqual(check['status'], 'unknown')
-        self.assertEqual(check['reason'], 'four_provider_membership_coverage_unavailable')
+        self.assertEqual(check['reason'], 'apollo_instantly_membership_coverage_unavailable')
 
     def test_strict_transport_rejects_mutation_before_credentials_and_request(self):
         checker, transport, original = self.port()
@@ -172,7 +172,8 @@ class NewJourneyCheckTests(unittest.TestCase):
         searches = [c for c in transport.calls if c[0] == 'POST']
         self.assertEqual(len(searches), 10)
         self.assertEqual(result[-1]['coverage']['hubspot_reason'], 'checks_hubspot_budget_exhausted')
-        with patch('thunder_os.new_journey_checks.time.monotonic', side_effect=[0, 16]):
+        ticks = iter([0, 0])
+        with patch('thunder_os.new_journey_checks.time.monotonic', side_effect=lambda: next(ticks, 16)):
             result = checker([lead()], CAMPAIGN)
         self.assertEqual(result[0]['coverage']['hubspot_reason'], 'checks_hubspot_budget_exhausted')
 
