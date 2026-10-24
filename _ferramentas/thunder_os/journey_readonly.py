@@ -74,13 +74,43 @@ def _block(text=None, *, label=None, date=None, sender=None, direction=None, com
             'sender': sender, 'direction': direction, 'body_complete': bool(complete and text.strip())}
 
 
-def _sent_email_audit(event, campaign_id, sheet):
-    """Advisory sidecar for actual Apollo receipts, never inferred from campaign.
+def _restriction_phrases(restrictions):
+    """Read literal JSON phrases or quoted phrases in explicit prohibition clauses.
 
-    Canonical restrictions may explicitly contain a JSON object with a literal
-    forbidden_phrases list. Prose/invalid structures retain the auditor defaults;
-    no phrases or numeric proofs are inferred from campaign names or other fields.
+    Prose only recognizes Nunca/Evitar/(São) proibido clauses at sentence starts.
+    Quoted punctuation cannot end a clause; malformed quotes/JSON invent nothing.
+    JSON retains its existing replacement semantics; prose adds to the defaults.
     """
+    if not isinstance(restrictions, str) or len(restrictions) > 1_000_000:
+        return DEFAULT_FORBIDDEN_PHRASES
+    try:
+        value = json.loads(restrictions)
+        explicit = value.get('forbidden_phrases') if isinstance(value, dict) else None
+    except (ValueError, TypeError, RecursionError):
+        if restrictions.lstrip().startswith(('{', '[')):
+            return DEFAULT_FORBIDDEN_PHRASES
+        explicit = list(DEFAULT_FORBIDDEN_PHRASES)
+        quoted = re.compile(r'“([^“”"]*)”|"([^"“”]*)"')
+        for line in restrictions.splitlines():
+            quotes = list(quoted.finditer(line))
+            unquoted = quoted.sub(lambda match: ' ' * len(match.group()), line)
+            if any(char in unquoted for char in '“”"'):
+                continue
+            for clause in re.finditer(r'(?:^|[.!?;])([^.!?;]*)', unquoted):
+                if re.match(r'\s*(?:[-*]\s*)?(?:Nunca|Evitar|(?:São|Sao)\s+proibid[oa]s?|proibid[oa]s?)\b',
+                            clause.group(1), flags=re.IGNORECASE):
+                    explicit.extend(match.group(1) if match.group(1) is not None else match.group(2)
+                                    for match in quotes
+                                    if clause.start(1) <= match.start() < clause.end(1))
+    if (isinstance(explicit, list) and len(explicit) <= 100
+            and all(isinstance(phrase, str) and phrase.strip() and len(phrase) <= 500
+                    and not any(0xD800 <= ord(c) <= 0xDFFF for c in phrase) for phrase in explicit)):
+        return explicit
+    return DEFAULT_FORBIDDEN_PHRASES
+
+
+def _sent_email_audit(event, campaign_id, sheet):
+    """Advisory sidecar for actual Apollo receipts, using canonical fields only."""
     receipt = event.get('receipt')
     if (event.get('direction') != 'outgoing' or event.get('unsent')
             or not isinstance(receipt, dict) or receipt.get('provider') != 'apollo'
@@ -94,21 +124,9 @@ def _sent_email_audit(event, campaign_id, sheet):
         rows = [field for field in fields if isinstance(field, dict) and field.get('key') == key]
         return rows[0].get('content') if len(rows) == 1 and rows[0].get('status') == 'ok' else None
 
-    phrases = DEFAULT_FORBIDDEN_PHRASES
-    restrictions = content('restrictions')
-    if isinstance(restrictions, str):
-        try:
-            value = json.loads(restrictions)
-            explicit = value.get('forbidden_phrases') if isinstance(value, dict) else None
-            if (isinstance(explicit, list) and len(explicit) <= 100
-                    and all(isinstance(phrase, str) and phrase.strip() and len(phrase) <= 500
-                            and not any(0xD800 <= ord(c) <= 0xDFFF for c in phrase) for phrase in explicit)):
-                phrases = explicit
-        except (ValueError, TypeError, RecursionError):
-            pass
     result = audit_sent_email({'original_id': receipt['message_id'], 'date': event.get('date'),
         'body_text': event.get('text'), 'body_complete': event.get('body_complete') is True},
-        content('proofs'), forbidden_phrases=phrases)
+        content('proofs'), forbidden_phrases=_restriction_phrases(content('restrictions')))
     return {**result, 'advisory': True, 'provider': 'apollo', 'campaign_id': campaign_id,
             'source_id': event.get('source_id') or event.get('id')}
 

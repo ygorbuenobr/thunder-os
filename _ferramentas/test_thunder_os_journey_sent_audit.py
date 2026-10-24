@@ -18,7 +18,7 @@ from unittest.mock import Mock, patch
 from thunder_os.campaign_registry import CampaignRegistry
 from thunder_os.db import Repository
 from thunder_os.external_email_import import APOLLO_TEAM, APOLLO_SEQUENCE, plan_email
-from thunder_os.journey_readonly import JourneyReadonly, MISSING
+from thunder_os.journey_readonly import JourneyReadonly, MISSING, _restriction_phrases
 from thunder_os.knowledge import KnowledgeStore
 from thunder_os.seqd_client import MAILBOX
 from thunder_os.service import ThunderService
@@ -29,6 +29,23 @@ BR = 'BR-APOLLO-01'
 OTHER = 'BR-OTHER-01'
 NOW = datetime(2026, 10, 24, 15, tzinfo=timezone.utc)
 DATE = '2026-10-24T12:34:56Z'
+# Literal canonical lines, copied as fixture data; never read the global Brain in tests.
+CANONICAL_RESTRICTIONS = (
+    '- Nunca transformar observação de setor em deficiência presumida da conta. '
+    'São proibidos diagnósticos sem prova como “vocês perdem oportunidades”, '
+    '“o marketing atira para todo lado” e “dependem de indicação/feira”, além de perguntas '
+    'binárias que obriguem o lead a admitir problema. Com pesquisa, usar fato verificável '
+    'e pergunta aberta sobre a visão da pessoa.\n'
+    '- Indicação deve soar como aproximação humana, não encaminhamento corporativo: '
+    'saudação natural, contar quem indicou e como a conversa levou até a pessoa, reconhecer '
+    'a agenda e pedir primeiro a visão dela. Nunca abrir com “você foi indicada”, despejar '
+    'capacidades, falar em “trabalhar juntos” ou pedir reunião para “avaliar se faz sentido”. '
+    'A proposta vem depois da escuta.\n'
+    '- Copy enterprise de retomada não pede licença para existir. Mostra domínio do negócio, '
+    'transforma a dor em impacto comercial, tensiona o custo de continuar igual, apresenta '
+    'uma tese específica e conduz um próximo passo. Evitar “isso está na pauta?”, '
+    '“vale uma troca?” e mensagens que apenas confirmam interesse.'
+)
 
 
 class JourneySentAuditTests(unittest.TestCase):
@@ -216,7 +233,13 @@ class JourneySentAuditTests(unittest.TestCase):
 
     def test_prose_and_malformed_restrictions_keep_defaults_without_invented_phrases(self):
         for content in ('Proibido: Texto proibido', 'Texto proibido', '{invalid',
+                        'Nunca usar “Texto proibido', 'Nunca usar "Texto proibido”',
+                        'Evitar “Texto proibido"', 'Nunca usar “”',
+                        'Nunca usar “' + 'x' * 501 + '”',
+                        '{"note": "Nunca usar “Texto proibido”"',
                         json.dumps({'forbidden_phrases': 'Texto proibido'}),
+                        json.dumps({'forbidden_phrases': 'Texto proibido',
+                                    'note': 'Nunca usar “Texto proibido”'}),
                         json.dumps({'forbidden_phrases': [None]}),
                         json.dumps({'forbidden_phrases': ['x'] * 101})):
             with self.subTest(content=content):
@@ -226,6 +249,39 @@ class JourneySentAuditTests(unittest.TestCase):
                 self.add_thread('Texto proibido; resultado garantido.')
                 audit, = self.detail()['sent_email_audits']
                 self.assertEqual([a['match'] for a in audit['alerts']], ['resultado garantido'])
+
+    def test_canonical_prose_restrictions_flag_literal_prohibitions(self):
+        phrases = ['vocês perdem oportunidades', 'o marketing atira para todo lado',
+                   'dependem de indicação/feira', 'você foi indicada', 'trabalhar juntos',
+                   'avaliar se faz sentido', 'isso está na pauta?', 'vale uma troca?']
+        self.assertEqual(_restriction_phrases(CANONICAL_RESTRICTIONS),
+                         ['resultado garantido', 'resultados garantidos', *phrases])
+        self.register(BR, restrictions=CANONICAL_RESTRICTIONS)
+        body = '; '.join([phrases[0].upper(), *phrases[1:]])
+        self.add_thread(body)
+        audit, = self.detail()['sent_email_audits']
+        self.assertEqual(audit['status'], 'flagged')
+        self.assertEqual([(a['code'], a['match']) for a in audit['alerts']],
+                         [('forbidden_phrase', p) for p in [phrases[0].upper(), *phrases[1:]]])
+        self.assertEqual(audit['body_hash'], hashlib.sha256(body.encode()).hexdigest())
+
+    def test_ordinary_quoted_examples_do_not_become_prohibitions(self):
+        restrictions = (
+            '- Exemplo de pergunta: “Como você vê a expansão?”\n'
+            '- Nunca usar “Texto vedado”. Exemplo permitido: “Texto comum”.\n'
+            '- Evitar “Isso está na pauta?”, “vale uma troca?”. Sugestão: "Vamos conversar?"\n'
+            '- Exemplo de citação: "Nunca usar palavras inventadas".\n'
+            '- A orientação não diz para evitar “Outra frase”.'
+        )
+        self.assertEqual(_restriction_phrases(restrictions),
+                         ['resultado garantido', 'resultados garantidos', 'Texto vedado',
+                          'Isso está na pauta?', 'vale uma troca?'])
+        self.register(BR, restrictions=restrictions)
+        self.add_thread('Como você vê a expansão? Texto comum. Vamos conversar? '
+                        'Nunca usar palavras inventadas. Outra frase.')
+        audit, = self.detail()['sent_email_audits']
+        self.assertEqual(audit['status'], 'no_alerts')
+        self.assertEqual(audit['alerts'], [])
 
     def test_missing_or_non_ok_proofs_never_borrow_other_campaign_proofs(self):
         self.add_thread('40%')

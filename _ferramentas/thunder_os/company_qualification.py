@@ -160,6 +160,7 @@ class CompanyQualification:
         self._fresh_identity(lead, bound)
         provenance = {'kind': PURPOSE, 'source_kind': 'human_company_review', 'actor': actor,
             'company_id': bound['company_id'], 'binding_hash': bound['binding_hash'],
+            'company_identity_hash': payload_hash({key: bound[key] for key in ('company_id', 'company_name', 'domain')}),
             'sheet_hash': row['sheet_hash'], 'not_customer': True, 'not_excluded': True,
             'source_url': facts['source_url'], 'source_date': facts['source_date'],
             'reviewed_at': qualification['reviewed_at'], 'rationale': facts['rationale'],

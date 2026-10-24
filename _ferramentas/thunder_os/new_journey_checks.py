@@ -275,7 +275,8 @@ class NewJourneyChecks:
                 and provenance.get('source_kind') == 'human_company_review'
                 and provenance.get('actor') == 'ygor'
                 and provenance.get('company_id') == bound['company_id']
-                and provenance.get('binding_hash') == bound['binding_hash']
+                and provenance.get('company_identity_hash') == payload_hash({
+                    key: bound[key] for key in ('company_id', 'company_name', 'domain')})
                 and provenance.get('sheet_hash') == NewJourney._sheet_hash(sheet)
                 and provenance.get('not_customer') is True and provenance.get('not_excluded') is True
                 and when.tzinfo is not None and 0 <= (now - when).total_seconds() <= 14 * 86400)

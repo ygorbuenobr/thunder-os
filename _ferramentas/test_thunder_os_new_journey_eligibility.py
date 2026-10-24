@@ -20,6 +20,7 @@ from thunder_os.external_email_import import INSTANTLY_WORKSPACE
 from thunder_os.hubspot_executor import HubSpotHTTP
 from thunder_os.knowledge import KnowledgeStore
 from thunder_os.new_journey import NewJourney
+from thunder_os.models import payload_hash
 from thunder_os.new_journey_checks import KEYS, NewJourneyChecks
 from thunder_os.new_journey_membership import CrossCampaignReadOnly, InstantlyMembershipReadOnly
 from thunder_os.new_journey_refusal import RegisteredRefusalRead
@@ -126,13 +127,25 @@ class CanonicalEligibilityTests(unittest.TestCase):
         bound = candidate(evidence)
         provenance = {'kind':'company_qualification_v1', 'source_kind':'human_company_review',
             'actor':'ygor', 'company_id':bound['company_id'], 'binding_hash':bound['binding_hash'],
+            'company_identity_hash':payload_hash({key:bound[key] for key in ('company_id','company_name','domain')}),
             'sheet_hash':NewJourney._sheet_hash(self.service.campaign_sheet_view('BR-APOLLO-FIXTURE')),
             'not_customer':True, 'not_excluded':True, 'reviewed_at':NOW.isoformat()}
         props = self.http.companies['500']['properties']
         props['thunder_enrichment_source'] = json.dumps(provenance)
         self.assertEqual(self.check()['exclusions']['status'], 'pass')
         self.assertEqual(self.http.contacts['123']['properties']['tipo_do_lead'], '')
-        provenance['binding_hash'] = '0' * 64
+        second = HubSpotEligibilityRead(self.checker.hubspot).lookup(EMAIL, profile=PROFILE)
+        second['identity'].update(contact_id='124', emails=['second@example.invalid'],
+                                  linkedin_urls=['https://www.linkedin.com/in/second-synthetic'])
+        second['contact']['id'] = '124'
+        second['contact']['properties'].update(email='second@example.invalid', tipo_do_lead='')
+        self.assertNotEqual(candidate(second)['binding_hash'], bound['binding_hash'])
+        checks = {key:{'status':'unknown'} for key in KEYS}
+        self.checker._canonical_checks(checks, second,
+            self.service.campaign_sheet_view('BR-APOLLO-FIXTURE'), NOW, 0, {})
+        self.assertEqual(checks['exclusions']['status'], 'pass',
+                         'Company review applies to another verified contact of the same company')
+        provenance['company_identity_hash'] = '0' * 64
         props['thunder_enrichment_source'] = json.dumps(provenance)
         self.assertEqual(self.check()['exclusions']['status'], 'unknown')
         props['thunder_icp_exclusion_reason'] = 'fora_setor'

@@ -212,9 +212,36 @@ class CompanyQualificationTests(unittest.TestCase):
         self.assertFalse(result['retry_write'])
         self.assertEqual(self.writes, [])
 
+    def test_single_company_review_covers_two_distinct_linked_contacts(self):
+        self.http.contacts['123']['properties']['tipo_do_lead'] = ''
+        self.row = self.journey.check(self.row['id'], 'ygor', self.row['version'])
+        p = self.preview()
+        result = self.execute(p)
+        self.assertEqual(result['result']['status'], 'verified_state')
+        second = deepcopy(self.http.contacts['123'])
+        second['id'] = '124'
+        profile = 'https://www.linkedin.com/in/second-synthetic'
+        second['properties'].update(email='second@example.invalid', hs_additional_emails='',
+            hs_linkedin_url=profile, linkedin_url=profile, tipo_do_lead='')
+        self.http.contacts['124'] = second
+        self.http.search = {'total':1, 'results':[{'id':'124'}]}
+        row = {'source_key':'second-source', 'email':'second@example.invalid', 'linkedin_url':profile}
+        checked = self.checker([row], 'BR-APOLLO-FIXTURE')[0]
+        self.assertEqual(checked['qualification_context']['company_id'], '500')
+        self.assertEqual(checked['qualification_context']['contact_id'], '124')
+        self.assertEqual({c['key']:c['status'] for c in checked['checks']},
+            {key:'pass' for key in ('icp','client','exclusions','open_deal','refusal','membership')})
+        second['properties']['opt_out'] = 'true'
+        checked = self.checker([row], 'BR-APOLLO-FIXTURE')[0]
+        self.assertEqual(next(c for c in checked['checks'] if c['key']=='refusal')['status'], 'blocked')
+        self.assertEqual(len(self.writes), 1)
+        self.assertEqual(self.http.contacts['123']['properties']['tipo_do_lead'], '')
+        self.assertEqual(second['properties']['tipo_do_lead'], '')
+
     def test_company_reassociation_after_preview_cannot_write(self):
         p = self.preview()
         other = deepcopy(self.http.companies['500']); other['id'] = '600'
+        other['properties'].update(name='Other linked company', domain='other.invalid')
         self.http.companies['600'] = other
         self.http.contacts['123']['associations']['companies']['results'][0]['id'] = '600'
         result = self.execute(p)
