@@ -12,6 +12,7 @@ import re
 import threading
 from urllib.parse import urlsplit
 
+from .apollo_sent_audit import audit_sent_email, DEFAULT_FORBIDDEN_PHRASES
 from .cadence_readonly import PORTAL_ID, _date, _id, plain_text
 from .campaign_registry import CampaignRegistry
 from .external_email_import import _validate_plan
@@ -71,6 +72,50 @@ def _block(text=None, *, label=None, date=None, sender=None, direction=None, com
     return {'label': label or ('Texto original' if complete and text.strip() else 'Texto parcial / indisponivel'),
             'text': text if text.strip() else MISSING, 'date': date,
             'sender': sender, 'direction': direction, 'body_complete': bool(complete and text.strip())}
+
+
+def _sent_email_audit(event, campaign_id, sheet):
+    """Advisory sidecar for actual Apollo receipts, never inferred from campaign.
+
+    Canonical restrictions may explicitly contain a JSON object with a literal
+    forbidden_phrases list. Prose/invalid structures retain the auditor defaults;
+    no phrases or numeric proofs are inferred from campaign names or other fields.
+    """
+    receipt = event.get('receipt')
+    if (event.get('direction') != 'outgoing' or event.get('unsent')
+            or not isinstance(receipt, dict) or receipt.get('provider') != 'apollo'
+            or receipt.get('verification') != 'provider_read'
+            or not isinstance(receipt.get('message_id'), str) or not receipt['message_id'].strip()):
+        return None
+
+    fields = sheet.get('fields', []) if sheet.get('campaign_id') == campaign_id else []
+
+    def content(key):
+        rows = [field for field in fields if isinstance(field, dict) and field.get('key') == key]
+        return rows[0].get('content') if len(rows) == 1 and rows[0].get('status') == 'ok' else None
+
+    phrases = DEFAULT_FORBIDDEN_PHRASES
+    restrictions = content('restrictions')
+    if isinstance(restrictions, str):
+        try:
+            value = json.loads(restrictions)
+            explicit = value.get('forbidden_phrases') if isinstance(value, dict) else None
+            if (isinstance(explicit, list) and len(explicit) <= 100
+                    and all(isinstance(phrase, str) and phrase.strip() and len(phrase) <= 500
+                            and not any(0xD800 <= ord(c) <= 0xDFFF for c in phrase) for phrase in explicit)):
+                phrases = explicit
+        except (ValueError, TypeError, RecursionError):
+            pass
+    result = audit_sent_email({'original_id': receipt['message_id'], 'date': event.get('date'),
+        'body_text': event.get('text'), 'body_complete': event.get('body_complete') is True},
+        content('proofs'), forbidden_phrases=phrases)
+    return {**result, 'advisory': True, 'provider': 'apollo', 'campaign_id': campaign_id,
+            'source_id': event.get('source_id') or event.get('id')}
+
+
+def _audit_summary(summary, audits):
+    count = sum(len(audit['alerts']) for audit in audits)
+    return summary + (' Auditoria consultiva Apollo: ' + str(count) + ' alerta(s).' if count else '')
 
 
 class JourneyReadonly:
@@ -363,7 +408,7 @@ class JourneyReadonly:
                     if _id(row.get('id')):
                         contact_display[str(row['id'])] = {'name': row.get('name'), 'company': task.get('company')}
 
-        def put(stage, key, row, blocks, *, draft=None, summary=None):
+        def put(stage, key, row, blocks, *, draft=None, summary=None, audit_events=None):
             ident = _opaque('detail', key)
             cid = row.get('campaign_id') or row.get('campaign')
             name = plain_text(row.get('name') or row.get('contact_name') or row.get('title')) or 'Identidade nao informada'
@@ -373,6 +418,10 @@ class JourneyReadonly:
                 'blocks': blocks or [_block()], 'source_links': _links(row.get('action')),
                 'draft': deepcopy(draft), 'editable': False, 'approval_available': False,
                 'approval_reason': APPROVAL_REASON}
+            audits = [audit for event in (audit_events if audit_events is not None else [row])
+                      if (audit := _sent_email_audit(event, cid, sheets.get(cid, {}))) is not None]
+            if audits:
+                detail['sent_email_audits'] = audits
             details[ident] = detail
             contact = _id(row.get('contact_id'))
             if not contact and len(row.get('contact_ids') or []) == 1:
@@ -381,7 +430,7 @@ class JourneyReadonly:
                 contacts[ident] = contact
             item = {'id': ident, 'name': name, 'company': company, 'campaign_id': cid,
                 'date': date, 'owner': row.get('owner') or 'ygor',
-                'summary': plain_text(summary or row.get('summary') or row.get('title')) or MISSING,
+                'summary': _audit_summary(plain_text(summary or row.get('summary') or row.get('title')) or MISSING, audits),
                 'action': {'label': 'Abrir', 'type': 'detail', 'id': ident}}
             if stage and not any(i['id'] == ident for i in stages[stage]['items']):
                 stages[stage]['items'].append(item)
@@ -433,6 +482,7 @@ class JourneyReadonly:
                 partial_stages.add(stage)
             ident = put(stage, 'thread:' + thread['id'], thread, blocks,
                 draft=pending.get(thread['id'], {}).get('draft'),
+                audit_events=messages,
                 summary='Saida posterior registrada no CRM; pendencia nao confirmada.' if later_outgoing else
                     ('Mensagem recebida no HubSpot; leitura e classificacao pendentes. ' if crm_read_pending else 'Ultima mensagem observada: ') + (latest.get('subject') or latest.get('direction', 'desconhecida')))
             for m in messages:
@@ -744,7 +794,8 @@ class JourneyReadonly:
             timeline['events'].append({'id': _opaque('event', e.get('source_id') or e['id']),
                 'date': e.get('date'), 'label': 'Voce' if e.get('direction') == 'outgoing' else 'Resposta'
                     if e.get('direction') == 'incoming' else 'Registro',
-                'summary': plain_text(e.get('subject')) or 'Mensagem observada', 'detail_id': did})
+                'summary': _audit_summary(plain_text(e.get('subject')) or 'Mensagem observada',
+                                          details[did].get('sent_email_audits', [])), 'detail_id': did})
         timeline['events'].sort(key=lambda e: (e['date'] or '~', e['id']))
         source_names = {'today': 'Consulta de hoje', 'cadence': 'Cadencias HubSpot',
             'hubspot_tasks': 'Tarefas HubSpot', 'hubspot_emails': 'E-mails HubSpot',

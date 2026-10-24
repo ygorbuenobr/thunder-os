@@ -11,10 +11,11 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
+const {createHash} = require('node:crypto');
 const {chromium} = require('playwright');
 const root = path.resolve(__dirname, '..');
-const html = fs.readFileSync(path.join(root, '_ferramentas/painel_modelo.html'), 'utf8')
-  .replaceAll("/*MODO*/'artifact'", "'servidor'").replaceAll('/*DADOS*/{}', '{}');
+const sourceHTML = fs.readFileSync(path.join(root, '_ferramentas/painel_modelo.html'), 'utf8');
+const html = sourceHTML.replaceAll("/*MODO*/'artifact'", "'servidor'").replaceAll('/*DADOS*/{}', '{}');
 const output = path.join(root, '.scratch/phase2-new-journey-ui');
 const base = '/api/os/v1/new-journey';
 const campaign = 'BR-APOLLO-01'; // Existing Registry reference, never a new campaign ID.
@@ -23,6 +24,8 @@ const date = '2031-03-12T12:30:00Z';
 const attack = '<img src=x onerror="window.injected=true">';
 const csv = '\ufeffname,email,company,var_note\r\n"Pessoa, sintética",fixture@example.invalid,"Empresa ""A""","Linha 1\nLinha 2"\r\n"' + attack.replaceAll('"', '""') + '",second@example.invalid,Teste,Original\r\n';
 const original = 'Texto original sintético.\n\n  Espaçamento preservado.\n' + 'Mensagem integral. '.repeat(600) + '\nFULL_ORIGINAL_END\n' + attack;
+const promptOriginal = 'Instrução original Apollo.\n  Preservar {{company.name}} e {{thunder_research}}.\n' + attack;
+const promptVariants = [{touch_id:'touch-fixture',template_id:'template-fixture',subject:'Assunto original {{first_name}}',content:'Olá {{first_name}}\n{{thunder_research}}',body_text:'Olá {{first_name}}\n{{thunder_research}}',body_html:null,template_type:'prompt_template',has_ai_variables:true,include_signature:false,prompt_template:{id:'prompt-fixture',team_id:'team-fixture',prompt_template:promptOriginal,system_instructions:'Só provas.',instructions:'Não inventar métricas.',raw_variables:{thunder_research:{value:'Pesquisa sintética original.',fallback:'Sem prova'}}},generation_options:[{field_name:'thunder_research',fallback:'Sem prova'}],generation_tone:'formal',attachments:[]}];
 const keys = ['icp', 'exclusions', 'client', 'open_deal', 'refusal', 'membership'];
 const provenance = {path:'fixtures/campaign.md', section:'Ficha sintética', status:'ok', expected_sha256:'a'.repeat(64), observed_sha256:'a'.repeat(64), source_updated_at:date};
 const sheet = complete => ({status:complete?'complete':'incomplete', version:'fixture-v1', fingerprint:'c'.repeat(64),
@@ -31,16 +34,20 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
     sources:key==='proofs'?[provenance,{...provenance,path:'fixtures/second.md',section:'Segunda prova'}]:undefined})), missing_fields:complete?[]:['cta']});
 
 (async()=>{
+  console.log('HTML SHA-256 '+createHash('sha256').update(sourceHTML).digest('hex')+'; current worktree fixture; no server/provider HTTP');
   const browser=await chromium.launch({headless:true});
   fs.mkdirSync(output,{recursive:true});
+  const deficiencies=[];
   try{
     for(const viewport of [{width:1440,height:1100},{width:390,height:844},{width:320,height:800}]){
       const page=await browser.newPage({viewport,acceptDownloads:true});
       await page.clock.install();
-      const traffic=[],errors=[];
+      const traffic=[],errors=[],downloads=[];
+      const uiCheck=(ok,message)=>{if(!ok)deficiencies.push(viewport.width+': '+message);};
       let draft=null,complete=false,checker='unknown',failCatalog=true,emptyCatalog=false,failGet=false,denySource=false,denySequences=false;
       let holdApprove=false,releaseApprove,selectedSequence='',observedEnrollment=false;
       let parityStatus='verified';
+      let companyPreview=null,promptHash='e'.repeat(64);
       const row = (n=1,email='fixture@example.invalid')=>({source_key:'source-'+n,name:'Pessoa sintética '+n,email,company:'Empresa sintética',linkedin_url:'https://www.linkedin.com/in/fixture-'+n,blockers:[],variables:{}});
       const checkRows=()=>draft.rows.map(r=>({source_key:r.source_key,qualification_context:checker==='pass'?{company_id:'123',contact_id:'42',company_name:'Empresa sintética',domain:'example.invalid',binding_hash:'f'.repeat(64)}:null,checks:keys.map(key=>({key,status:checker,
         reason:checker==='pass'?'Prova sintética verificada.':'identity_unlinked',source:'fixtures/checks.md · '+date,checked_at:date}))}));
@@ -54,15 +61,16 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
         if(draft.sequence&&parityStatus!=='verified')blockers.push('journey_apollo_text_unverified');
         const steps=draft.steps.map(s=>({...s,approval_status:draft.approvals[s.id]?'approved':'pending',can_approve:!blockers.length,blockers:[...blockers]}));
         if(steps.some(s=>s.approval_status!=='approved'))blockers.push('journey_step_approval_required');
-        return {...structuredClone(draft),sheet:sheet(complete),review_hash:String(draft.version).padStart(64,'0'),
+        return {...structuredClone(draft),approval_mode:draft.approval_mode||'exact_copy_v1',sheet:sheet(complete),review_hash:String(draft.version).padStart(64,'0'),
           steps,rows:draft.rows.map(r=>({...r,eligible:!!(r.email&&draft.checks.find(c=>c.source_key===r.source_key)?.checks.every(c=>c.status==='pass')),
             checks:draft.checks.find(c=>c.source_key===r.source_key)?.checks||keys.map(key=>({key,status:'unknown',reason:'Prova ausente.'}))})),
           blockers,can_export:!blockers.length,counts:{total:draft.rows.length,eligible,retained:draft.rows.length-eligible},
-          apollo_text_parity:{status:parityStatus,reason:parityStatus==='verified'?'apollo_static_text_exact_match':'apollo_template_text_mismatch',steps:draft.steps.map(s=>({...s}))},
+          apollo_text_parity:{status:parityStatus,reason:parityStatus==='verified'?'apollo_static_text_exact_match':'apollo_template_text_mismatch',steps:draft.steps.map(s=>({...s,...(draft.approval_mode==='apollo_prompts_v1'?{variants:promptVariants}:{})})),...(draft.approval_mode==='apollo_prompts_v1'?{input_hash:promptHash,approval_kind:'prompts',final_email_parity:false}:{})},
           enrollment_enabled:false,external_writes:0,cost:{credits:0,paid_lookup_enabled:false},credits:0};
       };
       const changed=()=>{draft.version++;return view();};
       page.on('pageerror',e=>errors.push(e.message));
+      page.on('download',d=>downloads.push(d.suggestedFilename()));
       await page.route('**/*',async route=>{
         const req=route.request(),url=new URL(req.url()),body=req.postDataJSON();
         assert.equal(url.host,'new-journey.test','No external network allowed');
@@ -88,6 +96,18 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
             assert.deepEqual(body,{preview_id:'import-fixture',expected_version:1,preview_hash:'d'.repeat(64),confirm:true});
             return send({kind:'journey_import_v1',id:'import-fixture',version:2,journey_id:id,journey_version:draft.version,source_key:'source-1',preview_hash:'d'.repeat(64),portal_id:'51412240',state:'processed',can_execute:false,contact:{properties:{email:'fixture@example.invalid'}},company:{properties:{name:'Empresa sintética',domain:'example.invalid'}},association:{status:'verified'},blockers:[],result:{status:'verified_state'}});
           }
+          if(op==='company-execute'){
+            assert(companyPreview,'An exact company preview must precede confirmation');
+            assert.deepEqual(body,{preview_id:companyPreview.id,expected_version:companyPreview.version,preview_hash:companyPreview.preview_hash,confirm:true});
+            assert.equal(companyPreview.journey_version,draft.version,'Confirmation cannot apply a stale draft');
+            assert.equal(companyPreview.kind,'company_qualification_v1');
+            assert.equal(companyPreview.plan.method,'PATCH');
+            assert.equal(companyPreview.plan.record_id,'123','Only the bound existing company is proposed');
+            assert.equal(traffic.filter(t=>t.path.endsWith('/company-execute')).length,1,'A single explicit confirmation');
+            draft.qualifications={'source-1':{actor:'ygor',reviewed_at:date,facts:companyPreview.facts}};
+            draft.approvals={};draft.version++;
+            return send({...companyPreview,state:'processed',write_enabled:false,result:{status:'verified_state'},external_writes:1});
+          }
           assert.equal(body.expected_version,draft.version,'Every operation binds current version');
           if(op==='source'){
             if(denySource)return send({erro:'Busca sem permissão na fixture.'},403);
@@ -97,7 +117,7 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
             else if(body.mode==='apollo_people'){
               assert.deepEqual(body.filters,{person_titles:['Diretor','Gerente'],person_locations:['Brasil'],q_keywords:'industrial'});
               assert.equal(body.page,1);draft.rows=[row(3,'')];
-            }else{assert.equal(body.query,'Contato confirmado');assert.equal(body.page,1);draft.rows=[row()];}
+            }else{assert.equal(body.query,'Contato confirmado');assert.equal(body.page,1);draft.rows=[row(),row(2,'second@example.invalid')];}
             draft.checks=[];draft.approvals={};draft.reconciliation=null;return send(changed());
           }
           if(op==='hubspot-preview'){
@@ -107,14 +127,19 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
             return send({kind:'journey_import_v1',id:'import-fixture',version:1,journey_id:id,journey_version:draft.version,source_key:'source-1',preview_hash:'d'.repeat(64),portal_id:'51412240',state:'review_required',can_execute:true,contact:{properties:body.data.contact,action:'propose_create'},company:{properties:body.data.company,action:'propose_create'},association:{status:'planned'},source_refs:body.data.source_refs,blockers:[]});
           }
           if(op==='check'){assert.deepEqual(Object.keys(body),['expected_version']);draft.checks=checkRows();draft.approvals={};return send(changed());}
-          if(op==='qualify'){
+          if(op==='company-preview'){
             assert.deepEqual(Object.keys(body).sort(),['expected_version','facts','review_hash','source_key']);
             assert.equal(body.review_hash,view().review_hash);
             assert.equal(body.source_key,'source-1');assert.equal(body.facts.is_b2b,true);
             assert.equal(body.facts.annual_revenue_brl,20000000);assert.equal(body.facts.country,'BR');
             assert.equal(body.facts.source_url,'https://example.invalid/report');
-            draft.qualifications={[body.source_key]:{actor:'ygor',reviewed_at:date,facts:body.facts}};
-            draft.approvals={};return send(changed());
+            assert.equal(body.facts.source_date,'2031-03-01');
+            assert.equal(body.facts.not_customer,true);assert.equal(body.facts.not_excluded,true);
+            assert.equal(body.facts.decision,'qualified');assert.equal(body.facts.sector,'industria_b2b');
+            assert.deepEqual(Object.keys(body.facts).sort(),['annual_revenue_brl','country','decision','is_b2b','not_customer','not_excluded','rationale','sector','source_date','source_url']);
+            const changes={thunder_icp_status:'qualified',thunder_is_customer:'false',thunder_icp_exclusion_reason:'',country:'BR',hs_country_code:'BR',thunder_icp_sector:'industria_b2b',thunder_annual_revenue_estimate:'20000000',thunder_last_enriched_at:'2031-03-12',thunder_enrichment_source:JSON.stringify(body.facts)};
+            companyPreview={kind:'company_qualification_v1',id:'company-fixture',version:1,journey_id:id,journey_version:draft.version,source_key:'source-1',preview_hash:'b'.repeat(64),company_identity:{company_id:'123',company_name:'Empresa sintética',domain:'example.invalid'},facts:body.facts,before:{properties:{thunder_icp_status:'unknown',thunder_is_customer:'',thunder_icp_exclusion_reason:''}},after:{properties:changes},plan:{method:'PATCH',record_id:'123',changes},write_enabled:true,state:'review_required',external_writes:0};
+            return send(companyPreview);
           }
           if(op==='sequences'){
             assert.deepEqual(Object.keys(body).sort(),['expected_version','query']);
@@ -128,20 +153,27 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
             assert.equal(body.steps[0].content,original+(body.steps[0].subject==='Revisado'?'\nRevisão local.':''));
             draft.steps=body.steps;draft.approvals={};draft.sequence={apollo_sequence_id:body.apollo_sequence_id,query:body.apollo_sequence_query};selectedSequence=body.apollo_sequence_id;return send(changed());
           }
+          if(op==='apollo-prompts'){
+            assert.deepEqual(body,{expected_version:draft.version,apollo_sequence_id:'apollo-sequence-fixture',apollo_sequence_query:'Sequência confirmada pelo usuário'});
+            draft.approval_mode='apollo_prompts_v1';draft.approvals={};
+            draft.steps=[{id:'prompt-step-1',channel:'email',subject:'Assunto gerado pelo Apollo',content:'Corpo gerado pelo Apollo',order:1,interval_hours:0}];
+            return send(changed());
+          }
           if(op==='approve-step'){
             assert.deepEqual(Object.keys(body).sort(),['expected_version','review_hash','step_id']);assert.equal(body.review_hash,view().review_hash);
             assert.equal(view().steps.find(s=>s.id===body.step_id).can_approve,true,'Fixture mirrors core can_approve');
             if(holdApprove)await new Promise(resolve=>{releaseApprove=resolve;});
-            draft.approvals[body.step_id]={scope_hash:'fixture-only'};return send(changed());
+            draft.approvals[body.step_id]={scope_hash:'fixture-only',kind:draft.approval_mode||'exact_copy_v1',...(draft.approval_mode==='apollo_prompts_v1'?{input_hash:promptHash}:{})};return send(changed());
           }
-          if(op==='export'){
+          if(op==='export'||op==='export-preview'){
             assert.equal(view().can_export,true);assert.equal(body.review_hash,view().review_hash);assert.equal(selectedSequence,'apollo-sequence-fixture');
             assert.deepEqual(Object.keys(body).sort(),['expected_version','review_hash']);
-            return send({filename:'fixture-approved.csv',csv_text:'\ufeffname,email\r\n"Pessoa, sintética",fixture@example.invalid\r\n',rows:1,credits:0,review_hash:body.review_hash,external_writes:0,enrollment_enabled:false});
+            const prompts=draft.approval_mode==='apollo_prompts_v1';
+            return send({filename:'fixture-approved.csv',csv_text:'\ufeffname,email'+(prompts?',approval_kind,approved_prompt_hash':'')+'\r\n"Pessoa, sintética",fixture@example.invalid'+(prompts?',apollo_prompts_v1,'+promptHash:'')+'\r\nPessoa sintética 2,second@example.invalid'+(prompts?',apollo_prompts_v1,'+promptHash:'')+'\r\n',rows:2,credits:0,review_hash:body.review_hash,external_writes:0,enrollment_enabled:false,approval_kind:draft.approval_mode||'exact_copy_v1',...(op==='export-preview'?{preview_only:true}:{})});
           }
           if(op==='reconcile'){
             assert.deepEqual(Object.keys(body),['expected_version']);
-            draft.reconciliation={status:observedEnrollment?'observed':'configuration_pending',observed_at:date,pagination:{processed_count:observedEnrollment?1:0,total:1},sequence_id:observedEnrollment?selectedSequence:null,rows:draft.rows.map(r=>({source_key:r.source_key,status:observedEnrollment?'enrolled':'unknown',reason:observedEnrollment?'sequence_membership_observed':'configuration_pending'}))};
+            draft.reconciliation={status:observedEnrollment?'observed':'configuration_pending',observed_at:date,pagination:{processed_count:observedEnrollment?draft.rows.length:0,total:draft.rows.length},sequence_id:observedEnrollment?selectedSequence:null,rows:draft.rows.map(r=>({source_key:r.source_key,status:observedEnrollment?'enrolled':'unknown',reason:observedEnrollment?'sequence_membership_observed':'configuration_pending'}))};
             return send(changed());
           }
           assert.fail('No other POST operation is allowed: '+op);
@@ -164,11 +196,12 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
           const contains=(parent,...nodes)=>!!parent&&nodes.every(n=>n&&parent.contains(n));
           const fits=(parent,child)=>{if(!parent||!child)return false;const p=parent.getBoundingClientRect(),c=child.getBoundingClientRect();return c.left>=p.left-1&&c.right<=p.right+1&&c.top>=p.top-1&&c.bottom<=p.bottom+1;};
           const header=root.querySelector(':scope > header'),trail=root.querySelector('#nj-steps'),body=root.querySelector('#nj-body'),footer=root.querySelector('.nj-bottom');
-          const current=trail.querySelector('[aria-current="step"]'),step=Number(current.dataset.njStep),panel=body.firstElementChild;
+          const current=trail.querySelector('[aria-current="step"]'),step=Number(current.dataset.njStep),panel=body.querySelector(':scope > section'),paths=body.querySelector(':scope > [aria-label="Tipos de cadência"]');
           check(JSON.stringify([...trail.querySelectorAll('button')].map(n=>n.innerText.replace(/\s+/g,' ').trim()))===JSON.stringify(['01 Ficha','02 Fonte','03 Checagem','04 Sequência','05 Ativar manual']),'literal five-step trail order');
           check(contains(header,root.querySelector('#nj-title'),root.querySelector('#nj-back')),'header owns title and return');
           check(before(header,trail)&&before(trail,body)&&before(body,footer),'header, trail, screen, footer order');
-          check(body.children.length===1&&panel.id==='nj-panel-'+step&&panel.firstElementChild.id==='nj-heading','one named region for the selected screen');
+          check(body.children.length===2&&contains(body,paths)&&before(paths,panel)&&['Apollo:','Instantly:','Thunder:'].every(label=>paths?.textContent.includes(label)),'three distinct cadence paths precede the selected screen');
+          check(panel.id==='nj-panel-'+step&&panel.firstElementChild.id==='nj-heading','one named region for the selected screen');
           check(fits(root,header)&&fits(root,trail)&&fits(root,body)&&fits(root,footer)&&fits(body,panel),'primary regions remain contained');
           check(!panel.contains(footer)&&contains(footer,root.querySelector('#nj-prev'),root.querySelector('#nj-next')),'navigation stays outside screen content');
           if(step===1){
@@ -209,7 +242,7 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
             const activation=panel.querySelector('#nj-activation'),manual=panel.querySelector('#nj-manual'),automatic=panel.querySelector('#nj-automatic');
             check(activation.children.length===2&&activation.children[0]===manual&&activation.children[1]===automatic,'manual first and automatic second, exactly two regions');
             check(contains(manual,panel.querySelector('[data-nj-action="export"]'),panel.querySelector('[data-nj-action="reconcile"]'),panel.querySelector('#nj-enrollment'))&&!automatic.querySelector('button,input,a'),'manual owns download/reconciliation, automatic has no action');
-            check(manual.getAttribute('role')==='region'&&automatic.getAttribute('role')==='region'&&automatic.textContent.includes('Inscrição automática: OFF'),'both activation regions are named, automatic stays OFF');
+            check(manual.getAttribute('role')==='region'&&automatic.getAttribute('role')==='region'&&/Inscrição automática: (OFF|desligada)/.test(automatic.textContent),'both activation regions are named, automatic stays off');
             check(before(panel.querySelector('.nj-cost'),activation)&&fits(activation,manual)&&fits(activation,automatic),'cost precedes contained activation regions');
             const m=manual.getBoundingClientRect(),a=automatic.getBoundingClientRect();
             check(innerWidth===1440?a.left>=m.right-1&&Math.abs(a.top-m.top)<=1:a.top>=m.bottom-1,'activation regions are beside on desktop and stacked on mobile');
@@ -220,11 +253,14 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
         assert.deepEqual(result.failures,[],'F2-2 screen '+result.step+' composition');
       };
       const noOverflow=async()=>{
-        assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
-        const bad=await page.locator('#new-journey *').evaluateAll(nodes=>nodes.filter(n=>n.getClientRects().length&&getComputedStyle(n).position!=='absolute').filter(n=>n.getBoundingClientRect().right>innerWidth+1||n.getBoundingClientRect().left< -1).map(n=>n.id||n.className));
-        assert.deepEqual(bad,[],'Every visible element fits, not just the clipped page');
+        const pageOverflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth);
+        const bad=await page.locator('#new-journey *').evaluateAll(nodes=>[...new Set(nodes.filter(n=>n.getClientRects().length&&getComputedStyle(n).position!=='absolute').filter(n=>n.getBoundingClientRect().right>innerWidth+1||n.getBoundingClientRect().left< -1).map(n=>n.id||n.tagName+(n.className?'.'+String(n.className).replaceAll(' ','.'):'')))]);
+        assert.deepEqual({pageOverflow,bad},{pageOverflow:false,bad:[]},'Every visible element fits, not just the clipped page');
       };
-      const shot=async name=>{await composition();await noOverflow();await page.evaluate(()=>window.scrollTo(0,0));await page.screenshot({path:path.join(output,name+'-'+viewport.width+'.png'),fullPage:true});};
+      const shot=async(name,collect=false)=>{
+        await page.evaluate(()=>window.scrollTo(0,0));await page.screenshot({path:path.join(output,name+'-'+viewport.width+'.png'),fullPage:true});
+        try{await composition();await noOverflow();}catch(e){if(!collect)throw e;uiCheck(false,name+': '+e.message);}
+      };
       await page.goto('https://new-journey.test/#jornada');
       await page.locator('#journey-new').click();await settled();
       assert.equal(await page.locator('#nj-title').evaluate(n=>n===document.activeElement),true);
@@ -295,17 +331,55 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
       assert.equal(await page.locator('.nj-sources > .nj-source').count(),4,'Saved contacts never adds a fifth source');
       await composition();await page.locator('#nj-query').fill('Contato confirmado');await click('#nj-source-form button');
       checker='pass';complete=true;await go(3);await click('[data-nj-action=check]');await shot('03-checagem-verificada');
+      assert.equal(await page.locator('.nj-record').count(),2,'Two contacts remain visible for the same bound company');
+      assert.equal(await page.locator('form[data-nj-qualification]').count(),1,'Exactly one review per company, not one per contact');
       await page.locator('.nj-qualification summary').click();
       const form=page.locator('form[data-nj-qualification]');
       await form.locator('[name=decision]').selectOption('qualified');await form.locator('[name=is_b2b]').selectOption('true');
       await form.locator('[name=country]').selectOption('BR');await form.locator('[name=sector]').selectOption('industria_b2b');
       await form.locator('[name=annual_revenue_brl]').fill('20000000');await form.locator('[name=source_url]').fill('https://example.invalid/report');
       await form.locator('[name=source_date]').fill('2031-03-01');await form.locator('[name=rationale]').fill('Decisão sintética com fonte explícita.');
-      await click('form[data-nj-qualification] button');await page.locator('.nj-qualification summary').click();assert.match(await page.locator('#nj-body').innerText(),/Revisado por ygor/);
+      const fillCompany=async()=>{
+        await form.locator('[name=decision]').selectOption('qualified');await form.locator('[name=is_b2b]').selectOption('true');
+        await form.locator('[name=country]').selectOption('BR');await form.locator('[name=sector]').selectOption('industria_b2b');
+        await form.locator('[name=annual_revenue_brl]').fill('20000000');await form.locator('[name=source_url]').fill('https://example.invalid/report');
+        await form.locator('[name=source_date]').fill('2031-03-01');await form.locator('[name=rationale]').fill('Decisão sintética com fonte explícita.');
+        await form.locator('[name=company_confirmation]').check();
+      };
+      // Required confirmation must block even the read-only preview until reviewed.
+      await click('form[data-nj-qualification] button');
+      assert.equal(traffic.filter(t=>t.path.endsWith('/company-preview')).length,0,'No preview without explicit human company review');
+      await form.locator('[name=company_confirmation]').check();await click('form[data-nj-qualification] button');
+      const preview=page.locator('[aria-label="Prévia da revisão da empresa"]');
+      assert.equal(await preview.count(),1);
+      assert.match(await preview.innerText(),/https:\/\/example.invalid\/report.*2031-03-01/);
+      assert.match(await preview.innerText(),/Agora no HubSpot.*Após confirmar/si);
+      assert.match(await preview.innerText(),/unknown.*Aderente ao ICP/s);
+      assert.match(await preview.innerText(),/Recusa continua somente leitura/);
+      assert.equal(traffic.filter(t=>t.path.endsWith('/company-execute')).length,0,'Company preview never dispatches a write');
+      await shot('03-empresa-previa',true);
+      await page.locator('.nj-qualification summary').click();
+      for(const [name,value] of Object.entries({decision:'qualified',is_b2b:'true',country:'BR',sector:'industria_b2b',annual_revenue_brl:'20000000',source_url:'https://example.invalid/report',source_date:'2031-03-01',rationale:'Decisão sintética com fonte explícita.'})){
+        uiCheck(await form.locator('[name='+name+']').inputValue()===value,'Submitted company '+name+' must remain prefilled while reviewing its preview');
+      }
+      await form.locator('[name=source_url]').fill('https://example.invalid/changed');
+      const staleConfirm=page.locator('[data-nj-action=company-confirm]');
+      uiCheck(await staleConfirm.count()===0||await staleConfirm.isDisabled(),'Editing company source must remove or disable the stale preview confirmation');
+      await fillCompany();await click('form[data-nj-qualification] button');
+      await click('#nj-reload');
+      assert.equal(await page.locator('[aria-label="Prévia da revisão da empresa"]').count(),0,'Reload invalidates company preview instead of reusing its old confirmation');
+      await page.locator('.nj-qualification summary').click();await fillCompany();await click('form[data-nj-qualification] button');
+      await click('[data-nj-action=company-confirm]');
+      assert.equal(traffic.filter(t=>t.path.endsWith('/company-execute')).length,1);
+      assert.match(await page.locator('#nj-status').innerText(),/Empresa conferida de volta.*Refazer as checagens/s);
+      await page.locator('.nj-qualification summary').click();assert.match(await page.locator('#nj-body').innerText(),/Revisado por ygor/);
       assert.equal(await form.locator('[name=source_url]').inputValue(),'https://example.invalid/report');
       assert.equal(await form.locator('[name=source_date]').inputValue(),'2031-03-01');
       assert.equal(await form.locator('[name=annual_revenue_brl]').inputValue(),'20000000');
       assert.equal(await form.locator('[name=decision]').inputValue(),'qualified');
+      await click('#nj-reload');await page.locator('.nj-qualification summary').click();
+      assert.equal(await form.locator('[name=source_url]').inputValue(),'https://example.invalid/report','Saved company review survives reload');
+      assert.equal(await form.locator('[name=source_date]').inputValue(),'2031-03-01');
       await go(4);assert.equal(await page.locator('#nj-sequence-id').inputValue(),'');
       await page.locator('#nj-sequence-query').fill('Sequência confirmada pelo usuário');
       denySequences=true;await click('[data-nj-action=sequences]');assert.match(await page.locator('#nj-status').innerText(),/Sem permissão/);
@@ -325,6 +399,14 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
       holdApprove=false;releaseApprove();await settled();
       assert.match(await page.locator('[data-nj-approval-state]').innerText(),/Aprovado no servidor/);
       await go(5);assert.equal(await page.locator('[data-nj-action=export]').isEnabled(),true);await shot('05-manual');
+      const previewVersion=draft.version,previewDownloads=downloads.length,previewTraffic=traffic.length;
+      await click('[data-nj-action=export-preview]');
+      assert.match(await page.locator('#nj-manual pre').innerText(),/"Pessoa, sintética"/);
+      assert.match(await page.locator('#nj-status').innerText(),/Prévia gerada, sem inscrição nem envio/);
+      assert.equal(draft.version,previewVersion,'Export preview does not persist a new draft version');
+      assert.equal(downloads.length,previewDownloads,'Export preview never downloads a file');
+      assert.deepEqual(traffic.slice(previewTraffic).filter(t=>t.method!=='GET').map(t=>t.path),[base+'/'+id+'/export-preview'],'Preview never calls export, company execution or provider writes');
+      await shot('05-previa-exportacao-exata');
       await go(4);await page.locator('#nj-content-0').fill(original+'\nRevisão local.');await page.locator('#nj-subject-0').fill('Revisado');
       assert.match(await page.locator('[data-nj-approval-state]').innerText(),/invalidada/);
       await go(5);assert.equal(await page.locator('[data-nj-action=export]').isDisabled(),true,'Unsaved edit disables export');
@@ -335,10 +417,10 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
       const stream=await download.createReadStream();let exported='';for await(const chunk of stream)exported+=chunk.toString();
       assert.match(exported,/"Pessoa, sintética"/);assert.match(await page.locator('#nj-status').innerText(),/ainda não confirmada/);
       await click('[data-nj-action=reconcile]');assert.match(await page.locator('#nj-enrollment').innerText(),/Desconhecido.*não configurada/);
-      assert.match(await page.locator('#nj-body').innerText(),/Inscrição automática: OFF/);
+      assert.match(await page.locator('#nj-body').innerText(),/Inscrição automática: (OFF|desligada)/);
       await shot('05-reconciliacao-desconhecida');
-      observedEnrollment=true;await click('[data-nj-action=reconcile]');assert.match(await page.locator('#nj-enrollment').innerText(),/1 inscrições observadas.*não confirma envio/);
-      assert.match(await page.locator('#nj-reconcile-progress').innerText(),/Conferidos 1 de 1/);
+      observedEnrollment=true;await click('[data-nj-action=reconcile]');assert.match(await page.locator('#nj-enrollment').innerText(),/2 inscrições observadas.*não confirma envio/);
+      assert.match(await page.locator('#nj-reconcile-progress').innerText(),/Conferidos 2 de 2/);
       failGet=true;await click('#nj-reload');assert.match(await page.locator('#nj-status').innerText(),/Leitura indisponível/);
       assert.equal(await page.locator('[data-nj-action=export]').isDisabled(),true);
       failGet=false;await click('#nj-reload');await page.reload();await settled();
@@ -353,11 +435,44 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
       for(const tab of ['cadencias','contas','sistema','jornada']){await page.locator('#abas [data-aba='+tab+']').click();assert.equal(await page.locator('#abas [aria-selected=true]').getAttribute('data-aba'),tab);}
       await page.locator('#journey-new').click();await page.reload();await settled();
       assert.equal(await page.locator('[data-nj-resume]').count(),1);await click('[data-nj-resume]');assert.match(page.url(),new RegExp(id+'/1$'));
+      // Apollo prompt approval is a separate mode; preserve the exact-mode path above.
+      await go(4);assert.match(await page.locator('#nj-body').innerText(),/Apollo, Instantly e Cadência Thunder são caminhos distintos/);
+      await click('[data-nj-action=select-prompts]');
+      assert.equal(draft.approval_mode,'apollo_prompts_v1');
+      assert.equal(await page.locator('#nj-body input,#nj-body textarea,#nj-body select,[data-nj-remove]').count(),0,'Original Apollo prompts have no editor or mutation control');
+      assert.match(await page.locator('#nj-body').innerText(),/Modo Apollo · aprovação da versão dos prompts/);
+      await page.getByText('Prompts e variáveis originais · passo 1',{exact:true}).click();
+      assert.deepEqual(JSON.parse(await page.locator('#nj-body pre').innerText()),promptVariants,'Full original prompts, instructions and variables survive escaping');
+      assert.equal(await page.locator('#new-journey img,#new-journey script').count(),0);
+      assert.equal(await page.evaluate(()=>window.injected),undefined);
+      await noOverflow();await page.screenshot({path:path.join(output,'04-prompts-originais-'+viewport.width+'.png'),fullPage:true});
+      await click('[data-nj-approve]');
+      assert.equal(draft.approvals['prompt-step-1'].kind,'apollo_prompts_v1','Prompt approval retains its separate server approval kind');
+      assert.match(await page.locator('[data-nj-approve]').innerText(),/prompts aprovada/);
+      await go(5);const promptPreviewDownloads=downloads.length,promptPreviewTraffic=traffic.length;
+      await click('[data-nj-action=export-preview]');
+      assert.match(await page.locator('#nj-manual pre').innerText(),/approval_kind,approved_prompt_hash/);
+      assert.match(await page.locator('#nj-manual pre').innerText(),new RegExp('apollo_prompts_v1,'+promptHash));
+      assert.equal(downloads.length,promptPreviewDownloads,'Prompt export preview never downloads');
+      assert.deepEqual(traffic.slice(promptPreviewTraffic).filter(t=>t.method!=='GET').map(t=>t.path),[base+'/'+id+'/export-preview']);
+      await shot('05-previa-exportacao-prompts');
+      await page.reload();await settled();
+      assert.match(await page.locator('#nj-manual').innerText(),/Inscrição manual no Apollo/);
+      assert.equal(await page.locator('#nj-manual pre').count(),0,'Reload clears export preview and never reuses a stale generated CSV');
+      await go(4);assert.match(await page.locator('[data-nj-approval-state]').innerText(),/Aprovado no servidor/);
+      // Model a changed authoritative snapshot. This only exercises browser consumption;
+      // backend hash invalidation is covered by the main agent's domain tests.
+      promptHash='f'.repeat(64);draft.approvals={};draft.version++;
+      await click('#nj-reload');assert.match(await page.locator('[data-nj-approval-state]').innerText(),/Aguardando aprovação/);
+      await go(5);assert.equal(await page.locator('[data-nj-action=export-preview]').isDisabled(),true,'Changed prompt inputs revoke export until renewed review');
+      assert.equal(traffic.filter(t=>t.path.endsWith('/apollo-prompts')).length,1,'Reading originals and approval never alters Apollo prompts');
       assert.equal(await page.locator('#new-journey img,#new-journey script').count(),0);assert.equal(await page.evaluate(()=>window.injected),undefined);
       assert.deepEqual(errors,[]);await noOverflow();
       assert.equal(traffic.filter(t=>t.method!=='GET'&&!t.path.startsWith(base+'/')).length,0,'No effect calls');
-      console.log('PASS '+viewport.width+': F2-2 literal trail/four sources+Apollo subtype/screen containment/manual+automatic regions/local Concluir; catalog/error+403/retry/CSV bounds+escaping/newlines/free searches/exact sequence ID/full text/save+approve/stale invalidation/export/reconcile/resume/hash/keyboard/reflow/no external network');
+      console.log('EXERCISED '+viewport.width+': exact-mode regression; grouped company review/source+date/explicit company PATCH intent/readback+reload; original readonly Apollo prompts/separate approval_kind/hash refresh; export previews without download or writes; catalog/error+403/retry/CSV/escaping/keyboard/reflow/no external network; pending final aggregated assertions');
       await page.close();
     }
+    assert.deepEqual(deficiencies,[],'S27 browser deficiencies requiring main-owned HTML fixes');
+    console.log('PASS S27 browser fixture: all assertions at 1440, 390 and 320px; zero provider HTTP');
   }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

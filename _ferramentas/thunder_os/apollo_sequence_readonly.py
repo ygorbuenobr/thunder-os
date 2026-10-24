@@ -433,6 +433,9 @@ def _normalize(data, sequence_id, account_id, owner_id):
                 'has_ai_variables': template.get('has_ai_variables'),
                 'prompt_template': prompt, 'generation_options': touch.get('generation_options'),
                 'generation_tone': touch.get('generation_tone'),
+                'system_instructions': {'touch': touch.get('system_instructions'), 'template': template.get('system_instructions')},
+                'instructions': {'touch': touch.get('instructions'), 'template': template.get('instructions')},
+                'tone': {'touch': touch.get('tone'), 'template': template.get('tone')},
                 'attachments': [row.get(key, []) for row in (touch, template)
                                 for key in ('attachments', 'attachment_ids')]})
         flags['static_safe'] = not any(value for key, value in flags.items()

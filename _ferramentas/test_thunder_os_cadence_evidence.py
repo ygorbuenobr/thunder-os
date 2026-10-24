@@ -6,6 +6,7 @@ from unittest.mock import patch
 import os
 
 from thunder_os.cadence_readonly import project_task, project_snapshot, CadenceReadonlyConsole
+from thunder_os import hubspot_read_budget
 from thunder_os.seqd_client import MAILBOX
 from test_thunder_os_cadence_readonly import Provider, task
 
@@ -162,6 +163,14 @@ class EvidenceTests(unittest.TestCase):
 
 
 class ExternalActivityTests(unittest.TestCase):
+    def setUp(self):
+        tick = [0.0]
+        budget = hubspot_read_budget.HubSpotReadBudget(monotonic=lambda: tick[0],
+            sleep=lambda seconds: tick.__setitem__(0, tick[0] + seconds), schema_ttl=0)
+        scope = patch.object(hubspot_read_budget, 'SHARED_READ_BUDGET', budget)
+        scope.start()
+        self.addCleanup(scope.stop)
+
     # The user's Task 3 decision supersedes GUID/source attribution in Task 2.
     def test_event_pair_does_not_attribute_incoming_or_meetings(self):
         provider = Provider()

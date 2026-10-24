@@ -118,6 +118,26 @@ class CanonicalEligibilityTests(unittest.TestCase):
         result = self.checker([row], 'BR-APOLLO-FIXTURE')[0]
         return {entry['key']: entry for entry in result['checks']}
 
+    def test_company_review_source_allows_exclusion_without_contact_rewrite(self):
+        from thunder_os.new_journey_hubspot import HubSpotEligibilityRead
+        from thunder_os.new_journey_qualification import candidate
+        self.http.contacts['123']['properties']['tipo_do_lead'] = ''
+        evidence = HubSpotEligibilityRead(self.checker.hubspot).lookup(EMAIL, profile=PROFILE)
+        bound = candidate(evidence)
+        provenance = {'kind':'company_qualification_v1', 'source_kind':'human_company_review',
+            'actor':'ygor', 'company_id':bound['company_id'], 'binding_hash':bound['binding_hash'],
+            'sheet_hash':NewJourney._sheet_hash(self.service.campaign_sheet_view('BR-APOLLO-FIXTURE')),
+            'not_customer':True, 'not_excluded':True, 'reviewed_at':NOW.isoformat()}
+        props = self.http.companies['500']['properties']
+        props['thunder_enrichment_source'] = json.dumps(provenance)
+        self.assertEqual(self.check()['exclusions']['status'], 'pass')
+        self.assertEqual(self.http.contacts['123']['properties']['tipo_do_lead'], '')
+        provenance['binding_hash'] = '0' * 64
+        props['thunder_enrichment_source'] = json.dumps(provenance)
+        self.assertEqual(self.check()['exclusions']['status'], 'unknown')
+        props['thunder_icp_exclusion_reason'] = 'fora_setor'
+        self.assertEqual(self.check()['exclusions']['status'], 'blocked')
+
     def test_real_checker_proves_all_six_from_canonical_reads_not_csv_claims(self):
         checks = self.check(icp=False, verified=False, client=True)
         self.assertEqual(list(checks), list(KEYS))

@@ -5,6 +5,7 @@ import unittest
 
 from test_thunder_os_cadence_readonly import Provider, task
 from thunder_os.cadence_readonly import ACTIVITY_PROPERTIES, CadenceReadonlyConsole
+from thunder_os.hubspot_read_budget import HubSpotReadBudget
 
 
 CAMPAIGN = 'BR-APOLLO-01'
@@ -67,6 +68,10 @@ class ContactProvider(Provider):
 class ContactCampaignTests(unittest.TestCase):
     def console(self, provider=None, **kwargs):
         kwargs.setdefault('campaign_registry', Registry())
+        tick = [0.0]
+        def advance(seconds):
+            tick[0] += seconds
+        kwargs.setdefault('read_budget', HubSpotReadBudget(monotonic=lambda: tick[0], sleep=advance))
         return CadenceReadonlyConsole(lambda: 'synthetic-token', request=provider or ContactProvider(),
                                      sleep=lambda _: None, **kwargs)
 
@@ -200,8 +205,8 @@ class ContactCampaignTests(unittest.TestCase):
     def test_pagination_and_partial_coverage(self):
         provider = ContactProvider()
         provider.email_pages = {'': {'results': [email()], 'total': 2,
-            'paging': {'next': {'after': 'next', 'link': 'https://evil.invalid/'}}},
-            'next': {'results': [email(), email('901')], 'total': 2}}
+            'paging': {'next': {'after': '200', 'link': 'https://evil.invalid/'}}},
+            '200': {'results': [email(), email('901')], 'total': 2}}
         provider.email_links['901'] = ['100']
         result = self.console(provider).snapshot()
         self.assertEqual(self.group(result)['metrics']['external_sent'], 2)

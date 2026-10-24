@@ -29,6 +29,7 @@ from zoneinfo import ZoneInfo
 
 from .approvals import ApprovalError
 from .cadence_evidence import pipe_title, task_evidence
+from . import hubspot_read_budget
 
 PORTAL_ID = "51412240"
 OWNER_ID = "92901049"
@@ -317,7 +318,8 @@ def _https(method, path, body, headers, timeout):
         connection.request(method, path, json.dumps(body).encode() if body is not None else None, headers)
         response = connection.getresponse()
         raw = response.read(2_000_001)
-        return response.status, raw
+        return hubspot_read_budget.HubSpotReadResponse(response.status, raw,
+            {'Retry-After': response.getheader('Retry-After')})
     finally:
         connection.close()
 
@@ -326,16 +328,17 @@ class HubSpotReadonlyAdapter:
     """Fixed origin and read-only allowlist. One attempt; next refresh may retry.
 
     Injected transport has signature (method, path, body, headers, timeout) and
-    returns (status, JSON bytes). No token is cached, logged or exposed in output.
+    returns (status, JSON bytes[, headers]). No token is cached, logged or exposed in output.
     """
     def __init__(self, credential_loader, *, request=None, monotonic=time.monotonic,
-                 max_pages=100, max_requests=150, budget_seconds=45, sleep=time.sleep):
+                 max_pages=100, max_requests=150, budget_seconds=45, sleep=time.sleep, read_budget=None):
         self.loader, self.request = credential_loader, request or _https
         self.monotonic = monotonic
         self.max_pages = max(1, min(int(max_pages), 100))
         self.max_requests = max(1, min(int(max_requests), 150))
         self.budget_seconds = max(1, min(float(budget_seconds), 60))
-        self.sleep, self.last_search = sleep, None
+        self.sleep = sleep
+        self.read_budget = read_budget if read_budget is not None else hubspot_read_budget.SHARED_READ_BUDGET
 
     def session(self):
         return _ReadSession(self)
@@ -360,12 +363,6 @@ class _ReadSession:
                   re.fullmatch(r"/crm/v3/objects/(?:contacts|" + kinds + r")/batch/read", path)))
         if not allowed:
             raise CadenceReadonlyError("readonly_endpoint_blocked")
-        if path in {"/crm/v3/objects/tasks/search", "/crm/v3/objects/emails/search", "/crm/v3/objects/meetings/search"}:
-            if self.adapter.last_search is not None:
-                delay = max(0, .21 - (self.adapter.monotonic() - self.adapter.last_search))
-                if delay:
-                    self.adapter.sleep(delay)
-            self.adapter.last_search = self.adapter.monotonic()
         remaining = self.deadline - self.adapter.monotonic()
         if remaining <= 0 or self.requests >= self.adapter.max_requests:
             raise CadenceReadonlyError("read_budget_exhausted")
@@ -376,11 +373,19 @@ class _ReadSession:
             raise CadenceReadonlyError("credential_unavailable") from None
         if not isinstance(token, str) or not token or any(c.isspace() for c in token):
             raise CadenceReadonlyError("credential_unavailable")
+        remaining = self.deadline - self.adapter.monotonic()
+        if remaining <= 0:
+            raise CadenceReadonlyError('read_budget_exhausted')
         try:
-            status, raw = self.adapter.request(method, path, body,
-                {"Authorization": "Bearer " + token, "Content-Type": "application/json"}, min(8, remaining))
+            status, raw = self.adapter.read_budget.call(token, method, path, body,
+                {"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+                min(8, remaining), self.adapter.request)
+        except hubspot_read_budget.HubSpotReadBudgetError as exc:
+            raise CadenceReadonlyError(exc.code, exc.status) from None
         except Exception:
             raise CadenceReadonlyError("provider_read_failed") from None
+        if self.adapter.monotonic() >= self.deadline:
+            raise CadenceReadonlyError("read_budget_exhausted")
         if type(status) is not int or not 200 <= status < 300:
             raise CadenceReadonlyError("provider_http_error", status if type(status) is int else None)
         try:
@@ -408,7 +413,7 @@ class _ReadSession:
         if kind in self._schemas:
             return self._schemas[kind]
         result = self.call("GET", "/crm/v3/properties/" + kind)
-        if not isinstance(result.get("results"), list):
+        if not hubspot_read_budget._schema_response(json.dumps(result).encode()):
             raise CadenceReadonlyError("provider_invalid_schema")
         names = {row["name"] for row in result["results"] if isinstance(row, dict)
                 and isinstance(row.get("name"), str) and row.get("archived") is not True}
@@ -607,6 +612,10 @@ class _ReadSession:
                 if not cursor or len(cursor) > 512 or cursor in seen_cursors:
                     raise CadenceReadonlyError("pagination_cycle_or_invalid_cursor")
                 seen_cursors.add(cursor)
+                if method == 'POST' and path.endswith('/search'):
+                    if not cursor.isascii() or not cursor.isdigit() or int(cursor) > 10000:
+                        raise CadenceReadonlyError('provider_invalid_cursor')
+                    cursor = int(cursor)
             if not info["complete"]:
                 _partial(coverage, source + ":page_limit")
         except CadenceReadonlyError as exc:
@@ -620,9 +629,11 @@ class _ReadSession:
 class CadenceReadonlyConsole:
     def __init__(self, credential_loader, *, request=None, clock=time.time,
                  monotonic=time.monotonic, max_pages=100, max_requests=150, budget_seconds=45,
-                 sleep=time.sleep, campaign_registry=None, activity_bindings=None, activity_bindings_loader=None):
+                 sleep=time.sleep, campaign_registry=None, activity_bindings=None, activity_bindings_loader=None,
+                 read_budget=None):
         self.adapter = HubSpotReadonlyAdapter(credential_loader, request=request, monotonic=monotonic,
-            max_pages=max_pages, max_requests=max_requests, budget_seconds=budget_seconds, sleep=sleep)
+            max_pages=max_pages, max_requests=max_requests, budget_seconds=budget_seconds, sleep=sleep,
+            read_budget=read_budget)
         self.clock, self.monotonic = clock, monotonic
         self.campaign_registry = campaign_registry
         # Retain the server constructor contract; legacy event bindings are ignored.

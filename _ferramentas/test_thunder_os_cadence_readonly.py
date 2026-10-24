@@ -8,6 +8,7 @@ import unittest
 
 from thunder_os.campaign_registry import CampaignRegistry
 from thunder_os.db import Repository
+from thunder_os.hubspot_read_budget import HubSpotReadBudget
 from test_thunder_os_campaign_registry import config
 
 from thunder_os.cadence_readonly import (
@@ -167,7 +168,11 @@ class ProjectionTests(unittest.TestCase):
 
 class AdapterTests(unittest.TestCase):
     def make_console(self, provider=None, **kwargs):
-        kwargs.setdefault("sleep", lambda seconds: None)
+        tick = [0.0]
+        def advance(seconds):
+            tick[0] += seconds
+        budget_clock = kwargs.get('monotonic', lambda: tick[0]) if 'sleep' in kwargs else lambda: tick[0]
+        kwargs.setdefault('read_budget', HubSpotReadBudget(monotonic=budget_clock, sleep=kwargs.get('sleep', advance)))
         return CadenceReadonlyConsole(lambda: "synthetic-test-token", request=provider or Provider(), **kwargs)
 
     def registry(self, *ids):
@@ -219,7 +224,7 @@ class AdapterTests(unittest.TestCase):
             provider = Provider()
             provider.tasks = []
             if partial == 'pagination':
-                provider.pages = {'': {'results': [], 'paging': {'next': {'after': 'more'}}}}
+                provider.pages = {'': {'results': [], 'paging': {'next': {'after': '200'}}}}
             else:
                 provider.schema.remove('hs_task_subject')
             with self.subTest(partial=partial):
@@ -238,7 +243,7 @@ class AdapterTests(unittest.TestCase):
             provider.tasks = [task(hs_task_status='COMPLETED')]
             if partial == 'pagination':
                 provider.pages = {'': {'results': provider.tasks, 'total': 2,
-                                      'paging': {'next': {'after': 'remaining-unknown'}}}}
+                                      'paging': {'next': {'after': '200'}}}}
             else:
                 provider.schema.remove('hs_task_subject')
             with self.subTest(partial=partial):
@@ -297,8 +302,8 @@ class AdapterTests(unittest.TestCase):
     def test_complete_pagination_dedupe_and_hostile_link_ignored(self):
         provider = Provider()
         provider.pages = {"": {"results": [task()], "total": 2, "paging": {"next": {
-            "after": "next", "link": "https://evil.test/steal"}}},
-            "next": {"results": [task(), task("2")], "total": 2}}
+            "after": "200", "link": "https://evil.test/steal"}}},
+            "200": {"results": [task(), task("2")], "total": 2}}
         result = self.make_console(provider).snapshot()
         self.assertTrue(result["coverage"]["complete"])
         self.assertEqual(result["campaigns"][0]["metrics"]["tasks"], 2)
@@ -306,8 +311,8 @@ class AdapterTests(unittest.TestCase):
 
     def test_page_cap_and_cycle_are_visible_partial(self):
         provider = Provider()
-        page = {"results": [task()], "total": 2, "paging": {"next": {"after": "next"}}}
-        provider.pages = {"": page, "next": page}
+        page = {"results": [task()], "total": 2, "paging": {"next": {"after": "200"}}}
+        provider.pages = {"": page, "200": page}
         for max_pages in (1, 3):
             result = self.make_console(provider, max_pages=max_pages).snapshot()
             self.assertTrue(result["coverage"]["partial"])
@@ -585,8 +590,8 @@ class AdapterTests(unittest.TestCase):
 
     def test_search_pacing(self):
         provider, tick, starts = Provider(), [0.0], []
-        provider.pages = {"": {"results": [task()], "total": 2, "paging": {"next": {"after": "next"}}},
-                          "next": {"results": [task("2")], "total": 2}}
+        provider.pages = {"": {"results": [task()], "total": 2, "paging": {"next": {"after": "200"}}},
+                          "200": {"results": [task("2")], "total": 2}}
         def request(*args):
             if args[1].endswith("tasks/search"):
                 starts.append(tick[0])

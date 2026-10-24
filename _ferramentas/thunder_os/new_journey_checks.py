@@ -8,6 +8,7 @@ from collections import Counter
 from copy import copy
 from datetime import date, datetime, timezone
 import math
+import json
 import re
 import time
 import unicodedata
@@ -262,9 +263,28 @@ class NewJourneyChecks:
         if non_customer:
             result('client', 'pass', 'canonical_company_explicit_non_customer')
         exclusion_schema = evidence.get('schema', {}).get('companies', {}).get('thunder_icp_exclusion_reason', {})
+        # A grouped company review is canonical only after its exact provenance
+        # has been written and read back from this linked HubSpot company.
+        company_review = False
+        try:
+            provenance = json.loads(props.get('thunder_enrichment_source') or '{}')
+            bound = candidate(evidence)
+            when = datetime.fromisoformat(provenance.get('reviewed_at', ''))
+            company_review = bool(bound and _property(evidence, 'companies', 'thunder_enrichment_source')
+                and provenance.get('kind') == 'company_qualification_v1'
+                and provenance.get('source_kind') == 'human_company_review'
+                and provenance.get('actor') == 'ygor'
+                and provenance.get('company_id') == bound['company_id']
+                and provenance.get('binding_hash') == bound['binding_hash']
+                and provenance.get('sheet_hash') == NewJourney._sheet_hash(sheet)
+                and provenance.get('not_customer') is True and provenance.get('not_excluded') is True
+                and when.tzinfo is not None and 0 <= (now - when).total_seconds() <= 14 * 86400)
+        except (ValueError, TypeError, AttributeError):
+            pass
+        contact_qualified = (cp.get('tipo_do_lead') in ('MQL', 'LEAD')
+                             and _property(evidence, 'contacts', 'tipo_do_lead'))
         if (qualified and non_customer and checks['icp']['status'] == 'pass'
-                and cp.get('tipo_do_lead') in ('MQL', 'LEAD')
-                and _property(evidence, 'contacts', 'tipo_do_lead')
+                and (contact_qualified or company_review)
                 and exclusion_schema.get('type') == 'enumeration'
                 and ENUMS['thunder_icp_exclusion_reason'] <= set(exclusion_schema.get('options', []))
                 and 'thunder_icp_exclusion_reason' in props and exclusion in ('', None)):

@@ -1378,7 +1378,7 @@ class Handler(BaseHTTPRequestHandler):
                 if set(body) != {'campaign_id', 'name'}:
                     raise Erro('Dados de jornada inválidos.')
                 return self.responder(200, wizard.create(body, actor))
-            match = re.fullmatch(r'([A-Za-z0-9_-]{1,100})/(source|check|qualify|sequences|sequence|approve-step|export|reconcile|hubspot-preview|hubspot-execute|hubspot-reconcile)', target)
+            match = re.fullmatch(r'([A-Za-z0-9_-]{1,100})/(source|check|qualify|sequences|sequence|apollo-prompts|approve-step|export|export-preview|reconcile|company-preview|company-execute|company-reconcile|hubspot-preview|hubspot-execute|hubspot-reconcile)', target)
             if not match:
                 raise Erro('Operação de jornada não encontrada.', 404)
             ident, action = match.groups()
@@ -1386,6 +1386,22 @@ class Handler(BaseHTTPRequestHandler):
                 raise Erro('Versão de jornada inválida.')
             version = body['expected_version']
             required = {'expected_version'}
+            if action.startswith('company-'):
+                reviewer = getattr(self.server, 'thunder_company_qualification', None)
+                if reviewer is None:
+                    raise Erro('Revisão da empresa indisponível.', 503)
+                if action == 'company-preview':
+                    if set(body) != {'expected_version', 'review_hash', 'source_key', 'facts'}:
+                        raise Erro('Revisão da empresa inválida.')
+                    result = reviewer.preview(ident, body['source_key'], body['facts'], actor,
+                        expected_version=version, review_hash=body['review_hash'])
+                else:
+                    preview = reviewer.repo.get_state('hubspot_preview', body.get('preview_id'))
+                    if not preview or preview.get('journey_id') != ident:
+                        raise Erro('Prévia de outra jornada ou inexistente.', 404)
+                    operation = reviewer.execute if action == 'company-execute' else reviewer.reconcile
+                    result = operation(body, actor)
+                return self.responder(200, result)
             if action.startswith('hubspot-'):
                 importer = getattr(self.server, 'thunder_new_journey_import', None)
                 if importer is None:
@@ -1428,20 +1444,26 @@ class Handler(BaseHTTPRequestHandler):
                 if set(body) != required | {'query'}:
                     raise Erro('Consulta de sequências inválida.')
                 result = wizard.sequences(ident, body['query'], actor, expected_version=version)
+            elif action == 'apollo-prompts':
+                if set(body) != required | {'apollo_sequence_id', 'apollo_sequence_query'}:
+                    raise Erro('Seleção de prompts inválida.')
+                result = wizard.select_apollo_prompts(ident, body['apollo_sequence_id'],
+                    body['apollo_sequence_query'], actor, expected_version=version)
             elif action == 'sequence':
                 selection = {'apollo_sequence_id', 'apollo_sequence_query'}
                 if set(body) not in (required | {'steps'}, required | {'steps'} | selection):
                     raise Erro('Sequência inválida.')
                 args = {key: body[key] for key in selection if key in body}
                 result = wizard.revise_sequence(ident, body['steps'], actor, expected_version=version, **args)
-            elif action in {'approve-step', 'export'}:
+            elif action in {'approve-step', 'export', 'export-preview'}:
                 fields = required | {'review_hash'} | ({'step_id'} if action == 'approve-step' else set())
                 if (set(body) != fields or not isinstance(body.get('review_hash'), str)
                         or not re.fullmatch(r'[a-f0-9]{64}', body['review_hash'])):
                     raise Erro('Revisão de jornada inválida.')
                 args = {'expected_version': version, 'review_hash': body['review_hash']}
                 result = (wizard.approve_step(ident, body['step_id'], actor, **args)
-                          if action == 'approve-step' else wizard.export(ident, actor, **args))
+                          if action == 'approve-step' else wizard.export_preview(ident, actor, **args)
+                          if action == 'export-preview' else wizard.export(ident, actor, **args))
             else:
                 if set(body) != required:
                     raise Erro('Consulta de jornada inválida.')
@@ -1457,6 +1479,10 @@ class Handler(BaseHTTPRequestHandler):
             if status not in {400, 404, 409, 503}:
                 status = 409
             public_errors = {
+                'company_qualification_explicit_review_required': 'Confirme a revisão conjunta de ICP, cliente e exclusões.',
+                'company_qualification_preview_not_current': 'A revisão expirou ou já foi processada. Atualize as checagens antes de preparar outra prévia.',
+                'company_qualification_identity_changed': 'O vínculo da empresa mudou no HubSpot. Refaça a checagem antes de revisar.',
+                'journey_apollo_inputs_unverified': 'A leitura completa dos prompts, variáveis e destinatários do Apollo não foi comprovada.',
                 'import_writes_disabled': 'O cadastro está desligado nos controles do servidor. A prévia não gravou nada.',
                 'import_preview_conflict': 'A prévia mudou. Prepare e confira novamente antes de confirmar.',
                 'import_exact_review_required': 'Confirme o hash e a versão exatos da prévia.',
@@ -2411,6 +2437,9 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
                     refusals=RegisteredRefusalRead() if runtime is None else None))
             from thunder_os.new_journey_import import NewJourneyImport
             servidor.thunder_new_journey_import = NewJourneyImport(
+                servidor.thunder_new_journey, servidor.thunder_hubspot_console)
+            from thunder_os.company_qualification import CompanyQualification
+            servidor.thunder_company_qualification = CompanyQualification(
                 servidor.thunder_new_journey, servidor.thunder_hubspot_console)
             servidor.thunder_origin = os.environ.get(
                 'THUNDER_OS_ORIGIN', 'https://painel.r3xdigital.tech')

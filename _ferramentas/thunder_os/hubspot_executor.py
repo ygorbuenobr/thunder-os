@@ -12,6 +12,7 @@ import os
 import re
 import ssl
 from urllib.parse import quote, urlencode
+from . import hubspot_read_budget
 from .integration_hubspot import (PORTAL_ID, FIELDS, NAME_FIELDS, HubSpotContractError,
     _name, _require, _validate_plan, business_identity, plan_record, wire_request, reconcile_record)
 from .models import payload_hash
@@ -41,14 +42,16 @@ def _https_request(method,path,body,headers,timeout):
         connection.request(method,path,body=json.dumps(body).encode() if body is not None else None,headers=headers)
         response=connection.getresponse();raw=response.read(1_000_001)
         if len(raw)>1_000_000:raise HubSpotHTTPError('hubspot_response_too_large')
-        return response.status,raw
+        return hubspot_read_budget.HubSpotReadResponse(response.status,raw,
+            {'Retry-After': response.getheader('Retry-After')})
     finally:connection.close()
 
 
 class HubSpotHTTP:
     """No token or payload in exceptions. One HTTP attempt, fixed HTTPS origin."""
-    def __init__(self,credential_loader,*,request=None,timeout=20,unique_properties=None,creation_mode="unique_property"):
+    def __init__(self,credential_loader,*,request=None,timeout=20,unique_properties=None,creation_mode="unique_property",read_budget=None):
         self._loader=credential_loader;self._request=request or _https_request
+        self._read_budget=read_budget if read_budget is not None else hubspot_read_budget.SHARED_READ_BUDGET
         _require(creation_mode in {'unique_property','business_ledger'},'invalid_creation_mode')
         self.creation_mode=creation_mode
         self._token=None;self.timeout=timeout;self.unique_properties=dict(unique_properties or {})
@@ -65,7 +68,9 @@ class HubSpotHTTP:
             if not isinstance(self._token,str) or not self._token or any(c.isspace() for c in self._token):
                 raise HubSpotHTTPError('hubspot_credential_unavailable')
         try:
-            status,raw=self._request(method,path,body,{'Authorization':'Bearer '+self._token,'Content-Type':'application/json'},self.timeout)
+            status,raw=self._read_budget.call(self._token,method,path,body,
+                {'Authorization':'Bearer '+self._token,'Content-Type':'application/json'},self.timeout,self._request,
+                cache_schema=False)
             if not isinstance(status,int) or not 200<=status<300:
                 raise HubSpotHTTPError('hubspot_http_error',status)
             if not isinstance(raw,(bytes,bytearray)) or len(raw)>1_000_000:
@@ -73,6 +78,8 @@ class HubSpotHTTP:
             result=json.loads(raw)
             if not isinstance(result,dict):raise HubSpotHTTPError('hubspot_invalid_response')
             return result
+        except hubspot_read_budget.HubSpotReadBudgetError as exc:
+            raise HubSpotHTTPError('hubspot_'+exc.code,exc.status) from None
         except HubSpotHTTPError:raise
         except Exception:raise HubSpotHTTPError('hubspot_request_uncertain') from None
 
