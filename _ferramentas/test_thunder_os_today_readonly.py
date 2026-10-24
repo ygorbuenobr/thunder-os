@@ -136,6 +136,17 @@ class TodayTests(unittest.TestCase):
             'messages': messages, 'source_hash': payload_hash(messages), 'complete': complete})
         return messages
 
+    def crm_email(self, **properties):
+        self.port.links[('emails', '900')] = ['700']
+        self.port.contacts['700'] = {'campanha_ativa': 'BR-CRM-FIXTURE', 'executor': 'ygor'}
+        row = {'id': '900', 'properties': {
+            'hubspot_owner_id': OWNER_ID, 'hs_email_direction': 'INCOMING_EMAIL',
+            'hs_timestamp': '2026-10-23T10:00:00Z', 'hs_email_from_email': PEER,
+            'hs_email_subject': 'Synthetic CRM inbound', 'hs_email_text': 'Synthetic CRM original',
+            **properties}}
+        self.port.emails = [row]
+        return row
+
     def thread(self, messages, **changes):
         self.today._mx_contacts, self.today._mx_people, self.today._mx_codes = set(), set(), set()
         return self.today._thread(source='fixture', ident='thread:fixture', title='Synthetic',
@@ -297,7 +308,102 @@ class TodayTests(unittest.TestCase):
         self.assertEqual(result['blocks']['do']['items'], [])
         source = next(s for s in result['blocks']['do']['sources'] if s['id'] == 'hubspot_emails')
         self.assertEqual(source['unclassified_count'], 1)
-        self.assertIn('crm_history_not_authoritative', source['limitations'])
+        self.assertIn('crm_thread_history_incomplete', source['limitations'])
+
+    def test_hubspot_original_full_body_is_observed_with_unknown_human_and_no_action(self):
+        original = '  Original <literal> & text.\n\n' + 'Exact CRM line with  spaces.\n' * 3000 + 'End.  '
+        self.crm_email(hs_email_text=original)
+        before = self.state()
+        result = self.today.snapshot()
+        self.assertEqual(len(result['observed_threads']), 1)
+        observed = result['observed_threads'][0]
+        self.assertEqual(observed['contact_id'], '700')
+        self.assertEqual(observed['campaign_id'], 'BR-CRM-FIXTURE')
+        self.assertEqual(observed['review_status'], 'leitura_pendente')
+        self.assertTrue(observed['observation_only'])
+        self.assertFalse(observed['thread']['complete'])
+        self.assertEqual(observed['date'], '2026-10-23T10:00:00Z')
+        self.assertEqual(observed['source']['id'], 'hubspot_emails')
+        self.assertEqual(observed['source']['collected_at'], datetime.fromtimestamp(NOW, timezone.utc).isoformat().replace('+00:00', 'Z'))
+        message = observed['thread']['messages'][0]
+        self.assertEqual(message['text'], original)
+        self.assertTrue(message['body_complete'])
+        self.assertEqual(message['direction'], 'incoming')
+        self.assertIsNone(message['human_reply'])
+        self.assertIsNone(message['receipt'])
+        self.assertEqual(message['source_id'], 'hubspot:email:900')
+        self.assertEqual(result['blocks']['respond']['items'], [])
+        self.assertEqual(result['blocks']['do']['items'], [])
+        self.assertEqual(self.today._packets, {})
+        self.assertEqual(before, self.state())
+        self.runner.assert_not_called()
+
+    def test_hubspot_missing_invalid_or_html_only_body_never_claims_complete_original(self):
+        for body in (None, '', '  ', {'summary': 'Not an original body'}):
+            with self.subTest(body=body):
+                self.crm_email(hs_email_text=body, hs_email_html='<p>HTML is not hs_email_text</p>')
+                self.today._expires = 0
+                result = self.today.snapshot()
+                observed = result['observed_threads'][0]
+                self.assertFalse(observed['thread']['messages'][0]['body_complete'])
+                self.assertEqual(observed['thread']['messages'][0]['text'], body if isinstance(body, str) else '')
+                self.assertFalse(observed['thread']['complete'])
+                self.assertEqual(result['blocks']['respond']['items'], [])
+                self.assertEqual(result['blocks']['do']['items'], [])
+        self.runner.assert_not_called()
+
+    def test_hubspot_observation_requires_unique_resolved_id_campaign_and_event_date(self):
+        for failure in ('unlinked', 'ambiguous', 'unresolved', 'no_campaign', 'mx', 'mixed_mx', 'invalid_date'):
+            with self.subTest(failure=failure):
+                self.crm_email()
+                self.port.contacts['701'] = {'campanha_ativa': 'MX27-FIXTURE', 'executor': 'ygor'}
+                if failure == 'unlinked': self.port.links[('emails', '900')] = []
+                if failure == 'ambiguous':
+                    self.port.contacts['701']['campanha_ativa'] = 'BR-CRM-FIXTURE'
+                    self.port.links[('emails', '900')] = ['700', '701']
+                if failure == 'unresolved': self.port.contacts.pop('700')
+                if failure == 'no_campaign': self.port.contacts['700']['campanha_ativa'] = ''
+                if failure == 'mx': self.port.contacts['700']['campanha_ativa'] = 'MX27-FIXTURE'
+                if failure == 'mixed_mx': self.port.links[('emails', '900')] = ['700', '701']
+                if failure == 'invalid_date': self.port.emails[0]['properties']['hs_timestamp'] = 'unknown'
+                self.today._expires = 0
+                result = self.today.snapshot()
+                self.assertEqual(result['observed_threads'], [])
+                self.assertEqual(result['blocks']['respond']['items'], [])
+                self.assertEqual(result['blocks']['do']['items'], [])
+
+    def test_hubspot_inbound_plus_later_full_outgoing_keeps_chronology_without_pending(self):
+        self.crm_email()
+        messages = self.gmail()
+        messages[0]['received_at'] = '2026-10-23T10:00:00Z'
+        messages.append({**messages[0], 'id': 'ab13', 'received_at': '2026-10-23T11:00:00Z',
+                         'outgoing': True, 'sender': MAILBOX, 'content': 'Full outgoing after CRM inbound'})
+        self.repo.put_state('gmail_thread', 'thread-fixture', {'mailbox': MAILBOX,
+            'messages': messages, 'source_hash': payload_hash(messages), 'complete': True})
+        before = self.state()
+        result = self.today.snapshot()
+        self.assertEqual(len(result['observed_threads']), 2)
+        observed = next(t for t in result['observed_threads'] if t['source']['id'] == 'gmail')
+        self.assertTrue(observed['thread']['complete'])
+        self.assertEqual([m['direction'] for m in observed['thread']['messages']], ['incoming', 'outgoing'])
+        self.assertEqual(observed['thread']['messages'][-1]['text'], messages[-1]['content'])
+        self.assertEqual(result['blocks']['respond']['items'], [])
+        self.assertEqual(result['blocks']['do']['items'], [])
+        self.assertEqual(self.today._packets, {})
+        self.assertEqual(before, self.state())
+        self.runner.assert_not_called()
+
+    def test_hubspot_automated_messages_never_become_pending_read_observations(self):
+        for change in ({'hs_email_subject': 'Delivery failure: Synthetic'},
+                       {'hs_email_from_email': 'mailer-daemon@example.invalid'},
+                       {'hs_email_headers': json.dumps({'headers': [{'name': 'Auto-Submitted', 'value': 'auto-replied'}]})}):
+            with self.subTest(change=change):
+                self.crm_email(**change)
+                self.today._expires = 0
+                result = self.today.snapshot()
+                self.assertEqual(result['observed_threads'], [])
+                self.assertEqual(result['blocks']['respond']['items'], [])
+                self.assertEqual(result['blocks']['do']['items'], [])
 
     def test_H03_395_historical_inbound_records_are_metadata_never_work(self):
         self.port.emails = [{'id': str(i + 1000), 'properties': {

@@ -1,5 +1,5 @@
 """Synthetic fixtures only; no provider, network or operational database access."""
-from datetime import date
+from datetime import date, datetime, timezone
 import hashlib
 import os
 from pathlib import Path
@@ -70,6 +70,11 @@ eu/estilo-e-regras.md
 
 class AccountCadenceReadonlyTests(unittest.TestCase):
     def setUp(self):
+        for target in ('socket.create_connection', 'socket.socket.connect', 'socket.getaddrinfo'):
+            guard = patch(target, side_effect=AssertionError('network forbidden'))
+            port = guard.start()
+            self.addCleanup(guard.stop)
+            self.addCleanup(port.assert_not_called)
         self.scratch = tempfile.TemporaryDirectory()
         self.addCleanup(self.scratch.cleanup)
         self.root = Path(self.scratch.name).resolve() / 'brain'
@@ -100,6 +105,41 @@ class AccountCadenceReadonlyTests(unittest.TestCase):
         self.assertEqual(self.reader.list_accounts('CAMPAIGN-B')['accounts'], [])
         self.assertEqual(self.reader.account('absent')['source_status'], 'incomplete')
         self.assertEqual(self.reader.account('absent')['tabs']['cadence'], [])
+
+    def test_account_date_uses_open_source_mtime_with_explicit_provenance(self):
+        timestamp = datetime(2024, 2, 3, 4, 5, 6, tzinfo=timezone.utc).timestamp()
+        os.utime(self.root / self.path, (timestamp, timestamp))
+        expected = '2024-02-03T04:05:06+00:00'
+        row = self.reader.list_accounts('CAMPAIGN-A')['accounts'][0]
+        detail = self.view()
+        for observed in (row, detail):
+            self.assertEqual(observed['date'], expected)
+            self.assertEqual(observed['source']['updated_at'], expected)
+            self.assertEqual(observed['date_basis'], 'source_file')
+            self.assertEqual(observed['date_sourcepath'], self.path)
+        # File recency never fills a missing year in a planned touch.
+        self.assertIsNone(detail['tabs']['cadence'][1]['date'])
+
+    def test_missing_source_never_uses_clock_state_or_directory_as_date(self):
+        reader = AccountCadenceReadonly(self.root, {'cadences': [{
+            'account_id': 'missing-2026-10-22', 'campaign_id': 'CAMPAIGN-A',
+            'updated_at': '2026-10-23T10:00:00Z'}]}, clock=lambda: date(2035, 1, 2))
+        row = next(r for r in reader.list_accounts()['accounts'] if r['id'] == 'missing-2026-10-22')
+        for observed in (row, reader.account(row['id'])):
+            self.assertIsNone(observed.get('date'))
+            self.assertIsNone(observed.get('date_basis'))
+            self.assertIsNone(observed.get('date_sourcepath'))
+
+    def test_source_directory_and_clock_are_not_account_dates(self):
+        path = 'contas/source-2020-01-01/cadencia.md'
+        self.put(path, self.document.replace('example.test', 'dated-path.test'))
+        timestamp = datetime(2023, 7, 8, 9, 10, 11, tzinfo=timezone.utc).timestamp()
+        os.utime(self.root / path, (timestamp, timestamp))
+        reader = AccountCadenceReadonly(self.root, clock=lambda: date(2035, 1, 2))
+        observed = reader.account('dated-path.test')
+        self.assertEqual(observed['date'], '2023-07-08T09:10:11+00:00')
+        self.assertEqual(observed['date_basis'], 'source_file')
+        self.assertEqual(observed['date_sourcepath'], path)
 
     def test_exact_body_subject_and_raw_source_hash(self):
         result = self.view()
@@ -371,6 +411,11 @@ class VisitorIndexTests(unittest.TestCase):
         'bloqueada: j\u00e1 est\u00e1 em MX27-EXAMPLE (M\u00e9xico)', 'descartada: n\u00e3o prospect\u00e1vel')
 
     def setUp(self):
+        for target in ('socket.create_connection', 'socket.socket.connect', 'socket.getaddrinfo'):
+            guard = patch(target, side_effect=AssertionError('network forbidden'))
+            port = guard.start()
+            self.addCleanup(guard.stop)
+            self.addCleanup(port.assert_not_called)
         self.scratch = tempfile.TemporaryDirectory()
         self.addCleanup(self.scratch.cleanup)
         self.root = Path(self.scratch.name).resolve() / 'brain'
@@ -567,6 +612,19 @@ class VisitorIndexTests(unittest.TestCase):
         self.assertEqual(view['source_status'], 'incomplete')
         self.assertEqual(view['readiness'], self.READINESS[0])
         self.assertEqual(view['tabs']['cadence'], [])
+        self.assertIsNone(view.get('date'))
+        self.assertIsNone(view.get('date_basis'))
+        self.assertIsNone(view.get('date_sourcepath'))
+
+    def test_indexed_source_date_uses_its_file_not_index_brief_or_group_name(self):
+        path = module.VISITOR_DIRECTORY + '/alpha/cadencia.md'
+        timestamp = datetime(2024, 3, 4, 5, 6, 7, tzinfo=timezone.utc).timestamp()
+        os.utime(self.root / path, (timestamp, timestamp))
+        view = self.account('alpha')
+        self.assertEqual(view['date'], '2024-03-04T05:06:07+00:00')
+        self.assertEqual(view['date'], view['source']['updated_at'])
+        self.assertEqual(view['date_basis'], 'source_file')
+        self.assertEqual(view['date_sourcepath'], path)
 
     def test_original_brief_alias_provenance_hash_change_and_no_author_claim(self):
         view = self.account('alpha')

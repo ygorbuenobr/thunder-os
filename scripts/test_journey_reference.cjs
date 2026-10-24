@@ -59,7 +59,15 @@ fs.mkdirSync(output,{recursive:true});
         assert(panel.y<=520,'Primary stage panel starts in the first desktop viewport');
       }
       const selectedInk=await page.locator('#abas [aria-selected=true]').evaluate(el=>getComputedStyle(el).color);
-      assert.equal(selectedInk,'rgb(0, 0, 0)','Cyan selected tab uses legible black ink');
+      assert.equal(selectedInk,'rgb(0, 0, 0)','Mustard selected tab uses legible black ink');
+      assert.equal(await page.locator('#abas [aria-selected=true]').evaluate(el=>getComputedStyle(el).backgroundColor),'rgb(224, 169, 51)');
+      assert.equal(await page.locator('#journey-log .journey-log-history').evaluate(el=>getComputedStyle(el).color),'rgb(163, 105, 226)','Purple identifies the secondary history action');
+      const unavailable=page.locator('[data-journey-stage=preparacao]');
+      assert.equal(await unavailable.locator('.journey-stage-count').textContent(),'Desligado');
+      await unavailable.locator('.journey-stage-reason').waitFor({state:'visible'});
+      assert.equal(await unavailable.getAttribute('aria-describedby'),'journey-stage-note-preparacao');
+      assert.match(await unavailable.innerText(),/Cobertura parcial da fonte sintética/);
+      assert.equal(await page.locator('[data-journey-stage=icp] .journey-stage-count').textContent(),'50 lidos','Observed items are labelled separately from an unknown total');
       assert.equal(await page.locator('[data-journey-metric=reached] strong').textContent(),'12');
       assert.equal(await page.locator('[data-journey-metric=replied] strong').textContent(),'?');
       assert.equal(await page.locator('[data-journey-metric=hot] strong').textContent(),'?');

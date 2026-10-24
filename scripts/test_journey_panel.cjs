@@ -1,3 +1,6 @@
+// Bounded continuation: exact mustard/purple; Portuguese unavailable state with visible
+// reason; source/date_basis readback and absent-date honesty. Proofs: this script
+// and test_journey_reference.cjs. Existing business and security checks retained.
 // Phase 1 UI checks, one delegated slice. Binding: full Brain Jornada/Conta prototypes.
 // V24 binding: user GIF; compact funnel, connected circular stages, stage panel, footer log.
 // Timeline/evidence now expand; account five tabs and all behavior checks stay intact.
@@ -26,7 +29,7 @@ const journey = () => ({read_only: true, collected_at: collected,
   metrics: {reached: metric(12), replied: {...metric(null), reason: 'Sem leitura de respostas humanas.'}, hot: {...metric(null), reason: 'Classificação não disponível.'}, cost_per_hot: {value: null, source: [], reason: 'Sem custo comprovado.'}},
   stages: stages.map(([id, label]) => ({id, label, count: id === 'preparacao' ? null : 1, status: id === 'preparacao' ? 'off' : 'partial',
     reason: id === 'preparacao' ? 'Fonte de preparação desligada.' : 'Cobertura parcial da fonte.',
-    items: [{id: id + '-row', name: 'Pessoa sintética ' + label, company: 'Empresa sintética', campaign_id: br, date: collected, owner: 'Pessoa responsável sintética', summary: 'Resumo sintético ' + attack,
+    items: [{id: id + '-row', name: 'Pessoa sintética ' + label, company: 'Empresa sintética', campaign_id: br, date: id === 'icp' ? null : collected, date_basis: 'Data declarada pela fonte sintética', source: {label: 'Registro sintético ' + attack}, owner: 'Pessoa responsável sintética', summary: 'Resumo sintético ' + attack,
       action: {label: 'Abrir', type: id === 'icp' ? 'account' : 'detail', id: id === 'icp' ? 'account:opaque/fixture' : 'detail:' + id + '/opaque'}},
     {id: 'excluded', name: 'MX nunca aparecer', campaign_id: mx}, {id: 'unknown', name: 'Sem identidade não entra', campaign_id: null}]})),
   timeline: {name: 'Pessoa sintética', company: 'Empresa sintética', events: [{id: 'event', date: collected, label: 'Resposta', summary: 'Resumo do evento', detail_id: 'detail:resposta/opaque'}]},
@@ -187,8 +190,13 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
         assert.match(await page.locator('#journey-stage-heading').innerText(), new RegExp(label));
         assert.equal(await page.locator('#journey-stage-items article').count(), 1);
         assert.equal(await page.locator('#journey-stage-items article button').count(), 1);
+        await page.locator('#journey-stage-items article details summary').click();
+        assert.match(await page.locator('#journey-stage-items [data-journey-date-basis]').innerText(), /Data declarada pela fonte sintética/);
+        assert.equal(await page.locator('#journey-stage-items [data-journey-item-source]').textContent(), 'Fonte: Registro sintético ' + attack);
+        if (id === 'icp') assert.match(await page.locator('#journey-stage-items article').innerText(), /Data não informada/);
+        await page.locator('#journey-stage-items article details summary').click();
       }
-      assert.match(await page.locator('[data-journey-stage=preparacao]').innerText(), /off/);
+      assert.match(await page.locator('[data-journey-stage=preparacao]').innerText(), /Desligado/);
       assert.match(await page.locator('#journey-stage-reason').innerText(), /Fonte de preparação desligada/);
       await page.locator('[data-journey-stage=resposta]').click();
       const beforeFilter = callCount();

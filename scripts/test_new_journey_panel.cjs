@@ -84,6 +84,10 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
             draft={id,version:1,name:body.name,campaign_id:campaign,source:null,rows:[],checks:[],steps:[],approvals:{},sequence:null,reconciliation:null};
             return send(view());
           }
+          if(op==='hubspot-execute'){
+            assert.deepEqual(body,{preview_id:'import-fixture',expected_version:1,preview_hash:'d'.repeat(64),confirm:true});
+            return send({kind:'journey_import_v1',id:'import-fixture',version:2,journey_id:id,journey_version:draft.version,source_key:'source-1',preview_hash:'d'.repeat(64),portal_id:'51412240',state:'processed',can_execute:false,contact:{properties:{email:'fixture@example.invalid'}},company:{properties:{name:'Empresa sintética',domain:'example.invalid'}},association:{status:'verified'},blockers:[],result:{status:'verified_state'}});
+          }
           assert.equal(body.expected_version,draft.version,'Every operation binds current version');
           if(op==='source'){
             if(denySource)return send({erro:'Busca sem permissão na fixture.'},403);
@@ -95,6 +99,12 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
               assert.equal(body.page,1);draft.rows=[row(3,'')];
             }else{assert.equal(body.query,'Contato confirmado');assert.equal(body.page,1);draft.rows=[row()];}
             draft.checks=[];draft.approvals={};draft.reconciliation=null;return send(changed());
+          }
+          if(op==='hubspot-preview'){
+            assert.equal(body.review_hash,view().review_hash);assert.equal(body.data.source_key,'source-1');
+            assert.equal(body.data.contact.email,'fixture@example.invalid');assert.equal(body.data.company.domain,'example.invalid');
+            assert(Object.values(body.data.source_refs).every(r=>r.verified===true&&r.ref==='https://example.invalid/source'));
+            return send({kind:'journey_import_v1',id:'import-fixture',version:1,journey_id:id,journey_version:draft.version,source_key:'source-1',preview_hash:'d'.repeat(64),portal_id:'51412240',state:'review_required',can_execute:true,contact:{properties:body.data.contact,action:'propose_create'},company:{properties:body.data.company,action:'propose_create'},association:{status:'planned'},source_refs:body.data.source_refs,blockers:[]});
           }
           if(op==='check'){assert.deepEqual(Object.keys(body),['expected_version']);draft.checks=checkRows();draft.approvals={};return send(changed());}
           if(op==='qualify'){
@@ -256,6 +266,24 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
       assert.match(await page.locator('.nj-record details').first().innerText(),/fixtures\/checks.md/);
       assert.match(await page.locator('.nj-record details').first().innerText(),/Conferida em: 2031-03-12/);
       await page.locator('.nj-record summary').first().click();await shot('03-checagem-retida');
+      const imp=page.locator('form[data-nj-import]').first();
+      await page.locator('.nj-import > summary').first().click();
+      await imp.locator('[name="company.domain"]').fill('example.invalid');
+      await imp.locator('[name=source_ref]').fill('https://example.invalid/source');
+      await imp.locator('[name=verified]').check();
+      await click('form[data-nj-import] button >> nth=0');
+      assert.equal(traffic.filter(t=>t.path.endsWith('/hubspot-execute')).length,0,'Preview never applies CRM changes');
+      await page.locator('.nj-import > summary').first().click();
+      assert.equal(await page.locator('[data-nj-import-confirm]').count(),1);
+      await page.locator('form[data-nj-import]').first().locator('[name="company.domain"]').fill('changed.invalid');
+      assert.equal(await page.locator('[data-nj-import-confirm]').count(),0,'Editing removes stale confirmation');
+      await page.locator('form[data-nj-import]').first().locator('[name="company.domain"]').fill('example.invalid');
+      await page.locator('form[data-nj-import]').first().locator('[name=source_ref]').fill('https://example.invalid/source');
+      await page.locator('form[data-nj-import]').first().locator('[name=verified]').check();
+      await click('form[data-nj-import] button >> nth=0');
+      await page.locator('.nj-import > summary').first().click();
+      await click('[data-nj-import-confirm]');
+      assert.equal(traffic.filter(t=>t.path.endsWith('/hubspot-execute')).length,1,'Only the exact explicit confirm reaches apply');
       await go(5);assert.equal(await page.locator('[data-nj-action=export]').isDisabled(),true);
       await go(2);await page.locator('[name=nj-source][value=apollo_people]').check();
       assert.equal(await page.locator('#nj-titles').inputValue(),'','Sheet hypotheses never become filters');

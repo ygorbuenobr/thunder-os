@@ -147,6 +147,27 @@ class NewJourneyHTTPTests(unittest.TestCase):
             body={'expected_version': 3})[0], 404)
         self.server.thunder_service.dispatch_step.assert_not_called()
 
+    def test_import_preview_requires_actor_nonce_and_exact_journey_binding(self):
+        importer = Mock()
+        importer.preview.return_value = {'kind': 'journey_import_v1', 'journey_id': 'draft-test'}
+        importer.execute.return_value = {'kind': 'journey_import_v1', 'state': 'processed'}
+        importer.repo.get_state.return_value = {'journey_id': 'draft-test'}
+        self.server.thunder_new_journey_import = importer
+        body = {'expected_version': 3, 'review_hash': 'b' * 64,
+                'data': {'source_key': 'fixture', 'contact': {}, 'company': {}, 'source_refs': {}}}
+        self.assertEqual(self.request('draft-test/hubspot-preview', method='POST', body=body)[0], 401)
+        self.assertEqual(self.request('draft-test/hubspot-preview', actor='codex', method='POST', body=body, nonce=True)[0], 403)
+        self.assertEqual(self.request('draft-test/hubspot-preview', method='POST', body=body, nonce=True)[0], 200)
+        importer.preview.assert_called_once_with('draft-test', body['data'], 'ygor', expected_version=3, review_hash='b' * 64)
+        importer.execute.assert_not_called()
+        approved = {'preview_id': 'p-fixture', 'expected_version': 1, 'preview_hash': 'a' * 64, 'confirm': True}
+        self.assertEqual(self.request('other-draft/hubspot-execute', method='POST', body=approved, nonce=True)[0], 404)
+        importer.execute.assert_not_called()
+        self.assertEqual(self.request('draft-test/hubspot-execute', method='POST', body=approved, nonce=True)[0], 200)
+        importer.execute.assert_called_once_with(approved, 'ygor')
+        self.wizard.export.assert_not_called()
+        self.server.thunder_service.dispatch_step.assert_not_called()
+
     def test_N09_errors_hide_internal_data_and_conflicts_require_refresh(self):
         self.wizard.get.side_effect = ContractError('private payload token-like-data')
         status, result = self.request('draft-test')

@@ -267,7 +267,8 @@ class TodayReadonly:
         return result
 
     def _thread(self, *, source, ident, title, messages, complete, action, campaign=None,
-                contact_id=None, draft=None, scope_verified=True, person_keys=(), source_collected_at=None):
+                contact_id=None, draft=None, scope_verified=True, person_keys=(), source_collected_at=None,
+                observation_only=False):
         if not scope_verified or self._excluded({'campaign_id': campaign, 'title': title,
                                                 'contact_id': contact_id, 'person_keys': person_keys}):
             return {}
@@ -296,13 +297,21 @@ class TodayReadonly:
                 'source_id': m.get('canonical_id') or source + ':' + m['id'],
                 'message_keys': m.get('message_keys') or [m.get('canonical_id') or source + ':' + m['id']],
                 'receipt': deepcopy(m.get('receipt'))})
-        self._observed_threads.append({'id': ident, 'title': plain_text(title),
+        observed_thread = {'id': ident, 'title': plain_text(title),
             'campaign_id': campaign, 'contact_id': contact_id,
             'person_keys': sorted(key for key in person_keys if key and key != MAILBOX),
             'owner': 'ygor', 'date': ordered[-1].get('date'), 'source_ids': [source],
             'source_collected_at': source_collected_at,
             'collected_at': _stamp(self.clock()), 'action': deepcopy(action),
-            'thread': {'complete': complete and all(m['body_complete'] for m in observed), 'messages': observed}})
+            'thread': {'complete': complete and all(m['body_complete'] for m in observed), 'messages': observed}}
+        if observation_only:
+            observed_thread.update(observation_only=True, review_status='leitura_pendente',
+                                   triage_reason='human_classification_unknown')
+        self._observed_threads.append(observed_thread)
+        if observation_only:
+            # A CRM engagement is an observation, not a proved unanswered thread.
+            # In particular, do not create a draft packet or an actionable item.
+            return {}
         # An outgoing draft is not a sent reply. An unknown direction cannot prove silence.
         sent = [m['date'] for m in ordered if m.get('outgoing') is True and not m.get('unsent') and m.get('date')]
         last_sent = max(sent, default='')
@@ -740,19 +749,30 @@ class TodayReadonly:
             p = row.get('properties', {})
             if (row.get('archived') or not _id(row.get('id')) or p.get('hs_email_direction') != 'INCOMING_EMAIL'):
                 continue
-            subject = p.get('hs_email_subject') or ''
-            sender = p.get('hs_email_from_email') or ''
+            subject = p.get('hs_email_subject') if isinstance(p.get('hs_email_subject'), str) else ''
+            sender = p.get('hs_email_from_email') if isinstance(p.get('hs_email_from_email'), str) else ''
             try:
                 headers = json.loads(p.get('hs_email_headers') or '{}')
+                if not isinstance(headers, dict):
+                    headers = {}
                 sender = sender or headers.get('from', {}).get('email') or ''
-            except (ValueError, AttributeError):
+            except (ValueError, AttributeError, TypeError):
                 headers = {}
+            sender = sender if isinstance(sender, str) else ''
             recipients = headers.get('to', [])
-            recipient_emails = ({r.get('email', '').lower() for r in recipients if isinstance(r, dict)}
+            recipient_emails = ({r['email'].lower() for r in recipients
+                                 if isinstance(r, dict) and isinstance(r.get('email'), str)}
                 if isinstance(recipients, list) else _addresses(recipients) if isinstance(recipients, str) else set())
             if _id(p.get('hubspot_owner_id')) != OWNER_ID and MAILBOX not in recipient_emails:
                 continue
-            if _automated({'subject': subject, 'sender': sender, 'text': p.get('hs_email_text')}):
+            automation_headers = headers.get('headers', [])
+            automation_headers = [h for h in automation_headers if isinstance(h, dict)
+                                  and isinstance(h.get('name'), str) and isinstance(h.get('value'), str)] if isinstance(automation_headers, list) else []
+            automation_headers.extend({'name': key, 'value': value} for key, value in headers.items()
+                                      if isinstance(value, str) and key.lower() in {
+                                          'auto-submitted', 'precedence', 'list-id', 'x-autoreply', 'x-autorespond'})
+            if _automated({'subject': subject, 'sender': sender, 'text': p.get('hs_email_text'),
+                           'headers': automation_headers}):
                 continue
             # An engagement ID is exact; CRM registration is not mailbox completeness.
             ident = str(row['id'])
@@ -773,10 +793,28 @@ class TodayReadonly:
                 continue
             if not self._excluded({'contact_id': contact}):
                 unclassified += 1
+                occurred = _date(p.get('hs_timestamp'))
+                if (contact and isinstance(campaign, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,100}', campaign)
+                        and occurred):
+                    # This bounded query reads inbound engagements only. A full
+                    # hs_email_text proves that message's body, never thread
+                    # completeness, human classification or unanswered status.
+                    original = p.get('hs_email_text') if 'hs_email_text' in props else None
+                    self._thread(source='hubspot_emails', ident='hubspot-email:' + ident,
+                        title=subject, contact_id=contact, campaign=campaign,
+                        messages=[{'id': ident, 'date': occurred, 'outgoing': False,
+                            'text': original if isinstance(original, str) else '',
+                            'sender': sender, 'subject': subject,
+                            'body_complete': isinstance(original, str) and bool(original.strip()),
+                            'human_reply': None, 'canonical_id': 'hubspot:email:' + ident}],
+                        complete=False, observation_only=True,
+                        source_collected_at=_stamp(self.clock()),
+                        action={'label': 'Abrir registro CRM', 'url': _crm_url('emails', ident)})
         info = coverage['sources']['inbound_emails']
         return {'do': [], 'unclassified_count': unclassified,
                 'status': 'offline' if info.get('error') and not rows else 'partial',
-                'limitations': ['crm_history_not_authoritative'] + coverage['limitations']}
+                'limitations': ['crm_observation_only', 'crm_thread_history_incomplete',
+                                'human_classification_unknown'] + coverage['limitations']}
 
     def _deals(self):
         if self.deals is None:

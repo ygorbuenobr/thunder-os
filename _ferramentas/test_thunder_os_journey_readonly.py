@@ -105,6 +105,29 @@ class JourneyTests(unittest.TestCase):
                 'occurred_at': '2026-10-23T07:00:00Z', 'text': 'Original provider body',
                 'subject': 'Original provider subject', 'content_complete': True}]}]})
 
+    def test_crm_unknown_identity_coverage_never_reports_empty_total(self):
+        self.today._deals.return_value = {'status': 'ok', 'do': [],
+            'limitations': ['unknown_identity_cannot_guarantee_mx_exclusion']}
+        value = self.stage(self.adapter.snapshot(), 'crm')
+        self.assertIsNone(value['count'])
+        self.assertFalse(value['coverage']['complete'])
+        self.assertIn('total desconhecido', value['reason'])
+
+    def test_hubspot_incoming_original_is_readable_without_human_claim(self):
+        self.add_thread([message('crm-in', 10, False, 'Original integral CRM', human_reply=None)],
+                        source='hubspot_emails', complete=False)
+        snap = self.adapter.snapshot()
+        rows = self.stage(snap, 'resposta')['items']
+        self.assertEqual(len(rows), 1)
+        self.assertIn('classificacao pendentes', rows[0]['summary'])
+        detail = self.adapter.detail(rows[0]['id'])
+        self.assertIn('Original integral CRM', [b['text'] for b in detail['blocks']])
+        self.assertNotEqual(snap['metrics']['replied']['value'], 1)
+        self.assertFalse(detail['approval_available'])
+        self.rows[0]['messages'].append(message('crm-out', 11, True, 'Retorno real CRM'))
+        self.refresh()
+        self.assertEqual(self.stage(self.adapter.snapshot(), 'resposta')['items'], [])
+
     def test_seven_stages_exact_contract_unknown_missing_sources(self):
         self.today._gmail = Mock(side_effect=RuntimeError('secret error'))
         self.today._deals = Mock(side_effect=RuntimeError('secret error'))
@@ -120,6 +143,41 @@ class JourneyTests(unittest.TestCase):
         self.assertNotIn('secret error', json.dumps(snap))
         self.assertEqual(snap['timeline']['events'], [])
 
+    def test_crm_unknown_when_healthy_hubspot_has_deals_without_verified_campaign(self):
+        self.today._deals.return_value = {'status': 'ok', 'do': [{
+            'id': 'hubspot:deal:' + ident, 'title': title, 'campaign_id': cid,
+            'date': '2026-10-23T11:00:00Z'} for ident, title, cid in (
+                ('900', 'Known deal', BR), ('901', 'Unbound deal', None),
+                ('902', 'Other campaign deal', OTHER), ('903', 'Excluded deal', 'MX27-FIXTURE'))]}
+        snapshot = self.adapter.snapshot(campaign=BR)
+        stage = self.stage(snapshot, 'crm')
+        self.assertEqual(next(s for s in snapshot['sources'] if s['id'] == 'hubspot_deals')['status'], 'ok')
+        self.assertEqual([i['name'] for i in stage['items']], ['Known deal'])
+        self.assertIsNone(stage['count'])
+        self.assertEqual(stage['status'], 'partial')
+        self.assertEqual(stage['coverage']['omitted_without_verified_brazil_campaign'], 1)
+        self.assertFalse(stage['coverage']['complete'])
+        self.assertIn('total desconhecido', stage['reason'])
+        self.today._deals.return_value['do'] = self.today._deals.return_value['do'][1:]
+        self.refresh()
+        stage = self.stage(self.adapter.snapshot(campaign=BR), 'crm')
+        self.assertEqual(stage['items'], [])
+        self.assertIsNone(stage['count'])
+        self.assertEqual(stage['status'], 'unavailable')
+
+    def test_crm_intentional_other_campaign_and_mexico_exclusion_do_not_invent_unknown(self):
+        self.today._deals.return_value = {'status': 'ok', 'do': [{
+            'id': 'hubspot:deal:' + ident, 'title': 'Synthetic deal', 'campaign_id': cid,
+            'date': '2026-10-23T11:00:00Z'} for ident, cid in (
+                ('902', OTHER), ('903', 'MX27-FIXTURE'))]}
+        stage = self.stage(self.adapter.snapshot(campaign=BR), 'crm')
+        self.assertEqual(stage['items'], [])
+        self.assertEqual(stage['count'], 0)
+        self.assertEqual(stage['status'], 'ok')
+        self.assertTrue(stage['coverage']['complete'])
+        self.assertEqual(stage['coverage']['scope'], 'observed_campaign_bound_deals')
+        self.assertEqual(stage['coverage']['omitted_without_verified_brazil_campaign'], 0)
+
     def test_campaign_filter_and_mexico_never_enter_items_or_details(self):
         for campaign in (BR, OTHER, 'MX27-MTY', 'CDMX-fixture', 'old-mexico'):
             self.add_thread([message(campaign, 10, False, campaign)], ident=campaign, campaign=campaign)
@@ -133,6 +191,41 @@ class JourneyTests(unittest.TestCase):
         self.assertTrue(all(i['campaign_id'] == BR for s in filtered['stages'] for i in s['items']))
         self.assertNotIn('MX27', json.dumps(filtered))
         self.assertEqual(self.adapter.snapshot(campaign='MX27-MTY')['timeline']['events'], [])
+
+    def test_registry_campaigns_are_filters_and_sheets_never_icp_leads(self):
+        with patch.object(self.adapter.service, 'campaign_sheet_view', return_value={
+                'status': 'complete', 'fields': [{'key': 'country', 'label': 'Pais',
+                    'status': 'ok', 'content': 'BR'}]}) as sheets:
+            snapshot = self.adapter.snapshot()
+        self.assertEqual({c['id'] for c in snapshot['campaigns']}, {BR, OTHER})
+        self.assertEqual({call.args[0] for call in sheets.call_args_list}, {BR, OTHER})
+        self.assertEqual(self.stage(snapshot, 'icp')['items'], [])
+        self.assertIsNone(self.stage(snapshot, 'icp')['count'])
+        self.assertEqual(self.stage(snapshot, 'icp')['status'], 'unavailable')
+
+    def test_icp_account_date_fallback_survives_real_reader_and_campaign_filter(self):
+        from thunder_os.account_cadence_readonly import AccountCadenceReadonly
+        import os
+        brain = Path(self.tmp.name) / 'brain'
+        path = brain / 'contas/source-2020-01-01/cadencia.md'
+        path.parent.mkdir(parents=True)
+        path.write_text('account_id: dated-account\ncampaign_id: ' + BR +
+                        '\n# Cadencia sintetica\n', encoding='utf-8')
+        timestamp = datetime(2024, 2, 3, 4, 5, 6, tzinfo=timezone.utc).timestamp()
+        os.utime(path, (timestamp, timestamp))
+        accounts = AccountCadenceReadonly(brain, clock=lambda: NOW)
+        adapter = JourneyReadonly(self.today, cadence_reader=self.cadence, accounts=accounts)
+        snapshot = adapter.snapshot(campaign=BR)
+        items = self.stage(snapshot, 'icp')['items']
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['action'], {'label': 'Abrir', 'type': 'account', 'id': 'dated-account'})
+        self.assertEqual(items[0]['date'], '2024-02-03T04:05:06+00:00')
+        self.assertEqual(items[0]['date_basis'], 'source_file')
+        self.assertEqual(items[0]['date_sourcepath'], 'contas/source-2020-01-01/cadencia.md')
+        detail = adapter.account_detail('dated-account', campaign=BR)
+        for key in ('date', 'date_basis', 'date_sourcepath'):
+            self.assertEqual(items[0][key], detail[key])
+        self.assertEqual(self.stage(adapter.snapshot(campaign=OTHER), 'icp')['items'], [])
 
     def test_all_observed_full_originals_survive_latest_outgoing_pending_unchanged(self):
         bodies = [' First contact\n\nExact <literal> & text.\n', 'Human original\nSecond paragraph.',
@@ -391,6 +484,10 @@ class JourneyTests(unittest.TestCase):
         self.assertNotIn('private', json.dumps(snap))
 
     def test_each_of_seven_stages_has_source_detail_or_explicit_missing_body(self):
+        accounts = Mock()
+        accounts.list_accounts.return_value = {'accounts': [{
+            'id': 'fixture-account', 'campaign_id': BR, 'name': 'Recorded account'}], 'limitations': []}
+        self.adapter = JourneyReadonly(self.today, cadence_reader=self.cadence, accounts=accounts)
         self.add_thread([message('human', 8, False, 'Original inbound')])
         self.add_thread([message('sent', 9, True, 'Original sent', receipt=receipt('gmail', 'sent'))],
                         ident='outgoing')
@@ -405,7 +502,7 @@ class JourneyTests(unittest.TestCase):
         for stage in snap['stages']:
             with self.subTest(stage=stage['id']):
                 self.assertTrue(stage['items'])
-                detail = self.adapter.detail(stage['items'][0]['action']['id'])
+                detail = self.adapter.detail(stage['items'][0]['id'])
                 self.assertTrue(all(isinstance(b['text'], str) and b['text'] for b in detail['blocks']))
                 self.assertFalse(detail['approval_available'])
         crm = self.adapter.detail(self.stage(snap, 'crm')['items'][0]['id'])

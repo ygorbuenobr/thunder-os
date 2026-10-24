@@ -325,7 +325,7 @@ button,.btn,select,input:not([type="hidden"]),summary {min-height:44px;}
 /* V24: Thunder palette; Arcgent composition, Linear border/density only. */
 body[data-aba="jornada"],body[data-journey-ready="true"][data-aba="contas"],.journey-drawer{
   color-scheme:dark;--bg:#000000;--surface:#0c0c0c;--surface2:#171717;--line:#2A2A33;
-  --text:#FFFEF8;--muted:#BFC3CC;--faint:#8B909B;--mostarda:#E1AA32;--roxo:#8F60D8;--ok:#8fd0ad;--alerta:#FF2841;--journey-accent:#00FAFF;
+  --text:#FFFEF8;--muted:#BFC3CC;--faint:#8B909B;--mostarda:#E0A933;--roxo:#A369E2;--ok:#8fd0ad;--alerta:#FF2841;--journey-accent:var(--mostarda);
 }
 #journey-overview{--display:"Aktiv Grotesk Ex","Inter Tight",Inter,Arial,sans-serif;--body:"Inter Tight",Inter,Arial,sans-serif;font-family:var(--body)}
 html:has(body[data-aba="jornada"]),html:has(body[data-journey-ready="true"][data-aba="contas"]){background:#000000}
@@ -357,9 +357,9 @@ body[data-aba="jornada"] h1,body[data-journey-ready="true"][data-aba="contas"] h
 .journey-stage{position:relative;display:flex;align-items:center;flex-direction:column;gap:6px;text-align:center;min-width:0;min-height:96px;padding:6px 4px;border:0;border-radius:8px;background:transparent;color:var(--muted);font:inherit;cursor:pointer;overflow-wrap:anywhere}
 .journey-stage:not(:last-child)::before{content:"";position:absolute;top:28px;left:50%;width:100%;height:1px;background:var(--line);pointer-events:none}
 .journey-stage-icon{position:relative;display:grid;place-items:center;width:44px;height:44px;flex:none;border:1px solid var(--line);border-radius:50%;background:var(--surface);color:var(--muted)}
-.journey-stage-icon svg{width:20px;height:20px}.journey-stage[aria-pressed="true"]{color:var(--text)}.journey-stage[aria-pressed="true"] .journey-stage-icon{border-color:var(--journey-accent);color:var(--journey-accent);box-shadow:0 0 0 4px rgba(0,250,255,.06)}
+.journey-stage-icon svg{width:20px;height:20px}.journey-stage[aria-pressed="true"]{color:var(--text)}.journey-stage[aria-pressed="true"] .journey-stage-icon{border-color:var(--journey-accent);color:var(--journey-accent);box-shadow:0 0 0 4px rgba(224,169,51,.10)}
 .journey-stage:hover .journey-stage-icon{border-color:var(--muted)}.journey-stage[aria-pressed="true"]:hover .journey-stage-icon{border-color:var(--journey-accent)}
-.journey-stage strong{font-size:13px;font-weight:600}.journey-stage b{font:500 12px var(--mono);color:var(--muted)}.journey-off .journey-stage-icon{border-style:dashed}
+.journey-stage strong{font-size:13px;font-weight:600}.journey-stage b{font:500 12px var(--mono);color:var(--muted)}.journey-off .journey-stage-icon{border-style:dashed}.journey-stage-reason{font-size:11px;line-height:1.4;color:var(--muted)}
 .journey-sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0}
 .journey-row{padding:16px 0;border-bottom:1px solid var(--line);display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 16px;align-items:center;min-width:0}
 .journey-row>div{min-width:0}.journey-row p{white-space:pre-wrap;overflow-wrap:anywhere}.journey-row .btn{justify-self:end}
@@ -376,7 +376,7 @@ body[data-aba="jornada"] h1,body[data-journey-ready="true"][data-aba="contas"] h
 .journey-bottom>details{padding:0 20px;border-bottom:1px solid var(--line);min-width:0}.journey-bottom summary{padding:12px 0;cursor:pointer;font-size:12px;color:var(--muted)}.journey-bottom details[open]>summary{color:var(--text)}
 #journey-timeline-heading{font:inherit;color:inherit}.journey-bottom .journey-list p{font-size:13px}
 #journey-overview .journey-agent-log{margin:0;padding:12px 20px;border:0;display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px 20px;align-items:baseline;min-width:0}
-#journey-overview .journey-agent-log h3{font-size:12px;color:var(--muted);white-space:nowrap}.journey-agent-log details{min-width:0}.journey-agent-log summary{padding:4px 0;display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 16px;min-height:44px}.journey-log-preview{flex:1 1 240px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.journey-log-history{color:var(--journey-accent);font-size:12px}.journey-agent-log .journey-list{max-height:260px;overflow:auto;scrollbar-gutter:stable}
+#journey-overview .journey-agent-log h3{font-size:12px;color:var(--muted);white-space:nowrap}.journey-agent-log details{min-width:0}.journey-agent-log summary{padding:4px 0;display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 16px;min-height:44px}.journey-log-preview{flex:1 1 240px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.journey-log-history{color:var(--roxo);font-size:12px}.journey-agent-log .journey-list{max-height:260px;overflow:auto;scrollbar-gutter:stable}
 .journey-list{list-style:none;padding:0;margin:0;min-width:0}.journey-list li{padding:12px 0;border-bottom:1px solid var(--line);min-width:0}
 .journey-list time{font:12px var(--mono);color:var(--muted)}
 .journey-original{white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.65 var(--body);margin:8px 0}
@@ -2086,7 +2086,7 @@ let journeyAccount=null,journeyAccountRequest=0,journeyAccountsRequest=0,journey
 let journeyAccountTab='cadence';
 const journeyEdits=new Map();
 const journeyStageDefs=[['icp','ICP'],['abordagem','Abordagem'],['resposta','Resposta'],['crm','CRM'],['linkedin','LinkedIn'],['followup','Follow-up'],['preparacao','Preparação']];
-const journeyStageStatusLabels={partial:'Leitura parcial',ok:'Fonte disponível',unavailable:'Fonte indisponível',off:'Etapa indisponível',disabled:'Etapa desligada',missing:'Fonte indisponível',error:'Falha na leitura',offline:'Fonte indisponível'};
+const journeyStageStatusLabels={partial:'Leitura parcial',ok:'Fonte disponível',unavailable:'Fonte indisponível',off:'Desligado',disabled:'Desligado',missing:'Fonte indisponível',error:'Falha na leitura',offline:'Fonte indisponível'};
 // Static, decorative symbols only. Selection never implies execution or progress.
 function journeyStageIcon(id){
   const paths={
@@ -2109,6 +2109,12 @@ const journeyRecordLabel=row=>journeyVisitor(row)?'Visitantes · rascunhos':row?
 const journeyText=value=>typeof value==='string'?value:typeof value==='number'?String(value):'';
 const journeyDescribe=value=>typeof value==='string'?value:value&&typeof value==='object'?JSON.stringify(value):journeyText(value);
 const journeyDate=value=>value?cadReadDate(value):'Data não informada';
+// Dates come exclusively from the projection; never infer them from the browser clock.
+function journeyItemProvenance(item){
+  const basis=journeyText(item.date_basis);
+  const source=item.date_sourcepath||(typeof item.source==='string'?item.source:journeyText(item.source?.label||item.source?.path||item.source?.url));
+  return (basis?`<p class="msg" data-journey-date-basis>Base da data: ${esc(basis)}</p>`:'')+(source?`<p class="msg" data-journey-item-source>Fonte: ${esc(source)}</p>`:'');
+}
 const journeyCampaign=()=>$('journey-campaign').value;
 const journeyQuery=()=>journeyCampaign()?'?campaign='+encodeURIComponent(journeyCampaign()):'';
 function journeyLink(url,label){
@@ -2183,7 +2189,7 @@ function renderJourneyStage(){
   const query=($('journey-filter').value||'').trim().toLocaleLowerCase('pt-BR');
   const filtered=items.filter(item=>!query||[item.name,item.company,item.campaign_id,item.owner,item.readiness,journeyVisitor(item)&&item.reviewable!==true?'':item.summary].some(text=>journeyText(text).toLocaleLowerCase('pt-BR').includes(query)));
   $('journey-stage-observed').textContent=query?`${filtered.length.toLocaleString('pt-BR')} de ${items.length.toLocaleString('pt-BR')} itens observados · busca nesta lista`:`${items.length.toLocaleString('pt-BR')} ${items.length===1?'item observado':'itens observados'} · total da etapa ${Number.isFinite(stage?.count)?stage.count.toLocaleString('pt-BR'):'não comprovado'}`;
-  target.innerHTML=filtered.length?filtered.map(item=>`<article class="journey-row" data-journey-item="${esc(item.id)}"><div><div class="journey-row-identity"><h4>${esc(item.name||'Nome não informado')}</h4><p${item.name&&item.name===item.company?' class="journey-sr"':''}>${esc(item.company||'Empresa não informada')}</p>${item.readiness?`<span class="journey-readiness">${esc(item.readiness)}</span>`:''}</div><p class="msg">${esc(journeyRecordLabel(item))} · ${esc(journeyDate(item.date))} · Responsável: ${esc(item.owner||'Não informado')}</p><details data-journey-proof="${esc('row:'+item.id)}"><summary id="${esc('journey-row-proof-'+encodeURIComponent(item.id))}">Ver contexto<span class="journey-sr"> · ${esc(item.name||'Nome não informado')}</span></summary><p>${esc(journeyVisitor(item)&&item.reviewable!==true?'Somente status. Revisão de cadência indisponível.':item.summary)}</p></details></div>${journeyAction(item.action)?`<button class="btn" type="button" data-journey-open="${esc(item.action.id)}" data-journey-kind="${item.action.type}">Abrir</button>`:'<p class="msg">Detalhe indisponível na fonte.</p>'}</article>`).join(''):`<p class="vazio">${query?'Nenhum item encontrado. Ajuste a busca.':stage?.reason||'Nenhum item nesta etapa. Use Atualizar para consultar novamente.'}</p>`;
+  target.innerHTML=filtered.length?filtered.map(item=>`<article class="journey-row" data-journey-item="${esc(item.id)}"><div><div class="journey-row-identity"><h4>${esc(item.name||'Nome não informado')}</h4><p${item.name&&item.name===item.company?' class="journey-sr"':''}>${esc(item.company||'Empresa não informada')}</p>${item.readiness?`<span class="journey-readiness">${esc(item.readiness)}</span>`:''}</div><p class="msg">${esc(journeyRecordLabel(item))} · ${esc(journeyDate(item.date))} · Responsável: ${esc(item.owner||'Não informado')}</p><details data-journey-proof="${esc('row:'+item.id)}"><summary id="${esc('journey-row-proof-'+encodeURIComponent(item.id))}">Ver contexto<span class="journey-sr"> · ${esc(item.name||'Nome não informado')}</span></summary>${journeyItemProvenance(item)}<p>${esc(journeyVisitor(item)&&item.reviewable!==true?'Somente status. Revisão de cadência indisponível.':item.summary)}</p></details></div>${journeyAction(item.action)?`<button class="btn" type="button" data-journey-open="${esc(item.action.id)}" data-journey-kind="${item.action.type}">Abrir</button>`:'<p class="msg">Detalhe indisponível na fonte.</p>'}</article>`).join(''):`<p class="vazio">${query?'Nenhum item encontrado. Ajuste a busca.':stage?.reason||'Nenhum item nesta etapa. Use Atualizar para consultar novamente.'}</p>`;
   for(const node of target.querySelectorAll('details[data-journey-proof]'))node.open=expanded.has(node.dataset.journeyProof);
   target.scrollTop=target.dataset.stage===journeyStage&&target.dataset.query===query?listScroll:0;target.dataset.stage=journeyStage;target.dataset.query=query;
   $('journey-stages').querySelectorAll('button').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.journeyStage===journeyStage)));
@@ -2199,7 +2205,7 @@ function renderJourney(){
     <nav class="journey-stages" id="journey-stages" aria-label="Etapas da jornada">${journeyStageDefs.map(([id,label],index)=>{
       const stage=journeyRows(journeySnapshot.stages).find(row=>row.id===id);
       const off=!stage||['off','disabled','unavailable','missing','error','offline'].includes(stage.status);
-      return `<button class="journey-stage${off?' journey-off':''}" type="button" data-journey-stage="${id}" aria-pressed="${journeyStage===id}" aria-controls="journey-stage-panel" aria-describedby="journey-stage-note-${id}"><span class="journey-stage-icon">${journeyStageIcon(id)}</span><strong>${label}</strong><b class="journey-stage-count">${off?'off':Number.isFinite(stage?.count)?esc(stage.count):'?'}</b><span class="journey-sr" id="journey-stage-note-${id}">${String(index+1).padStart(2,'0')} · ${esc(journeyStageStatusLabels[stage?.status]||'Status não informado')} · ${esc(stage?.reason||'')}</span></button>`;
+      return `<button class="journey-stage${off?' journey-off':''}" type="button" data-journey-stage="${id}" aria-pressed="${journeyStage===id}" aria-controls="journey-stage-panel" aria-describedby="journey-stage-note-${id}"><span class="journey-stage-icon">${journeyStageIcon(id)}</span><strong>${label}</strong><b class="journey-stage-count">${off?'Desligado':Number.isFinite(stage?.count)?esc(stage.count):journeyRows(stage?.items).length?esc(journeyRows(stage.items).filter(journeyValidItem).length)+' lidos':'?'}</b><span class="${off?'journey-stage-reason':'journey-sr'}" id="journey-stage-note-${id}">${off?esc(stage?.reason||'Fonte indisponível nesta consulta.'):String(index+1).padStart(2,'0')+' · '+esc(journeyStageStatusLabels[stage?.status]||'Status não informado')+' · '+esc(stage?.reason||'')}</span></button>`;
     }).join('')}</nav>
     <section class="journey-stage-panel" id="journey-stage-panel" aria-labelledby="journey-stage-heading"><header class="journey-head"><div><h3 id="journey-stage-heading"></h3><p id="journey-stage-observed"></p></div><label class="journey-field" for="journey-filter">Buscar na etapa<input type="search" id="journey-filter" maxlength="200" autocomplete="off" aria-controls="journey-stage-items"></label></header><p class="msg" id="journey-stage-reason"></p><p class="journey-sr" id="journey-list-help">Lista com rolagem própria. Todos os itens observados estão disponíveis; use as setas para percorrer a lista com foco.</p><div id="journey-stage-items" role="region" tabindex="0" aria-labelledby="journey-stage-heading" aria-describedby="journey-stage-observed journey-list-help"></div></section>
     <div class="journey-bottom"><details id="journey-timeline" data-journey-proof="timeline"><summary id="journey-timeline-toggle"><span id="journey-timeline-heading">Um lead, seguido pela equipe</span> · Ver histórico</summary><p>${esc([journeySnapshot.timeline?.name,journeySnapshot.timeline?.company].filter(Boolean).join(' · ')||'Nenhum lead nesta consulta.')}</p><ol class="journey-list">${journeyRows(journeySnapshot.timeline?.events).map(event=>`<li><time>${esc(journeyDate(event.date))}</time><p><b>${esc(event.label)}</b> · ${esc(event.summary)}</p>${typeof event.detail_id==='string'&&event.detail_id?`<button class="btn" type="button" data-journey-open="${esc(event.detail_id)}" data-journey-kind="detail" aria-label="Abrir mensagem original">Abrir</button>`:''}</li>`).join('')||'<li class="vazio">Nenhum evento disponível.</li>'}</ol></details>
@@ -2470,7 +2476,7 @@ const njReasonLabels={
 const njReason=value=>njReasonLabels[value]||value||'Sem prova disponível nesta leitura.';
 const nj={catalog:null,draft:null,id:null,step:1,busy:false,loading:false,stale:false,error:'',message:'',sequence:null,sequenceDirty:false,sourceDirty:false,
   name:'',campaign:'',mode:'csv',csv:'',titles:'',locations:'',companyLocations:'',sizes:'',keywords:'',query:'',page:1,request:0,createUncertain:false,
-  sequences:[],sequenceId:'',sequenceQuery:'',sequenceResultsQuery:'',exported:null};
+  sequences:[],sequenceId:'',sequenceQuery:'',sequenceResultsQuery:'',exported:null,importPreview:null};
 const njRows=value=>Array.isArray(value)?value:[];
 const njText=value=>typeof value==='string'?value:'';
 const njDirty=()=>nj.sequenceDirty||nj.sourceDirty||nj.qualificationDirty;
@@ -2479,7 +2485,9 @@ function njRoutePath(step=nj.step){return 'jornada/nova'+(nj.id?'/'+encodeURICom
 function njGo(step){mostrarAba(njRoutePath(Math.max(1,Math.min(5,step))));$('nj-heading')?.focus();}
 function njDraft(value){
   if(!value||typeof value.id!=='string'||!value.id||!Number.isInteger(value.version)||value.version<1||typeof value.review_hash!=='string'||!Array.isArray(value.rows)||!Array.isArray(value.steps)||nj.id&&value.id!==nj.id)throw Error('Rascunho inválido. Recarregue para conferir o estado salvo.');
+  if(nj.importPreview&&(nj.importPreview.journey_id!==value.id||nj.importPreview.journey_version!==value.version))nj.importPreview=null;
   nj.id=value.id;nj.draft=value;nj.stale=false;
+  if(!nj.importPreview&&Array.isArray(value.hubspot_import_previews))nj.importPreview=value.hubspot_import_previews[0]||null;
   if(!nj.sequenceDirty){
     nj.sequence=value.steps.map(step=>({id:step.id,channel:step.channel,subject:step.subject??'',content:step.content??'',order:step.order,interval_hours:step.interval_hours}));
     nj.sequenceId=value.sequence?.apollo_sequence_id||'';nj.sequenceQuery=value.sequence?.query||'';
@@ -2508,13 +2516,26 @@ function njRenderSource(){
   else fields=`${njField('Busca de contatos salvos','nj-query',nj.query,'maxlength="500" required')}${njField('Página','nj-page',nj.page,'type="number" min="1" max="500" step="1" required')}<button class="btn pri" type="submit">Buscar contatos salvos · 0 créditos</button>`;
   return `<p class="msg">A importação substitui a seleção do rascunho e exige novas checagens e aprovações. Nenhum contato é inscrito no Apollo.</p><fieldset class="nj-sources"><legend>De onde vêm os leads</legend><div class="nj-source" data-nj-source="apollo"><label><input type="radio" name="nj-source" value="apollo_people" ${apollo?'checked':''}><strong>Buscar no Apollo</strong></label><p>Busque pessoas com filtros explícitos ou consulte contatos já salvos.</p><small>Consulta gratuita · sem revelar e-mail ou telefone</small><fieldset class="nj-apollo-modes" id="nj-apollo-modes" ${apollo?'':'hidden'}><legend>Tipo de busca no Apollo</legend><label><input type="radio" name="nj-apollo-mode" value="apollo_people" ${nj.mode==='apollo_people'?'checked':''}>Pessoas novas</label><label><input type="radio" name="nj-apollo-mode" value="apollo_contacts" ${nj.mode==='apollo_contacts'?'checked':''}>Contatos salvos</label></fieldset></div><div class="nj-source" data-nj-source="csv"><label><input type="radio" name="nj-source" value="csv" ${nj.mode==='csv'?'checked':''}><strong>Importar lista do Apollo</strong></label><p>Importe o arquivo que você já exportou do Apollo.</p><small>CSV local · 0 créditos OS</small></div><div class="nj-source" data-nj-source="jobs" aria-disabled="true"><strong>Vagas abertas</strong><p>Empresas contratando marketing ou comercial.</p><small>Coletor desligado</small></div><div class="nj-source" data-nj-source="engagers" aria-disabled="true"><strong>Engajadores de posts</strong><p>Pessoas que curtem e comentam posts.</p><small>Fonte indisponível</small></div></fieldset>${njCosts()}<form id="nj-source-form" class="nj-fields">${fields}</form>${nj.draft?.rows.length?`<p class="msg">${esc(nj.draft.rows.length)} registros retornados pelo servidor. A checagem determina quais ficam retidos.</p>`:'<p class="vazio">Nenhum contato nesta seleção.</p>'}`;
 }
+function njImportHTML(row){
+  const preview=nj.importPreview?.source_key===row.source_key?nj.importPreview:null;
+  const fields=[['contact.email','E-mail',preview?.contact?.properties?.email||row.email],['contact.firstname','Nome',preview?.contact?.properties?.firstname||row.first_name],['contact.lastname','Sobrenome',preview?.contact?.properties?.lastname||row.last_name],['contact.jobtitle','Cargo',preview?.contact?.properties?.jobtitle||''],['company.name','Empresa',preview?.company?.properties?.name||row.company],['company.domain','Domínio confirmado',preview?.company?.properties?.domain||''],['company.website','Site confirmado',preview?.company?.properties?.website||'']];
+  const output=preview?`<section aria-label="Prévia HubSpot"><p><b>Prévia de cadastro · portal ${esc(preview.portal_id)}</b></p>${['contact','company'].map(k=>`<h5>${k==='contact'?'Contato':'Empresa'} · ${esc(preview[k]?.action||'retido')}</h5><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(JSON.stringify(preview[k]?.properties||{},null,2))}</pre>${preview[k]?.existing_id?`<p>ID existente: ${esc(preview[k].existing_id)} · preservar dados atuais</p>`:''}`).join('')}<p>Vínculo: ${esc(preview.association?.status||'não conferido')}. Nenhuma alteração de estágio, dono, negócio ou campanha.</p><details><summary>Fonte e hash da prévia</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(JSON.stringify({sources:preview.source_refs,hash:preview.preview_hash,expires_at:preview.expires_at},null,2))}</pre></details>${njRows(preview.blockers).map(x=>`<p class="nj-warning">${esc(njReason(x))}</p>`).join('')}${preview.result?`<pre style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(JSON.stringify(preview.result,null,2))}</pre>`:''}${preview.can_execute===true?'<button type="button" class="btn pri" data-nj-import-confirm>Confirmar este cadastro e vínculo no HubSpot</button>':'<p class="msg">Sem gravação disponível nesta prévia. Confira pendências e controles do servidor.</p>'}${['executing','processed'].includes(preview.state)?'<button type="button" class="btn" data-nj-import-reconcile>Conferir resultado no HubSpot · só leitura</button>':''}</section>`:'';
+  return `<details class="nj-import"><summary>Cadastro no HubSpot · preparar prévia</summary><p>HubSpot é a fonte do contato e da empresa. A prévia consulta duplicidade; nenhum cadastro acontece ao importar a lista no OS. Confirme os campos e a origem antes de preparar.</p><form data-nj-import="${esc(row.source_key)}" class="nj-fields"><div class="nj-grid">${fields.map(([name,label,value])=>`<label>${label}<input name="${name}" value="${esc(value||'')}" ${name==='contact.email'||name==='company.name'||name==='company.domain'?'required':''} maxlength="2000"></label>`).join('')}</div><label>Fonte verificada dos campos<input name="source_ref" type="text" required maxlength="2000" placeholder="URL ou caminho do registro original" value="${esc(Object.values(preview?.source_refs||{})[0]?.ref||'')}"></label><label><input name="verified" type="checkbox" required>Conferi estes dados na fonte indicada.</label><button class="btn" type="submit">Consultar HubSpot e preparar prévia · sem gravar</button></form>${output}</details>`;
+}
+async function njImportRequest(action,body){
+  if(nj.busy||!nj.draft||njDirty()||nj.stale)return;
+  const id=nj.id;nj.busy=true;nj.error='';nj.message='Conferindo cadastro no HubSpot…';njGuards();
+  try{const r=await apiServidor(njPath()+'/'+action,'POST',body);if(nj.id!==id)return;if(r?.kind!=='journey_import_v1'||r.journey_id!==id)throw Error('Prévia de cadastro inválida.');nj.importPreview=r;nj.message=action==='hubspot-preview'?'Prévia preparada. Nenhuma gravação executada.':'Resultado do cadastro consultado; confira a leitura de volta.';}
+  catch(e){nj.importPreview=null;nj.error=e.message||'Resultado incerto: confira no HubSpot antes de repetir.';}
+  finally{nj.busy=false;njRender();}
+}
 function njRenderChecks(){
   const rows=njRows(nj.draft?.rows),checks=njRows(nj.draft?.checks);
   return `<p>Cada contato precisa de prova para ICP, exclusões, cliente, negócio aberto, recusa e campanha única. Estado desconhecido permanece retido.</p><div class="nj-actions"><button class="btn pri" type="button" data-nj-action="check" ${!rows.length||njDirty()||nj.stale?'disabled':''}>Conferir seleção</button></div>${rows.map(row=>{
     const result=checks.find(c=>c.source_key===row.source_key),list=njRows(result?.checks||row.checks);
     const primary=list.find(c=>c.status==='blocked')||list.find(c=>c.status!=='pass');
     const reason=njRows(row.blockers)[0]||primary?.reason;
-    return `<article class="nj-record"><header class="journey-row-head"><div><h4>${esc(row.name||[row.first_name,row.last_name].filter(Boolean).join(' ')||row.email||row.source_key||'Identidade não informada')}</h4><p class="msg">${esc(row.company||row.organization_name||'Empresa não informada')} · ${esc(row.email||'E-mail não revelado')}</p></div><span class="nj-state">${row.eligible===true?'Liberado pelas checagens do servidor':'Retido'}</span></header><p>${esc(reason?njReason(reason):row.eligible===true?'As seis checagens foram confirmadas pelo servidor.':'Sem prova disponível nesta leitura.')}</p><details><summary>Ver checagens e fontes</summary><ul>${Object.entries(njCheckLabels).map(([key,label])=>{const c=list.find(c=>c.key===key);return `<li><b>${label}: ${esc(njStatusLabels[c?.status]||njStatusLabels.unknown)}</b><p>${esc(njReason(c?.reason))}</p>${c?.source?`<p class="msg">Fonte: ${esc(typeof c.source==='string'?c.source:JSON.stringify(c.source))}</p>`:''}${c?.proof_path?`<p class="msg">${esc(c.proof_path)}</p>`:''}${c?.checked_at||c?.date?`<p class="msg">Conferida em: ${esc(c.checked_at||c.date)}</p>`:''}${c?.coverage?`<p class="msg">Cobertura: ${esc(JSON.stringify(c.coverage))}</p>`:''}</li>`;}).join('')}</ul></details></article>`;
+    return `<article class="nj-record"><header class="journey-row-head"><div><h4>${esc(row.name||[row.first_name,row.last_name].filter(Boolean).join(' ')||row.email||row.source_key||'Identidade não informada')}</h4><p class="msg">${esc(row.company||row.organization_name||'Empresa não informada')} · ${esc(row.email||'E-mail não revelado')}</p></div><span class="nj-state">${row.eligible===true?'Liberado pelas checagens do servidor':'Retido'}</span></header><p>${esc(reason?njReason(reason):row.eligible===true?'As seis checagens foram confirmadas pelo servidor.':'Sem prova disponível nesta leitura.')}</p><details><summary>Ver checagens e fontes</summary><ul>${Object.entries(njCheckLabels).map(([key,label])=>{const c=list.find(c=>c.key===key);return `<li><b>${label}: ${esc(njStatusLabels[c?.status]||njStatusLabels.unknown)}</b><p>${esc(njReason(c?.reason))}</p>${c?.source?`<p class="msg">Fonte: ${esc(typeof c.source==='string'?c.source:JSON.stringify(c.source))}</p>`:''}${c?.proof_path?`<p class="msg">${esc(c.proof_path)}</p>`:''}${c?.checked_at||c?.date?`<p class="msg">Conferida em: ${esc(c.checked_at||c.date)}</p>`:''}${c?.coverage?`<p class="msg">Cobertura: ${esc(JSON.stringify(c.coverage))}</p>`:''}</li>`;}).join('')}</ul></details>${njImportHTML(row)}</article>`;
   }).join('')||'<p class="vazio">Importe uma lista ou busque contatos para iniciar a checagem.</p>'}`;
 }
 function njQualificationHTML(){
@@ -2631,6 +2652,9 @@ $('nj-prev').addEventListener('click',()=>nj.step===1?$('nj-back').click():njGo(
 $('nj-next').addEventListener('click',()=>nj.step===5?$('nj-back').click():njGo(nj.step+1));
 $('nj-reload').addEventListener('click',njLoad);$('nj-retry').addEventListener('click',njLoad);
 $('new-journey').addEventListener('click',event=>{
+  const confirmImport=event.target.closest('[data-nj-import-confirm]');
+  const reconcileImport=event.target.closest('[data-nj-import-reconcile]');
+  if(confirmImport||reconcileImport){const p=nj.importPreview;if(!p||nj.busy)return;const b={preview_id:p.id,expected_version:p.version,preview_hash:p.preview_hash};if(confirmImport){if(p.can_execute!==true)return;b.confirm=true;}njImportRequest(confirmImport?'hubspot-execute':'hubspot-reconcile',b);return;}
   const resume=event.target.closest('[data-nj-resume]');if(resume&&!nj.busy){mostrarAba('jornada/nova/'+encodeURIComponent(resume.dataset.njResume)+'/1');$('nj-title').focus();return;}
   const step=event.target.closest('[data-nj-step]');if(step){njGo(Number(step.dataset.njStep));return;}
   const approve=event.target.closest('[data-nj-approve]');if(approve){const s=nj.sequence[Number(approve.dataset.njApprove)];if(njCanApprove(s?.id))njWrite('approve-step',{step_id:s.id,review_hash:nj.draft.review_hash},'Texto exato aprovado para uso manual no Apollo. Nenhum envio executado.');return;}
@@ -2656,6 +2680,7 @@ $('nj-steps').addEventListener('keydown',event=>{
 });
 $('new-journey').addEventListener('input',event=>{
   const el=event.target;if(nj.busy)return;
+  if(el.closest('form[data-nj-import]')){nj.importPreview=null;el.closest('.nj-import')?.querySelector('section')?.remove();return;}
   if(el.closest('form[data-nj-qualification]'))nj.qualificationDirty=true;
   if(el.dataset.njField){const index=Number(el.closest('[data-nj-index]').dataset.njIndex),field=el.dataset.njField;nj.sequence[index][field]=field==='interval_hours'?Number(el.value):el.value;nj.sequenceDirty=true;}
   if(el.id==='nj-sequence-query'){nj.sequenceQuery=el.value;nj.sequenceId='';nj.sequences=[];nj.sequenceDirty=true;$('nj-sequence-id').innerHTML='<option value="">Selecione após consultar</option>';}
@@ -2681,6 +2706,12 @@ $('new-journey').addEventListener('change',async event=>{
 });
 $('new-journey').addEventListener('submit',async event=>{
   event.preventDefault();if(nj.busy||!apiServidor)return;
+  if(event.target.dataset.njImport){
+    if(!event.target.reportValidity()||njDirty()||nj.stale)return;
+    const values=Object.fromEntries(new FormData(event.target).entries()),contact={},company={},source_refs={};
+    for(const [key,value] of Object.entries(values)){if((key.startsWith('contact.')||key.startsWith('company.'))&&value.trim()){const [kind,field]=key.split('.');(kind==='contact'?contact:company)[field]=value;source_refs[key]={ref:values.source_ref,verified:values.verified==='on'};}}
+    njImportRequest('hubspot-preview',{expected_version:nj.draft.version,review_hash:nj.draft.review_hash,data:{source_key:event.target.dataset.njImport,contact,company,source_refs}});return;
+  }
   if(event.target.dataset.njQualification){
     if(!event.target.reportValidity())return;
     const f=new FormData(event.target),facts=Object.fromEntries(f.entries());

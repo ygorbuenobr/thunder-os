@@ -340,6 +340,13 @@ class JourneyReadonly:
                                     if not selected({'campaign_id': g['id']}))
         omitted['items'] = sum(not selected(row) for b in observed.get('blocks', {}).values()
                                for row in b.get('items', []))
+        # An unbound deal is observed CRM data, but is neither a Brazil lead nor
+        # proof of an empty CRM. Intentional campaign filters/Mexico stay excluded.
+        unbound_deals = sum(str(row.get('id', '')).startswith('hubspot:deal:')
+                            and (row.get('campaign_id') or row.get('campaign')) not in campaigns
+                            and not excluded(row)
+                            for block in observed.get('blocks', {}).values()
+                            for row in block.get('items', []))
         account_rows = []
         if self.accounts is not None:
             catalog = read('accounts', lambda: self.accounts.list_accounts(campaign=campaign), {})
@@ -380,16 +387,7 @@ class JourneyReadonly:
                 stages[stage]['items'].append(item)
             return ident
 
-        for cid in sorted(campaigns):
-            if campaign is not None and cid != campaign:
-                continue
-            view = sheets[cid]
-            fields = view.get('fields', [])
-            put('icp', 'campaign:' + cid, {'title': cid, 'campaign_id': cid}, [
-                _block(f.get('content'), label=f['label'] if f.get('status') == 'ok' else f['label'] + ' / indisponivel',
-                       date=f.get('source_updated_at'), complete=f.get('status') == 'ok') for f in fields],
-                summary='Ficha da campanha: ' + ('completa' if view.get('status') == 'complete' else 'incompleta'))
-
+        # Registry entries are campaign metadata and filters, never ICP people/accounts.
         for row in account_rows:
             put('icp', ['account', row['id'], row.get('campaign_id')],
                 {**row, 'title': row.get('name') or row.get('company') or row['id']},
@@ -398,6 +396,9 @@ class JourneyReadonly:
                         'Ficha individual da conta; cadastro nao comprova envio ou aprovacao')
             item = stages['icp']['items'][-1]
             item['action'] = {'label': 'Abrir', 'type': 'account', 'id': row['id']}
+            for key in ('date_basis', 'date_sourcepath'):
+                if key in row:
+                    item[key] = row[key]
             if self._indexed_draft(row):
                 item.update({k: row[k] for k in ('source_group', 'source_group_label', 'campaign_label',
                                                  'readiness', 'reviewable', 'status_only', 'approval_available')})
@@ -423,14 +424,17 @@ class JourneyReadonly:
                 and (event.get('occurred_at') or '') > last_incoming
                 for group in groups if group['id'] == thread.get('campaign_id')
                 for event in group.get('activities', [])))
+            crm_read_pending = ('hubspot_emails' in thread.get('source_ids', [])
+                and latest.get('direction') == 'incoming' and not latest.get('automatic')
+                and not later_outgoing)
             stage = 'linkedin' if 'linkedin' in thread.get('source_ids', []) else (
-                'resposta' if thread['id'] in pending and not later_outgoing else 'followup')
+                'resposta' if (thread['id'] in pending or crm_read_pending) and not later_outgoing else 'followup')
             if thread.get('thread', {}).get('complete') is not True:
                 partial_stages.add(stage)
             ident = put(stage, 'thread:' + thread['id'], thread, blocks,
                 draft=pending.get(thread['id'], {}).get('draft'),
                 summary='Saida posterior registrada no CRM; pendencia nao confirmada.' if later_outgoing else
-                    'Ultima mensagem observada: ' + (latest.get('subject') or latest.get('direction', 'desconhecida')))
+                    ('Mensagem recebida no HubSpot; leitura e classificacao pendentes. ' if crm_read_pending else 'Ultima mensagem observada: ') + (latest.get('subject') or latest.get('direction', 'desconhecida')))
             for m in messages:
                 events.append({**deepcopy(m), 'campaign_id': thread.get('campaign_id'),
                     'contact_id': thread.get('contact_id'), 'person_keys': thread.get('person_keys', []),
@@ -696,7 +700,7 @@ class JourneyReadonly:
             'cost_per_hot': metric(None, 'verified_cost_source_unavailable')}
 
         dependencies = {'icp': ['campaign_registry'], 'abordagem': ['cadence', 'instantly'],
-            'resposta': ['gmail', 'seqd', 'instantly'], 'crm': ['hubspot_deals'],
+            'resposta': ['hubspot_emails', 'gmail', 'seqd', 'instantly'], 'crm': ['hubspot_deals'],
             'linkedin': ['linkedin'], 'followup': ['hubspot_tasks', 'gmail', 'seqd'],
             'preparacao': ['local:meeting', 'local:research']}
         for key, stage in stages.items():
@@ -705,13 +709,21 @@ class JourneyReadonly:
             if key == 'icp':
                 complete = complete and all(view.get('status') == 'complete' for cid, view in sheets.items()
                                              if campaign is None or campaign == cid)
-                if self.accounts is not None:
-                    complete = complete and sources.get('accounts', {}).get('status') == 'ok'
+                complete = complete and sources.get('accounts', {}).get('status') == 'ok'
+            if key == 'crm':
+                crm_scope_incomplete = 'unknown_identity_cannot_guarantee_mx_exclusion' in sources.get('hubspot_deals', {}).get('limitations', [])
+                complete = (complete and not unbound_deals and not crm_scope_incomplete
+                            and sources.get('campaign_registry', {}).get('status') == 'ok')
+                stage['coverage'] = {'complete': complete, 'scope': 'observed_campaign_bound_deals',
+                    'omitted_without_verified_brazil_campaign': unbound_deals}
             stage['items'].sort(key=lambda i: (i['date'] or '~', i['id']))
             stage.update(count=len(stage['items']) if complete else None,
                 status='ok' if complete else 'partial' if stage['items'] else 'unavailable',
                 reason='Registros observados nas fontes declaradas.' if complete else
                        'Cobertura parcial ou indisponivel; total desconhecido.')
+            if key == 'crm' and (unbound_deals or crm_scope_incomplete):
+                stage['reason'] = ('Negocios observados sem vinculo com campanha Brasil verificada '
+                                   'foram omitidos; total desconhecido.')
             if key == 'preparacao' and not stage['items']:
                 stage.update(count=None, status='unavailable', reason='Sem preparacao vinculada a reuniao comprovada.')
 

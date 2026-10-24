@@ -83,6 +83,8 @@ ALLOWED_FILES = {
 ALLOWED_TESTS = {
     "test_thunder_os_apollo_prospect_readonly.py",
     "test_thunder_os_new_journey.py",
+    "test_thunder_os_new_journey_import.py",
+    "test_thunder_os_apollo_research_input.py",
     "test_thunder_os_new_journey_checks.py",
     "test_thunder_os_new_journey_eligibility.py",
     "test_thunder_os_new_journey_hubspot.py",

@@ -1357,7 +1357,15 @@ class Handler(BaseHTTPRequestHandler):
                     return self.responder(200, wizard.catalog())
                 if not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', target):
                     raise Erro('Jornada não encontrada.', 404)
-                return self.responder(200, wizard.get(target, 'ygor'))
+                value = wizard.get(target, 'ygor')
+                importer = getattr(self.server, 'thunder_new_journey_import', None)
+                if importer is not None:
+                    previews = [p for p in importer.repo.list_state('hubspot_preview')
+                        if p.get('kind') == 'journey_import_v1' and p.get('journey_id') == target
+                        and p.get('journey_version') == value.get('version')]
+                    value['hubspot_import_previews'] = [importer._view(p) for p in
+                        sorted(previews, key=lambda p: p.get('updated_at', ''), reverse=True)[:20]]
+                return self.responder(200, value)
             if self.command != 'POST':
                 raise Erro('Método de jornada não permitido.', 405)
             actor = self.thunder_actor()
@@ -1370,7 +1378,7 @@ class Handler(BaseHTTPRequestHandler):
                 if set(body) != {'campaign_id', 'name'}:
                     raise Erro('Dados de jornada inválidos.')
                 return self.responder(200, wizard.create(body, actor))
-            match = re.fullmatch(r'([A-Za-z0-9_-]{1,100})/(source|check|qualify|sequences|sequence|approve-step|export|reconcile)', target)
+            match = re.fullmatch(r'([A-Za-z0-9_-]{1,100})/(source|check|qualify|sequences|sequence|approve-step|export|reconcile|hubspot-preview|hubspot-execute|hubspot-reconcile)', target)
             if not match:
                 raise Erro('Operação de jornada não encontrada.', 404)
             ident, action = match.groups()
@@ -1378,6 +1386,27 @@ class Handler(BaseHTTPRequestHandler):
                 raise Erro('Versão de jornada inválida.')
             version = body['expected_version']
             required = {'expected_version'}
+            if action.startswith('hubspot-'):
+                importer = getattr(self.server, 'thunder_new_journey_import', None)
+                if importer is None:
+                    raise Erro('Cadastro HubSpot indisponível.', 503)
+                if action == 'hubspot-preview':
+                    if set(body) != {'expected_version', 'review_hash', 'data'}:
+                        raise Erro('Prévia HubSpot inválida.')
+                    result = importer.preview(ident, body['data'], actor,
+                        expected_version=version, review_hash=body['review_hash'])
+                else:
+                    required = {'preview_id', 'expected_version', 'preview_hash'}
+                    if action == 'hubspot-execute':
+                        required.add('confirm')
+                    if set(body) != required:
+                        raise Erro('Confirme a prévia exata do cadastro.')
+                    preview = importer.repo.get_state('hubspot_preview', body['preview_id'])
+                    if not preview or preview.get('journey_id') != ident:
+                        raise Erro('Prévia de outra jornada ou inexistente.', 404)
+                    operation = importer.execute if action == 'hubspot-execute' else importer.reconcile
+                    result = operation(body, actor)
+                return self.responder(200, result)
             if action == 'source':
                 mode = body.get('mode')
                 fields = {'csv': {'mode', 'csv_text'},
@@ -1428,6 +1457,9 @@ class Handler(BaseHTTPRequestHandler):
             if status not in {400, 404, 409, 503}:
                 status = 409
             public_errors = {
+                'import_writes_disabled': 'O cadastro está desligado nos controles do servidor. A prévia não gravou nada.',
+                'import_preview_conflict': 'A prévia mudou. Prepare e confira novamente antes de confirmar.',
+                'import_exact_review_required': 'Confirme o hash e a versão exatos da prévia.',
                 'journey_apollo_permission_denied': 'A chave do Apollo não permite esta consulta. Confira o escopo de leitura indicado na etapa.',
                 'journey_apollo_credential_unavailable': 'A credencial privada do Apollo não está disponível para o painel.',
                 'journey_apollo_credential_rejected': 'O Apollo recusou a credencial configurada.',
@@ -2377,6 +2409,9 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
                         InstantlyMembershipReadOnly(), apollo_account_id=APOLLO_TEAM)
                     if runtime is None else None,
                     refusals=RegisteredRefusalRead() if runtime is None else None))
+            from thunder_os.new_journey_import import NewJourneyImport
+            servidor.thunder_new_journey_import = NewJourneyImport(
+                servidor.thunder_new_journey, servidor.thunder_hubspot_console)
             servidor.thunder_origin = os.environ.get(
                 'THUNDER_OS_ORIGIN', 'https://painel.r3xdigital.tech')
             if runtime is not None:servidor.thunder_origin = runtime['public_origin']

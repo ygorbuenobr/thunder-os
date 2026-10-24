@@ -5,6 +5,8 @@ ATX headings outside fences, scalar identity metadata, pipe tables, M1..M7
 paragraphs, D<n> sections and numbered sections under 'Textos exatos'. Text and
 source bytes are preserved; dates without a year are never completed from the
 file date, research dates or the clock. No prototype, provider or network reads.
+Account display dates use the opened source file's modification timestamp,
+explicitly labelled source_file; this never dates a business event or a touch.
 
 Source roots are explicit below. Discovery is at most two directories deep,
 2,000 entries / 500 files / 512 KiB per file, plus the single explicit visitor
@@ -595,7 +597,7 @@ class AccountCadenceReadonly:
         self.root, self.repo, self.clock = Path(brain_root).resolve(), repo, clock
 
     @staticmethod
-    def _read(anchor, relative):
+    def _read(anchor, relative, *, with_updated_at=False):
         """Open each component relative to an fd, never following symlinks."""
         parts = PurePosixPath(relative).parts
         if not parts or relative.startswith('/') or '..' in parts:
@@ -614,7 +616,10 @@ class AccountCadenceReadonly:
                 raw = stream.read(MAX_BYTES + 1)
                 if len(raw) > MAX_BYTES:
                     raise ValueError('source_too_large')
-                return raw.decode('utf-8'), hashlib.sha256(raw).hexdigest()
+                result = (raw.decode('utf-8'), hashlib.sha256(raw).hexdigest())
+                if with_updated_at:
+                    return (*result, datetime.fromtimestamp(info.st_mtime, timezone.utc).isoformat())
+                return result
         finally:
             os.close(directory)
 
@@ -644,7 +649,7 @@ class AccountCadenceReadonly:
             limitations.append('visitor_brief_missing_or_unreadable:' + VISITOR_BRIEF)
         for row in rows:
             path = VISITOR_DIRECTORY + '/' + row['pasta'] + '/cadencia.md'
-            status, md, digest = row['status'], None, None
+            status, md, digest, updated_at = row['status'], None, None, None
             country = 'MX' if '(mexico)' in _fold(status) else 'BR'
             referenced_campaign = re.search(r'\bMX27-[A-Z0-9-]+\b', status)
             identity = {'id': 'source-' + hashlib.sha256(path.encode()).hexdigest()[:24],
@@ -658,7 +663,7 @@ class AccountCadenceReadonly:
                         'source_index': {'path': VISITOR_INDEX, 'sha256': index_hash},
                         'source_brief': {'path': VISITOR_BRIEF, 'sha256': brief_hash}}
             try:
-                text, digest = self._read(self.root, path)
+                text, digest, updated_at = self._read(self.root, path, with_updated_at=True)
                 md = _Markdown(text)
                 title = next((h[2] for h in md.headings if h[1] == 1), '')
                 parts = title.split(' | ', 2)
@@ -674,7 +679,9 @@ class AccountCadenceReadonly:
             except (OSError, ValueError, UnicodeError):
                 identity['reviewable'] = False
                 limitations.append('account_source_missing:' + path)
-            record = {**identity, 'source': {'path': path, 'sha256': digest},
+            record = {**identity, 'source': {'path': path, 'sha256': digest, 'updated_at': updated_at},
+                      'date': updated_at, 'date_basis': 'source_file' if updated_at is not None else None,
+                      'date_sourcepath': path if updated_at is not None else None,
                       'source_status': 'observed' if md is not None else 'incomplete'}
             yield record, md
 
@@ -721,7 +728,7 @@ class AccountCadenceReadonly:
                                 continue
                             path = relative_path if anchor == self.root else str(Path(item.path))
                             try:
-                                text, digest = self._read(anchor, relative_path)
+                                text, digest, updated_at = self._read(anchor, relative_path, with_updated_at=True)
                             except (OSError, ValueError, UnicodeError):
                                 limitations.append('source_unreadable:' + path)
                                 continue
@@ -733,7 +740,7 @@ class AccountCadenceReadonly:
                             title = next((title for _, level, title in md.headings if level == 1), '')
                             canonical_note = relative_path.startswith('contas/') and item.name == 'campanha.md'
                             if _fold(title).startswith('cadencia') or canonical_note:
-                                yield _identity(md, path), md, path, digest
+                                yield _identity(md, path), md, path, digest, updated_at
                             else:
                                 limitations.append('source_format_unsupported:' + path)
                 except OSError:
@@ -771,13 +778,15 @@ class AccountCadenceReadonly:
         limitations, records = [], []
         states = self._states(limitations)
         records.extend(self._visitor_sources(limitations))
-        for identity, md, path, digest in self._sources(limitations):
+        for identity, md, path, digest, updated_at in self._sources(limitations):
             if identity['identity_status'] == 'explicit_account_id' and not identity['campaign_id']:
                 campaigns = {self._state_campaign(row, limitations)
                              for row in states if row['account_id'] == identity['id']} - {None}
                 if len(campaigns) == 1:
                     identity['campaign_id'] = next(iter(campaigns))
-            record = {**identity, 'source': {'path': path, 'sha256': digest}, 'source_status': 'observed'}
+            record = {**identity, 'source': {'path': path, 'sha256': digest, 'updated_at': updated_at},
+                      'date': updated_at, 'date_basis': 'source_file', 'date_sourcepath': path,
+                      'source_status': 'observed'}
             records.append((record, md))
         for row in states:
             campaign = self._state_campaign(row, limitations)
