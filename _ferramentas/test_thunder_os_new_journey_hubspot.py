@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 from urllib.parse import urlsplit
 
-from thunder_os.hubspot_executor import HubSpotHTTP
+from thunder_os.hubspot_executor import HubSpotHTTP, HubSpotHTTPError
 from thunder_os.new_journey_hubspot import (BOOLS, COMPANY_PROPERTIES, CONTACT_PROPERTIES,
     DEAL_PROPERTIES, ENUMS, HubSpotEligibilityError, HubSpotEligibilityRead)
 
@@ -43,7 +43,7 @@ def record(ident, properties, associations=None):
 
 
 def links(*ids):
-    return {'results': [{'id': ident} for ident in ids]}
+    return {'results': [{'id': ident, 'type': 'synthetic_association'} for ident in ids]}
 
 
 class FakeHTTP:
@@ -66,6 +66,7 @@ class FakeHTTP:
         self.deals = {str(i): record(str(i), {'hs_is_closed': 'true', 'dealname': 'Synthetic'})
                       for i in range(1, 5)}
         self.search = {'total': 1, 'results': [{'id': '123'}]}
+        self.associations = {}
         self.fail = {}
 
     def loader(self):
@@ -86,6 +87,10 @@ class FakeHTTP:
             data = self.schemas[base.rsplit('/', 1)[1]]
         elif base == '/crm/v3/objects/contacts/search':
             data = self.search
+        elif base.startswith('/crm/v4/objects/'):
+            if base not in self.associations:
+                return 404, b'{}'
+            data = self.associations[base]
         else:
             parts = base.split('/')
             values = getattr(self, parts[-2])
@@ -107,6 +112,196 @@ class HubSpotEligibilityReadTests(unittest.TestCase):
 
     def lookup(self, **kwargs):
         return self.reader.lookup(EMAIL, **kwargs)
+
+    def test_distinct_association_labels_same_company_are_one_identity(self):
+        self.http.contacts['123']['associations']['companies'] = {'results': [
+            {'id': '500', 'type': 'contact_to_company'},
+            {'id': '500', 'type': 'contact_to_company_unlabeled'},
+        ], 'total': 2}
+        result = self.lookup()
+        self.assertEqual(result['status'], 'ok')
+        self.assertTrue(result['identity']['verified'])
+        self.assertEqual(result['identity']['company_id'], '500')
+        self.assertTrue(result['coverage']['company'])
+        self.assertTrue(result['coverage']['deals'])
+        company_reads = [path for _, path, _, _ in self.http.calls
+                         if urlsplit(path).path == '/crm/v3/objects/companies/500']
+        self.assertEqual(len(company_reads), 1)
+
+    def test_repeated_same_association_edge_and_partial_pages_stay_incomplete(self):
+        valid = {'id': '500', 'type': 'contact_to_company'}
+        groups = [
+            {'results': [valid, deepcopy(valid)]},
+            {'results': [valid, deepcopy(valid)], 'total': 2},
+            {'results': [valid, {'id': '501', 'type': 'contact_to_company'}]},
+            {'results': [valid], 'paging': {'next': {'after': 'more'}}},
+            {'results': [valid], 'paging': None},
+            {'results': [valid], 'total': 2},
+            {'results': [valid, {'id': '../500', 'type': 'contact_to_company'}]},
+        ]
+        for ident in (None, True, False, 0, -1, 500, '0', '0500', '5.0', '1' * 31):
+            groups.append({'results': [{'id': ident, 'type': 'contact_to_company'}]})
+        for label in (None, '', False, 1, [], {}, 'bad type', 'bad\nlabel'):
+            groups.append({'results': [{'id': '500', 'type': label}]})
+        groups.extend(({'results': [{'id': '500'}]}, {'results': [None]},
+                       {'results': 'invalid'}, None))
+        for group in groups:
+            with self.subTest(group=group):
+                http = FakeHTTP()
+                http.contacts['123']['associations']['companies'] = deepcopy(group)
+                result = HubSpotEligibilityRead(HubSpotHTTP(http.loader, request=http)).lookup(EMAIL)
+                self.assertIsNone(result['company'])
+                self.assertFalse(result['coverage']['company'])
+                self.assertFalse(result['coverage']['deals'])
+                self.assertEqual([d['id'] for d in result['deals']], ['1', '2'])
+                self.assertFalse(any('/crm/v4/' in path for _, path, _, _ in http.calls))
+
+    def test_omitted_deals_require_explicit_association_read(self):
+        for source, ident in (('contacts', '123'), ('companies', '500')):
+            base = f'/crm/v4/objects/{source}/{ident}/associations/deals'
+            for change in ('empty', 'linked', 'error', 'timeout', 'missing_results',
+                           'next', 'bad_next', 'bad_paging', 'duplicate', 'bad_id',
+                           'bool_id', 'bad_types', 'duplicate_type', 'missing_type_id',
+                           'bool_type_id', 'bad_category', 'bad_label', 'too_many'):
+                with self.subTest(source=source, change=change):
+                    http = FakeHTTP()
+                    http.contacts['123']['associations']['deals'] = links()
+                    http.companies['500']['associations']['deals'] = links()
+                    getattr(http, source)[ident]['associations'].pop('deals')
+                    edge = {'toObjectId': 4, 'associationTypes': [
+                        {'category': 'HUBSPOT_DEFINED', 'typeId': 4, 'label': None}]}
+                    group = {'results': []}
+                    if change == 'linked': group['results'] = [edge]
+                    elif change == 'error': http.fail[base] = 403
+                    elif change == 'timeout': http.fail[base] = TimeoutError(TOKEN)
+                    elif change == 'missing_results': group = {}
+                    elif change == 'next': group['paging'] = {'next': {'after': 'more'}}
+                    elif change == 'bad_next': group['paging'] = {'next': None}
+                    elif change == 'bad_paging': group['paging'] = []
+                    elif change == 'duplicate': group['results'] = [edge, deepcopy(edge)]
+                    elif change == 'too_many': group['results'] = [deepcopy(edge) for _ in range(501)]
+                    elif change not in ('empty', 'error', 'timeout'):
+                        group['results'] = [edge]
+                        if change == 'bad_id': edge['toObjectId'] = 4.0
+                        elif change == 'bool_id': edge['toObjectId'] = True
+                        elif change == 'bad_types': edge['associationTypes'] = []
+                        elif change == 'duplicate_type': edge['associationTypes'] *= 2
+                        elif change == 'missing_type_id': edge['associationTypes'][0].pop('typeId')
+                        elif change == 'bool_type_id': edge['associationTypes'][0]['typeId'] = True
+                        elif change == 'bad_category': edge['associationTypes'][0]['category'] = []
+                        elif change == 'bad_label': edge['associationTypes'][0]['label'] = 1
+                    http.associations[base] = group
+                    result = HubSpotEligibilityRead(HubSpotHTTP(http.loader, request=http)).lookup(EMAIL)
+                    self.assertEqual(result['coverage']['deals'], change in ('empty', 'linked'))
+                    if change == 'empty': self.assertEqual(result['deals'], [])
+                    if change == 'linked':
+                        self.assertEqual(result['association_coverage']['resolved_ids'], ['4'])
+                    self.assertEqual([path for _, path, _, _ in http.calls if '/crm/v4/' in path],
+                                     [base + '?limit=500'])
+                    self.assertNotIn(TOKEN, json.dumps(result))
+
+    def test_association_fallback_read_allowlist(self):
+        paths = [f'/crm/v4/objects/{source}/123/associations/{target}?limit=500'
+                 for source, target in (('contacts', 'companies'), ('contacts', 'deals'),
+                                        ('companies', 'deals'))]
+        for path in paths:
+            self.http.associations[urlsplit(path).path] = {'results': []}
+            self.assertEqual(self.reader.port._call('GET', path), {'results': []})
+            self.assertEqual(self.original._call('GET', path), {'results': []})
+        self.assertEqual(len(self.http.calls), 6)
+        rejected = [
+            paths[0].replace('limit=500', 'limit=100'),
+            paths[0].replace('?limit=500', ''), paths[0] + '&after=next',
+            paths[0] + '&limit=500', paths[0] + '#fragment',
+            paths[0].replace('/123/', '/0/'), paths[0].replace('/123/', '/0123/'),
+            paths[0].replace('/123/', '/true/'), paths[0].replace('/123/', '/1.0/'),
+            paths[0].replace('/123/', '/' + '1' * 31 + '/'),
+            'https://evil.invalid' + paths[0],
+            paths[0].replace('/contacts/', '/deals/'),
+            paths[0].replace('/contacts/', '/companies/'),
+            paths[1].replace('/associations/deals', '/associations/contacts'),
+        ]
+        http = FakeHTTP()
+        original = HubSpotHTTP(http.loader, request=http)
+        reader = HubSpotEligibilityRead(original)
+        for method, path, body in ([('GET', path, None) for path in rejected]
+                + [(method, path, {} if method == 'POST' else None)
+                   for path in paths for method in ('POST', 'PATCH', 'DELETE', 'PUT')]
+                + [('GET', paths[0], {})]):
+            with self.subTest(method=method, path=path):
+                with self.assertRaises(HubSpotEligibilityError):
+                    reader.port._call(method, path, body)
+                # Base transport owns the exact method/path boundary. Body
+                # validation belongs to the read capability, as before S26.
+                if body is None or method != 'GET':
+                    with self.assertRaises(HubSpotHTTPError):
+                        original._call(method, path, body)
+        self.assertEqual(http.loads, 0)
+        self.assertEqual(http.calls, [])
+
+    def test_missing_company_group_uses_typed_v4_ids_and_distinct_labels(self):
+        base = '/crm/v4/objects/contacts/123/associations/companies'
+        for change in ('distinct', 'repeated', 'invalid', 'partial', 'multiple'):
+            with self.subTest(change=change):
+                http = FakeHTTP()
+                http.contacts['123']['associations'].pop('companies')
+                primary = {'toObjectId': 500, 'associationTypes': [
+                    {'category': 'HUBSPOT_DEFINED', 'typeId': 1, 'label': 'Primary'},
+                    {'category': 'HUBSPOT_DEFINED', 'typeId': 279, 'label': None}]}
+                group = {'results': [primary, {'toObjectId': '500', 'associationTypes': [
+                    {'category': 'USER_DEFINED', 'typeId': 1, 'label': 'Buyer'}]}]}
+                if change == 'repeated': group['results'].append(deepcopy(primary))
+                elif change == 'invalid': primary['toObjectId'] = True
+                elif change == 'partial': group['paging'] = {'next': {'after': 'more'}}
+                elif change == 'multiple': group['results'][1]['toObjectId'] = '501'
+                http.associations[base] = group
+                result = HubSpotEligibilityRead(HubSpotHTTP(http.loader, request=http)).lookup(EMAIL)
+                self.assertEqual(result['coverage']['company'], change == 'distinct')
+                self.assertEqual(result['coverage']['deals'], change == 'distinct')
+                if change == 'distinct': self.assertEqual(result['identity']['company_id'], '500')
+                else: self.assertIsNone(result['company'])
+                self.assertEqual([path for _, path, _, _ in http.calls if '/crm/v4/' in path],
+                                 [base + '?limit=500'])
+
+    def test_fallback_only_for_absent_groups_including_absent_container(self):
+        for container in ('absent', None, [], 'invalid'):
+            with self.subTest(container=container):
+                http = FakeHTTP()
+                if container == 'absent': http.contacts['123'].pop('associations')
+                else: http.contacts['123']['associations'] = container
+                company = '/crm/v4/objects/contacts/123/associations/companies'
+                deals = '/crm/v4/objects/contacts/123/associations/deals'
+                http.associations[company] = {'results': [{'toObjectId': '500', 'associationTypes': [
+                    {'category': 'HUBSPOT_DEFINED', 'typeId': 279, 'label': None}]}]}
+                http.associations[deals] = {'results': []}
+                result = HubSpotEligibilityRead(HubSpotHTTP(http.loader, request=http)).lookup(EMAIL)
+                self.assertEqual(result['coverage']['deals'], container == 'absent')
+                observed = [path for _, path, _, _ in http.calls if '/crm/v4/' in path]
+                self.assertEqual(observed, [company + '?limit=500', deals + '?limit=500']
+                                 if container == 'absent' else [])
+        for group in (None, {}, {'results': []}, {'results': [], 'paging': {'next': {'after': 'more'}}}):
+            http = FakeHTTP()
+            http.contacts['123']['associations']['deals'] = group
+            http.companies['500']['associations']['deals'] = links()
+            result = HubSpotEligibilityRead(HubSpotHTTP(http.loader, request=http)).lookup(EMAIL)
+            self.assertEqual(result['coverage']['deals'], group == {'results': []})
+            self.assertFalse(any('/crm/v4/' in path for _, path, _, _ in http.calls))
+
+    def test_fallback_consumes_existing_budget_without_retry_and_cache_is_stable(self):
+        for source, ident in (('contacts', '123'), ('companies', '500')):
+            getattr(self.http, source)[ident]['associations'].pop('deals')
+            self.http.associations[f'/crm/v4/objects/{source}/{ident}/associations/deals'] = {'results': []}
+        reader = HubSpotEligibilityRead(self.original, max_requests=8)
+        first = reader.lookup(EMAIL)
+        self.assertFalse(first['coverage']['deals'])
+        self.assertTrue(first['coverage']['company'])
+        self.assertEqual(reader.requests, 8)
+        self.assertEqual(len(self.http.calls), 8)
+        self.assertEqual([path for _, path, _, _ in self.http.calls if '/crm/v4/' in path],
+                         ['/crm/v4/objects/contacts/123/associations/deals?limit=500'])
+        self.assertEqual(reader.lookup(EMAIL), first)
+        self.assertEqual(len(self.http.calls), 8)
+        self.assertTrue(all(0 < timeout <= 4 for _, _, _, timeout in self.http.calls))
 
     def test_exact_lookup_returns_company_schema_and_all_union_deals_without_policy(self):
         result = self.lookup(profile=PROFILE)

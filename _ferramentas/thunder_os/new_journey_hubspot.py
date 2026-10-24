@@ -129,6 +129,9 @@ class HubSpotEligibilityRead:
             if method == 'GET' and body is None:
                 allowed = path == '/account-info/v3/details' or path in {
                     '/crm/v3/properties/' + kind for kind in PROPERTIES}
+                allowed |= bool(re.fullmatch(
+                    r'/crm/v4/objects/(?:contacts/[1-9][0-9]{0,29}/associations/(?:companies|deals)'
+                    r'|companies/[1-9][0-9]{0,29}/associations/deals)\?limit=500', path))
                 match = re.fullmatch(r'/crm/v3/objects/(contacts|companies|deals)/[1-9][0-9]{0,29}', parsed.path)
                 if match:
                     kind = match[1]
@@ -306,30 +309,72 @@ class HubSpotEligibilityRead:
                 props[key] = value
             elif self._clean(value):
                 props[key] = value
-        associations = raw.get('associations')
+        associations = raw.get('associations', {})
         return {'id': ident, 'archived': False, 'properties': props}, associations
 
     @staticmethod
-    def _associations(associations, kind):
+    def _associations(associations, kind, *, v4=False):
         if not isinstance(associations, Mapping) or not isinstance(associations.get(kind), Mapping):
             return [], False
         group = associations[kind]
         rows = group.get('results')
-        if not isinstance(rows, list) or len(rows) > 1000:
+        if not isinstance(rows, list) or len(rows) > (500 if v4 else 1000):
             return [], False
-        ids, complete = [], HubSpotEligibilityRead._terminal(group)
+        ids, edges, complete = [], set(), HubSpotEligibilityRead._terminal(group)
         for row in rows:
-            ident = row.get('id') if isinstance(row, Mapping) else None
-            if not isinstance(ident, str) or not _ID.fullmatch(ident):
+            ident = row.get('toObjectId' if v4 else 'id') if isinstance(row, Mapping) else None
+            if (type(ident) not in ((str, int) if v4 else (str,))
+                    or not _ID.fullmatch(str(ident))):
                 complete = False
-            elif ident in ids:
-                complete = False
-            else:
+                continue
+            ident = str(ident)
+            # Retain observed targets for positive deal evidence, even when
+            # their edge metadata cannot prove complete association coverage.
+            if ident not in ids:
                 ids.append(ident)
+            if v4:
+                types = row.get('associationTypes')
+                if not isinstance(types, list) or not 1 <= len(types) <= 1000:
+                    complete = False
+                    continue
+                labels = []
+                for item in types:
+                    if (not isinstance(item, Mapping)
+                            or not isinstance(item.get('category'), str)
+                            or item['category'] not in {'HUBSPOT_DEFINED', 'USER_DEFINED'}
+                            or type(item.get('typeId')) is not int or item['typeId'] <= 0
+                            or item.get('label') is not None and not _text(item['label'], 200)):
+                        complete = False
+                        continue
+                    labels.append((item['category'], item['typeId']))
+            elif (isinstance(row.get('type'), str)
+                    and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,199}', row['type'])):
+                labels = [row['type']]
+            else:
+                complete = False
+                continue
+            for label in labels:
+                edge = ident, label
+                if edge in edges:
+                    complete = False
+                edges.add(edge)
         total = group.get('total')
-        if total is not None and (type(total) is not int or total != len(ids)):
+        # An explicit total counts response edges, before target deduplication.
+        if total is not None and (type(total) is not int or total != len(rows)):
             complete = False
         return ids, complete
+
+    def _association_group(self, source, ident, associations, kind):
+        # Only an omitted group warrants an explicit read. Malformed or paged
+        # v3 evidence stays incomplete and is never replaced by a clean page.
+        if not isinstance(associations, Mapping) or kind in associations:
+            return self._associations(associations, kind)
+        try:
+            raw = self.port._call('GET', '/crm/v4/objects/' + source + '/' + ident
+                                  + '/associations/' + kind + '?limit=500')
+            return self._associations({kind: raw}, kind, v4=True)
+        except Exception:
+            return [], False
 
     @staticmethod
     def _empty():
@@ -440,8 +485,8 @@ class HubSpotEligibilityRead:
                 result['identity'].update(contact_id=ident, emails=sorted(emails), linkedin_urls=sorted(profiles),
                                           verified=bool(valid))
                 result['coverage']['identity']['complete'] = bool(valid)
-                company_ids, company_complete = self._associations(associations, 'companies')
-                contact_deals, contact_deals_complete = self._associations(associations, 'deals')
+                company_ids, company_complete = self._association_group('contacts', ident, associations, 'companies')
+                contact_deals, contact_deals_complete = self._association_group('contacts', ident, associations, 'deals')
                 result['coverage']['deals']['expected_ids'] = sorted(contact_deals)
                 result.update(status='partial' if valid else 'unknown',
                     reason='checks_hubspot_company_unresolved' if valid else 'checks_hubspot_identity_mismatch')
@@ -460,7 +505,8 @@ class HubSpotEligibilityRead:
                                                              properties=property_flags)
                         if result['coverage']['company']['complete']:
                             result['identity'].update(company_id=company['id'], domain=domain)
-                        company_deals, company_deals_complete = self._associations(company_associations, 'deals')
+                        company_deals, company_deals_complete = self._association_group(
+                            'companies', company['id'], company_associations, 'deals')
                     except Exception:
                         result['reason'] = 'checks_hubspot_company_unavailable'
                 elif len(company_ids) > 1:

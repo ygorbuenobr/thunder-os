@@ -54,7 +54,8 @@ class HubSpotHTTP:
         self._token=None;self.timeout=timeout;self.unique_properties=dict(unique_properties or {})
 
     def _call(self,method,path,body=None):
-        allowed=(method=='GET' and (path=='/account-info/v3/details' or bool(re.fullmatch(r'/crm/v3/(?:properties/(?:contacts|companies|deals)|pipelines/deals|objects/(?:contacts|companies|deals)/[^/?]+)(?:\?[^#]*)?',path)))
+        allowed=(method=='GET' and (path=='/account-info/v3/details' or bool(re.fullmatch(r'/crm/v3/(?:properties/(?:contacts|companies|deals)|pipelines/deals|objects/(?:contacts|companies|deals)/[^/?]+)(?:\?[^#]*)?',path))
+                 or bool(re.fullmatch(r'/crm/v4/objects/(?:contacts/[1-9][0-9]{0,29}/associations/(?:companies|deals)|companies/[1-9][0-9]{0,29}/associations/deals)\?limit=500',path)))
                  or method=='POST' and bool(re.fullmatch(r'/crm/v3/objects/(?:contacts|companies|deals)(?:/search)?',path))
                  or method=='PATCH' and bool(re.fullmatch(r'/crm/v3/objects/(?:contacts|companies|deals)/\d+',path)))
         if not allowed:raise HubSpotHTTPError('hubspot_endpoint_blocked')
