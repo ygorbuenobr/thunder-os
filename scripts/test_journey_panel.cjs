@@ -1,5 +1,6 @@
 // Phase 1 UI checks, one delegated slice. Binding: full Brain Jornada/Conta prototypes.
-// Arrangement: funnel, seven stages, selected list, timeline/log; account five tabs.
+// V24 binding: user GIF; compact funnel, connected circular stages, stage panel, footer log.
+// Timeline/evidence now expand; account five tabs and all behavior checks stay intact.
 // Proofs below cover source-backed metrics, BR-only scope, originals, local editing,
 // empty/loading/error/retry, polling, races, escaping, links, keyboard and reflow.
 // No backend, provider, credentials, persistence or execution evidence is claimed.
@@ -135,6 +136,11 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
       const settled = () => page.waitForFunction(() => !document.querySelector('#journey-refresh').disabled);
       const refresh = async () => { await page.locator('#journey-refresh').click(); await settled(); };
       const callCount = () => requests.filter(row => row.path === '/api/os/v1/journey').length;
+      const metricText = async key => {
+        const box = page.locator(`[data-journey-metric=${key}]`), proof = box.locator('details');
+        if (!(await proof.getAttribute('open') !== null)) await proof.locator('summary').click();
+        return box.innerText();
+      };
       const noOverflow = async () => {
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
         assert.equal(await page.locator('#journey-dialog').evaluate(node => node.open && node.scrollWidth > node.clientWidth), false);
@@ -163,18 +169,18 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
       assert.equal(await page.locator('body').getAttribute('data-aba'), 'jornada');
       assert.deepEqual(await page.locator('#abas [role=tab]').evaluateAll(nodes => nodes.map(node => node.firstChild.textContent)), ['Jornada', 'Campanhas', 'Contas', 'Sistema']);
       assert.equal(await page.locator('#journey-brand').isVisible(), true);
-      assert.equal(await page.locator('body').evaluate(node => getComputedStyle(node).backgroundColor), 'rgb(14, 13, 11)');
+      assert.equal(await page.locator('body').evaluate(node => getComputedStyle(node).backgroundColor), 'rgb(0, 0, 0)');
       assert.deepEqual(await page.locator('#journey-campaign option').evaluateAll(nodes => nodes.map(node => node.value)), ['', br, other, 'CHATTIE-01']);
       assert.equal(await page.locator('#journey-stages button').count(), 7);
-      assert.match(await page.locator('[data-journey-metric=reached]').innerText(), /12/);
-      assert.match(await page.locator('[data-journey-metric=replied]').innerText(), /\?[\s\S]*Sem leitura/);
+      assert.match(await metricText('reached'), /12/);
+      assert.match(await metricText('replied'), /\?[\s\S]*Sem leitura/);
       assert.equal(await page.locator('[data-journey-metric=cost_per_hot]').count(), 1, 'J03: unknown cost remains visible');
       assert.equal(await page.locator('[data-journey-metric=cost_per_hot] strong').textContent(), '?');
-      assert.match(await page.locator('[data-journey-metric=cost_per_hot]').innerText(), /Sem custo comprovado/);
+      assert.match(await metricText('cost_per_hot'), /Sem custo comprovado/);
       if (viewport.width === 1440) {
         const ys = await page.locator('#journey-stages button').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().y));
         assert.equal(new Set(ys).size, 1, 'Seven stage tiles share one desktop row');
-        assert.equal(await page.locator('.journey-bottom').evaluate(node => getComputedStyle(node).gridTemplateColumns.split(' ').length), 2);
+        assert.equal(await page.locator('.journey-bottom').evaluate(node => getComputedStyle(node).gridTemplateColumns.split(' ').length), 1, 'Reference footer stacks timeline/evidence/log');
       }
       for (const [id, label] of stages) {
         await page.locator(`[data-journey-stage=${id}]`).click();
@@ -217,7 +223,7 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
       assert.equal(await page.locator('#journey-detail-body img,#journey-detail-body script').count(), 0);
       const editor = page.locator('#journey-detail-body [data-journey-editor]');
       const textarea = editor.locator('textarea');
-      assert.equal(await textarea.evaluate(node => getComputedStyle(node).color), 'rgb(244, 241, 234)', 'Draft text remains legible in the dark drawer');
+      assert.equal(await textarea.evaluate(node => getComputedStyle(node).color), 'rgb(255, 254, 248)', 'Draft text remains legible in the dark drawer');
       await textarea.fill('Um dois três');
       assert.equal(await editor.locator('[data-journey-words]').textContent(), '3 palavras');
       assert.match(await editor.locator('[data-journey-approval]').innerText(), /Aprovar versão editada/);
@@ -259,16 +265,16 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
       await page.keyboard.press('Escape');
       state.metrics.cost_per_hot = metric(25); await refresh();
       assert.equal(await page.locator('[data-journey-metric=cost_per_hot] strong').textContent(), '?', 'Unknown hot denominator cannot produce numeric cost');
-      assert.match(await page.locator('[data-journey-metric=cost_per_hot]').innerText(), /Quantidade positiva de leads quentes não comprovada/);
+      assert.match(await metricText('cost_per_hot'), /Quantidade positiva de leads quentes não comprovada/);
       state.metrics.hot = metric(0); await refresh();
       assert.equal(await page.locator('[data-journey-metric=cost_per_hot] strong').textContent(), '?', 'Zero hot leads cannot be a cost denominator');
       state.metrics.hot = metric(2); await refresh();
-      assert.match(await page.locator('[data-journey-metric=cost_per_hot]').innerText(), /25,00/);
+      assert.match(await metricText('cost_per_hot'), /25,00/);
       state.metrics.cost_per_hot = {value: 0, source: [], reason: ''}; await refresh();
       assert.equal(await page.locator('[data-journey-metric=cost_per_hot] strong').textContent(), '?', 'Unregistered cost never becomes a presumed zero');
-      assert.match(await page.locator('[data-journey-metric=cost_per_hot]').innerText(), /Custo não cadastrado ou sem fonte comprovada/);
+      assert.match(await metricText('cost_per_hot'), /Custo não cadastrado ou sem fonte comprovada/);
       state.metrics.reached = {value: 900, source: [], reason: 'Sem comprovação.'}; await refresh();
-      assert.match(await page.locator('[data-journey-metric=reached]').innerText(), /\?/);
+      assert.match(await metricText('reached'), /\?/);
       const metricReasons = [
         ['verified_cost_source_unavailable', 'Fonte de custo comprovada indisponível nesta consulta.'],
         ['partial_human_reply_coverage', 'Leitura parcial das respostas humanas.'],
@@ -284,7 +290,7 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
         for (let i = 0; i < fields.length; i++) Object.assign(state.metrics[fields[i]], {reason: metricReasons[start + i][0], coverage: {complete: i % 2 === 0, scope: 'observed_brazil_people', observed_count: i}});
         await refresh();
         for (let i = 0; i < fields.length; i++) {
-          const rendered = await page.locator(`[data-journey-metric=${fields[i]}]`).innerText();
+          const rendered = await metricText(fields[i]);
           assert(rendered.includes(metricReasons[start + i][1]), 'Actual backend reason code renders its Portuguese explanation');
           assert(rendered.includes((i % 2 === 0 ? 'Leitura completa' : 'Leitura parcial') + ' · ' + i + (i === 1 ? ' pessoa observada' : ' pessoas observadas')));
           assert.doesNotMatch(rendered, /observed_brazil_people|observed_count|"complete"|"scope"|verified_cost_source_unavailable|partial_human_reply_coverage|unique_people_first_observed_touch_provider_receipt|person_identity_unverified|provider_receipt_unavailable|provider_classified_humans|explicit_positive_classification_bound_to_original|positive_classification_unavailable/);
@@ -299,11 +305,11 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
         const indicator = page.locator(`[data-journey-metric=${key}]`);
         assert.equal(await indicator.locator('[data-journey-metric-sources]').count(), 1, 'String source collection is compacted into one caption');
         assert.equal(await indicator.locator('[data-journey-metric-sources]').textContent(), consultedCaption);
-        assert.doesNotMatch(await indicator.innerText(), /local:hubspot_attempt|local:reply|\bgmail\b|\bseqd\b|\binstantly\b|\bcadence\b/);
+        assert.doesNotMatch(await metricText(key), /local:hubspot_attempt|local:reply|\bgmail\b|\bseqd\b|\binstantly\b|\bcadence\b/);
       }
       assert.equal(await page.locator('[data-journey-metric=reached] a').getAttribute('href'), source.url, 'Object source link remains unchanged alongside compact string sources');
       assert.equal(await page.locator('[data-journey-metric=cost_per_hot] strong').textContent(), '?');
-      assert.match(await page.locator('[data-journey-metric=cost_per_hot]').innerText(), /Fonte de custo comprovada indisponível/);
+      assert.match(await metricText('cost_per_hot'), /Fonte de custo comprovada indisponível/);
       state = journey(); await refresh();
       await page.locator('[data-journey-stage=icp]').click();
       await page.locator('#journey-stage-items [data-journey-kind=account]').click();

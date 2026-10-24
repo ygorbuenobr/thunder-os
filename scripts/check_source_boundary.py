@@ -10,6 +10,7 @@ ALLOWED_FILES = {
     "scripts/test_campaign_sheet_panel.cjs",
     "scripts/test_today_panel.cjs",
     "scripts/test_journey_panel.cjs",
+    "scripts/test_journey_reference.cjs",
     "scripts/test_new_journey_panel.cjs",
     "requirements-test.txt",
     "_ferramentas/chief_briefing.py",

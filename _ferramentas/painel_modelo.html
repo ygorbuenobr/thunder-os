@@ -322,13 +322,20 @@ button,.btn,select,input:not([type="hidden"]),summary {min-height:44px;}
 [data-cs-review] {overflow-wrap:anywhere;}
 [data-cs-review]:not(:empty) {border:1px solid #bbbdb5;padding:16px;margin:16px 0;border-radius:8px;}
 #abas button[aria-selected="true"] {color:#20211f;}
-/* Jornada follows the panel tokens; sections stay unframed. */
+/* V24: Thunder palette; Arcgent composition, Linear border/density only. */
 body[data-aba="jornada"],body[data-journey-ready="true"][data-aba="contas"],.journey-drawer{
-  color-scheme:dark;--bg:#0e0d0b;--surface:#161512;--surface2:#1c1a16;--line:#3a3630;
-  --text:#f4f1ea;--muted:#b9b3a8;--faint:#b9b3a8;--roxo:#b990ed;--ok:#8fd0ad;--alerta:#ffaaa3;
+  color-scheme:dark;--bg:#000000;--surface:#0c0c0c;--surface2:#171717;--line:#2A2A33;
+  --text:#FFFEF8;--muted:#BFC3CC;--faint:#8B909B;--mostarda:#E1AA32;--roxo:#8F60D8;--ok:#8fd0ad;--alerta:#FF2841;--journey-accent:#00FAFF;
 }
-html:has(body[data-aba="jornada"]),html:has(body[data-journey-ready="true"][data-aba="contas"]){background:#0e0d0b}
+#journey-overview{--display:"Aktiv Grotesk Ex","Inter Tight",Inter,Arial,sans-serif;--body:"Inter Tight",Inter,Arial,sans-serif;font-family:var(--body)}
+html:has(body[data-aba="jornada"]),html:has(body[data-journey-ready="true"][data-aba="contas"]){background:#000000}
 body[data-aba="jornada"] .abas,body[data-journey-ready="true"][data-aba="contas"] .abas{background:var(--bg)}
+body[data-aba="jornada"] #abas button[aria-selected="true"],body[data-journey-ready="true"][data-aba="contas"] #abas button[aria-selected="true"]{color:#000000;background:var(--journey-accent)}
+body[data-aba="jornada"] #journey-brand b,body[data-journey-ready="true"][data-aba="contas"] #journey-brand b{color:var(--journey-accent)}
+body[data-aba="jornada"]:has(#journey-overview:not([hidden])) .topo{padding:12px 0}
+body[data-aba="jornada"]:has(#journey-overview:not([hidden])) .topo h1{font-size:28px}
+body[data-aba="jornada"]:has(#journey-overview:not([hidden])) .abas{padding:4px 0;margin-bottom:16px}
+body[data-aba="jornada"]:has(#journey-overview:not([hidden])){background-image:linear-gradient(rgba(255,254,248,.025) 1px,transparent 1px),linear-gradient(90deg,rgba(255,254,248,.025) 1px,transparent 1px);background-size:40px 40px}
 body[data-aba="jornada"] h1,body[data-journey-ready="true"][data-aba="contas"] h1{font-size:38px;letter-spacing:0}
 .journey{min-width:0;overflow-wrap:anywhere;letter-spacing:0}
 .journey h2,.journey h3,.journey h4{letter-spacing:0;text-transform:none;color:var(--text);margin:0}
@@ -339,17 +346,37 @@ body[data-aba="jornada"] h1,body[data-journey-ready="true"][data-aba="contas"] h
 .journey-tools{display:flex;flex-wrap:wrap;align-items:end;gap:12px}
 .journey-field{display:grid;gap:4px;min-width:0;font-size:13px;color:var(--muted)}
 .journey-field select,.journey-field input{font:14px var(--body);background:var(--surface);color:var(--text);min-height:44px;max-width:100%;min-width:0;border:1px solid var(--muted);border-radius:6px;padding:8px}
-.journey-funnel{display:flex;flex-wrap:wrap;gap:16px 24px;padding:24px 0;border-block:1px solid var(--line);margin-top:20px}
-.journey-metric{flex:1 1 170px;min-width:0}.journey-metric strong{display:block;font:800 56px/1.2 var(--display);font-variant-numeric:tabular-nums}
-.journey-metric h3{font-size:14px}.journey-metric p{font-size:12px;color:var(--muted)}
-.journey-stages{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px;margin-top:24px}
-.journey-stage{display:flex;flex-direction:column;gap:6px;text-align:left;min-width:0;min-height:148px;padding:12px;border:1px solid var(--muted);border-radius:8px;background:var(--surface);color:var(--text);font:inherit;cursor:pointer;overflow-wrap:anywhere}
-.journey-stage[aria-pressed="true"]{border-color:var(--roxo);box-shadow:inset 0 0 0 1px var(--roxo)}
-.journey-stage strong{font-size:15px}.journey-stage b{font:700 26px var(--display);margin-top:auto}.journey-stage small{font-size:12px;color:var(--muted)}
-.journey-off{background:var(--surface2);color:var(--muted);border-style:dashed}
+.journey-funnel{display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) minmax(170px,.9fr);align-items:start;gap:0;padding:12px 8px;border:1px solid var(--line);border-radius:20px;background:var(--surface);margin-top:16px}
+.journey-metric{position:relative;min-width:0;padding:0 20px;border-inline-end:1px solid var(--line)}.journey-metric strong{display:block;font:600 36px/1.2 var(--display);letter-spacing:-.04em;font-variant-numeric:tabular-nums;margin:4px 0 0}
+.journey-metric h3{font-size:13px;font-weight:500;color:var(--muted);padding-inline-end:32px}.journey-metric p{font-size:12px;color:var(--muted)}
+.journey-metric[data-journey-metric="hot"]>strong{color:var(--journey-accent)}
+#journey-new{color:#000000;background:var(--journey-accent);border-color:var(--journey-accent)}
+.journey-metric details{font-size:12px}.journey-metric summary{position:absolute;inset-inline-end:4px;top:-10px;display:grid;place-items:center;cursor:pointer;color:var(--muted);padding:0;width:44px;min-height:44px;list-style:none;border-radius:50%}.journey-metric summary::-webkit-details-marker{display:none}.journey-metric summary svg{width:16px;height:16px}.journey-metric details[open]{padding:12px 0 8px}.journey-metric .journey-source{display:block;padding:8px 0;overflow-wrap:anywhere}
+.journey-metric[data-journey-metric="cost_per_hot"]{border:1px solid var(--line);border-radius:20px;padding:8px 14px;margin:0 12px}.journey-metric[data-journey-metric="cost_per_hot"] strong{font-size:24px;margin-bottom:0}.journey-metric[data-journey-metric="cost_per_hot"] summary{top:0;inset-inline-end:0}
+.journey-stages{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:0;margin:16px 0 12px;padding:4px 0;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-color:var(--line) transparent}
+.journey-stage{position:relative;display:flex;align-items:center;flex-direction:column;gap:6px;text-align:center;min-width:0;min-height:96px;padding:6px 4px;border:0;border-radius:8px;background:transparent;color:var(--muted);font:inherit;cursor:pointer;overflow-wrap:anywhere}
+.journey-stage:not(:last-child)::before{content:"";position:absolute;top:28px;left:50%;width:100%;height:1px;background:var(--line);pointer-events:none}
+.journey-stage-icon{position:relative;display:grid;place-items:center;width:44px;height:44px;flex:none;border:1px solid var(--line);border-radius:50%;background:var(--surface);color:var(--muted)}
+.journey-stage-icon svg{width:20px;height:20px}.journey-stage[aria-pressed="true"]{color:var(--text)}.journey-stage[aria-pressed="true"] .journey-stage-icon{border-color:var(--journey-accent);color:var(--journey-accent);box-shadow:0 0 0 4px rgba(0,250,255,.06)}
+.journey-stage:hover .journey-stage-icon{border-color:var(--muted)}.journey-stage[aria-pressed="true"]:hover .journey-stage-icon{border-color:var(--journey-accent)}
+.journey-stage strong{font-size:13px;font-weight:600}.journey-stage b{font:500 12px var(--mono);color:var(--muted)}.journey-off .journey-stage-icon{border-style:dashed}
+.journey-sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0}
 .journey-row{padding:16px 0;border-bottom:1px solid var(--line);display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 16px;align-items:center;min-width:0}
 .journey-row>div{min-width:0}.journey-row p{white-space:pre-wrap;overflow-wrap:anywhere}.journey-row .btn{justify-self:end}
-.journey-bottom{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:28px}
+.journey-bottom{display:grid;grid-template-columns:minmax(0,1fr);gap:0;margin-top:20px;background:var(--surface);border:1px solid var(--line);border-radius:20px;min-width:0}
+#journey-overview .journey-stage-panel{margin:0;padding:20px 24px;border:1px solid var(--line);border-radius:20px;background:var(--surface);gap:8px;min-width:0}
+#journey-overview>.journey-head .journey-tools>.journey-field{display:flex;align-items:center;gap:8px}
+#journey-overview .journey-stage-panel h3{font-size:18px}#journey-overview .journey-stage-panel .journey-field{font-size:12px;max-width:260px}#journey-overview .journey-stage-panel input{border-color:var(--line);background:var(--bg);border-radius:999px;width:100%}
+#journey-stage-items{position:relative;max-height:360px;overflow:auto;overscroll-behavior:auto;scrollbar-gutter:stable;scrollbar-color:var(--line) transparent;min-width:0;padding-inline:4px 8px}
+#journey-stage-items .journey-row{padding:4px 0;gap:8px 16px}#journey-stage-items .journey-row:last-child{border-bottom:0}#journey-stage-items h4{font-size:14px}#journey-stage-items .journey-row p{font-size:13px;margin:3px 0}#journey-stage-items .journey-row .msg{font-size:12px;color:var(--muted)}
+#journey-stage-items .journey-row>div{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:0 12px;align-items:center}#journey-stage-items .journey-row-identity{grid-column:1/-1}#journey-stage-items .journey-row>div>details[open]{grid-column:1/-1}
+.journey-row-identity{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;min-width:0}.journey-row-identity>p{color:var(--muted)}.journey-readiness{margin-inline-start:auto;max-width:min(100%,30ch);border:1px solid var(--line);border-radius:6px;padding:3px 7px;font-size:12px;color:var(--text);overflow-wrap:anywhere}
+#journey-stage-items .journey-row details{font-size:13px}#journey-stage-items .journey-row summary{cursor:pointer;font-size:12px;color:var(--muted);width:fit-content;padding:10px 0}#journey-stage-items .journey-row .btn{border-radius:999px;font-size:12px;padding:8px 16px}
+#journey-stage-items .vazio{padding:24px 0}#journey-stage-observed{font:12px var(--mono);color:var(--muted)}
+.journey-bottom>details{padding:0 20px;border-bottom:1px solid var(--line);min-width:0}.journey-bottom summary{padding:12px 0;cursor:pointer;font-size:12px;color:var(--muted)}.journey-bottom details[open]>summary{color:var(--text)}
+#journey-timeline-heading{font:inherit;color:inherit}.journey-bottom .journey-list p{font-size:13px}
+#journey-overview .journey-agent-log{margin:0;padding:12px 20px;border:0;display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px 20px;align-items:baseline;min-width:0}
+#journey-overview .journey-agent-log h3{font-size:12px;color:var(--muted);white-space:nowrap}.journey-agent-log details{min-width:0}.journey-agent-log summary{padding:4px 0;display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 16px;min-height:44px}.journey-log-preview{flex:1 1 240px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.journey-log-history{color:var(--journey-accent);font-size:12px}.journey-agent-log .journey-list{max-height:260px;overflow:auto;scrollbar-gutter:stable}
 .journey-list{list-style:none;padding:0;margin:0;min-width:0}.journey-list li{padding:12px 0;border-bottom:1px solid var(--line);min-width:0}
 .journey-list time{font:12px var(--mono);color:var(--muted)}
 .journey-original{white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.65 var(--body);margin:8px 0}
@@ -371,10 +398,12 @@ body[data-aba="jornada"] h1,body[data-journey-ready="true"][data-aba="contas"] h
 .journey-drawer h2{font-size:22px}.journey-drawer .journey-source{display:block;min-height:44px;padding:10px 0}
 .journey code{overflow-wrap:anywhere;white-space:pre-wrap;font:12px var(--mono)}
 .journey-loading{min-height:148px;color:var(--muted);padding-block:20px}
-.journey :focus-visible{outline:2px solid var(--roxo)!important;outline-offset:3px}
-@media(max-width:860px){.journey-stages{grid-template-columns:repeat(4,minmax(0,1fr))}.journey-bottom{grid-template-columns:minmax(0,1fr)}}
+.journey :focus-visible{outline:2px solid var(--journey-accent)!important;outline-offset:3px}
+@media(max-width:860px){.journey-funnel{grid-template-columns:repeat(3,minmax(0,1fr));gap:12px 0}.journey-metric[data-journey-metric="hot"]{border:0}.journey-metric[data-journey-metric="cost_per_hot"]{grid-column:1/-1;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:0 12px}.journey-metric[data-journey-metric="cost_per_hot"] details{grid-column:1/-1}.journey-metric[data-journey-metric="cost_per_hot"] strong{margin:0}.journey-stages{grid-template-columns:repeat(7,minmax(92px,1fr))}}
 @media(max-width:560px){.journey-account-header{grid-template-columns:minmax(0,1fr)}.journey-account-header>aside{border-inline-start:0;border-top:1px solid var(--line);padding-inline-start:0;padding-top:16px}}
-@media(max-width:560px){body[data-aba="jornada"] h1,body[data-journey-ready="true"][data-aba="contas"] h1{font-size:28px}.journey-metric strong{font-size:36px}.journey-stages{grid-template-columns:repeat(2,minmax(0,1fr))}.journey-row{grid-template-columns:minmax(0,1fr)}.journey-row .btn{justify-self:start}.journey-tools,.journey-field{width:100%}.journey-dossier{grid-template-columns:minmax(0,1fr)}.journey-drawer{padding:16px}.journey-drawer .conta-topo{top:-16px}.journey-head{align-items:start}}
+@media(max-width:560px){body[data-aba="jornada"] h1,body[data-journey-ready="true"][data-aba="contas"] h1{font-size:28px}.journey-metric strong{font-size:28px}.journey-metric{padding:0 10px}.journey-metric h3,.journey-metric summary{font-size:12px}.journey-row{grid-template-columns:minmax(0,1fr)}.journey-row .btn{justify-self:start}.journey-tools,.journey-field{width:100%}.journey-dossier{grid-template-columns:minmax(0,1fr)}.journey-drawer{padding:16px}.journey-drawer .conta-topo{top:-16px}.journey-head{align-items:start}#journey-overview .journey-stage-panel{padding:16px 12px}#journey-overview .journey-stage-panel .journey-field{max-width:none}#journey-stage-items .journey-row{grid-template-columns:minmax(0,1fr) auto;gap:8px}#journey-stage-items .journey-row .btn{justify-self:end;padding-inline:12px}#journey-overview .journey-agent-log{grid-template-columns:minmax(0,1fr);gap:0}.journey-bottom>details,#journey-overview .journey-agent-log{padding-inline:16px}}
+@media(max-width:390px){.journey-metric{padding-inline:4px}}
+@media(max-width:560px){.journey-metric h3{padding-inline-end:0}.journey-metric summary{position:static;margin-top:4px}#journey-stage-items{max-height:clamp(300px,45svh,360px)}#journey-stage-items .journey-row>div{display:block}#journey-overview>.journey-head .journey-tools>.journey-field{display:grid}}
 /* Nova jornada: locked five-step composition, using the existing panel tokens. */
 .new-journey{display:grid;gap:20px;min-width:0}
 .new-journey h2{font-size:26px}.new-journey h3{font-size:18px}
@@ -2052,11 +2081,25 @@ setInterval(()=>{if(!document.hidden&&document.body.dataset.aba==='hoje')carrega
 /* TODAY_WORK_END */
 /* JOURNEY_BEGIN: GET projections; only explicit canonical step reviews permit POSTs. */
 let journeyMode='pending',journeySnapshot=null,journeyReadAt=0,journeyRequest=0,journeyLoading=false;
-let journeyStage='resposta',journeyDetailRequest=0,journeyDetail=null,journeyDetailFocus=null;
+let journeyStage='icp',journeyDetailRequest=0,journeyDetail=null,journeyDetailFocus=null;
 let journeyAccount=null,journeyAccountRequest=0,journeyAccountsRequest=0,journeyAccountsLoading=false,journeyAccountsReadAt=0;
 let journeyAccountTab='cadence';
 const journeyEdits=new Map();
 const journeyStageDefs=[['icp','ICP'],['abordagem','Abordagem'],['resposta','Resposta'],['crm','CRM'],['linkedin','LinkedIn'],['followup','Follow-up'],['preparacao','Preparação']];
+const journeyStageStatusLabels={partial:'Leitura parcial',ok:'Fonte disponível',unavailable:'Fonte indisponível',off:'Etapa indisponível',disabled:'Etapa desligada',missing:'Fonte indisponível',error:'Falha na leitura',offline:'Fonte indisponível'};
+// Static, decorative symbols only. Selection never implies execution or progress.
+function journeyStageIcon(id){
+  const paths={
+    icp:'<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3"/>',
+    abordagem:'<path d="m3 11 18-8-8 18-2-8-8-2Z"/><path d="m11 13 5-5"/>',
+    resposta:'<path d="M20 11a8 8 0 0 1-8 8H5l-3 3V11a9 9 0 0 1 18 0Z"/><path d="M7 10h8m-8 4h5"/>',
+    crm:'<rect x="3" y="5" width="18" height="15" rx="2"/><path d="M8 5V3h8v2M3 11h18m-11 0v3h4v-3"/>',
+    linkedin:'<path d="m10 14 4-4m-6 6-1 1a4 4 0 0 1-6-6l4-4a4 4 0 0 1 6 0m2 10a4 4 0 0 0 6 0l4-4a4 4 0 0 0-6-6l-1 1"/>',
+    followup:'<path d="M3 10a9 9 0 1 1 1 7M3 4v6h6m3-3v5l3 2"/>',
+    preparacao:'<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9l-6-6Zm0 0v6h6M8 15l3 3 5-6"/>'
+  };
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths[id]||''}</svg>`;
+}
 const journeyTabDefs=[['research','Pesquisa ABM'],['dossier','Dossiê'],['context','Contexto usado'],['cadence','Cadência'],['before_approval','Antes de aprovar']];
 const journeyRows=value=>Array.isArray(value)?value:[];
 const journeyBR=id=>typeof id==='string'&&(/^BR(?:[-_]|$)/i.test(id)||id==='CHATTIE-01');
@@ -2120,7 +2163,7 @@ function journeyMetric(key,label){
   const consulted=[...new Set(sources.filter(source=>typeof source==='string').map(source=>Object.hasOwn(sourceNames,source)?sourceNames[source]:'Fonte não identificada'))];
   const sourceHTML=(consulted.length?`<p class="msg" data-journey-metric-sources>Fontes consultadas: ${esc(consulted.join(' · '))}</p>`:'')+journeySources(sources.filter(source=>typeof source!=='string'));
   const number=proven?(key==='cost_per_hot'?metric.value.toLocaleString('pt-BR',{style:'currency',currency:'BRL'}):metric.value.toLocaleString('pt-BR')):'?';
-  return `<div class="journey-metric" data-journey-metric="${key}"><h3>${label}</h3><strong>${esc(number)}</strong><p>${esc(reason||(!proven?'Sem fonte comprovada nesta consulta.':''))}</p>${sourceHTML}${coverageLabel?`<p>${esc(coverageLabel)}</p>`:''}</div>`;
+  return `<div class="journey-metric" data-journey-metric="${key}"><h3>${label}</h3><strong>${esc(number)}</strong><details data-journey-proof="metric:${key}"><summary id="journey-metric-proof-${key}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v2"/></svg><span class="journey-sr">Fontes e cobertura · ${label}</span></summary><p>${esc(reason||(!proven?'Sem fonte comprovada nesta consulta.':''))}</p>${sourceHTML}${coverageLabel?`<p>${esc(coverageLabel)}</p>`:''}</details></div>`;
 }
 function journeyValidItem(item){
   return item&&typeof item.id==='string'&&journeyVisibleRecord(item)&&(!journeyCampaign()||item.campaign_id===journeyCampaign());
@@ -2131,32 +2174,41 @@ function journeyAction(action){
 function renderJourneyStage(){
   const stage=journeyRows(journeySnapshot?.stages).find(row=>row.id===journeyStage);
   const target=$('journey-stage-items');if(!target)return;
+  const expanded=new Set([...target.querySelectorAll('details[open][data-journey-proof]')].map(node=>node.dataset.journeyProof));
+  const listScroll=target.scrollTop;
   const label=journeyStageDefs.find(([id])=>id===journeyStage)?.[1]||'';
   $('journey-stage-heading').textContent='Etapa '+String(journeyStageDefs.findIndex(([id])=>id===journeyStage)+1).padStart(2,'0')+' · '+label;
-  $('journey-stage-reason').textContent=[stage?.status,stage?.reason||(!stage?'Fonte indisponível nesta consulta.':'')].filter(Boolean).join(' · ');
+  $('journey-stage-reason').textContent=[journeyStageStatusLabels[stage?.status]||'Status não informado',stage?.reason||(!stage?'Fonte indisponível nesta consulta.':'')].filter(Boolean).join(' · ');
   const seen=new Set(),items=journeyRows(stage?.items).filter(journeyValidItem).filter(item=>!seen.has(item.id)&&seen.add(item.id));
   const query=($('journey-filter').value||'').trim().toLocaleLowerCase('pt-BR');
   const filtered=items.filter(item=>!query||[item.name,item.company,item.campaign_id,item.owner,item.readiness,journeyVisitor(item)&&item.reviewable!==true?'':item.summary].some(text=>journeyText(text).toLocaleLowerCase('pt-BR').includes(query)));
-  target.innerHTML=filtered.length?filtered.map(item=>`<article class="journey-row" data-journey-item="${esc(item.id)}"><div><h4>${esc(item.name||'Nome não informado')}</h4><p>${esc(item.company||'Empresa não informada')}</p><p class="msg">${esc(journeyRecordLabel(item))} · ${esc(journeyDate(item.date))} · Responsável: ${esc(item.owner||'Não informado')}</p>${item.readiness?`<p class="msg">${esc(item.readiness)}</p>`:''}<p>${esc(journeyVisitor(item)&&item.reviewable!==true?'Somente status. Revisão de cadência indisponível.':item.summary)}</p></div>${journeyAction(item.action)?`<button class="btn" type="button" data-journey-open="${esc(item.action.id)}" data-journey-kind="${item.action.type}">Abrir</button>`:'<p class="msg">Detalhe indisponível na fonte.</p>'}</article>`).join(''):`<p class="vazio">${query?'Nenhum item encontrado. Ajuste a busca.':stage?.reason||'Nenhum item nesta etapa. Use Atualizar para consultar novamente.'}</p>`;
+  $('journey-stage-observed').textContent=query?`${filtered.length.toLocaleString('pt-BR')} de ${items.length.toLocaleString('pt-BR')} itens observados · busca nesta lista`:`${items.length.toLocaleString('pt-BR')} ${items.length===1?'item observado':'itens observados'} · total da etapa ${Number.isFinite(stage?.count)?stage.count.toLocaleString('pt-BR'):'não comprovado'}`;
+  target.innerHTML=filtered.length?filtered.map(item=>`<article class="journey-row" data-journey-item="${esc(item.id)}"><div><div class="journey-row-identity"><h4>${esc(item.name||'Nome não informado')}</h4><p${item.name&&item.name===item.company?' class="journey-sr"':''}>${esc(item.company||'Empresa não informada')}</p>${item.readiness?`<span class="journey-readiness">${esc(item.readiness)}</span>`:''}</div><p class="msg">${esc(journeyRecordLabel(item))} · ${esc(journeyDate(item.date))} · Responsável: ${esc(item.owner||'Não informado')}</p><details data-journey-proof="${esc('row:'+item.id)}"><summary id="${esc('journey-row-proof-'+encodeURIComponent(item.id))}">Ver contexto<span class="journey-sr"> · ${esc(item.name||'Nome não informado')}</span></summary><p>${esc(journeyVisitor(item)&&item.reviewable!==true?'Somente status. Revisão de cadência indisponível.':item.summary)}</p></details></div>${journeyAction(item.action)?`<button class="btn" type="button" data-journey-open="${esc(item.action.id)}" data-journey-kind="${item.action.type}">Abrir</button>`:'<p class="msg">Detalhe indisponível na fonte.</p>'}</article>`).join(''):`<p class="vazio">${query?'Nenhum item encontrado. Ajuste a busca.':stage?.reason||'Nenhum item nesta etapa. Use Atualizar para consultar novamente.'}</p>`;
+  for(const node of target.querySelectorAll('details[data-journey-proof]'))node.open=expanded.has(node.dataset.journeyProof);
+  target.scrollTop=target.dataset.stage===journeyStage&&target.dataset.query===query?listScroll:0;target.dataset.stage=journeyStage;target.dataset.query=query;
   $('journey-stages').querySelectorAll('button').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.journeyStage===journeyStage)));
 }
 function renderJourney(){
   const filter=$('journey-filter')?.value||'';
   const focus=document.activeElement,focusId=focus?.id,stageFocus=focus?.dataset?.journeyStage,openFocus=focus?.dataset?.journeyOpen;
   const sourcesOpen=$('journey-sources')?.open||false;
+  const expanded=new Set([...$('journey-content').querySelectorAll('details[open][data-journey-proof]')].map(node=>node.dataset.journeyProof));
+  const listScroll=$('journey-stage-items')?.scrollTop||0,navScroll=$('journey-stages')?.scrollLeft||0,logScroll=$('journey-log-history')?.scrollTop||0;
   const drawerOpen=$('journey-dialog').open;
-  $('journey-content').innerHTML=`<div class="journey-funnel" aria-label="Funil da jornada">${journeyMetric('reached','Alcançados →')}${journeyMetric('replied','Responderam →')}${journeyMetric('hot','Quentes')}${journeyMetric('cost_per_hot','Custo por lead quente')}</div>
+  $('journey-content').innerHTML=`<div class="journey-funnel" aria-label="Funil da jornada">${journeyMetric('reached','Alcançados')}${journeyMetric('replied','Responderam')}${journeyMetric('hot','Quentes')}${journeyMetric('cost_per_hot','Custo por lead quente')}</div>
     <nav class="journey-stages" id="journey-stages" aria-label="Etapas da jornada">${journeyStageDefs.map(([id,label],index)=>{
       const stage=journeyRows(journeySnapshot.stages).find(row=>row.id===id);
       const off=!stage||['off','disabled','unavailable','missing','error','offline'].includes(stage.status);
-      return `<button class="journey-stage${off?' journey-off':''}" type="button" data-journey-stage="${id}" aria-pressed="${journeyStage===id}"><small>${String(index+1).padStart(2,'0')} · ${esc(stage?.status||'Sem fonte')}</small><strong>${label}</strong><small>${esc(stage?.reason||'')}</small><b>${off?'off':Number.isFinite(stage?.count)?esc(stage.count):'?'}</b></button>`;
+      return `<button class="journey-stage${off?' journey-off':''}" type="button" data-journey-stage="${id}" aria-pressed="${journeyStage===id}" aria-controls="journey-stage-panel" aria-describedby="journey-stage-note-${id}"><span class="journey-stage-icon">${journeyStageIcon(id)}</span><strong>${label}</strong><b class="journey-stage-count">${off?'off':Number.isFinite(stage?.count)?esc(stage.count):'?'}</b><span class="journey-sr" id="journey-stage-note-${id}">${String(index+1).padStart(2,'0')} · ${esc(journeyStageStatusLabels[stage?.status]||'Status não informado')} · ${esc(stage?.reason||'')}</span></button>`;
     }).join('')}</nav>
-    <section aria-labelledby="journey-stage-heading"><header class="journey-head"><h3 id="journey-stage-heading"></h3><label class="journey-field" for="journey-filter">Buscar na etapa<input type="search" id="journey-filter" maxlength="200" autocomplete="off" aria-controls="journey-stage-items"></label></header><p class="msg" id="journey-stage-reason"></p><div id="journey-stage-items"></div></section>
-    <div class="journey-bottom"><section aria-labelledby="journey-timeline-heading"><h3 id="journey-timeline-heading">Um lead, seguido pela equipe</h3><p>${esc([journeySnapshot.timeline?.name,journeySnapshot.timeline?.company].filter(Boolean).join(' · ')||'Nenhum lead nesta consulta.')}</p><ol class="journey-list">${journeyRows(journeySnapshot.timeline?.events).map(event=>`<li><time>${esc(journeyDate(event.date))}</time><p><b>${esc(event.label)}</b> · ${esc(event.summary)}</p>${typeof event.detail_id==='string'&&event.detail_id?`<button class="btn" type="button" data-journey-open="${esc(event.detail_id)}" data-journey-kind="detail" aria-label="Abrir mensagem original">Abrir</button>`:''}</li>`).join('')||'<li class="vazio">Nenhum evento disponível.</li>'}</ol></section>
-    <section aria-labelledby="journey-log-heading"><h3 id="journey-log-heading">Log dos agentes</h3><ul class="journey-list">${journeyRows(journeySnapshot.log).map(row=>`<li><time>${esc(journeyDate(row.date))}</time><p>${esc(row.message)}</p></li>`).join('')||'<li class="vazio">Nenhum registro nesta consulta.</li>'}</ul></section></div>
-    <details id="journey-sources"><summary>Fontes da consulta</summary>${journeySources(journeySnapshot.sources)||'<p class="msg">Fontes não informadas.</p>'}</details>`;
+    <section class="journey-stage-panel" id="journey-stage-panel" aria-labelledby="journey-stage-heading"><header class="journey-head"><div><h3 id="journey-stage-heading"></h3><p id="journey-stage-observed"></p></div><label class="journey-field" for="journey-filter">Buscar na etapa<input type="search" id="journey-filter" maxlength="200" autocomplete="off" aria-controls="journey-stage-items"></label></header><p class="msg" id="journey-stage-reason"></p><p class="journey-sr" id="journey-list-help">Lista com rolagem própria. Todos os itens observados estão disponíveis; use as setas para percorrer a lista com foco.</p><div id="journey-stage-items" role="region" tabindex="0" aria-labelledby="journey-stage-heading" aria-describedby="journey-stage-observed journey-list-help"></div></section>
+    <div class="journey-bottom"><details id="journey-timeline" data-journey-proof="timeline"><summary id="journey-timeline-toggle"><span id="journey-timeline-heading">Um lead, seguido pela equipe</span> · Ver histórico</summary><p>${esc([journeySnapshot.timeline?.name,journeySnapshot.timeline?.company].filter(Boolean).join(' · ')||'Nenhum lead nesta consulta.')}</p><ol class="journey-list">${journeyRows(journeySnapshot.timeline?.events).map(event=>`<li><time>${esc(journeyDate(event.date))}</time><p><b>${esc(event.label)}</b> · ${esc(event.summary)}</p>${typeof event.detail_id==='string'&&event.detail_id?`<button class="btn" type="button" data-journey-open="${esc(event.detail_id)}" data-journey-kind="detail" aria-label="Abrir mensagem original">Abrir</button>`:''}</li>`).join('')||'<li class="vazio">Nenhum evento disponível.</li>'}</ol></details>
+    <details id="journey-sources"><summary id="journey-sources-toggle">Fontes da consulta</summary>${journeySources(journeySnapshot.sources)||'<p class="msg">Fontes não informadas.</p>'}</details>
+    <section class="journey-agent-log" id="journey-log" aria-labelledby="journey-log-heading"><h3 id="journey-log-heading">Log dos agentes</h3><details data-journey-proof="log"><summary id="journey-log-toggle"><span class="journey-log-preview">${esc(journeyRows(journeySnapshot.log)[0]?.message||'Nenhum registro nesta consulta.')}</span><span class="journey-log-history">Ver histórico</span></summary><ul class="journey-list" id="journey-log-history" tabindex="0" aria-label="Histórico do log dos agentes">${journeyRows(journeySnapshot.log).map(row=>`<li><time>${esc(journeyDate(row.date))}</time><p>${esc(row.message)}</p></li>`).join('')||'<li class="vazio">Nenhum registro nesta consulta.</li>'}</ul></details></section></div>`;
   $('journey-filter').value=filter;$('journey-sources').open=sourcesOpen;
   $('journey-filter').addEventListener('input',renderJourneyStage);renderJourneyStage();
+  for(const node of $('journey-content').querySelectorAll('details[data-journey-proof]'))node.open=expanded.has(node.dataset.journeyProof);
+  $('journey-stage-items').scrollTop=listScroll;$('journey-stages').scrollLeft=navScroll;$('journey-log-history').scrollTop=logScroll;
   if(drawerOpen)return;
   if(focusId&&$(focusId))$(focusId).focus({preventScroll:true});
   else if(stageFocus)[...$('journey-stages').querySelectorAll('button')].find(button=>button.dataset.journeyStage===stageFocus)?.focus({preventScroll:true});
