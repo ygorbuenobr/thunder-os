@@ -332,6 +332,68 @@ class HubSpotEligibilityReadTests(unittest.TestCase):
         self.assertFalse(self.lookup(contact_id='456')['identity']['verified'])
         self.assertFalse(self.lookup(contact_id='123')['identity']['verified'])
 
+    @staticmethod
+    def native_alias_schema(http):
+        row = next(r for r in http.schemas['contacts']['results']
+                   if r['name'] == 'hs_additional_emails')
+        row.update(type='enumeration', fieldType='select', hubspotDefined=True,
+                   calculated=False, externalOptions=False, options=[],
+                   modificationMetadata={'readOnlyDefinition': True})
+        return row
+
+    def test_native_additional_email_schema_accepts_present_empty_and_valid_aliases(self):
+        for aliases in (None, '', 'alias@mail.invalid', 'one@mail.invalid;two@mail.invalid'):
+            with self.subTest(aliases=aliases):
+                http = FakeHTTP()
+                self.native_alias_schema(http)
+                http.contacts['123']['properties']['hs_additional_emails'] = aliases
+                result = HubSpotEligibilityRead(HubSpotHTTP(http.loader, request=http)).lookup(EMAIL)
+                self.assertTrue(result['property_coverage']['contacts']['hs_additional_emails'])
+                self.assertTrue(result['identity']['verified'])
+                self.assertEqual(result['status'], 'ok')
+                expected = sorted([EMAIL] + (aliases.split(';') if aliases else []))
+                self.assertEqual(result['identity']['emails'], expected)
+
+    def test_native_alias_missing_invalid_and_conflicting_evidence_stays_unknown(self):
+        for change in ('missing_value', 'missing_schema', 'not_native', 'wrong_field',
+                       'mutable_definition', 'calculated', 'external_options', 'conflict'):
+            with self.subTest(change=change):
+                http = FakeHTTP()
+                schema_row = self.native_alias_schema(http)
+                http.contacts['123']['properties']['hs_additional_emails'] = None
+                if change == 'missing_value':
+                    del http.contacts['123']['properties']['hs_additional_emails']
+                elif change == 'missing_schema':
+                    http.schemas['contacts']['results'].remove(schema_row)
+                elif change == 'not_native': schema_row['hubspotDefined'] = False
+                elif change == 'wrong_field': schema_row['fieldType'] = 'text'
+                elif change == 'mutable_definition': schema_row['modificationMetadata']['readOnlyDefinition'] = False
+                elif change == 'calculated': schema_row['calculated'] = True
+                elif change == 'external_options': schema_row['externalOptions'] = True
+                else:
+                    http.contacts['456'] = deepcopy(http.contacts['123'])
+                    http.contacts['456']['id'] = '456'
+                reader = HubSpotEligibilityRead(HubSpotHTTP(http.loader, request=http))
+                if change == 'conflict':
+                    self.assertTrue(reader.lookup(EMAIL, contact_id='123')['identity']['verified'])
+                    self.assertFalse(reader.lookup(EMAIL, contact_id='456')['identity']['verified'])
+                    result = reader.lookup(EMAIL, contact_id='123')
+                else:
+                    result = reader.lookup(EMAIL, contact_id='123')
+                self.assertFalse(result['identity']['verified'])
+
+    def test_native_additional_email_values_do_not_bypass_validation(self):
+        for aliases in (True, False, 3, [], {}, 'not-an-email',
+                        'alias@mail.invalid;', 'alias@mail.invalid;bad',
+                        ';'.join(['alias@mail.invalid'] * 51)):
+            with self.subTest(aliases=aliases):
+                http = FakeHTTP()
+                self.native_alias_schema(http)
+                http.contacts['123']['properties']['hs_additional_emails'] = aliases
+                result = HubSpotEligibilityRead(HubSpotHTTP(http.loader, request=http)).lookup(EMAIL)
+                self.assertFalse(result['identity']['verified'])
+                self.assertIsNone(result['company'])
+
     def test_foreign_portal_never_reads_customer_records(self):
         self.http.portal = {'portalId': '999'}
         result = self.lookup()

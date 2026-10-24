@@ -234,6 +234,19 @@ class HubSpotEligibilityRead:
                              and bool(re.search(r'R\$|\bBRL\b|\breais\b', description, re.I)))
                 elif name == 'thunder_last_enriched_at':
                     good &= typ == 'date'
+                elif kind == 'contacts' and name == 'hs_additional_emails':
+                    # HubSpot's native aliases are enumeration/select with an
+                    # immutable definition, but their values are email strings,
+                    # not members of the property's (normally empty) options.
+                    native = (typ == 'enumeration' and item.get('fieldType') == 'select'
+                        and item.get('hubspotDefined') is True
+                        and item.get('calculated') is False
+                        and item.get('externalOptions') is False
+                        and isinstance(item.get('modificationMetadata'), Mapping)
+                        and item['modificationMetadata'].get('readOnlyDefinition') is True)
+                    good &= typ == 'string' or native
+                    if native:
+                        metadata['native_email_aliases'] = True
                 elif name != 'tipo_do_lead':
                     good &= typ == 'string'
                 result[name], valid[name] = metadata, bool(good)
@@ -246,6 +259,10 @@ class HubSpotEligibilityRead:
         if not self._schema_complete.get(kind) or not self._schema_valid.get(kind, {}).get(key):
             return False
         schema = self._schemas[kind][key]
+        if kind == 'contacts' and key == 'hs_additional_emails' and schema.get('native_email_aliases') is True:
+            return (value in ('', None) or isinstance(value, str) and self._clean(value)
+                    and len(value.split(';')) <= 50
+                    and all(_email(alias) is not None for alias in value.split(';')))
         if (kind == 'contacts' and key in ('hs_additional_emails', 'campanha_ativa', 'executor')
                 and schema['type'] == 'string' and value in ('', None)):
             return True
