@@ -52,6 +52,38 @@ class NewJourneyHTTPTests(unittest.TestCase):
         response = connection.getresponse()
         return response.status, json.loads(response.read())
 
+    def test_prompt_and_export_preview_routes_require_exact_inputs(self):
+        self.wizard.select_apollo_prompts.return_value = {'approval_mode':'apollo_prompts_v1'}
+        self.wizard.export_preview.return_value = {'preview_only':True, 'external_writes':0}
+        body = {'expected_version':1, 'apollo_sequence_id':'sequence-1', 'apollo_sequence_query':'Existing'}
+        self.assertEqual(self.request('draft-test/apollo-prompts', method='POST', body=body)[0],401)
+        self.assertEqual(self.request('draft-test/apollo-prompts', method='POST', body=body, nonce=True)[0],200)
+        self.wizard.select_apollo_prompts.assert_called_once_with('draft-test','sequence-1','Existing','ygor',expected_version=1)
+        self.assertEqual(self.request('draft-test/export-preview',method='POST',nonce=True,
+            body={'expected_version':1,'review_hash':'a'*64})[0],200)
+        self.wizard.export_preview.assert_called_once_with('draft-test','ygor',expected_version=1,review_hash='a'*64)
+        self.wizard.export.assert_not_called()
+
+    def test_company_review_routes_nonce_actor_and_bound_journey(self):
+        reviewer = Mock()
+        reviewer.preview.return_value = {'preview_id':'preview-1','external_writes':0}
+        reviewer.execute.return_value = {'state':'processed'}
+        reviewer.repo.get_state.return_value = {'journey_id':'draft-test'}
+        self.server.thunder_company_qualification = reviewer
+        body = {'expected_version':1,'source_key':'source-1','review_hash':'a'*64,'facts':{'fixture':True}}
+        self.assertEqual(self.request('draft-test/company-preview', method='POST',body=body)[0],401)
+        self.assertEqual(self.request('draft-test/company-preview', actor='codex', method='POST',body=body,nonce=True)[0],403)
+        reviewer.preview.assert_not_called()
+        self.assertEqual(self.request('draft-test/company-preview',method='POST',body=body,nonce=True)[0],200)
+        reviewer.preview.assert_called_once_with('draft-test','source-1',{'fixture':True},'ygor',expected_version=1,review_hash='a'*64)
+        execute = {'preview_id':'preview-1','expected_version':2,'preview_hash':'b'*64,'confirm':True}
+        reviewer.repo.get_state.return_value = {'journey_id':'other-journey'}
+        self.assertEqual(self.request('draft-test/company-execute',method='POST',body=execute,nonce=True)[0],404)
+        reviewer.execute.assert_not_called()
+        reviewer.repo.get_state.return_value = {'journey_id':'draft-test'}
+        self.assertEqual(self.request('draft-test/company-execute',method='POST',body=execute,nonce=True)[0],200)
+        reviewer.execute.assert_called_once_with(execute,'ygor')
+
     def test_N09_only_authenticated_ygor_reads_catalog_and_drafts(self):
         self.assertEqual(self.request('catalog')[0], 200)
         self.assertEqual(self.request('draft-test')[0], 200)
