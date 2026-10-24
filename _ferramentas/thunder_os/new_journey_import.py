@@ -162,6 +162,13 @@ class JourneyImportHTTP(HubSpotHTTP):
         for row in value['results']:
             raw = row.get('toObjectId') if isinstance(row, Mapping) else None
             _require(type(raw) in (str, int) and _ID.fullmatch(str(raw)), 'import_association_read_invalid')
+            types = row.get('associationTypes')
+            _require(isinstance(types, list) and bool(types) and all(
+                isinstance(t, Mapping) and t.get('category') in {'HUBSPOT_DEFINED', 'USER_DEFINED'}
+                and type(t.get('typeId')) is int and t['typeId'] > 0 for t in types),
+                'import_association_type_unverified')
+            _require(any(t['category'] == 'HUBSPOT_DEFINED' and t['typeId'] == 279 for t in types),
+                     'import_association_type_unverified')
             ids.append(str(raw))
         return sorted(set(ids))
 
@@ -466,6 +473,7 @@ class NewJourneyImport:
                     target = approved[label]
                     _require(outer._object(port, kind, target['properties']) == target, 'import_target_changed')
                     _require(request.get('body') == {'properties': target['properties']}, 'import_write_blocked')
+                    _require(outer._authorize(approved), 'hubspot_writes_disabled_or_paused')
                     writes += 1
                     return port.write(request)
         executor = HubSpotExecutor(self.repo, Guarded(), enabled=True,
@@ -533,14 +541,19 @@ class NewJourneyImport:
             self.repo.append_state('hubspot_attempt', effect,
                 {'plan_hash': plan['plan_hash'], 'plan': plan, 'status': 'attempted', 'returned_id': None})
             self.repo.put_state('hubspot_identity', lock_key, {'effect': effect, 'status': 'attempted'})
+        dispatched = False
         try:
-            _require(self._authorize(approved), 'hubspot_writes_disabled_or_paused')
-            port.associate(cid, oid)
+            # Intent above is already durable. Reuse the repository's existing
+            # dispatch exclusion so a committed pause wins before any PUT.
+            with self.repo.transaction():
+                _require(self._authorize(approved), 'hubspot_writes_disabled_or_paused')
+                dispatched = True
+                port.associate(cid, oid)
             self.repo.put_state('hubspot_attempt', effect,
                 {'plan_hash': plan['plan_hash'], 'plan': plan, 'status': 'response_received', 'returned_id': None})
             found = port.association_ids(cid)
         except Exception:
-            return {'status': 'pending_reconciliation', 'retry_write': False, 'write_attempts': 1}
+            return {'status': 'pending_reconciliation', 'retry_write': False, 'write_attempts': int(dispatched)}
         if found != [oid]:
             return {'status': 'pending_reconciliation', 'retry_write': False, 'write_attempts': 1}
         self.repo.put_state('hubspot_attempt', effect,

@@ -9,7 +9,7 @@ Acceptance checklist owned by this slice (principal owns independent review):
 No test claims real tenant scopes, publication, delivery or ICP qualification.
 """
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing
+from contextlib import closing, contextmanager
 from copy import deepcopy
 from datetime import datetime, timezone
 import json
@@ -117,7 +117,8 @@ class SyntheticHTTP:
             return self.response(row)
         if method == 'PUT':
             assert parts[3] == 'contacts' and parts[5:7] == ['associations', 'companies'] and parts[-1] == '279'
-            assert getattr(self.repo._local, 'connection', None) is None
+            # Dispatch exclusion is separate from the already committed intent.
+            assert getattr(self.repo._local, 'connection', None) is not None
             with closing(sqlite3.connect(self.repo.path)) as connection:
                 attempts = connection.execute("SELECT payload FROM thunder_state WHERE kind='hubspot_attempt'").fetchall()
                 assert any(json.loads(r[0]).get('status') == 'attempted'
@@ -473,6 +474,59 @@ class NewJourneyImportTests(unittest.TestCase):
             results = list(pool.map(lambda _: run(), range(2)))
         self.assertEqual(results.count('verified_state'), 1)
         self.assertEqual(len(self.http.writes), 3)
+
+    def test_expiry_during_final_dedupe_blocks_before_any_create(self):
+        p = self.preview()
+        original = self.http.request
+        def delayed(method, path, body, headers, timeout):
+            result = original(method, path, body, headers, timeout)
+            if path.endswith('/search') and getattr(self.repo._local, 'connection', None) is not None:
+                self.now = p['expires_at'] + 1
+            return result
+        self.console.port._request = delayed
+        self.execute(p)
+        self.assertEqual(self.http.writes, [])
+
+    def test_pause_committed_before_association_dispatch_blocks_put(self):
+        self.existing()
+        p = self.preview()
+        other = Repository(self.repo.path)
+        original = self.repo.transaction
+        paused = []
+        @contextmanager
+        def before_dispatch():
+            if not getattr(self.repo._local, 'connection', None) and not paused:
+                attempts = self.repo.list_state('hubspot_attempt')
+                if any(a.get('plan', {}).get('operation') == 'associate' for a in attempts):
+                    with ThreadPoolExecutor(max_workers=1) as pool:
+                        pool.submit(other.put_state, 'control', 'global', {'paused': True}).result(timeout=2)
+                    paused.append(True)
+            with original() as con:
+                yield con
+        with patch.object(self.repo, 'transaction', before_dispatch):
+            self.execute(p)
+        self.assertTrue(paused)
+        self.assertEqual(self.http.writes, [])
+        self.assertTrue(other.get_state('control', 'global')['paused'])
+
+    def test_association_readback_requires_exact_hubspot_defined_type(self):
+        self.existing()
+        self.http.links['22'] = ['11']
+        original = self.http.request
+        for types in (None, [], [{'category': 'USER_DEFINED', 'typeId': 999}],
+                      [{'category': 'HUBSPOT_DEFINED', 'typeId': True}]):
+            def invalid(method, path, body, headers, timeout):
+                if path.startswith('/crm/v4/objects/contacts/'):
+                    return self.http.response({'results': [{'toObjectId': 11, 'associationTypes': types}]})
+                return original(method, path, body, headers, timeout)
+            with self.subTest(types=types):
+                self.console.port._request = invalid
+                port = JourneyImportHTTP(self.console.port)
+                with self.assertRaisesRegex(NewJourneyError, 'import_association_type_unverified'):
+                    port.association_ids('22')
+        self.console.port._request = original
+        self.assertEqual(JourneyImportHTTP(self.console.port).association_ids('22'), ['11'])
+        self.assertEqual(self.http.writes, [])
 
     def test_extension_rejects_unrelated_association_endpoint(self):
         port = JourneyImportHTTP(self.console.port)
