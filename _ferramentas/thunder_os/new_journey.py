@@ -82,9 +82,10 @@ def _require_exact_copy(step):
 
 
 class NewJourney:
-    def __init__(self, service, apollo=None, checker=None, clock=None):
+    def __init__(self, service, apollo=None, checker=None, clock=None, *, template_reader=None):
         self.service, self.repo = service, service.repository
         self.apollo, self.checker = apollo, checker
+        self.template_reader = template_reader
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.approval_service = ApprovalService(service.global_paused)
 
@@ -163,7 +164,7 @@ class NewJourney:
                 'campaign_id': data['campaign_id'], 'actor': actor, 'source': None,
                 'rows': [], 'checks': [], 'steps': [], 'approvals': {},
                 'campaign_context': context, 'sheet_hash': self._sheet_hash(sheet),
-                'sequence': None, 'reconciliation': None}, 0)
+                'sequence': None, 'reconciliation': None, 'qualifications': {}, 'export_snapshot': None}, 0)
             return self._view(row)
 
     def get(self, ident, actor):
@@ -172,8 +173,43 @@ class NewJourney:
             return self._view(self._read(ident))
 
     def _scope(self, row):
-        return payload_hash({key: row[key] for key in ('name', 'campaign_id', 'source',
-            'rows', 'checks', 'steps', 'sequence', 'campaign_context', 'sheet_hash')})
+        return payload_hash({key: row.get(key) for key in ('name', 'campaign_id', 'source',
+            'rows', 'checks', 'steps', 'sequence', 'campaign_context', 'sheet_hash', 'qualifications')})
+
+    @staticmethod
+    def _text_parity(row):
+        snapshot = (row.get('sequence') or {}).get('template_snapshot') or {}
+        result = {'status': 'unverified', 'reason': 'apollo_template_read_unavailable',
+                  'fingerprint': snapshot.get('fingerprint'), 'steps': snapshot.get('items', [])}
+        if snapshot.get('status') != 'ok' or snapshot.get('complete') is not True:
+            return result
+        if snapshot.get('source', {}).get('contact_overrides_verified') is not True:
+            return {**result, 'reason': 'apollo_contact_overrides_unverified'}
+        if snapshot.get('source', {}).get('static_safe') is not True:
+            return {**result, 'reason': 'apollo_dynamic_or_extra_content'}
+        steps = sorted(row.get('steps', []), key=lambda step: step['order'])
+        actual = snapshot.get('items', [])
+        if not steps or len(steps) != len(actual):
+            return {**result, 'status': 'mismatch', 'reason': 'apollo_step_count_mismatch'}
+        for approved, observed in zip(steps, actual):
+            if observed.get('flags', {}).get('static_safe') is not True:
+                return {**result, 'status': 'unverified', 'reason': 'apollo_dynamic_or_extra_content'}
+            if any((approved.get(key) or '') != (observed.get(key) or '')
+                   for key in ('channel', 'subject', 'content')):
+                return {**result, 'status': 'mismatch', 'reason': 'apollo_template_text_mismatch'}
+        return {**result, 'status': 'verified', 'reason': 'apollo_static_text_exact_match'}
+
+    def _recipient_bindings(self, row):
+        checks = {entry['source_key']: entry['checks'] for entry in row['checks']}
+        bindings = []
+        for lead in self._eligible(row):
+            membership = next((c for c in checks[lead['source_key']] if c['key'] == 'membership'), {})
+            matches = [b for b in membership.get('coverage', {}).get('apollo_recipients', [])
+                       if b.get('email') == lead['email'] and b.get('lookup_complete') is True]
+            if len(matches) != 1:
+                return None
+            bindings.append(deepcopy(matches[0]))
+        return bindings
 
     def _review_hash(self, row, context, sheet):
         return payload_hash({'id': row['id'], 'version': row['version'],
@@ -209,6 +245,9 @@ class NewJourney:
             blockers.append('journey_email_steps_required')
         if not row.get('sequence'):
             blockers.append('journey_sequence_required')
+        parity = self._text_parity(row)
+        if parity['status'] != 'verified':
+            blockers.append('journey_apollo_text_unverified')
         steps = []
         for step in row['steps']:
             status = 'pending'
@@ -236,7 +275,8 @@ class NewJourney:
                        'retained': len(rows) - len(eligible)},
             'cost': {'credits': 0, 'paid_lookup_enabled': False}, 'credits': 0,
             'enrollment_enabled': False, 'external_writes': 0, 'manual_export': True,
-            'can_export': not blockers, 'check_keys': list(CHECK_KEYS)}
+            'can_export': not blockers, 'check_keys': list(CHECK_KEYS),
+            'apollo_text_parity': parity, 'approval_validity_hours': 24}
 
     @staticmethod
     def _unknown(reason='check_not_observed'):
@@ -389,6 +429,7 @@ class NewJourney:
             row = self._read(ident, expected_version)
             context, sheet = self._campaign(row['campaign_id'])
             row.update(source=descriptor, rows=rows, checks=[], approvals={}, reconciliation=None,
+                       qualifications={}, export_snapshot=None,
                        campaign_context=context, sheet_hash=self._sheet_hash(sheet))
             return self._view(self._save(row, expected_version))
 
@@ -396,7 +437,10 @@ class NewJourney:
         observed = []
         if self.checker is not None:
             try:
-                observed = self.checker(deepcopy(row['rows']), row['campaign_id'])
+                from .new_journey_checks import NewJourneyChecks
+                kwargs = ({'qualifications': row.get('qualifications', {})}
+                          if isinstance(self.checker, NewJourneyChecks) else {})
+                observed = self.checker(deepcopy(row['rows']), row['campaign_id'], **kwargs)
             except Exception:
                 observed = []
         if not isinstance(observed, list):
@@ -408,6 +452,7 @@ class NewJourney:
         result = []
         for lead in row['rows']:
             matches = by_key.get(lead['source_key'], [])
+            context = matches[0].get('qualification_context') if len(matches) == 1 else None
             evidence = matches[0].get('checks', []) if len(matches) == 1 else []
             if not isinstance(evidence, list):
                 evidence = []
@@ -420,6 +465,8 @@ class NewJourney:
                             and _text(check.get('reason'), 2000)
                             and _text(check.get('source'), 2000)):
                         target.update({key: check[key] for key in ('status', 'reason', 'source')})
+                        if target['key'] == 'membership' and isinstance(check.get('coverage'), Mapping):
+                            target['coverage'] = deepcopy(check['coverage'])
                         # Stable coverage/revision fingerprints are review inputs;
                         # consultation times do not make an unchanged check stale.
                         stable = {k: v for k, v in check.items() if k not in ('checked_at', 'observed_at')}
@@ -430,8 +477,36 @@ class NewJourney:
                             target['evidence_hash'] = payload_hash(stable)
                         except (TypeError, ValueError):
                             target.update(status='unknown', reason='check_evidence_invalid', source=None)
-            result.append({'source_key': lead['source_key'], 'checks': normalized})
+            result.append({'source_key': lead['source_key'], 'checks': normalized,
+                           **({'qualification_context': deepcopy(context)} if isinstance(context, Mapping) else {})})
         return result
+
+    def qualify(self, ident, source_key, facts, actor, expected_version, review_hash):
+        """Review ICP in the draft, never write qualifications into the CRM."""
+        self._actor(actor)
+        with self.repo.transaction():
+            self._running()
+            row = self._read(ident, expected_version)
+            context, sheet = self._campaign(row['campaign_id'])
+            _require(review_hash == self._review_hash(row, context, sheet), 'journey_review_conflict', 409)
+            _require(any(lead['source_key'] == source_key for lead in row['rows']), 'journey_recipient_required', 409)
+        checks = self._run_checks(row)
+        observed = next((item.get('qualification_context') for item in checks if item['source_key'] == source_key), None)
+        presented = next((item.get('qualification_context') for item in row['checks']
+                          if item['source_key'] == source_key), None)
+        _require(isinstance(presented, Mapping) and isinstance(observed, Mapping)
+                 and isinstance(presented.get('binding_hash'), str)
+                 and re.fullmatch(r'[a-f0-9]{64}', presented['binding_hash']) is not None
+                 and presented.get('binding_hash') == observed.get('binding_hash'),
+                 'journey_checks_changed', 409)
+        from .new_journey_qualification import review
+        record = review(facts, observed, self._sheet_hash(sheet), self._now())
+        row.setdefault('qualifications', {})[source_key] = record
+        updated_checks = self._run_checks(row)
+        with self.repo.transaction():
+            self._revalidate(row, context, sheet)
+            row.update(checks=updated_checks, approvals={}, export_snapshot=None, reconciliation=None)
+            return self._view(self._save(row, expected_version))
 
     def check(self, ident, actor, expected_version):
         self._actor(actor)
@@ -462,7 +537,7 @@ class NewJourney:
         return {**deepcopy(response), 'journey_id': row['id'], 'version': row['version'],
                 'enrollment_enabled': False, 'external_writes': 0, 'credits': 0}
 
-    def _sequence(self, campaign_id, ident, query):
+    def _sequence(self, campaign_id, ident, query, recipients=None):
         _require(isinstance(ident, str) and bool(_ID.fullmatch(ident)) and _text(query, empty=True),
                  'journey_sequence_invalid')
         if callable(getattr(self.apollo, 'profile', None)):
@@ -482,8 +557,25 @@ class NewJourney:
         _require(item.get('archived') is False, 'journey_sequence_archived', 409)
         activity = ('active' if item.get('active') is True else
                     'inactive' if item.get('active') is False else 'unknown')
+        snapshot = {'status': 'error', 'complete': False, 'items': [],
+                    'reason': 'apollo_template_read_unavailable'}
+        if self.template_reader is not None:
+            try:
+                _require(recipients is not None and all(
+                    b.get('account_id') == account_id and b.get('lookup_complete') is True
+                    and _valid_email(b.get('email')) for b in recipients),
+                    'journey_apollo_recipient_unverified', 409)
+                raw = self.template_reader.sequence_detail(ident, account_id, item['user_id'],
+                                                           query=query, recipients=recipients)
+                if isinstance(raw, Mapping) and raw.get('credit_cost') == 0:
+                    snapshot = {key: deepcopy(raw.get(key)) for key in
+                                ('status', 'complete', 'items', 'fingerprint', 'reason', 'source')}
+                    snapshot['fingerprint'] = raw.get('snapshot_hash') or raw.get('fingerprint')
+            except Exception:
+                pass
         return {'apollo_sequence_id': ident, 'query': query, 'account_id': account_id,
             'owner_id': item['user_id'], 'item': dict(item), 'activity_status': activity,
+            'template_snapshot': snapshot,
             'source': {key: source.get(key) for key in
                        ('provider', 'operation', 'endpoint', 'account_id', 'identity_source')}}
 
@@ -513,13 +605,14 @@ class NewJourney:
         with self.repo.transaction():
             self._running()
             row = self._read(ident, expected_version)
-        selected = (self._sequence(row['campaign_id'], apollo_sequence_id, apollo_sequence_query)
+        selected = (self._sequence(row['campaign_id'], apollo_sequence_id, apollo_sequence_query,
+                                   self._recipient_bindings(row))
                     if apollo_sequence_id is not None else row.get('sequence'))
         with self.repo.transaction():
             self._running()
             row = self._read(ident, expected_version)
             row.update(steps=deepcopy(sorted(steps, key=lambda step: step['order'])),
-                       sequence=selected, approvals={})
+                       sequence=selected, approvals={}, export_snapshot=None, reconciliation=None)
             return self._view(self._save(row, expected_version))
 
     def _preflight(self, ident, actor, expected_version, review_hash):
@@ -538,8 +631,10 @@ class NewJourney:
         _require(bool(self._eligible(row)), 'journey_no_eligible_rows', 409)
         _require(bool(row.get('sequence')), 'journey_sequence_required', 409)
         selected = row['sequence']
-        _require(self._sequence(row['campaign_id'], selected['apollo_sequence_id'], selected['query']) == selected,
+        _require(self._sequence(row['campaign_id'], selected['apollo_sequence_id'], selected['query'],
+                                self._recipient_bindings(row)) == selected,
                  'journey_sequence_changed', 409)
+        _require(self._text_parity(row)['status'] == 'verified', 'journey_apollo_text_unverified', 409)
         return row, context, sheet
 
     def _revalidate(self, row, context, sheet):
@@ -600,6 +695,12 @@ class NewJourney:
         with self.repo.transaction():
             self._revalidate(row, context, sheet)
             eligible = self._eligible(row)
+            bindings = self._recipient_bindings(row)
+            _require(bindings is not None and len(bindings) == len(eligible),
+                     'journey_apollo_recipient_unverified', 409)
+            bound = {lead['source_key']: deepcopy(binding) for lead, binding in zip(eligible, bindings)}
+            canonical = {entry['source_key']: entry.get('qualification_context') or {}
+                         for entry in row['checks']}
             emails = [s for s in row['steps'] if s['channel'] == 'email']
             _require(bool(emails), 'journey_email_steps_required', 409)
             for step in row['steps']:
@@ -619,6 +720,10 @@ class NewJourney:
             writer.writerow({key: _safe_cell(key) for key in columns})
             for lead in eligible:
                 values = {key: lead.get(key, '') for key in columns}
+                # Imported identifiers are hints, never export authority.
+                values.update(apollo_person_id='',
+                              apollo_contact_id=bound[lead['source_key']].get('contact_id') or '',
+                              hubspot_id=canonical[lead['source_key']].get('contact_id') or '')
                 values.update(campaign_id=row['campaign_id'], journey_id=ident, scope_hash=self._scope(row))
                 values['apollo_sequence_id'] = row['sequence']['apollo_sequence_id']
                 values.update({'var_' + key: lead['variables'].get(key, '') for key in variables})
@@ -627,10 +732,16 @@ class NewJourney:
                                    ('channel', 'subject', 'content', 'order', 'interval_hours')})
                 writer.writerow({key: value if key in exact_columns else _safe_cell(value)
                                  for key, value in values.items()})
+            snapshot = {'scope_hash': self._scope(row), 'source_keys': [lead['source_key'] for lead in eligible],
+                        'sequence_id': row['sequence']['apollo_sequence_id'],
+                        'account_id': row['sequence']['account_id'], 'recipient_bindings': bound}
+            if row.get('export_snapshot') != snapshot:
+                row.update(export_snapshot=snapshot, reconciliation=None)
+                row = self._save(row, expected_version)
             return {'filename': ident + '.csv', 'csv_text': '\ufeff' + stream.getvalue(),
                 'rows': len(eligible), 'credits': 0, 'external_writes': 0,
                 'enrollment_enabled': False, 'manual_export': True, 'version': row['version'],
-                'review_hash': review_hash, 'scope_hash': self._scope(row),
+                'review_hash': self._review_hash(row, context, sheet), 'scope_hash': self._scope(row),
                 'csv_formula_escaped': True, 'reconciliation_required': True}
 
     def reconcile(self, ident, actor, expected_version):
@@ -640,51 +751,15 @@ class NewJourney:
             self._running()
             row = self._read(ident, expected_version)
             context, sheet = self._campaign(row['campaign_id'])
+        from .new_journey_reconciliation import observe_batch
+        snapshot = row.get('export_snapshot')
         selected = row.get('sequence') or {}
-        sequence_id, account_id = selected.get('apollo_sequence_id'), selected.get('account_id')
-        configured = (isinstance(sequence_id, str) and bool(_ID.fullmatch(sequence_id))
-                      and _text(account_id))
-        observations, requests = [], 0
-        for lead in row['rows']:
-            observation = {'source_key': lead['source_key'], 'status': 'unknown',
-                'reason': 'configuration_pending' if not configured else 'provider_unavailable'}
-            if configured and self.apollo is not None and _valid_email(lead['email']):
-                observation['reason'] = 'request_budget_exhausted'
-                if requests < 10:
-                    requests += 1
-                    try:
-                        response = self._provider('contacts_search', query=lead['email'], page=1, per_page=100)
-                        provider_source = response.get('source') or {}
-                        _require(provider_source.get('account_id') == account_id
-                            and provider_source.get('identity_source') in _ACCOUNT_PROOFS,
-                            'journey_apollo_account_mismatch', 409)
-                        contacts = [item for item in response['items'] if isinstance(item, Mapping)
-                            and str(item.get('email', '')).lower() == lead['email'].lower()
-                            and (not lead['apollo_contact_id'] or item.get('id') == lead['apollo_contact_id'])]
-                        observation['reason'] = 'membership_unverified'
-                        if len(contacts) == 1:
-                            statuses = contacts[0].get('contact_campaign_statuses')
-                            if (isinstance(statuses, list)
-                                    and contacts[0].get('contact_campaign_statuses_complete') is True
-                                    and response.get('complete') is True):
-                                matching = [s for s in statuses if isinstance(s, Mapping)
-                                    and s.get('emailer_campaign_id') == sequence_id]
-                                if len(matching) == 1:
-                                    membership = matching[0]
-                                    observation.update(sequence_id=sequence_id, contact_id=contacts[0].get('id'),
-                                        provider_state=membership.get('state'), provider_status=membership.get('status'))
-                                    # Literal recognized active states only. Missing or
-                                    # conflicting semantics remain unknown.
-                                    signals = [membership[key] for key in ('state', 'status') if key in membership]
-                                    if signals and all(s in ('active', 'in_progress') for s in signals):
-                                        observation.update(status='enrolled', reason='sequence_membership_observed')
-                    except NewJourneyError as exc:
-                        observation['reason'] = exc.code
-            observations.append(observation)
-        reconciliation = {'observed_at': self._now().isoformat(), 'current': False,
-            'status': 'observed' if configured and self.apollo is not None else 'configuration_pending',
-            'sequence_id': sequence_id if configured else None, 'request_count': requests,
-            'request_budget': 10, 'rows': observations, 'external_writes': 0, 'credits': 0}
+        if snapshot and (snapshot.get('scope_hash') != self._scope(row)
+                or snapshot.get('sequence_id') != selected.get('apollo_sequence_id')
+                or snapshot.get('account_id') != selected.get('account_id')
+                or self._sheet_hash(sheet) != row['sheet_hash'] or context != row['campaign_context']):
+            row['export_snapshot'] = None
+        reconciliation = observe_batch(row, self._provider if self.apollo is not None else None, self._now())
         with self.repo.transaction():
             self._revalidate(row, context, sheet)
             row['reconciliation'] = reconciliation

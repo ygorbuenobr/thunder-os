@@ -1370,7 +1370,7 @@ class Handler(BaseHTTPRequestHandler):
                 if set(body) != {'campaign_id', 'name'}:
                     raise Erro('Dados de jornada inválidos.')
                 return self.responder(200, wizard.create(body, actor))
-            match = re.fullmatch(r'([A-Za-z0-9_-]{1,100})/(source|check|sequences|sequence|approve-step|export|reconcile)', target)
+            match = re.fullmatch(r'([A-Za-z0-9_-]{1,100})/(source|check|qualify|sequences|sequence|approve-step|export|reconcile)', target)
             if not match:
                 raise Erro('Operação de jornada não encontrada.', 404)
             ident, action = match.groups()
@@ -1387,6 +1387,14 @@ class Handler(BaseHTTPRequestHandler):
                     raise Erro('Fonte de jornada inválida.')
                 result = wizard.source(ident, {k: v for k, v in body.items() if k != 'expected_version'},
                                        actor, expected_version=version)
+            elif action == 'qualify':
+                if (set(body) != required | {'source_key', 'facts', 'review_hash'}
+                        or not isinstance(body['source_key'], str)
+                        or not isinstance(body['review_hash'], str)
+                        or not re.fullmatch(r'[a-f0-9]{64}', body['review_hash'])):
+                    raise Erro('Qualificação inválida.')
+                result = wizard.qualify(ident, body['source_key'], body['facts'], actor,
+                                        expected_version=version, review_hash=body['review_hash'])
             elif action == 'sequences':
                 if set(body) != required | {'query'}:
                     raise Erro('Consulta de sequências inválida.')
@@ -1430,6 +1438,8 @@ class Handler(BaseHTTPRequestHandler):
                 'journey_checks_changed': 'As evidências mudaram. Refaça a checagem antes de aprovar ou exportar.',
                 'journey_no_eligible_rows': 'Nenhum contato passou por todas as checagens. Confira os motivos por pessoa.',
                 'journey_review_conflict': 'A revisão mudou. Atualize antes de aprovar ou exportar.',
+                'journey_qualification_invalid': 'Confirme a empresa vinculada, os fatos, a fonte pública e a data da qualificação.',
+                'journey_apollo_text_unverified': 'O texto do Apollo não está comprovadamente igual ao aprovado. Confira os templates e o conteúdo dinâmico.',
             }
             raise Erro(public_errors.get(getattr(error, 'code', ''),
                 'Não foi possível concluir: confira os dados, as fontes e a revisão atual.'), status) from None
@@ -2345,6 +2355,7 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
                 cadence_reader=getattr(servidor, 'thunder_cadence_readonly', None),
                 accounts=servidor.thunder_account_cadence_readonly)
             from thunder_os.apollo_prospect_readonly import ApolloProspectReadonly
+            from thunder_os.apollo_sequence_readonly import ApolloSequenceReadonly
             from thunder_os.instantly_reader import private_text
             from thunder_os.new_journey import NewJourney
             from thunder_os.new_journey_checks import NewJourneyChecks
@@ -2356,6 +2367,9 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
                 enabled=runtime is None, timeout=8)
             servidor.thunder_new_journey = NewJourney(servidor.thunder_service,
                 apollo=apollo_prospects if runtime is None else None,
+                template_reader=ApolloSequenceReadonly(
+                    lambda: private_text('/root/.config/thunder/credentials/apollo_api_key.txt'))
+                    if runtime is None else None,
                 checker=NewJourneyChecks(servidor.thunder_service,
                     hubspot=HubSpotHTTP(systemd_hubspot_credential, timeout=4)
                     if runtime is None and crm_read else None,

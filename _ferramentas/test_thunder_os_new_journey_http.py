@@ -13,13 +13,14 @@ from unittest.mock import Mock
 import painel_servidor as panel
 from thunder_os.db import RepositoryConflict
 from thunder_os.models import ContractError
+from test_thunder_os_new_journey import StaticTemplates, passing
 
 
 class NewJourneyHTTPTests(unittest.TestCase):
     def setUp(self):
         self.wizard = Mock()
         for name in ('catalog', 'create', 'get', 'source', 'check', 'sequences', 'revise_sequence',
-                     'approve_step', 'export', 'reconcile'):
+                     'approve_step', 'export', 'reconcile', 'qualify'):
             getattr(self.wizard, name).return_value = {'enrollment_enabled': False, 'id': 'draft-test'}
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), panel.Handler)
         self.server.banco = SimpleNamespace()
@@ -93,6 +94,18 @@ class NewJourneyHTTPTests(unittest.TestCase):
             self.assertEqual(self.request('draft-test/source', method='POST', nonce=True,
                 body={'expected_version': 2, **data})[0], 200)
             self.wizard.source.assert_called_with('draft-test', data, 'ygor', expected_version=2)
+
+    def test_qualification_uses_same_actor_nonce_origin_and_exact_schema(self):
+        body = {'expected_version': 2, 'source_key': 'csv:1', 'facts': {}, 'review_hash': 'a' * 64}
+        for actor, nonce, expected in [('ygor', False, 401), ('codex', True, 403)]:
+            self.assertEqual(self.request('draft-test/qualify', actor=actor, method='POST',
+                                          body=body, nonce=nonce)[0], expected)
+        self.wizard.qualify.assert_not_called()
+        self.assertEqual(self.request('draft-test/qualify', method='POST', nonce=True,
+                                      body={**body, 'write_hubspot': True})[0], 400)
+        self.assertEqual(self.request('draft-test/qualify', method='POST', nonce=True, body=body)[0], 200)
+        self.wizard.qualify.assert_called_once_with('draft-test', 'csv:1', {}, 'ygor',
+                                                   expected_version=2, review_hash='a' * 64)
 
     def test_N06_exact_step_revision_and_approval_never_dispatch(self):
         steps = [{'id': 'D0', 'channel': 'email', 'subject': 'Original', 'content': 'Exact text',
@@ -173,11 +186,12 @@ class NewJourneyBoundHTTPTests(unittest.TestCase):
                        'identity_source': 'provider_response_team'},
             'items': [{'id': 'sequence-fixture', 'name': 'Fixture sequence',
                        'active': True, 'archived': False, 'user_id': 'owner-fixture'}]})
-        checker = lambda rows, campaign_id: [{'source_key': row['source_key'], 'checks': [
-            {'key': key, 'status': 'pass', 'reason': 'Fixture verified', 'source': 'fixture:revision1'}
-            for key in CHECK_KEYS]} for row in rows]
+        checker = lambda rows, campaign_id: passing(rows, campaign_id, account_id='team-fixture')
         self.server.thunder_service = self.service
-        self.server.thunder_new_journey = NewJourney(self.service, apollo=apollo, checker=checker)
+        templates = StaticTemplates([{'channel': 'email', 'subject': 'Fixture subject',
+            'content': 'Original exact text\nSecond paragraph', 'order': 1}])
+        self.server.thunder_new_journey = NewJourney(self.service, apollo=apollo, checker=checker,
+                                                    template_reader=templates)
 
     def test_N06_N07_real_service_http_persistence_exact_approval_and_csv(self):
         status, draft = self.request('create', method='POST', nonce=True,
@@ -210,6 +224,7 @@ class NewJourneyBoundHTTPTests(unittest.TestCase):
         self.assertEqual(exported['rows'], 1)
         self.assertFalse(exported['enrollment_enabled'])
         self.assertIn('Original exact text\nSecond paragraph', exported['csv_text'])
+        draft = self.request(ident)[1]
         status, revised = post('sequence', steps=[{**step, 'content': 'Changed text'}],
             apollo_sequence_id='sequence-fixture', apollo_sequence_query='Fixture sequence')
         self.assertEqual(status, 200)

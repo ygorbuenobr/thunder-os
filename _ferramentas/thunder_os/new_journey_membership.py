@@ -39,7 +39,7 @@ def _result(provider, address, status='unknown', reason='read_unavailable', *,
     proof = {'provider': provider, 'email': address, 'identity': identity,
              'records': sorted(records, key=lambda row: json.dumps(row, sort_keys=True)),
              'status': status, 'reason': reason, 'complete': complete}
-    return {'status': status, 'reason': provider + '_' + reason,
+    return {'provider': provider, 'records': proof['records'], 'status': status, 'reason': provider + '_' + reason,
             'source_ref': provider + ':' + _digest(proof),
             'coverage': {'complete': complete, 'identity': identity}}
 
@@ -286,7 +286,7 @@ class CrossCampaignReadOnly:
         status = 'occupied' if occupied else 'clear' if complete else 'unknown'
         reason = reason or (occupied['reason'] if occupied else 'providers_no_membership' if complete
                             else 'provider_membership_coverage_incomplete')
-        return {'status': status, 'reason': reason, 'source_ref': 'membership:' + _digest({
+        return {'email': address, 'status': status, 'reason': reason, 'source_ref': 'membership:' + _digest({
                     'email': address, 'sources': [r['source_ref'] for r in results], 'reason': reason}),
                 'coverage': {'complete': complete, 'providers': ['apollo', 'instantly'],
                              'scope': 'exact_email_all_account_campaigns', 'results': results}}

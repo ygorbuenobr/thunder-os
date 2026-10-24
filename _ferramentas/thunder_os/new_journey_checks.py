@@ -20,6 +20,7 @@ from .today_readonly import ReadonlyRepository, _safe_url
 from .new_journey_hubspot import ENUMS, HubSpotEligibilityRead
 from .new_journey_membership import CrossCampaignReadOnly
 from .new_journey_refusal import RegisteredRefusalRead
+from .new_journey_qualification import candidate, decision as qualification_decision
 
 KEYS = ('icp', 'exclusions', 'client', 'open_deal', 'refusal', 'membership')
 PROPERTIES = {'email', 'hs_additional_emails', 'company', 'lifecyclestage',
@@ -199,7 +200,7 @@ class NewJourneyChecks:
         self.hubspot, self.clock = hubspot, clock or (lambda: datetime.now(timezone.utc))
         self.membership, self.refusals = membership, refusals
 
-    def _canonical_checks(self, checks, evidence, sheet, now, deadline, source_keys):
+    def _canonical_checks(self, checks, evidence, sheet, now, deadline, source_keys, reviewed=None):
         """Only canonical server reads may turn an unknown check into a pass."""
         identity = evidence.get('identity', {})
         if identity.get('verified') is not True or not _complete(evidence, 'identity'):
@@ -220,8 +221,15 @@ class NewJourneyChecks:
         qualified = (_complete(evidence, 'company') and _fresh_company(evidence, now)
             and _property(evidence, 'companies', 'thunder_icp_status')
             and props.get('thunder_icp_status') == 'qualified')
+        from .new_journey import NewJourney
+        human = qualification_decision(reviewed, candidate(evidence), NewJourney._sheet_hash(sheet), now)
+        human_qualified = bool(human and human['fits'] and _br_icp(sheet))
+        qualified = qualified or human_qualified
         if props.get('thunder_icp_status') == 'disqualified':
             result('icp', 'blocked', 'canonical_company_disqualified')
+        if human and _br_icp(sheet):
+            result('icp', 'pass' if human['fits'] else 'blocked',
+                   'human_reviewed_icp_fit' if human['fits'] else 'human_reviewed_icp_disqualified', human['source'])
         if props.get('thunder_is_customer') in (True, 'true') or props.get('lifecyclestage') == 'customer':
             result('client', 'blocked', 'canonical_company_is_customer')
         if props.get('thunder_suppressed') in (True, 'true') or cp.get('opt_out') in (True, 'true'):
@@ -298,8 +306,19 @@ class NewJourneyChecks:
             elif all(item['status'] == 'clear' and item['coverage']['complete'] for item in observations):
                 result('membership', 'pass', 'canonical_apollo_instantly_no_membership', ref,
                        scope='hubspot_apollo_instantly_all_verified_email_aliases')
+                bindings = []
+                for observation in observations:
+                    apollo = [r for r in observation['coverage'].get('results', []) if r.get('provider') == 'apollo']
+                    if len(apollo) == 1 and apollo[0]['coverage']['complete']:
+                        records = apollo[0].get('records', [])
+                        if len(records) <= 1:
+                            bindings.append({'email': observation.get('email') or (
+                                records[0]['email'] if records else None),
+                                'contact_id': records[0]['id'] if records else None,
+                                'account_id': apollo[0]['coverage']['identity'], 'lookup_complete': True})
+                checks['membership']['coverage']['apollo_recipients'] = bindings
 
-    def __call__(self, rows, campaign_id):
+    def __call__(self, rows, campaign_id, *, qualifications=None):
         if (not isinstance(rows, list) or len(rows) > 200 or any(not isinstance(r, dict) for r in rows)
                 or not isinstance(campaign_id, str) or not re.fullmatch(r'BR-[A-Za-z0-9_-]{1,97}', campaign_id)):
             raise NewJourneyChecksError('checks_input_invalid')
@@ -426,7 +445,8 @@ class NewJourneyChecks:
                 keys.add('hubspot:' + str(identity.get('contact_id')))
                 relevant_state = {kind: [r for r in state[kind] if _token(r.get('person_key')) in keys
                     or 'hubspot:' + str(r.get('hubspot_contact_id')) in keys] for kind in ('reply', 'cadence')}
-                self._canonical_checks(checks, evidence, sheet, now, deadline, relevant_state)
+                self._canonical_checks(checks, evidence, sheet, now, deadline, relevant_state,
+                    (qualifications or {}).get(source_key))
             if identity_reason != 'identity_ambiguous':
                 for reply in state['reply']:
                     linked = _token(reply.get('person_key')) in keys or 'hubspot:' + str(reply.get('hubspot_contact_id')) in keys
@@ -465,7 +485,8 @@ class NewJourneyChecks:
                         or 'identity' in unavailable):
                     check.update(status='unknown', reason='canonical_state_read_incomplete')
                     check['coverage']['complete'] = False
-            output.append({'source_key': source_key, 'rowstablekey': row.get('rowstablekey') or source_key,
+            output.append({'source_key': source_key, 'qualification_context': candidate(evidence) if evidence else None,
+                'rowstablekey': row.get('rowstablekey') or source_key,
                 'checks': list(checks.values()), 'checked_at': now.isoformat(),
                 'retained': not all(c['status'] == 'pass' for c in checks.values()),
                 'coverage': {'complete': all(c['status'] == 'pass' for c in checks.values()),

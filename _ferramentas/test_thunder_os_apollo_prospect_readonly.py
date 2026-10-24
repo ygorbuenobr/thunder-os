@@ -621,6 +621,21 @@ class ApolloProspectReadonlyTests(unittest.TestCase):
             self.assertFalse(result['complete'])
             self.assertEqual(len(result['items']), 1)
 
+    def test_empty_first_page_accepts_both_observed_apollo_page_conventions(self):
+        for pages in (0, 1):
+            data = paged([])
+            data['pagination']['total_pages'] = pages
+            result = self.client(data).contacts_search('ygor@example.invalid')
+            self.assertEqual(result['status'], 'ok')
+            self.assertIs(result['complete'], True)
+            self.assertEqual(result['items'], [])
+        for pages in (2, 99):
+            data = paged([])
+            data['pagination']['total_pages'] = pages
+            result = self.client(data).contacts_search('ygor@example.invalid')
+            self.assertFalse(result['complete'])
+            self.assertEqual(result['reason'], 'pagination_unverified')
+
     def test_empty_search_is_complete_but_unknown_total_is_not_inferred(self):
         client = self.client({'people': [], 'total_entries': 0})
         self.assertTrue(client.people_search({})['complete'])

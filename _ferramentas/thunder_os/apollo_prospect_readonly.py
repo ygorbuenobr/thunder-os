@@ -458,7 +458,10 @@ class ApolloProspectReadonly:
                                   and _number(pagination.get('per_page')) == per_page)
                 pages = _number(pagination.get('total_pages'))
                 if pages is not None and total is not None:
-                    metadata_valid &= pages == (total + per_page - 1) // per_page
+                    # Apollo reports an empty first page as either zero or one
+                    # total pages. Other totals retain the exact page equation.
+                    metadata_valid &= (pages in (0, 1) if total == 0 and page == 1 and rows == []
+                                       else pages == (total + per_page - 1) // per_page)
             offset = (page - 1) * per_page
             invalid = self._observe_identity(data, rows if operation == 'contacts_search' else [], source, token)
             items, seen = [], set()

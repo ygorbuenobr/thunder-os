@@ -15,6 +15,19 @@ from test_thunder_os_campaign_registry import config
 from thunder_os.db import Repository
 from thunder_os.new_journey import CHECK_KEYS, NewJourney, NewJourneyError
 from thunder_os.service import ThunderService
+from thunder_os.models import payload_hash
+
+
+class StaticTemplates:
+    """Explicit synthetic provider content, independent of approval decisions."""
+    def __init__(self, steps=None):
+        self.items = deepcopy(steps or [])
+
+    def sequence_detail(self, sequence_id, account_id, owner_id, query='', recipients=None):
+        items = [{**step, 'flags': {'static_safe': True}} for step in self.items]
+        return {'status': 'ok', 'complete': True, 'credit_cost': 0,
+                'source': {'contact_overrides_verified': recipients is not None, 'static_safe': True},
+                'items': items, 'fingerprint': payload_hash(items)}
 
 
 class Apollo:
@@ -46,10 +59,15 @@ class Apollo:
         return self.response(self.items)
 
 
-def passing(rows, campaign_id):
-    return [{'source_key': row['source_key'], 'checks': [
+def passing(rows, campaign_id, account_id='team-2'):
+    return [{'source_key': row['source_key'],
+             'qualification_context': {'contact_id': 'hubspot-1'} if row['email'] == 'ana@example.invalid' else None,
+             'checks': [
         {'key': key, 'status': 'pass', 'reason': 'Synthetic verified absence/fit',
-         'source': 'synthetic-record:revision-1'} for key in CHECK_KEYS]} for row in rows]
+         'source': 'synthetic-record:revision-1', **({'coverage': {'apollo_recipients': [
+             {'email': row['email'], 'contact_id': 'contact-1' if row['email'] == 'ana@example.invalid' else None,
+              'account_id': account_id, 'lookup_complete': True}]}} if key == 'membership' else {})}
+        for key in CHECK_KEYS]} for row in rows]
 
 
 class NewJourneyTests(unittest.TestCase):
@@ -66,7 +84,9 @@ class NewJourneyTests(unittest.TestCase):
         self.service.campaign_registry.register(self.cfg, 'ygor', 0)
         self.now = datetime(2026, 10, 23, tzinfo=timezone.utc)
         self.apollo = Apollo()
-        self.journey = NewJourney(self.service, self.apollo, passing, lambda: self.now)
+        self.templates = StaticTemplates()
+        self.journey = NewJourney(self.service, self.apollo, passing, lambda: self.now,
+                                  template_reader=self.templates)
         self.row = self.journey.create({'campaign_id': self.cfg['campaign_id'], 'name': 'Synthetic'}, 'ygor')
         self.network = patch('socket.socket.connect', side_effect=AssertionError('network forbidden'))
         self.network.start()
@@ -88,6 +108,7 @@ class NewJourneyTests(unittest.TestCase):
             steps.append({'id': 'L1', 'channel': 'linkedin', 'subject': '',
                           'content': 'Exact LinkedIn text', 'order': 2, 'interval_hours': 72})
         args = {'apollo_sequence_id': 'sequence-2', 'apollo_sequence_query': 'Synthetic'} if select else {}
+        self.templates.items = deepcopy(steps)
         self.row = self.journey.revise_sequence(self.row['id'], steps, 'ygor', self.row['version'], **args)
         return self.row
 
@@ -101,7 +122,9 @@ class NewJourneyTests(unittest.TestCase):
         return self.row
 
     def export(self):
-        return self.journey.export(self.row['id'], 'ygor', self.row['version'], self.row['review_hash'])
+        result = self.journey.export(self.row['id'], 'ygor', self.row['version'], self.row['review_hash'])
+        self.row = self.journey.get(self.row['id'], 'ygor')
+        return result
 
     def assert_no_execution(self):
         for kind in ('cadence', 'approval', 'operation_approval'):
@@ -303,7 +326,9 @@ class NewJourneyTests(unittest.TestCase):
         self.ready(); self.approve()
         steps = [{k: s[k] for k in ('id', 'channel', 'subject', 'content', 'order', 'interval_hours')} for s in self.row['steps']]
         steps[0]['content'] = 'Changed exact text'
-        self.row = self.journey.revise_sequence(self.row['id'], steps, 'ygor', self.row['version'])
+        self.templates.items = deepcopy(steps)
+        self.row = self.journey.revise_sequence(self.row['id'], steps, 'ygor', self.row['version'],
+            apollo_sequence_id='sequence-2', apollo_sequence_query='Synthetic')
         self.assertEqual(self.row['approvals'], {})
         with self.assertRaisesRegex(NewJourneyError, 'approval_scope_changed'):
             self.export()
@@ -449,7 +474,9 @@ class NewJourneyTests(unittest.TestCase):
         steps = [{key: step[key] for key in fields} for step in self.row['steps']]
         steps[0].update(subject='Original, "quoted" subject', content='Original, "quoted" body\nExact next line')
         steps[1]['content'] = 'Original LinkedIn text\nExact next line'
-        self.row = self.journey.revise_sequence(self.row['id'], steps, 'ygor', self.row['version'])
+        self.templates.items = deepcopy(steps)
+        self.row = self.journey.revise_sequence(self.row['id'], steps, 'ygor', self.row['version'],
+            apollo_sequence_id='sequence-2', apollo_sequence_query='Synthetic')
         self.approve(); self.approve('L1')
         output = self.export()
         for exported in csv.DictReader(io.StringIO(output['csv_text'].removeprefix('\ufeff'))):
@@ -506,13 +533,15 @@ class NewJourneyTests(unittest.TestCase):
         self.row = self.journey.reconcile(self.row['id'], 'ygor', self.row['version'])
         self.assertEqual(len(self.apollo.calls), calls)
         reconciliation = self.row['reconciliation']
-        self.assertEqual(reconciliation['status'], 'configuration_pending')
+        self.assertEqual(reconciliation['status'], 'unknown')
+        self.assertEqual(reconciliation['reason'], 'export_snapshot_missing')
         self.assertFalse(reconciliation['current'])
         self.assertIn('observed_at', reconciliation)
         self.assertEqual(self.journey.get(self.row['id'], 'ygor')['reconciliation'], reconciliation)
 
     def test_reconciliation_exact_sequence_and_missing_status_semantics(self):
         self.ready()
+        self.approve(); self.export()
         for statuses, expected in (([{'emailer_campaign_id': 'other', 'status': 'active'}], 'unknown'),
                                    ([{'emailer_campaign_id': 'sequence-2'}], 'unknown'),
                                    ([{'emailer_campaign_id': 'sequence-2', 'status': 'paused'}], 'unknown'),
@@ -526,6 +555,7 @@ class NewJourneyTests(unittest.TestCase):
     def test_reconciliation_request_budget_and_no_provider_or_account_proof(self):
         self.source('email\n' + ''.join(f'person{i}@example.invalid\n' for i in range(12)))
         self.check(); self.steps()
+        self.approve(); self.export()
         self.row = self.journey.reconcile(self.row['id'], 'ygor', self.row['version'])
         self.assertEqual(self.row['reconciliation']['request_count'], 10)
         self.assertEqual(self.row['reconciliation']['rows'][10]['reason'], 'request_budget_exhausted')
@@ -536,6 +566,7 @@ class NewJourneyTests(unittest.TestCase):
 
     def test_reconciliation_partial_statuses_or_wrong_team_cannot_prove_enrollment(self):
         self.ready()
+        self.approve(); self.export()
         self.apollo.source['identity_source'] = 'provider_response_team'
         self.apollo.items = [{'id': 'contact-1', 'email': 'ana@example.invalid',
             'contact_campaign_statuses': [{'emailer_campaign_id': 'sequence-2', 'status': 'active'}],

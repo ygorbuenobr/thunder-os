@@ -40,8 +40,9 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
       const traffic=[],errors=[];
       let draft=null,complete=false,checker='unknown',failCatalog=true,emptyCatalog=false,failGet=false,denySource=false,denySequences=false;
       let holdApprove=false,releaseApprove,selectedSequence='',observedEnrollment=false;
+      let parityStatus='verified';
       const row = (n=1,email='fixture@example.invalid')=>({source_key:'source-'+n,name:'Pessoa sintética '+n,email,company:'Empresa sintética',linkedin_url:'https://www.linkedin.com/in/fixture-'+n,blockers:[],variables:{}});
-      const checkRows=()=>draft.rows.map(r=>({source_key:r.source_key,checks:keys.map(key=>({key,status:checker,
+      const checkRows=()=>draft.rows.map(r=>({source_key:r.source_key,qualification_context:checker==='pass'?{company_id:'123',contact_id:'42',company_name:'Empresa sintética',domain:'example.invalid',binding_hash:'f'.repeat(64)}:null,checks:keys.map(key=>({key,status:checker,
         reason:checker==='pass'?'Prova sintética verificada.':'identity_unlinked',source:'fixtures/checks.md · '+date,checked_at:date}))}));
       const view=()=>{
         const eligible=draft.rows.filter(r=>r.email&&draft.checks.find(c=>c.source_key===r.source_key)?.checks.every(c=>c.status==='pass')).length;
@@ -50,12 +51,14 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
         if(!eligible)blockers.push('journey_no_eligible_rows');
         if(!draft.steps.some(s=>s.channel==='email'))blockers.push('journey_email_steps_required');
         if(!draft.sequence)blockers.push('journey_sequence_required');
+        if(draft.sequence&&parityStatus!=='verified')blockers.push('journey_apollo_text_unverified');
         const steps=draft.steps.map(s=>({...s,approval_status:draft.approvals[s.id]?'approved':'pending',can_approve:!blockers.length,blockers:[...blockers]}));
         if(steps.some(s=>s.approval_status!=='approved'))blockers.push('journey_step_approval_required');
         return {...structuredClone(draft),sheet:sheet(complete),review_hash:String(draft.version).padStart(64,'0'),
           steps,rows:draft.rows.map(r=>({...r,eligible:!!(r.email&&draft.checks.find(c=>c.source_key===r.source_key)?.checks.every(c=>c.status==='pass')),
             checks:draft.checks.find(c=>c.source_key===r.source_key)?.checks||keys.map(key=>({key,status:'unknown',reason:'Prova ausente.'}))})),
           blockers,can_export:!blockers.length,counts:{total:draft.rows.length,eligible,retained:draft.rows.length-eligible},
+          apollo_text_parity:{status:parityStatus,reason:parityStatus==='verified'?'apollo_static_text_exact_match':'apollo_template_text_mismatch',steps:draft.steps.map(s=>({...s}))},
           enrollment_enabled:false,external_writes:0,cost:{credits:0,paid_lookup_enabled:false},credits:0};
       };
       const changed=()=>{draft.version++;return view();};
@@ -94,6 +97,15 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
             draft.checks=[];draft.approvals={};draft.reconciliation=null;return send(changed());
           }
           if(op==='check'){assert.deepEqual(Object.keys(body),['expected_version']);draft.checks=checkRows();draft.approvals={};return send(changed());}
+          if(op==='qualify'){
+            assert.deepEqual(Object.keys(body).sort(),['expected_version','facts','review_hash','source_key']);
+            assert.equal(body.review_hash,view().review_hash);
+            assert.equal(body.source_key,'source-1');assert.equal(body.facts.is_b2b,true);
+            assert.equal(body.facts.annual_revenue_brl,20000000);assert.equal(body.facts.country,'BR');
+            assert.equal(body.facts.source_url,'https://example.invalid/report');
+            draft.qualifications={[body.source_key]:{actor:'ygor',reviewed_at:date,facts:body.facts}};
+            draft.approvals={};return send(changed());
+          }
           if(op==='sequences'){
             assert.deepEqual(Object.keys(body).sort(),['expected_version','query']);
             if(denySequences)return send({erro:'Apollo sem permissão para consultar sequências.'},403);
@@ -119,7 +131,7 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
           }
           if(op==='reconcile'){
             assert.deepEqual(Object.keys(body),['expected_version']);
-            draft.reconciliation={status:observedEnrollment?'observed':'configuration_pending',observed_at:date,sequence_id:observedEnrollment?selectedSequence:null,rows:draft.rows.map(r=>({source_key:r.source_key,status:observedEnrollment?'enrolled':'unknown',reason:observedEnrollment?'sequence_membership_observed':'configuration_pending'}))};
+            draft.reconciliation={status:observedEnrollment?'observed':'configuration_pending',observed_at:date,pagination:{processed_count:observedEnrollment?1:0,total:1},sequence_id:observedEnrollment?selectedSequence:null,rows:draft.rows.map(r=>({source_key:r.source_key,status:observedEnrollment?'enrolled':'unknown',reason:observedEnrollment?'sequence_membership_observed':'configuration_pending'}))};
             return send(changed());
           }
           assert.fail('No other POST operation is allowed: '+op);
@@ -255,6 +267,17 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
       assert.equal(await page.locator('.nj-sources > .nj-source').count(),4,'Saved contacts never adds a fifth source');
       await composition();await page.locator('#nj-query').fill('Contato confirmado');await click('#nj-source-form button');
       checker='pass';complete=true;await go(3);await click('[data-nj-action=check]');await shot('03-checagem-verificada');
+      await page.locator('.nj-qualification summary').click();
+      const form=page.locator('form[data-nj-qualification]');
+      await form.locator('[name=decision]').selectOption('qualified');await form.locator('[name=is_b2b]').selectOption('true');
+      await form.locator('[name=country]').selectOption('BR');await form.locator('[name=sector]').selectOption('industria_b2b');
+      await form.locator('[name=annual_revenue_brl]').fill('20000000');await form.locator('[name=source_url]').fill('https://example.invalid/report');
+      await form.locator('[name=source_date]').fill('2031-03-01');await form.locator('[name=rationale]').fill('Decisão sintética com fonte explícita.');
+      await click('form[data-nj-qualification] button');await page.locator('.nj-qualification summary').click();assert.match(await page.locator('#nj-body').innerText(),/Revisado por ygor/);
+      assert.equal(await form.locator('[name=source_url]').inputValue(),'https://example.invalid/report');
+      assert.equal(await form.locator('[name=source_date]').inputValue(),'2031-03-01');
+      assert.equal(await form.locator('[name=annual_revenue_brl]').inputValue(),'20000000');
+      assert.equal(await form.locator('[name=decision]').inputValue(),'qualified');
       await go(4);assert.equal(await page.locator('#nj-sequence-id').inputValue(),'');
       await page.locator('#nj-sequence-query').fill('Sequência confirmada pelo usuário');
       denySequences=true;await click('[data-nj-action=sequences]');assert.match(await page.locator('#nj-status').innerText(),/Sem permissão/);
@@ -263,6 +286,11 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
       await click('[data-nj-action=add-step]');await page.locator('#nj-subject-0').fill('Original');await page.locator('#nj-content-0').fill(original);
       assert.equal(await page.locator('[data-nj-approve]').isDisabled(),true,'Explicit save precedes approval');
       await click('[data-nj-action=save-sequence]');assert.equal(await page.locator('#nj-content-0').inputValue(),original);
+      assert.match(await page.locator('#nj-parity').innerText(),/igual nesta leitura/);
+      assert.match(await page.locator('#nj-parity').innerText(),/24 horas/);
+      parityStatus='mismatch';await click('#nj-reload');assert.equal(await page.locator('[data-nj-approve]').isDisabled(),true);
+      assert.match(await page.locator('#nj-parity').innerText(),/diferente do rascunho/);
+      parityStatus='verified';await click('#nj-reload');
       assert.equal(await page.locator('[data-nj-approve]').isEnabled(),true);await shot('04-sequencia');
       holdApprove=true;await page.locator('[data-nj-approve]').click();await page.waitForFunction(()=>document.querySelector('[data-nj-approve]').disabled);
       await page.waitForTimeout(20);assert.equal(traffic.filter(t=>t.path.endsWith('/approve-step')).length,1);
@@ -282,6 +310,7 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
       assert.match(await page.locator('#nj-body').innerText(),/Inscrição automática: OFF/);
       await shot('05-reconciliacao-desconhecida');
       observedEnrollment=true;await click('[data-nj-action=reconcile]');assert.match(await page.locator('#nj-enrollment').innerText(),/1 inscrições observadas.*não confirma envio/);
+      assert.match(await page.locator('#nj-reconcile-progress').innerText(),/Conferidos 1 de 1/);
       failGet=true;await click('#nj-reload');assert.match(await page.locator('#nj-status').innerText(),/Leitura indisponível/);
       assert.equal(await page.locator('[data-nj-action=export]').isDisabled(),true);
       failGet=false;await click('#nj-reload');await page.reload();await settled();

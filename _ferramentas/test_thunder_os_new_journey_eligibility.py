@@ -267,7 +267,7 @@ class CanonicalEligibilityHTTPTests(http_fixture.NewJourneyBoundHTTPTests):
         checker = assemble(self, self.repo, self.service, self.service.knowledge_store.root, 1)
         existing = self.server.thunder_new_journey
         self.server.thunder_new_journey = NewJourney(self.service, apollo=existing.apollo,
-                                                    checker=checker, clock=lambda: NOW)
+            checker=checker, clock=lambda: NOW, template_reader=existing.template_reader)
 
     def test_incomplete_alias_name_or_membership_schema_cannot_approve_or_export(self):
         contacts, companies, schemas = deepcopy(self.http.contacts), deepcopy(self.http.companies), deepcopy(self.http.schemas)
