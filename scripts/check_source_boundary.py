@@ -6,6 +6,10 @@ from pathlib import PurePosixPath
 
 
 ALLOWED_FILES = {
+    "_ferramentas/thunder_os/internal_canary.py",
+    "_ferramentas/test_thunder_os_internal_canary.py",
+    "scripts/codex_assisted_operation.cjs",
+    "scripts/test_codex_assisted_operation.cjs",
     "scripts/codex_assisted_runner.cjs",
     "scripts/test_codex_assisted_runner.cjs",
     "_ferramentas/test_thunder_os_codex_assisted.py",

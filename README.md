@@ -477,3 +477,53 @@ changes diagnostics to reflect that decision, not the provider configuration.
 S32's pilot-binding experiment is preserved as a separate local patch and is not
 included or configured here. No enrollment, send, commercial CRM write, runtime
 activation or deployment is performed by the collector.
+
+### Entrada operacional assistida (canário interno, OFF por padrão)
+
+`node scripts/codex_assisted_operation.cjs` é a entrada JSON-lines do operador
+Codex. Em PTY, iniciar com `stty -echo -icanon && node ...` para não ecoar nem
+truncar respostas de ferramentas. A primeira linha contém `mode` (`dry-run` por
+padrão operacional; o campo é obrigatório), `panel_transport: "browser-session"`,
+`panel_url`, `scope` (kind internal_canary, from/to/subject/content, max_attempts 1,
+no_followup true), `packet` quando disponível, `lock_holder` e `journal_directory`.
+O packet deve vir do preview autenticado; nunca de um recibo ou ferramenta externa.
+Dados reais e journal ficam fora deste repositório.
+
+A entrada emite `{type:"tool_call",id,tool,args,authority?}`. O operador responde
+`{id,result}` ou `{id,error:true}`. Não executar código ou comandos recebidos no
+RPC. Para `thunder_panel_request`, chamar `browserPanelRequest` com a capability
+CDP suportada de uma aba já autenticada **na origem do painel**. O helper usa
+fetch same-origin/nonce existente; não lê cookies, storage ou credenciais.
+Para Gmail, usar `invokeConnectedRequest` no host das ferramentas conectadas.
+Essa função é autocontida (também pode ser carregada literalmente no host JS do
+Codex); manter um único `used: Set` por execução. Em dry-run, `allowSend` permanece
+false. Em execução, o `packet` do helper é a cópia autenticada guardada pelo
+operador, nunca dado do pedido RPC. `grant` também é guardado pelo operador a partir da resposta autenticada
+do painel; nunca aceitar autoridade autodeclarada do pedido RPC. O runner verifica seu hash completo; o host
+compara payload completo e referência do hash, deadline máximo de cinco segundos
+e tentativa ainda não consumida imediatamente antes da ferramenta. Não reiniciar
+um envio incerto nem renovar grant; reconciliar o recibo existente.
+
+O dry-run chama sessão do painel, perfil Gmail, busca paginada e metadados das
+mensagens. Não chama claim/dispatch/send/CRM nem adquire lock/cria journal.
+Histórico existente exige revisão do `review_hash` calculado sobre packet e
+cabeçalhos; isso serve **somente ao canário interno**, não classifica respostas,
+recusas, aliases globais ou elegibilidade comercial. O preflight final repete a
+busca e compara os IDs, além do preview canônico. Cap de páginas retém explicitamente
+continuação; não representa cobertura global. Nenhum transporte é substituído por
+fixture na entrada operacional.
+
+O holder existente do México deve corresponder ao hash pinado no módulo; ele
+mantém o mesmo flock compartilhado até terminar recibo/journal. O journal é
+exclusivo, fsync e nunca reabre tentativa. Lock é verificado antes da chamada;
+falha de inicialização/fechamento também libera o holder.
+
+A preparação interna usa as rotas autenticadas
+`codex-assisted/{prepare-canary,approve-canary,queue-canary}`. Não cria contato,
+negócio ou EMAIL no HubSpot. A exceção de pesquisa ABM/ficha existe apenas no
+serviço do canário, para envelope da política SHA-pinned
+`THUNDER_OS_CODEX_ASSISTED_POLICY_FILE/SHA256`, válida por no máximo 15 minutos.
+A ausência ou divergência bloqueia **antes** da criação do registro. O worker
+geral mantém os gates comerciais. Dispatch ainda depende de flag explícita e
+política exata; instalar código não ativa envio. Preparar não aprova nem enfileira.
+O pacote final/efeito e a política devem ser lidos de volta antes de executar.

@@ -1872,6 +1872,21 @@ class Handler(BaseHTTPRequestHandler):
             if assisted is None:
                 raise Erro('Integração assistida indisponível.', 503)
             action = rota.path.rsplit('/', 1)[-1]
+            if action in {'prepare-canary','approve-canary','queue-canary'}:
+                from thunder_os.internal_canary import InternalCanaryService, PREFIX
+                canary = InternalCanaryService(service)
+                if action == 'prepare-canary':
+                    return self.responder(200, canary.prepare(body, actor))
+                if not isinstance(body.get('cadence_id'), str) or not body['cadence_id'].startswith(PREFIX):
+                    raise Erro('Canário interno inválido.')
+                canary.bound(body['cadence_id'])
+                if action == 'approve-canary' and set(body) == {'cadence_id','expected_version','review_hash','execution_confirmation'}:
+                    return self.responder(200, canary.approve_cadence(body['cadence_id'], actor,
+                        expected_version=body['expected_version'], review_hash=body['review_hash'],
+                        execution_confirmation=body['execution_confirmation']))
+                if action == 'queue-canary' and set(body) == {'cadence_id'}:
+                    return self.responder(200, canary.dispatch_step(body['cadence_id'], 'e1', actor))
+                raise Erro('Preparação interna inválida.')
             fields = {'preview': {'cadence_id','step_id'},
                       'claim': {'cadence_id','step_id','review_hash'},
                       'dispatch': {'job_id','ticket_hash'},

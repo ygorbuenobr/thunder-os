@@ -28,7 +28,7 @@ async function runAssisted(packet,{panel,gmail,journal,withLock,preflight,now=()
     requireValue(grant?.dispatch_authorized===true&&grant.ticket_hash===ticket_hash&&grant.expires_at>now(),'DISPATCH_REVOKED');
     let sent;
     try{
-      sent=await gmail.send_email(ticket.payload);
+      sent=await gmail.send_email(ticket.payload,{not_after:grant.expires_at,ticket_hash,packet_hash:review_hash});
       requireValue(typeof sent?.id==='string'&&/^[a-f0-9]{1,64}$/.test(sent.id),'SEND_RESULT_UNKNOWN');
       await journal.append({state:'PROVIDER_RESULT',message_id:sent.id,thread_id:sent.thread_id||null});
     }catch(error){await journal.append({state:'UNCERTAIN_NO_RETRY'});throw error;}
@@ -78,8 +78,8 @@ module.exports.reconcileAssisted=reconcileAssisted;
 
 function connectedGmail(tools){
   requireValue(typeof tools?.mcp__codex_apps__gmail_send_email==='function','CONNECTED_GMAIL_REQUIRED');
-  return {send_email:async payload=>{
-    const raw=await tools.mcp__codex_apps__gmail_send_email(payload);
+  return {send_email:async (payload,authority)=>{
+    const raw=await tools.mcp__codex_apps__gmail_send_email(payload,authority);
     requireValue(!raw?.isError,'GMAIL_TOOL_ERROR');
     if(raw?.structuredContent)return raw.structuredContent;
     if(raw?.content){const text=raw.content.find(x=>x.type==='text')?.text;requireValue(typeof text==='string','GMAIL_RESULT_UNKNOWN');return JSON.parse(text);}

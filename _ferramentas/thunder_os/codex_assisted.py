@@ -212,5 +212,6 @@ def configured_assisted(service):
     from .touch_ledger import TouchLedger
     enabled=(os.environ.get('THUNDER_OS_CODEX_ASSISTED_DISPATCH')=='true' and
              os.environ.get('THUNDER_EXTERNAL_EFFECTS_ENABLED')=='true')
-    return CodexAssisted(service,TouchLedger(),enabled=enabled,
+    from .internal_canary import InternalCanaryService
+    return CodexAssisted(InternalCanaryService(service),TouchLedger(),enabled=enabled,
         policy_loader=lambda:pinned_policy('THUNDER_OS_CODEX_ASSISTED_POLICY'))
