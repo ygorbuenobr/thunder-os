@@ -267,10 +267,10 @@ test('native contact search includes spam trash through bounded existing GET tra
 test('wire only accepts canonical equal-participant query with explicit spam trash and no mutations',async()=>{
  const {contactQuery}=require('./native.cjs');let calls=0;const transporter={async request(){calls++;return {};}};
  guardReadWire({context:{_options:{auth:{transporter}}}});
- const params={fields:'messages(id,threadId),nextPageToken',q:contactQuery('x@example.invalid'),maxResults:10,includeSpamTrash:true};
+ const params={fields:'messages(id,threadId),nextPageToken,resultSizeEstimate',q:contactQuery('x@example.invalid'),maxResults:10,includeSpamTrash:true};
  const url='https://gmail.googleapis.com/gmail/v1/users/me/messages';
  await transporter.request({url,method:'GET',params});
- for(const extra of [{q:'in:anywhere'},{q:params.q.replace('to:x@','to:y@')},{includeSpamTrash:false},{maxResults:11}])
+ for(const extra of [{fields:LIST_FIELDS},{q:'in:anywhere'},{q:params.q.replace('to:x@','to:y@')},{includeSpamTrash:false},{maxResults:11}])
   assert.throws(()=>transporter.request({url,method:'GET',params:{...params,...extra}}),/read_wire_blocked/);
  assert.throws(()=>transporter.request({url,method:'POST',params}),/read_wire_blocked/);
  assert.equal(calls,1);
@@ -294,4 +294,27 @@ test('largest escaped provider cursor roundtrips at max email length without wea
   await assert.rejects(request(url+'&cursor='+encodeURIComponent(altered)),/invalid_search_cursor/);
   assert.equal(calls.length,2);
  }
+});
+
+
+test('contact search requests zero-result metadata instead of accepting a blank masked response',async()=>{
+ const wires=[];let forceBlank=false;
+ const transporter={async request(options){wires.push(options);return {data:forceBlank||!options.params.fields.includes('resultSizeEstimate')?'':{resultSizeEstimate:0}};}};
+ const gmail={context:{_options:{auth:{transporter}}},users:{messages:{async list(params,options){const {userId,...query}=params;return transporter.request({...options,url:'https://gmail.googleapis.com/gmail/v1/users/me/messages',method:'GET',params:query});}}}};
+ const session=nativeSession(gmail,null,{readOnly:true});
+ assert.deepEqual(await session.contactSearch({email:'x@example.invalid',cursor:null}),{messages:[],next_cursor:null});
+ assert.equal(wires[0].params.fields,'messages(id,threadId),nextPageToken,resultSizeEstimate');
+ forceBlank=true;await assert.rejects(session.contactSearch({email:'x@example.invalid',cursor:null}),/invalid_provider_response/);
+ assert.equal(wires.length,2);
+});
+
+test('contact search empty result requires explicit zero object and legacy inbox mask remains fixed',async()=>{
+ const f=fixture();
+ for(const value of ['',{},[],null,{resultSizeEstimate:1},{resultSizeEstimate:'0'}]){
+  f.setPage(value);await assert.rejects(call(f.bridge,'/v1/contact-search?email=x@example.invalid'),/invalid_provider_response/);
+ }
+ f.setPage({resultSizeEstimate:0});const result=await call(f.bridge,'/v1/contact-search?email=x@example.invalid');
+ assert.deepEqual(result.messages,[]);assert.equal(result.coverage.listing_complete,true);
+ f.setPage({});await call(f.bridge,'/v1/messages?limit=1');
+ assert.equal(f.calls.filter(row=>row[0]==='list').at(-1)[1].fields,LIST_FIELDS);
 });

@@ -83,6 +83,8 @@ function normalizedReadOnly(message){
 }
 const CONTEXT_LIMITS=Object.freeze({http_bytes:1000000,text_bytes:65536,messages:100,parts_per_message:64,parts_per_thread:512,depth:8});
 const LIST_FIELDS='messages(id,threadId),nextPageToken';
+// A no-match response has no message/cursor fields; retain explicit zero metadata.
+const CONTACT_SEARCH_FIELDS=LIST_FIELDS+',resultSizeEstimate';
 const READONLY_LIST_QUERY='in:inbox newer_than:7d';
 // Exact canonical address grammar excludes every Gmail query operator delimiter.
 const CONTACT_EMAIL=/^[a-z0-9][a-z0-9._+-]{0,63}@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
@@ -246,7 +248,7 @@ function guardReadWire(gmail){
     allowed.every(key=>params.getAll(key).length<=1)&&
     (!params.has('alt')||params.get('alt')==='json'),'read_wire_blocked',503);
    if(url.pathname.endsWith('/profile'))check(params.get('fields')==='emailAddress'&&!params.has('format'),'read_wire_blocked',503);
-   else if(collection)check(params.get('fields')===LIST_FIELDS&&((params.get('q')===READONLY_LIST_QUERY&&!params.has('includeSpamTrash'))||(isContactQuery(params.get('q'))&&params.get('includeSpamTrash')==='true'))&&/^(?:[1-9]|10)$/.test(params.get('maxResults')??'')&&(!params.has('pageToken')||opaqueCursor(params.get('pageToken'))),'read_wire_blocked',503);
+   else if(collection)check(((params.get('fields')===LIST_FIELDS&&params.get('q')===READONLY_LIST_QUERY&&!params.has('includeSpamTrash'))||(params.get('fields')===CONTACT_SEARCH_FIELDS&&isContactQuery(params.get('q'))&&params.get('includeSpamTrash')==='true'))&&/^(?:[1-9]|10)$/.test(params.get('maxResults')??'')&&(!params.has('pageToken')||opaqueCursor(params.get('pageToken'))),'read_wire_blocked',503);
    else if(url.pathname.includes('/threads/'))check(params.get('format')==='full'&&params.get('fields')===THREAD_FIELDS,'read_wire_blocked',503);
    else check(params.get('format')==='full'&&params.get('fields')==='id,threadId,labelIds,payload','read_wire_blocked',503);
   }
@@ -268,12 +270,13 @@ function nativeSession(gmail,quota,{readOnly=false}={}){
   async contactSearch({email,cursor}){
    const q=contactQuery(email);check(cursor==null||opaqueCursor(cursor),'invalid_cursor');
    const result=await gmail.users.messages.list({userId:'me',maxResults:10,includeSpamTrash:true,
-    ...(cursor!=null?{pageToken:cursor}:{}),fields:LIST_FIELDS,q},options());
+    ...(cursor!=null?{pageToken:cursor}:{}),fields:CONTACT_SEARCH_FIELDS,q},options());
    const data=result?.data;contextSize(data);
    check(data&&typeof data==='object'&&(!Object.hasOwn(data,'messages')||Array.isArray(data.messages)),'invalid_provider_response',503);
    const messages=data.messages??[];
-   check(messages.length<=10&&messages.every(row=>row&&hexId(row.id)&&hexId(row.threadId))&&
-    (data.nextPageToken===undefined||opaqueCursor(data.nextPageToken)),'invalid_provider_response',503);
+   check(!Array.isArray(data)&&messages.length<=10&&messages.every(row=>row&&hexId(row.id)&&hexId(row.threadId))&&
+    (data.nextPageToken===undefined||opaqueCursor(data.nextPageToken))&&
+    (messages.length>0||data.nextPageToken!==undefined||data.resultSizeEstimate===0),'invalid_provider_response',503);
    return {messages:messages.map(row=>({id:row.id,thread_id:row.threadId})),next_cursor:data.nextPageToken??null};
   },
   async list({limit,cursor}){
