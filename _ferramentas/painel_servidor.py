@@ -2421,8 +2421,12 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
                     servidor.thunder_panel_verifier=PanelVerification(servidor.thunder_cadence_readonly,HermesVerifyProcess.configured())
                     servidor.thunder_panel_gateway=AgentGateway(servidor.thunder_service,RAIZ)
                     from thunder_os.hunter_scoreboard import HunterScoreboard
-                    servidor.thunder_campaign_scoreboard=CampaignScoreboard(servidor.thunder_cadence_readonly,repository,
-                        hunter=HunterScoreboard(servidor.thunder_cadence_readonly.adapter, repository))
+                    scoreboard_reader=CadenceReadonlyConsole(systemd_hubspot_credential,
+                        campaign_registry=CampaignRegistry(repository),
+                        activity_bindings_loader=environment_activity_bindings,
+                        max_pages=5, max_requests=60, budget_seconds=8)
+                    servidor.thunder_campaign_scoreboard=CampaignScoreboard(scoreboard_reader,repository,
+                        hunter=HunterScoreboard(scoreboard_reader.adapter, repository))
             crm_write = external_effects_enabled() and not restricted_mode() and os.environ.get('THUNDER_OS_HUBSPOT_WRITE_ENABLED', '') == 'true'
             copilot = external_effects_enabled() and not restricted_mode() and os.environ.get('THUNDER_OS_COPILOT_MODE', '') == 'human_approval'
             servidor.thunder_hubspot_console = HubSpotConsole(servidor.thunder_service.repository,
