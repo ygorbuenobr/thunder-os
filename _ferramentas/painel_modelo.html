@@ -439,6 +439,24 @@ body[data-aba="jornada"] h1,body[data-journey-ready="true"][data-aba="contas"] h
 body:has(#new-journey:not([hidden])) #hoje-pedido{display:none}
 .nj-state{color:var(--roxo);font-size:13px}.nj-record{padding:14px 0;border-bottom:1px solid var(--line);min-width:0}.nj-record p,.nj-record li{white-space:pre-wrap;overflow-wrap:anywhere}.nj-record ul{padding-inline-start:20px}
 .nj-manual{border-inline-start:2px solid var(--mostarda);padding-inline-start:20px;display:grid;gap:10px;align-content:start}.nj-manual p{font-size:14px}
+/* Commercial content first; native details keep historical and technical evidence available. */
+.nj-record{padding-block:24px}.nj-record h4{font-size:20px;margin:0}.nj-record h5,.nj-qualification h5{font-size:15px;margin:0}.nj-record h6{font-size:13px;margin:0}
+.nj-record .journey-row-head{align-items:start;gap:12px}.nj-record .journey-row-head>*{min-width:0}
+.nj-commercial{margin-top:20px}.nj-eyebrow{font-size:12px;font-weight:600;color:var(--mostarda);letter-spacing:.06em;text-transform:uppercase}
+.nj-commercial-sections{display:grid;grid-template-columns:minmax(0,1fr);gap:0 28px;margin-top:16px}
+.new-journey .nj-commercial-section{display:block;padding-block:16px;border-top:1px solid var(--line);border-bottom:0}
+.nj-commercial-section h5{display:flex;align-items:baseline;gap:10px}.nj-commercial-section h5>span{font:12px var(--mono);color:var(--mostarda)}
+.nj-commercial-item{margin-top:10px}.nj-commercial-item p,.nj-check-signal p{font-size:14px;line-height:1.6;margin:4px 0}
+.nj-commercial-section>.nj-commercial-item>p{white-space:normal}
+.nj-commercial-meta{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:12px;color:var(--muted);margin-top:6px}.nj-account-links{display:flex;flex-wrap:wrap;gap:4px 20px;margin-top:12px}.nj-account-links a{display:inline-flex;align-items:center;min-height:44px;font-size:13px;color:var(--mostarda);text-decoration:underline}.nj-commercial-meta a{color:var(--mostarda);text-decoration:underline}.nj-commercial-meta .nj-hypothesis{color:var(--roxo)}
+.nj-commercial-empty{margin-block:20px;padding:14px 16px;border-inline-start:2px solid var(--roxo);background:var(--surface2)}.nj-commercial-empty p{font-size:14px;margin:6px 0 0}
+.new-journey .nj-live-checks{display:block;padding-block:20px;margin-top:16px}.nj-checks-header{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:start;gap:12px}.nj-checks-header>div{flex:1 1 260px;min-width:0}.nj-checks-header .btn{min-height:44px;white-space:normal;max-width:100%}
+.nj-check-signals{display:grid;grid-template-columns:minmax(0,1fr);margin-top:12px}.nj-check-signal{min-width:0;padding-block:12px;border-top:1px solid var(--line)}.nj-check-signal .msg{font-size:12px}
+.nj-signal-heading{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:4px 10px}.nj-signal-state{font-size:12px;color:var(--roxo)}.nj-signal-state[data-state="pass"]{color:var(--ok)}.nj-signal-state[data-state="blocked"]{color:var(--mostarda)}
+.nj-history,.nj-qualification{margin-top:14px;min-width:0}.nj-history details{margin-inline-start:8px;border-inline-start:1px solid var(--line);padding-inline-start:12px}.nj-history summary,.nj-qualification>summary{min-height:44px;padding-block:10px;cursor:pointer;font-size:13px;overflow-wrap:anywhere}.nj-history summary{color:var(--muted)}.nj-qualification>summary{color:var(--mostarda)}
+.nj-technical pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.6 var(--mono);max-width:100%;margin-block:12px}.nj-original-text{white-space:pre-wrap;overflow-wrap:anywhere;font-size:14px}.nj-original-entry{padding-block:10px;border-bottom:1px solid var(--line)}.nj-original-fields{margin:0}.nj-original-fields>div{margin-block:8px}.nj-original-fields dt{font-size:12px;color:var(--muted)}.nj-original-fields dd{margin:4px 0 0;min-width:0}
+.new-journey .nj-fields .nj-company-confirmation{display:flex;align-items:center;gap:12px;cursor:pointer;min-height:44px}.new-journey .nj-company-confirmation input[type="checkbox"]{appearance:auto;width:20px;height:20px;min-height:20px;flex:0 0 20px;margin:12px;accent-color:var(--mostarda)}
+@media(min-width:900px){.nj-commercial-sections{grid-template-columns:repeat(2,minmax(0,1fr))}.nj-check-signals{grid-template-columns:repeat(2,minmax(0,1fr));column-gap:28px}}
 @media(max-width:700px){.nj-steps{grid-template-columns:repeat(3,minmax(0,1fr))!important}.nj-grid,.nj-sheet,.nj-sources{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:380px){.nj-steps{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
 </style>
@@ -2449,6 +2467,7 @@ const njLabels=['Ficha','Fonte','Checagem','Sequência','Ativar manual'];
 const njCheckLabels={icp:'ICP',exclusions:'Exclusões',client:'Cliente',open_deal:'Negócio aberto',refusal:'Recusa anterior',membership:'Uma campanha por pessoa'};
 const njStatusLabels={pass:'Verificado',blocked:'Barrado',unknown:'Desconhecido · retido'};
 const njReasonLabels={
+  canonical_registered_crm_state_incomplete:'Os dados de recusa, supressão ou risco no HubSpot ainda não têm conclusão comprovada.',
   identity_unlinked:'A identidade desta pessoa ainda não foi vinculada às fontes canônicas.',identity_ambiguous:'Há mais de uma identidade possível. Revise o vínculo desta pessoa.',
   four_provider_membership_coverage_unavailable:'Uma leitura anterior não cobriu todas as fontes exigidas naquela ocasião. Confira novamente.',apollo_instantly_membership_coverage_unavailable:'Falta conferir a participação no Apollo e no Instantly.',structured_account_icp_proof_unavailable:'Falta prova estruturada de que esta conta atende ao ICP.',
   canonical_company_disqualified:'Empresa desqualificada no HubSpot.',canonical_company_is_customer:'A empresa é cliente no HubSpot.',
@@ -2479,7 +2498,7 @@ const njReasonLabels={
 const njReason=value=>njReasonLabels[value]||value||'Sem prova disponível nesta leitura.';
 const nj={catalog:null,draft:null,id:null,step:1,busy:false,loading:false,stale:false,error:'',message:'',sequence:null,sequenceDirty:false,sourceDirty:false,
   name:'',campaign:'',mode:'csv',csv:'',titles:'',locations:'',companyLocations:'',sizes:'',keywords:'',query:'',page:1,request:0,createUncertain:false,
-  sequences:[],sequenceId:'',sequenceQuery:'',sequenceResultsQuery:'',exported:null,importPreview:null};
+  sequences:[],sequenceId:'',sequenceQuery:'',sequenceResultsQuery:'',exported:null,importPreview:null,qualificationEdits:{}};
 const njRows=value=>Array.isArray(value)?value:[];
 const njText=value=>typeof value==='string'?value:'';
 const njDirty=()=>nj.sequenceDirty||nj.sourceDirty||nj.qualificationDirty;
@@ -2490,7 +2509,7 @@ function njDraft(value){
   nj.exportPreview=null;nj.companyPreview=null;
   if(!value||typeof value.id!=='string'||!value.id||!Number.isInteger(value.version)||value.version<1||typeof value.review_hash!=='string'||!Array.isArray(value.rows)||!Array.isArray(value.steps)||nj.id&&value.id!==nj.id)throw Error('Rascunho inválido. Recarregue para conferir o estado salvo.');
   if(nj.importPreview&&(nj.importPreview.journey_id!==value.id||nj.importPreview.journey_version!==value.version))nj.importPreview=null;
-  nj.id=value.id;nj.draft=value;nj.stale=false;
+  nj.id=value.id;nj.draft=value;nj.stale=false;if(!nj.qualificationDirty)nj.qualificationEdits={};
   if(!nj.importPreview&&Array.isArray(value.hubspot_import_previews))nj.importPreview=value.hubspot_import_previews[0]||null;
   if(!nj.sequenceDirty){
     nj.sequence=value.steps.map(step=>({id:step.id,channel:step.channel,subject:step.subject??'',content:step.content??'',order:step.order,interval_hours:step.interval_hours}));
@@ -2533,13 +2552,77 @@ async function njImportRequest(action,body){
   catch(e){nj.importPreview=null;nj.error=e.message||'Resultado incerto: confira no HubSpot antes de repetir.';}
   finally{nj.busy=false;njRender();}
 }
+// S28: commercial research is presentation only; eligibility remains server-owned.
+const njCommercialSections=[['business','Empresa e mercado','O que vende, para quem e em quais mercados?'],['fit','Aderência','Por que esta empresa cabe no ICP e na oferta?'],['moment','Momento','Qual fato recente justifica investigar a conta?'],['people','Pessoas','Quem decide e qual vínculo está comprovado?'],['thesis','Tese e prova','Qual contribuição, prova e hipótese precisam ser discutidas?'],['next_action','Próxima ação','Defina ação, responsável, data e aprovação necessária.']];
+function njSafeSource(value){
+  if(typeof value!=='string'||!/^https:\/\//i.test(value.trim()))return null;
+  try{const url=new URL(value);return url.protocol==='https:'&&url.hostname&&!url.username&&!url.password?url.href:null;}catch{return null;}
+}
+function njSourceLink(value){const url=njSafeSource(value);return url?`<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">Consultar fonte ↗</a>`:'<span>Fonte HTTPS não disponível</span>';}
+function njReadable(value,fallback='Informação não disponível nesta leitura.'){
+  if(typeof value!=='string'||!value.trim())return fallback;
+  if(njReasonLabels[value])return njReasonLabels[value];
+  return /^[a-z][a-z0-9_:. -]*_[a-z0-9_:. -]*$/.test(value)?fallback:value;
+}
+function njBrief(value,fallback){const text=njReadable(value,fallback);return text.length>200?text.slice(0,197)+'…':text;}
+function njDate(value){const text=njText(value),date=new Date(text);return text&&Number.isFinite(date.getTime())?date.toLocaleDateString('pt-BR',{timeZone:'UTC'}):'Data não informada';}
+function njHistoricalValue(value){
+  if(value===null||value===undefined||value==='')return '<span class="msg">Não informado no original.</span>';
+  if(typeof value!=='object')return `<div class="nj-original-text">${esc(String(value))}</div>`;
+  if(Array.isArray(value))return value.map(item=>`<div class="nj-original-entry">${njHistoricalValue(item)}</div>`).join('')||'<p class="msg">Sem itens no original.</p>';
+  const labels={text:'Texto original',key:'Seção',label:'Rótulo',classification:'Classificação original',source_url:'Fonte original',published_on:'Data de publicação',sources:'Fontes originais',subject:'Assunto original',content:'Conteúdo original',blocking:'Pendência registrada na época',status:'Estado histórico',source:'Fonte original',date:'Data original'};
+  return `<dl class="nj-original-fields">${Object.entries(value).map(([key,item])=>`<div><dt>${esc(labels[key]||key)}</dt><dd>${njHistoricalValue(item)}</dd></div>`).join('')}</dl>`;
+}
+function njCommercialHTML(row){
+  const account=nj.draft?.commercial_accounts?.[row.source_key];
+  const states={unlinked:['Pesquisa ainda sem vínculo confirmado','Confira o vínculo entre contato, empresa e fonte antes de usar esta pesquisa.'],ambiguous:['Mais de uma pesquisa possível','Resolva a identidade e a fonte da conta; nenhum documento foi escolhido.'],unavailable:['Pesquisa indisponível nesta leitura','Recarregue o rascunho para consultar novamente. Os demais contatos continuam disponíveis.']};
+  if(account?.status!=='available'){
+    const [title,action]=states[account?.status]||['Pesquisa ainda não disponível','Recarregue o rascunho após conferir a fonte e o vínculo da empresa.'];
+    return `<div class="nj-commercial-empty"><h5>${title}</h5><p>${action}</p><p class="msg">A pesquisa ausente não libera as checagens.</p></div>`;
+  }
+  const classes={fato:'Fato registrado na pesquisa',fact:'Fato registrado na pesquisa',confirmado:'Confirmado na pesquisa',inferred:'Inferência',inferido:'Inferência',hipotese:'Hipótese',hypothesis:'Hipótese',plausivel:'Plausível',reserva:'Em reserva',nao_classificado:'Classificação não informada',unverified:'Não verificado'};
+  const cutoff=new Date();cutoff.setFullYear(cutoff.getFullYear()-1);
+  const renderItem=(item,short=false)=>{
+    const text=item.text,clipped=short&&text.length>360,published=new Date(item.published_on),historical=item.context_only===true||!!item.published_on&&Number.isFinite(published.getTime())&&published<cutoff;
+    return `<div class="nj-commercial-item"><p>${esc(clipped?text.slice(0,360)+'…':text)}</p><div class="nj-commercial-meta">${clipped?'<span>Trecho · íntegra em Ver contexto completo</span>':''}<span class="${/hip[oó]tese|hypothesis/.test(item.classification||'')?'nj-hypothesis':''}">${esc(classes[item.classification]||'Classificação não informada')}</span>${historical?'<span>Contexto histórico · não comprova o momento atual</span>':''}<span>Publicação: ${njDate(item.published_on)}</span>${njSourceLink(item.source_url)}</div></div>`;
+  };
+  const sections=njCommercialSections.map(([key,label,gap],index)=>{
+    const items=njRows(njRows(account.sections).find(section=>section.key===key)?.items).filter(item=>typeof item?.text==='string'&&item.text.trim());
+    const more=items.length>2||items.some(item=>item.text.length>360);
+    return `<section class="nj-commercial-section" data-nj-commercial-section="${key}" aria-label="${label}"><h5><span>${String(index+1).padStart(2,'0')}</span>${label}</h5>${items.length?items.slice(0,2).map(item=>renderItem(item,true)).join(''):`<p class="msg">Pendente de pesquisa. ${gap}</p>`}${more?`<details class="nj-history nj-commercial-full"><summary>Ver contexto completo</summary>${items.map(item=>renderItem(item)).join('')}</details>`:''}</section>`;
+  }).join('');
+  const tabLabels={research:'Pesquisa original',dossier:'Dossiê M1–M7 original',context:'Contexto original',cadence:'Cadência original',before_approval:'Pendências originais'};
+  return `<div class="nj-commercial"><p class="nj-eyebrow">Ficha comercial · pesquisa da conta</p><p class="msg">${esc(account.company||'Empresa não informada')} · ${esc(account.contact||'Pessoa não informada')}. Pesquisa orienta a conversa; elegibilidade depende das checagens atuais abaixo.</p><div class="nj-commercial-sections">${sections}</div>${njRows(account.limitations).length?'<p class="msg">Pesquisa com limitações de fonte ou interpretação. Confira os originais antes de decidir.</p>':''}<details class="nj-history"><summary>Originais históricos e fontes da pesquisa</summary><p class="nj-warning">Originais históricos. Afirmações antigas sobre CRM, e-mail, recusas ou campanhas não comprovam o status atual. As checagens atuais prevalecem.</p><p class="msg">Atualização da fonte: ${njDate(account.source?.updated_at)}</p><details><summary>Documento original integral</summary>${njHistoricalValue(account.originals?.source_text)}</details>${Object.entries(account.originals?.tabs||{}).map(([key,value])=>`<details><summary>${esc(tabLabels[key]||'Outra seção original')}</summary>${njHistoricalValue(value)}</details>`).join('')}<details class="nj-technical"><summary>Detalhes técnicos da fonte e limitações</summary><pre>${esc(JSON.stringify({source:account.source,account_id:account.originals?.account_id,limitations:account.limitations},null,2))}</pre></details></details></div>`;
+}
+function njCheckSignal(key,check){
+  const status=njStatusLabels[check?.status]||njStatusLabels.unknown;
+  const actions={icp:'Revise os fatos e a fonte da empresa.',exclusions:'Confira a exclusão e a identidade da empresa.',client:'Confirme a condição de cliente na empresa.',open_deal:'Confira os negócios da pessoa e da empresa.',refusal:'Revise o histórico registrado e a conversa antes de prosseguir.',membership:'Confira a participação no HubSpot, Apollo e Instantly.'};
+  const passed={icp:'Aderência ao ICP confirmada.',exclusions:'Sem exclusão registrada no escopo consultado.',client:'Empresa classificada como não cliente.',open_deal:'Negócios associados conferidos como fechados.',refusal:'Sem recusa registrada no escopo consultado.',membership:'Sem inscrição atual no escopo consultado.'};
+  let cause=njBrief(check?.reason,check?.status==='pass'?passed[key]:'Falta evidência suficiente nesta leitura.'),action=check?.status==='pass'?'Reconfira se os dados mudarem.':actions[key];
+  if(key==='refusal'){
+    const observation=check?.observation;
+    const known={registered_refusal:['Recusa registrada.','Mantenha o contato retido e confira a origem do bloqueio.'],registered_reply:['Resposta registrada; isso não significa recusa.','Leia a conversa completa e defina o próximo passo.'],none_registered:['Nenhuma recusa ou resposta nos registros de toques consultados.','Isso não comprova ausência global nas caixas de entrada.'],unavailable:['Não foi possível consultar os registros de recusa e resposta.','Consulte novamente; o contato permanece sujeito aos gates do servidor.']};
+    if(observation?.status==='none_registered'&&check?.status==='blocked'){cause=njBrief(check.reason,'Há um bloqueio confirmado nesta checagem.');action='Resolva o bloqueio na fonte indicada. A ausência de registro no ledger não invalida o resultado do CRM.';}
+    else if(known[observation?.status]){[cause,action]=known[observation.status];if(observation.status==='none_registered'&&check?.status!=='pass')action+=' A checagem continua pendente.';}
+    else if(check?.reason==='registered_has_reply'||check?.reason==='human_reply_requires_conversation_review'){cause='Resposta humana registrada; isso não significa recusa.';action='Leia a conversa completa e defina o próximo passo.';}
+    else if(check?.status==='pass')action='Ausência de registro não comprova ausência global nas caixas de entrada.';
+    const pendingLabels={person_opt_out:'recusa da pessoa',email_opt_out:'recusa de e-mail',company_suppression:'supressão da empresa',outreach_risk:'risco de abordagem'};
+    const pending=njRows(observation?.crm_pending_fields).filter(key=>pendingLabels[key]);
+    if(check?.status==='unknown'&&pending.length)action+=' Falta conferir no HubSpot: '+pending.map(key=>pendingLabels[key]).join(', ')+'. Campo vazio não confirma liberação.';
+
+  }
+  return `<div class="nj-check-signal" data-nj-check="${key}"><div class="nj-signal-heading"><h6>${key==='refusal'?'Recusa e respostas':esc(njCheckLabels[key])}</h6><span class="nj-signal-state" data-state="${['pass','blocked'].includes(check?.status)?check.status:'unknown'}">${esc(status)}</span></div><p>${esc(cause)}</p><p class="msg">${esc(action)}</p></div>`;
+}
+function njHubSpotLinks(context){
+  if(!context)return '';
+  const links=[['company_id','0-2','Empresa no HubSpot'],['contact_id','0-1','Contato no HubSpot']].filter(([key])=>/^\d+$/.test(String(context[key]||'')));
+  return links.length?`<footer class="nj-account-links" aria-label="Registros vinculados no HubSpot">${links.map(([key,type,label])=>`<a href="https://app.hubspot.com/contacts/51412240/record/${type}/${encodeURIComponent(context[key])}" target="_blank" rel="noopener noreferrer">${label} ↗</a>`).join('')}</footer>`:'';
+}
 function njRenderChecks(){
   const rows=njRows(nj.draft?.rows),checks=njRows(nj.draft?.checks);
-  return `<p>Cada contato precisa de prova para ICP, exclusões, cliente, negócio aberto, recusa e campanha única. Estado desconhecido permanece retido.</p><div class="nj-actions"><button class="btn pri" type="button" data-nj-action="check" ${!rows.length||njDirty()||nj.stale?'disabled':''}>Conferir seleção</button></div>${rows.map(row=>{
-    const result=checks.find(c=>c.source_key===row.source_key),list=njRows(result?.checks||row.checks);
-    const primary=list.find(c=>c.status==='blocked')||list.find(c=>c.status!=='pass');
-    const reason=njRows(row.blockers)[0]||primary?.reason;
-    return `<article class="nj-record"><header class="journey-row-head"><div><h4>${esc(row.name||[row.first_name,row.last_name].filter(Boolean).join(' ')||row.email||row.source_key||'Identidade não informada')}</h4><p class="msg">${esc(row.company||row.organization_name||'Empresa não informada')} · ${esc(row.email||'E-mail não revelado')}</p></div><span class="nj-state">${row.eligible===true?'Liberado pelas checagens do servidor':'Retido'}</span></header><p>${esc(reason?njReason(reason):row.eligible===true?'As seis checagens foram confirmadas pelo servidor.':'Sem prova disponível nesta leitura.')}</p><details><summary>Ver checagens e fontes</summary><ul>${Object.entries(njCheckLabels).map(([key,label])=>{const c=list.find(c=>c.key===key);return `<li><b>${label}: ${esc(njStatusLabels[c?.status]||njStatusLabels.unknown)}</b><p>${esc(njReason(c?.reason))}</p>${c?.source?`<p class="msg">Fonte: ${esc(typeof c.source==='string'?c.source:JSON.stringify(c.source))}</p>`:''}${c?.proof_path?`<p class="msg">${esc(c.proof_path)}</p>`:''}${c?.checked_at||c?.date?`<p class="msg">Conferida em: ${esc(c.checked_at||c.date)}</p>`:''}${c?.coverage?`<p class="msg">Cobertura: ${esc(JSON.stringify(c.coverage))}</p>`:''}</li>`;}).join('')}</ul></details>${njImportHTML(row)}</article>`;
+  return `<p>Entenda a conta, confira os sinais atuais e revise as pendências. Cada contato precisa das seis checagens do servidor; estado desconhecido permanece retido.</p><div class="nj-actions"><button class="btn pri" type="button" data-nj-action="check" ${!rows.length||njDirty()||nj.stale?'disabled':''}>Conferir seleção</button></div>${rows.map(row=>{
+    const result=checks.find(c=>c.source_key===row.source_key),list=njRows(result?.checks||row.checks),context=result?.qualification_context;
+    return `<article class="nj-record"><header class="journey-row-head"><div><h4>${esc(row.name||[row.first_name,row.last_name].filter(Boolean).join(' ')||row.email||'Identidade não informada')}</h4><p class="msg">${esc(context?.company_name||row.company||row.organization_name||'Empresa não informada')} · ${esc(row.email||'E-mail não revelado')}</p></div><span class="nj-state">${row.eligible===true?'Liberado pelas checagens do servidor':'Retido'}</span></header>${njCommercialHTML(row)}<section class="nj-live-checks" aria-label="Checagens atuais do contato"><div class="nj-checks-header"><div><h5>Checagens atuais</h5><p class="msg">Última checagem salva · use Conferir seleção para atualizar. O histórico da pesquisa não substitui esta leitura.</p>${nj.draft?.updated_at?`<p class="msg">Rascunho atualizado em: ${njDate(nj.draft.updated_at)}</p>`:''}</div>${context?`<button class="btn" type="button" data-nj-review-company="${esc(row.source_key)}">Revisar empresa</button>`:''}</div><div class="nj-check-signals">${Object.keys(njCheckLabels).map(key=>njCheckSignal(key,list.find(c=>c.key===key))).join('')}</div></section><details class="nj-history"><summary>Ver checagens e fontes · diagnóstico completo</summary><p class="msg">Resultados do servidor, com motivos integrais e evidências técnicas.</p><ul>${Object.entries(njCheckLabels).map(([key,label])=>{const c=list.find(c=>c.key===key);return `<li><details><summary>${label} · ${esc(njStatusLabels[c?.status]||njStatusLabels.unknown)}</summary><p>${esc(njReason(c?.reason))}</p><p class="msg">Conferida em: ${njDate(c?.checked_at||c?.date)}</p><details class="nj-technical"><summary>Fonte, IDs, cobertura e observação</summary><pre>${esc(JSON.stringify(c||{},null,2))}</pre></details></details></li>`;}).join('')}</ul><details class="nj-technical"><summary>Identidade e bloqueios técnicos do contato</summary><pre>${esc(JSON.stringify({source_key:row.source_key,qualification_context:context,blockers:row.blockers},null,2))}</pre></details></details>${njImportHTML(row)}${njHubSpotLinks(context)}</article>`;
   }).join('')||'<p class="vazio">Importe uma lista ou busque contatos para iniciar a checagem.</p>'}`;
 }
 function njQualificationHTML(){
@@ -2547,14 +2630,14 @@ function njQualificationHTML(){
   return njRows(nj.draft?.checks).map(item=>{
     const c=item.qualification_context;if(!c||companies.has(c.company_id))return '';companies.add(c.company_id);
     const reviewed=nj.draft?.qualifications?.[item.source_key];
-    return `<details class="nj-qualification"><summary>Revisar empresa · ${esc(c.company_name)} · ${esc(c.domain)}</summary><p class="msg">Contato e empresa vinculados pelo HubSpot. Uma revisão confirma ICP, condição de cliente e exclusões, com fonte e data. A gravação será feita na empresa do HubSpot após sua confirmação. Recusa permanece somente leitura.</p>${reviewed?`<p>Revisado por ${esc(reviewed.actor)} em ${esc(reviewed.reviewed_at)}. Decisão: ${esc(reviewed.facts?.decision==='qualified'?'Enquadrada no ICP':'Fora do ICP')}.</p><p>${esc(reviewed.facts?.rationale||'')}</p>`:''}<form data-nj-qualification="${esc(item.source_key)}" class="nj-fields"><div class="nj-grid"><label>Decisão<select name="decision" required><option value="">Selecione</option><option value="qualified">Enquadrada no ICP</option><option value="disqualified">Fora do ICP</option></select></label><label>Vende para empresas?<select name="is_b2b" required><option value="">Selecione</option><option value="true">Sim, B2B</option><option value="false">Não</option></select></label><label>País<select name="country" required><option value="">Selecione</option><option value="BR">Brasil</option><option value="OTHER">Outro</option></select></label><label>Setor<select name="sector" required><option value="">Selecione</option><option value="industria_b2b">Indústria B2B</option><option value="distribuicao_b2b">Distribuição B2B</option><option value="outro">Outro</option></select></label><label>Receita anual em reais<input name="annual_revenue_brl" type="number" min="0" step="0.01" required></label><label>Fonte pública HTTPS<input name="source_url" type="url" maxlength="2000" required></label><label>Data da informação<input name="source_date" type="date" required></label></div><label>Fatos e justificativa da decisão<textarea name="rationale" maxlength="3000" required></textarea></label><label><input type="checkbox" name="company_confirmation" required> Confirmo o ICP desta empresa, que não é cliente e não está nas exclusões.</label><button type="submit" class="btn pri">Ver revisão antes de gravar no HubSpot</button></form></details>`;
+    return `<details class="nj-qualification" data-nj-company="${esc(c.company_id)}"><summary>Revisar empresa · ${esc(c.company_name)} · ${esc(c.domain)}</summary><p class="msg">Contato e empresa vinculados pelo HubSpot. Uma revisão confirma ICP, condição de cliente e exclusões, com fonte e data. A gravação será feita na empresa do HubSpot após sua confirmação. Recusa permanece somente leitura.</p>${reviewed?`<p>Revisado por ${esc(reviewed.actor)} em ${esc(reviewed.reviewed_at)}. Decisão: ${esc(reviewed.facts?.decision==='qualified'?'Enquadrada no ICP':'Fora do ICP')}.</p><details class="nj-history"><summary>Contexto histórico da revisão · justificativa integral</summary><p class="msg">Justificativa registrada naquela revisão; consulte as checagens atuais.</p><p class="nj-original-text">${esc(reviewed.facts?.rationale||'Justificativa não informada.')}</p></details>`:''}<form data-nj-qualification="${esc(item.source_key)}" class="nj-fields"><div class="nj-grid"><label>Decisão<select name="decision" required><option value="">Selecione</option><option value="qualified">Enquadrada no ICP</option><option value="disqualified">Fora do ICP</option></select></label><label>Vende para empresas?<select name="is_b2b" required><option value="">Selecione</option><option value="true">Sim, B2B</option><option value="false">Não</option></select></label><label>País<select name="country" required><option value="">Selecione</option><option value="BR">Brasil</option><option value="OTHER">Outro</option></select></label><label>Setor<select name="sector" required><option value="">Selecione</option><option value="industria_b2b">Indústria B2B</option><option value="distribuicao_b2b">Distribuição B2B</option><option value="outro">Outro</option></select></label><label>Receita anual em reais<input name="annual_revenue_brl" type="number" min="0" step="0.01" required></label><label>Fonte pública HTTPS<input name="source_url" type="url" maxlength="2000" required></label><label>Data da informação<input name="source_date" type="date" required></label></div><label>Fatos e justificativa da decisão<textarea name="rationale" maxlength="3000" required></textarea></label><label class="nj-company-confirmation"><input type="checkbox" name="company_confirmation" required> Confirmo o ICP desta empresa, que não é cliente e não está nas exclusões.</label><button type="submit" class="btn pri">Ver revisão antes de gravar no HubSpot</button></form></details>`;
   }).join('')+njCompanyPreviewHTML();
 }
 function njCompanyPreviewHTML(){
   const p=nj.companyPreview;if(!p)return '';
   const labels={thunder_icp_status:'Qualificação ICP',thunder_is_customer:'É cliente',thunder_icp_exclusion_reason:'Exclusão registrada',country:'País',hs_country_code:'Código do país',thunder_icp_sector:'Setor',thunder_annual_revenue_estimate:'Receita histórica de referência',thunder_last_enriched_at:'Data da revisão',thunder_enrichment_source:'Fonte e justificativa'};
   const before=p.before?.properties||{},after=p.after?.properties||{};
-  const shown=v=>v===''||v===null||v===undefined?'Não preenchido':({false:'Não',true:'Sim',qualified:'Aderente ao ICP',disqualified:'Fora do ICP',industria_b2b:'Indústria B2B',distribuicao_b2b:'Distribuição B2B',BR:'Brasil'})[String(v)]||String(v);
+  const shown=v=>v===''||v===null||v===undefined?'Não preenchido':({unknown:'Desconhecido',unavailable:'Indisponível nesta leitura',false:'Não',true:'Sim',qualified:'Aderente ao ICP',disqualified:'Fora do ICP',industria_b2b:'Indústria B2B',distribuicao_b2b:'Distribuição B2B',BR:'Brasil'})[String(v)]||String(v);
   const cells=Object.entries(p.plan?.changes||{}).map(([key,value])=>`<tr><th>${esc(labels[key]||key)}</th><td data-label="Agora no HubSpot"><small class="nj-company-label">Agora no HubSpot</small>${esc(shown(before[key]))}</td><td data-label="Após confirmar"><small class="nj-company-label">Após confirmar</small>${esc(key==='thunder_enrichment_source'?p.facts?.rationale||shown(value):shown(after[key]))}</td></tr>`).join('');
   return `<section class="nj-warning" aria-label="Prévia da revisão da empresa"><h4>Revisão de ${esc(p.company_identity?.company_name||'empresa')} · antes de gravar</h4><p>Fonte: ${esc(p.facts?.source_url)} · ${esc(p.facts?.source_date)}</p><table class="nj-company-table" style="width:100%;table-layout:fixed;overflow-wrap:anywhere"><thead><tr><th>Campo</th><th>Agora no HubSpot</th><th>Após confirmar</th></tr></thead><tbody>${cells}</tbody></table><p>Recusa continua somente leitura. A revisão não muda contato, dono, negócio nem campanha.</p><button class="btn pri" type="button" data-nj-action="company-confirm" style="max-width:100%;white-space:normal;overflow-wrap:anywhere" ${p.write_enabled===true?'':'disabled'}>Confirmar empresa e gravar no HubSpot</button></section>`;
 }
@@ -2590,7 +2673,7 @@ function njGuards(){
   $('nj-retry').hidden=!nj.error||!!nj.id;$('nj-retry').disabled=nj.busy;
   $('nj-body').setAttribute('aria-busy',String(nj.busy));
   $('nj-body').querySelectorAll('input,textarea,select,button').forEach(el=>{if(nj.busy){if(!el.disabled)el.dataset.njBusyDisabled='true';el.disabled=true;}else if(el.dataset.njBusyDisabled){el.disabled=false;delete el.dataset.njBusyDisabled;}});
-  const blockerLabels={journey_sheet_incomplete:'Ficha incompleta',journey_sheet_changed:'A ficha mudou; refaça a checagem',journey_campaign_changed:'A campanha mudou; refaça a checagem',journey_global_paused:'Controle global pausado',journey_checker_unavailable:'Checador indisponível; contatos retidos',journey_no_eligible_rows:'Nenhum contato liberado pelas checagens',journey_email_steps_required:'Adicione pelo menos um passo de e-mail',journey_step_approval_required:'Aprove cada texto salvo',journey_sequence_required:'Selecione e salve uma sequência real do Apollo'};
+  const blockerLabels={journey_commercial_research_pending:'Pesquisa comercial incompleta ou sem vínculo confirmado. Complete empresa, aderência, pessoas e tese e refaça as checagens antes de aprovar ou exportar. A pesquisa continua disponível.',journey_sheet_incomplete:'Ficha incompleta',journey_sheet_changed:'A ficha mudou; refaça a checagem',journey_campaign_changed:'A campanha mudou; refaça a checagem',journey_global_paused:'Controle global pausado',journey_checker_unavailable:'Checador indisponível; contatos retidos',journey_no_eligible_rows:'Nenhum contato liberado pelas checagens',journey_email_steps_required:'Adicione pelo menos um passo de e-mail',journey_step_approval_required:'Aprove cada texto salvo',journey_sequence_required:'Selecione e salve uma sequência real do Apollo'};
   blockerLabels.journey_apollo_text_unverified='Texto do Apollo diferente, dinâmico ou não verificado; confira a comparação na Sequência';
   const reason=dirty?'Há alterações locais. Salve a fonte, a revisão de ICP e a sequência antes de aprovar ou exportar.':nj.stale?'Recarregue o rascunho para conferir a versão salva.':njSheet()?.status!=='complete'?'Ficha incompleta ou desconhecida. Aprovação bloqueada.':njBlockers().map(b=>blockerLabels[b]||b).join(' · ')||'Aguarde a liberação das checagens e aprove os textos salvos.';
   if($('nj-sequence-status'))$('nj-sequence-status').textContent=njCanApprove()?'Sequência salva. Revise cada texto integral antes de aprovar.':reason;
@@ -2617,8 +2700,13 @@ function njRender(focus=false){
   const paths=`<p class="msg" aria-label="Tipos de cadência">Apollo: sequência e prompts do provedor · Instantly: sequência própria da plataforma · Thunder: textos por toque, gerados pelo método Thunder. Cada caminho mantém sua aprovação. Esta Nova jornada prepara a exportação para o Apollo.</p>`;
   $('nj-body').innerHTML=paths+`<section id="nj-panel-${nj.step}" aria-labelledby="nj-heading"><h3 id="nj-heading" tabindex="-1">${nj.step} · ${njLabels[nj.step-1]}</h3>${content}</section>`;
   document.querySelectorAll('form[data-nj-qualification]').forEach(form=>{
-    const facts=nj.companyPreview?.source_key===form.dataset.njQualification?nj.companyPreview.facts:nj.draft?.qualifications?.[form.dataset.njQualification]?.facts;
-    if(facts)Object.entries(facts).forEach(([key,value])=>{const input=form.elements.namedItem(key);if(input)input.value=String(value);});
+    const key=form.dataset.njQualification,context=njRows(nj.draft?.checks).find(item=>item.source_key===key)?.qualification_context,observed=context?.observed||{};
+    // Only literal, currently observed fields are prefilled; research never infers qualification.
+    const current={};if(['BR','OTHER'].includes(observed.hs_country_code))current.country=observed.hs_country_code;
+    if(['industria_b2b','distribuicao_b2b','outro'].includes(observed.thunder_icp_sector))current.sector=observed.thunder_icp_sector;
+    if(observed.thunder_annual_revenue_estimate!==null&&observed.thunder_annual_revenue_estimate!==undefined&&observed.thunder_annual_revenue_estimate!=='')current.annual_revenue_brl=observed.thunder_annual_revenue_estimate;
+    const facts={...current,...nj.draft?.qualifications?.[key]?.facts,...(nj.companyPreview?.source_key===key?nj.companyPreview.facts:{}),...nj.qualificationEdits[key]};
+    Object.entries(facts).forEach(([name,value])=>{const input=form.elements.namedItem(name);if(input&&input.type!=='checkbox'&&value!==null&&value!==undefined)input.value=String(value);});
   });
   njGuards();if(focus)$('nj-heading').focus();
 }
@@ -2644,7 +2732,7 @@ function njRoute(raw){
   const match=raw.match(/^jornada\/nova(?:\/([^/]+))?(?:\/([1-5]))?$/);if(!match){mostrarAba('jornada');return;}
   let id=null,step=Number(match[2]||1);
   if(match[1]){if(!match[2]&&/^[1-5]$/.test(match[1]))step=Number(match[1]);else try{id=decodeURIComponent(match[1]);}catch(error){nj.error='Referência de rascunho inválida.';}}
-    if(id!==nj.id){++nj.request;nj.id=id;nj.draft=null;nj.sequence=null;nj.sequenceDirty=false;nj.sourceDirty=false;nj.qualificationDirty=false;nj.companyPreview=null;nj.exportPreview=null;nj.sequences=[];nj.sequenceId='';nj.sequenceQuery='';nj.sequenceResultsQuery='';nj.csv='';nj.exported=null;nj.error='';nj.message='';nj.stale=false;nj.busy=false;}
+    if(id!==nj.id){++nj.request;nj.id=id;nj.draft=null;nj.sequence=null;nj.sequenceDirty=false;nj.sourceDirty=false;nj.qualificationDirty=false;nj.qualificationEdits={};nj.companyPreview=null;nj.exportPreview=null;nj.sequences=[];nj.sequenceId='';nj.sequenceQuery='';nj.sequenceResultsQuery='';nj.csv='';nj.exported=null;nj.error='';nj.message='';nj.stale=false;nj.busy=false;}
   nj.step=step;njRender();if(!nj.catalog||nj.id&&!nj.draft)njLoad();
 }
 async function njWrite(operation,body,success){
@@ -2670,7 +2758,7 @@ async function njWrite(operation,body,success){
   }catch(error){if(nj.id===id){nj.error=(error.status===403?'Sem permissão para esta operação. ':error.status===409?'A versão mudou. ':'')+(error.message||'Resultado não confirmado.');nj.stale=true;nj.message='Recarregue o rascunho antes de repetir a operação.';}}
   finally{if(request===nj.request){nj.busy=false;njRender();}}
 }
-$('journey-new').addEventListener('click',()=>{if(nj.busy)return;nj.catalog=null;nj.id=null;nj.draft=null;nj.sequence=null;nj.sequenceDirty=false;nj.sourceDirty=false;nj.csv='';nj.name='';nj.campaign='';nj.sequences=[];nj.sequenceId='';nj.sequenceQuery='';nj.sequenceResultsQuery='';nj.exported=null;nj.createUncertain=false;nj.error='';nj.message='';mostrarAba('jornada/nova');$('nj-title').focus();});
+$('journey-new').addEventListener('click',()=>{if(nj.busy)return;nj.catalog=null;nj.id=null;nj.draft=null;nj.sequence=null;nj.sequenceDirty=false;nj.sourceDirty=false;nj.qualificationDirty=false;nj.qualificationEdits={};nj.csv='';nj.name='';nj.campaign='';nj.sequences=[];nj.sequenceId='';nj.sequenceQuery='';nj.sequenceResultsQuery='';nj.exported=null;nj.createUncertain=false;nj.error='';nj.message='';mostrarAba('jornada/nova');$('nj-title').focus();});
 $('nj-back').addEventListener('click',()=>{mostrarAba('jornada');$('journey-new').focus();});
 $('nj-prev').addEventListener('click',()=>nj.step===1?$('nj-back').click():njGo(nj.step-1));
 $('nj-next').addEventListener('click',()=>nj.step===5?$('nj-back').click():njGo(nj.step+1));
@@ -2680,6 +2768,12 @@ $('new-journey').addEventListener('click',event=>{
   const reconcileImport=event.target.closest('[data-nj-import-reconcile]');
   if(confirmImport||reconcileImport){const p=nj.importPreview;if(!p||nj.busy)return;const b={preview_id:p.id,expected_version:p.version,preview_hash:p.preview_hash};if(confirmImport){if(p.can_execute!==true)return;b.confirm=true;}njImportRequest(confirmImport?'hubspot-execute':'hubspot-reconcile',b);return;}
   const resume=event.target.closest('[data-nj-resume]');if(resume&&!nj.busy){mostrarAba('jornada/nova/'+encodeURIComponent(resume.dataset.njResume)+'/1');$('nj-title').focus();return;}
+  const review=event.target.closest('[data-nj-review-company]');
+  if(review&&!nj.busy){
+    const context=njRows(nj.draft?.checks).find(item=>item.source_key===review.dataset.njReviewCompany)?.qualification_context;
+    const section=[...$('nj-body').querySelectorAll('.nj-qualification')].find(el=>el.dataset.njCompany===context?.company_id);
+    if(section){section.open=true;section.querySelector('select,input,textarea')?.focus();section.scrollIntoView({block:'start',behavior:'instant'});}return;
+  }
   const step=event.target.closest('[data-nj-step]');if(step){njGo(Number(step.dataset.njStep));return;}
   const approve=event.target.closest('[data-nj-approve]');if(approve){const s=nj.sequence[Number(approve.dataset.njApprove)];if(njCanApprove(s?.id))njWrite('approve-step',{step_id:s.id,review_hash:nj.draft.review_hash},nj.draft?.approval_mode==='apollo_prompts_v1'?'Versão dos prompts aprovada. Nenhum envio executado.':'Texto exato aprovado para uso manual no Apollo. Nenhum envio executado.');return;}
   const remove=event.target.closest('[data-nj-remove]');if(remove&&!nj.busy){nj.sequence.splice(Number(remove.dataset.njRemove),1);nj.sequence.forEach((s,i)=>s.order=i+1);nj.sequenceDirty=true;njRender();return;}
@@ -2708,7 +2802,7 @@ $('nj-steps').addEventListener('keydown',event=>{
 $('new-journey').addEventListener('input',event=>{
   const el=event.target;if(nj.busy)return;
   if(el.closest('form[data-nj-import]')){nj.importPreview=null;el.closest('.nj-import')?.querySelector('section')?.remove();return;}
-  if(el.closest('form[data-nj-qualification]')){nj.qualificationDirty=true;nj.companyPreview=null;nj.exportPreview=null;document.querySelector('[aria-label="Prévia da revisão da empresa"]')?.remove();}
+  if(el.closest('form[data-nj-qualification]')){const form=el.closest('form[data-nj-qualification]');nj.qualificationEdits[form.dataset.njQualification]=Object.fromEntries(new FormData(form).entries());delete nj.qualificationEdits[form.dataset.njQualification].company_confirmation;nj.qualificationDirty=true;nj.companyPreview=null;nj.exportPreview=null;document.querySelector('[aria-label="Prévia da revisão da empresa"]')?.remove();}
   if(el.dataset.njField){const index=Number(el.closest('[data-nj-index]').dataset.njIndex),field=el.dataset.njField;nj.sequence[index][field]=field==='interval_hours'?Number(el.value):el.value;nj.sequenceDirty=true;}
   if(el.id==='nj-sequence-query'){nj.sequenceQuery=el.value;nj.sequenceId='';nj.sequences=[];nj.sequenceDirty=true;$('nj-sequence-id').innerHTML='<option value="">Selecione após consultar</option>';}
   const fields={'nj-name':'name','nj-csv':'csv','nj-titles':'titles','nj-locations':'locations','nj-company-locations':'companyLocations','nj-sizes':'sizes','nj-keywords':'keywords','nj-query':'query','nj-page':'page'};

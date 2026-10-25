@@ -83,6 +83,9 @@ ALLOWED_FILES = {
     "_ferramentas/painel_modelo.html",
 }
 ALLOWED_TESTS = {
+    "test_thunder_os_commercial_account.py",
+    "test_thunder_os_registered_refusal_observation.py",
+    "test_thunder_os_commercial_journey.py",
     "test_thunder_os_apollo_prospect_readonly.py",
     "test_thunder_os_new_journey.py",
     "test_thunder_os_new_journey_import.py",

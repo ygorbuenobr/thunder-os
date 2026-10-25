@@ -30,6 +30,7 @@ def candidate(evidence):
     return {'binding_hash': payload_hash(bound), 'company_id': identity['company_id'],
             'contact_id': identity['contact_id'], 'company_name': props['name'],
             'domain': identity['domain'], 'source': evidence.get('source_ref'),
+            'verified_linkedin_urls': list(identity.get('linkedin_urls') or []),
             'observed': {key: props.get(key) for key in
                          ('hs_country_code', 'thunder_icp_sector', 'thunder_annual_revenue_estimate')}}
 

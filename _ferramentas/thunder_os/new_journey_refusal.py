@@ -84,7 +84,8 @@ class RegisteredRefusalRead:
                         raise ValueError('registered_identity_incomplete')
                     observations.append({'channel': channel, 'identity': identity,
                                          'blocked': proof.get('blocked')})
-                    if proof.get('blocked') in ('suppressed', 'has_reply'):
+                    if (proof.get('blocked') in ('suppressed', 'has_reply')
+                            and result.get('reason') != 'registered_suppressed'):
                         result.update(status='blocked', reason='registered_' + proof['blocked'])
                 if self.clock() >= end:
                     raise ValueError('registered_refusal_deadline')

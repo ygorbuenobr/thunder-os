@@ -82,10 +82,11 @@ def _require_exact_copy(step):
 
 
 class NewJourney:
-    def __init__(self, service, apollo=None, checker=None, clock=None, *, template_reader=None):
+    def __init__(self, service, apollo=None, checker=None, clock=None, *, template_reader=None, commercial_accounts=None):
         self.service, self.repo = service, service.repository
         self.apollo, self.checker = apollo, checker
         self.template_reader = template_reader
+        self.commercial_accounts = commercial_accounts
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.approval_service = ApprovalService(service.global_paused)
 
@@ -172,9 +173,58 @@ class NewJourney:
         with self.repo.transaction():
             return self._view(self._read(ident))
 
+    def _commercial(self, row, sheet=None):
+        if self.commercial_accounts is None:
+            return {}
+        contexts = {item['source_key']: item.get('qualification_context')
+                    for item in row.get('checks', [])}
+        try:
+            result = self.commercial_accounts.project_many(
+                deepcopy(row.get('rows', [])), deepcopy(contexts), sheet=sheet)
+            return result if isinstance(result, dict) else {}
+        except Exception:
+            return {item['source_key']: {'status': 'unavailable',
+                    'limitations': ['commercial_source_unavailable']}
+                    for item in row.get('rows', [])}
+
+    def _commercial_ready(self, row):
+        if self.commercial_accounts is None:
+            return True  # Optional port in pre-existing isolated consumers.
+        observed = self._commercial(row)
+        for lead in self._eligible(row):
+            item = observed.get(lead['source_key'], {})
+            pending = item.get('limitations') or []
+            sections = {section.get('key'): section.get('items') or []
+                        for section in item.get('sections', []) if isinstance(section, Mapping)}
+            required = ('business', 'fit', 'people', 'thesis')
+            if item.get('status') != 'available' or any(
+                    'commercial_section_pending:' + key in pending
+                    or not any(isinstance(part, Mapping) and _text(part.get('text'), 524288, multiline=True)
+                               for part in sections.get(key, [])) for key in required):
+                return False
+        return True
+
+    @staticmethod
+    def _stable_checks(checks):
+        # Collection time is display provenance, not a change in evidence.
+        return [{**item, 'checks': [{key: value for key, value in check.items()
+                                    if key not in ('checked_at', 'observed_at')}
+                                   for check in item.get('checks', [])]}
+                for item in checks]
+
     def _scope(self, row):
         values = {key: row.get(key) for key in ('name', 'campaign_id', 'source',
             'rows', 'checks', 'steps', 'sequence', 'campaign_context', 'sheet_hash', 'qualifications')}
+        values['checks'] = self._stable_checks(row.get('checks', []))
+        if self.commercial_accounts is not None:
+            # The source used in a commercial review is approval input. A fresh
+            # content hash invalidates the existing pack; no second ledger/state.
+            values['commercial_sources'] = {
+                key: {'status': item.get('status'), 'source': {
+                    field: (item.get('source') or {}).get(field)
+                    for field in ('path', 'sha256')},
+                    'context': (item.get('originals') or {}).get('tabs', {}).get('context', [])}
+                for key, item in self._commercial(row).items()}
         if 'approval_mode' in row:
             values['approval_mode'] = row['approval_mode']
         return payload_hash(values)
@@ -250,6 +300,8 @@ class NewJourney:
         eligible = self._eligible(row)
         if not eligible:
             blockers.append('journey_no_eligible_rows')
+        elif not self._commercial_ready(row):
+            blockers.append('journey_commercial_research_pending')
         if not any(step['channel'] == 'email' for step in row['steps']):
             blockers.append('journey_email_steps_required')
         if not row.get('sequence'):
@@ -287,6 +339,7 @@ class NewJourney:
             'can_export': not blockers, 'check_keys': list(CHECK_KEYS),
             'apollo_text_parity': parity, 'approval_validity_hours': 24,
             'approval_mode': row.get('approval_mode', 'exact_copy_v1'),
+            'commercial_accounts': self._commercial(row, sheet),
             'cadence_paths': [
                 {'id': 'apollo', 'label': 'Apollo', 'approval': 'prompt_hash_and_sent_audit'},
                 {'id': 'instantly', 'label': 'Instantly', 'approval': 'provider_sequence_and_exact_inputs'},
@@ -479,8 +532,12 @@ class NewJourney:
                             and _text(check.get('reason'), 2000)
                             and _text(check.get('source'), 2000)):
                         target.update({key: check[key] for key in ('status', 'reason', 'source')})
+                        if _text(check.get('checked_at'), 100):
+                            target['checked_at'] = check['checked_at']
                         if target['key'] == 'membership' and isinstance(check.get('coverage'), Mapping):
                             target['coverage'] = deepcopy(check['coverage'])
+                        if target['key'] == 'refusal' and isinstance(check.get('observation'), Mapping):
+                            target['observation'] = deepcopy(check['observation'])
                         # Stable coverage/revision fingerprints are review inputs;
                         # consultation times do not make an unchanged check stale.
                         stable = {k: v for k, v in check.items() if k not in ('checked_at', 'observed_at')}
@@ -668,8 +725,9 @@ class NewJourney:
             _require(context == row['campaign_context'], 'journey_campaign_changed', 409)
             _require(self._sheet_hash(sheet) == row['sheet_hash'], 'journey_sheet_changed', 409)
         checks = self._run_checks(row)
-        _require(self.checker is not None and checks == row['checks'], 'journey_checks_changed', 409)
+        _require(self.checker is not None and self._stable_checks(checks) == self._stable_checks(row['checks']), 'journey_checks_changed', 409)
         _require(bool(self._eligible(row)), 'journey_no_eligible_rows', 409)
+        _require(self._commercial_ready(row), 'journey_commercial_research_pending', 409)
         _require(bool(row.get('sequence')), 'journey_sequence_required', 409)
         selected = row['sequence']
         observed = self._sequence(row['campaign_id'], selected['apollo_sequence_id'], selected['query'],

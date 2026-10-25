@@ -298,14 +298,41 @@ class NewJourneyChecks:
                 and all(deal.get('properties', {}).get('hs_is_closed') in (True, 'true') for deal in deals)):
             result('open_deal', 'pass', 'canonical_contact_and_company_deals_closed', scope='all_associated_contact_and_company_deals')
         emails, profiles = identity.get('emails', []), identity.get('linkedin_urls', [])
-        if (isinstance(self.refusals, RegisteredRefusalRead)
+        observation = None
+        if isinstance(self.refusals, RegisteredRefusalRead):
+            observation = self.refusals.lookup(emails, profiles, deadline=deadline)
+            classification = ({'registered_suppressed': 'registered_refusal',
+                               'registered_has_reply': 'registered_reply'}.get(observation.get('reason'))
+                              if observation.get('status') == 'blocked' else
+                              'none_registered' if observation.get('status') == 'clear'
+                              and observation.get('coverage', {}).get('complete') is True else 'unavailable')
+            reason = {'registered_refusal': 'registered_suppressed',
+                      'registered_reply': 'registered_reply_requires_review',
+                      'none_registered': 'registered_refusals_and_replies_absent',
+                      'unavailable': 'registered_refusal_coverage_unavailable'}[classification]
+            required_negatives = (
+                ('person_opt_out', 'contacts', 'opt_out', cp, (False, 'false')),
+                ('email_opt_out', 'contacts', 'hs_email_optout', cp, (False, 'false')),
+                ('company_suppression', 'companies', 'thunder_suppressed', props, (False, 'false')),
+                ('outreach_risk', 'contacts', 'thunder_outreach_risk', cp, ('low', 'medium')))
+            pending_fields = [label for label, kind, key, values, accepted in required_negatives
+                              if not (_property(evidence, kind, key) and values.get(key) in accepted)]
+            checks['refusal']['observation'] = {'status': classification, 'reason': reason,
+                'source_ref': observation.get('source_ref'), 'coverage': observation.get('coverage', {}),
+                'crm_pending_fields': pending_fields}
+            if checks['refusal']['status'] == 'unknown' and pending_fields:
+                checks['refusal']['reason'] = 'canonical_registered_crm_state_incomplete'
+            if observation.get('status') == 'blocked':
+                result('refusal', 'blocked', observation['reason'], observation['source_ref'])
+        # Observing the registered ledger does not establish negative CRM flags.
+        # Only the existing complete guard may turn unknown into pass.
+        if (observation is not None
                 and all(_property(evidence, 'contacts', key) and cp.get(key) in (False, 'false')
                         for key in ('opt_out', 'hs_email_optout'))
                 and _property(evidence, 'companies', 'thunder_suppressed')
                 and props.get('thunder_suppressed') in (False, 'false')
                 and _property(evidence, 'contacts', 'thunder_outreach_risk')
                 and cp.get('thunder_outreach_risk') in ('low', 'medium')):
-            observation = self.refusals.lookup(emails, profiles, deadline=deadline)
             if observation['status'] == 'blocked':
                 result('refusal', 'blocked', observation['reason'], observation['source_ref'])
             elif observation['status'] == 'clear' and observation['coverage']['complete']:

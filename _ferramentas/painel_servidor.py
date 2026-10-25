@@ -2415,6 +2415,7 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
             from thunder_os.apollo_prospect_readonly import ApolloProspectReadonly
             from thunder_os.apollo_sequence_readonly import ApolloSequenceReadonly
             from thunder_os.instantly_reader import private_text
+            from thunder_os.commercial_account import CommercialAccountReadonly
             from thunder_os.new_journey import NewJourney
             from thunder_os.new_journey_checks import NewJourneyChecks
             from thunder_os.new_journey_membership import CrossCampaignReadOnly, InstantlyMembershipReadOnly
@@ -2424,6 +2425,7 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
                 credential_loader=lambda: private_text('/root/.config/thunder/credentials/apollo_api_key.txt'),
                 enabled=runtime is None, timeout=8)
             servidor.thunder_new_journey = NewJourney(servidor.thunder_service,
+                commercial_accounts=CommercialAccountReadonly(servidor.thunder_account_cadence_readonly),
                 apollo=apollo_prospects if runtime is None else None,
                 template_reader=ApolloSequenceReadonly(
                     lambda: private_text('/root/.config/thunder/credentials/apollo_api_key.txt'))
