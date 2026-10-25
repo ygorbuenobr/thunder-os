@@ -402,3 +402,24 @@ class AssistedLedger:
         if self.writer is None:
             raise TouchBlocked('assisted_writer_not_configured')
         return self.writer.confirm_receipt(*args, **kwargs)
+
+
+from contextlib import contextmanager
+
+@contextmanager
+def assisted_writer_database():
+    """Explicitly authorized writer, same credential reference, isolated connection.
+
+    Does not alter os.environ/PGOPTIONS or the canonical reader connection.
+    psycopg2 emits BEGIN READ WRITE for this connection only. No schema/grants.
+    """
+    with toques._banco() as (connection, marker):
+        if marker != '%s':
+            raise TouchBlocked('assisted_writer_postgres_required')
+        connection.set_session(readonly=False)
+        cursor=connection.cursor()
+        cursor.execute("SELECT session_user,current_user,current_database(),current_setting('port'),current_setting('transaction_read_only')")
+        if tuple(cursor.fetchone()) != ('thunder_gtm','thunder_gtm','thunder_gtm','54322','off'):
+            raise TouchBlocked('assisted_writer_identity_mismatch')
+        cursor.execute('SET LOCAL search_path TO pg_catalog, public')
+        yield connection,marker

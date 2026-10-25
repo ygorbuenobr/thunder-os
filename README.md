@@ -609,3 +609,5 @@ opt-in com schema/roles sintéticos e reader readonly. O teste PG exige cluster
 Unix privado descartável indicado no módulo e psycopg2 já instalado; sem opt-in
 é NOT RUN, não PASS. Triggers de produção cuja leitura foi negada não são
 reproduzidos nem considerados validados. Nenhuma instalação foi necessária.
+
+Binding de writer aprovado posteriormente: `THUNDER_OS_CODEX_ASSISTED_WRITER_ENABLED=true` fornece conexão dedicada usando a referência THUNDER_DB_URL existente, somente para reserva/confirmação. `set_session(readonly=False)` aplica-se exclusivamente à nova conexão; session_user/current_user/banco/porta são conferidos e search_path fixado localmente. PGOPTIONS do processo/leitor permanece readonly. Flag não ativa dispatch nem substitui política exata. Nenhum GRANT novo.

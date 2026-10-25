@@ -101,6 +101,25 @@ class AssistedTests(unittest.TestCase):
   self.assertEqual(result['status'],'confirmed')
   self.assertEqual(self.repo.effect(self.job['id'])['state'],'sent')
   self.assertEqual(self.mail.sends,[])
+ def test_authorized_writer_factory_does_not_change_global_readonly(self):
+  from contextlib import contextmanager
+  from unittest.mock import Mock
+  from thunder_os.touch_ledger import assisted_writer_database
+  con=Mock();con.cursor.return_value.fetchone.return_value=('thunder_gtm','thunder_gtm','thunder_gtm','54322','off')
+  @contextmanager
+  def database():yield con,'%s'
+  with patch.dict('os.environ',{'PGOPTIONS':'-c default_transaction_read_only=on','THUNDER_OS_CODEX_ASSISTED_WRITER_ENABLED':'true'}):
+   app=configured_assisted(self.service)
+   self.assertIsNotNone(app.ledger.writer)
+   with patch('thunder_os.touch_ledger.toques._banco',database):
+    with assisted_writer_database() as (seen,marker):self.assertIs(seen,con)
+   import os
+   self.assertEqual(os.environ['PGOPTIONS'],'-c default_transaction_read_only=on')
+  con.set_session.assert_called_once_with(readonly=False)
+  con.cursor.return_value.fetchone.return_value=('postgres','postgres','thunder_gtm','54322','off')
+  with patch('thunder_os.touch_ledger.toques._banco',database):
+   with self.assertRaisesRegex(Exception,'identity_mismatch'):
+    with assisted_writer_database():pass
  def test_default_off_preview_does_not_authorize(self):
   with patch.dict('os.environ',{},clear=True):app=configured_assisted(self.service)
   self.assertFalse(app.preview('batch-1','s1')['dispatch_authorized'])

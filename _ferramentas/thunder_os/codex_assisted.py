@@ -277,9 +277,11 @@ class CodexAssisted:
 
 
 def configured_assisted(service, *, ledger_reader=None, ledger_writer=None):
-    from .touch_ledger import TouchLedger, AssistedLedger
+    from .touch_ledger import TouchLedger, AssistedLedger, assisted_writer_database
     enabled=(os.environ.get('THUNDER_OS_CODEX_ASSISTED_DISPATCH')=='true' and
              os.environ.get('THUNDER_EXTERNAL_EFFECTS_ENABLED')=='true')
     from .internal_canary import InternalCanaryService
+    if ledger_writer is None and os.environ.get('THUNDER_OS_CODEX_ASSISTED_WRITER_ENABLED')=='true':
+        ledger_writer=TouchLedger(db_context=assisted_writer_database)
     return CodexAssisted(InternalCanaryService(service),AssistedLedger(ledger_reader or TouchLedger(),ledger_writer),enabled=enabled,
         policy_loader=lambda:pinned_policy('THUNDER_OS_CODEX_ASSISTED_POLICY'))
