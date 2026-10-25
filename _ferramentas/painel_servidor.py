@@ -1888,15 +1888,16 @@ class Handler(BaseHTTPRequestHandler):
                     return self.responder(200, canary.dispatch_step(body['cadence_id'], 'e1', actor))
                 raise Erro('Preparação interna inválida.')
             fields = {'preview': {'cadence_id','step_id'},
+                      'recover-preclaim': {'cadence_id','step_id','review_hash'},
                       'claim': {'cadence_id','step_id','review_hash'},
                       'dispatch': {'job_id','ticket_hash'},
                       'receipt-preview': {'job_id','receipt'},
                       'receipt-confirm': {'job_id','receipt','review_hash'}}
             if action not in fields or set(body) != fields[action] or any(not isinstance(v,str) for v in body.values()):
                 raise Erro('Pacote assistido inválido.')
-            if action in {'claim','dispatch'} and (not external_effects_enabled() or restricted_mode()):
+            if action in {'claim','dispatch','recover-preclaim'} and (not external_effects_enabled() or restricted_mode()):
                 raise Erro('Execução assistida desabilitada.', 403)
-            method = {'preview': assisted.preview, 'claim': assisted.claim, 'dispatch': assisted.dispatch,
+            method = {'preview': assisted.preview, 'recover-preclaim': assisted.recover_preclaim, 'claim': assisted.claim, 'dispatch': assisted.dispatch,
                       'receipt-preview': assisted.receipt_preview, 'receipt-confirm': assisted.receipt_confirm}[action]
             return self.responder(200, method(**body))
         if rota.path.startswith('/api/os/v1/integrations/thunder-email/'):

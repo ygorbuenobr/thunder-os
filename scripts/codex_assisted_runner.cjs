@@ -44,14 +44,14 @@ module.exports={runAssisted,hash};
 // Existing authenticated panel session supplied by Codex; no token extraction/login.
 function panelPort(fetchPanel){
   return async(action,body)=>{
-    requireValue(['claim','dispatch','receipt-preview','receipt-confirm'].includes(action),'PANEL_ACTION_INVALID');
+    requireValue(['claim','dispatch','receipt-preview','receipt-confirm','recover-preclaim'].includes(action),'PANEL_ACTION_INVALID');
     const session=await fetchPanel('/api/os/v1/session',{method:'GET'});
     requireValue(session?.actor==='ygor'&&typeof session.nonce==='string','PANEL_SESSION_REQUIRED');
     return fetchPanel('/api/os/v1/integrations/codex-assisted/'+action,
       {method:'POST',headers:{'Content-Type':'application/json','X-Thunder-Nonce':session.nonce},body:JSON.stringify(body)});
   };
 }
-async function durableJournal(directory){
+async function durableJournal(directory,{recoverPreclaim}={}){
   const fs=require('node:fs/promises'),path=require('node:path');
   requireValue(path.isAbsolute(directory||''),'JOURNAL_DIRECTORY_REQUIRED');
   const stat=await fs.lstat(directory);requireValue(stat.isDirectory()&&!stat.isSymbolicLink(),'JOURNAL_DIRECTORY_INVALID');
@@ -59,7 +59,23 @@ async function durableJournal(directory){
   return {
     async createExclusive(key,value){
       requireValue(/^[a-f0-9]{64}$/.test(key),'JOURNAL_KEY_INVALID');
-      handle=await fs.open(path.join(directory,key+'.jsonl'),'wx',0o600);
+      const name=path.join(directory,key+'.jsonl');
+      try{handle=await fs.open(name,'wx',0o600);}
+      catch(error){
+        if(error.code!=='EEXIST'||typeof recoverPreclaim!=='function')throw error;
+        const flags=require('node:fs').constants;
+        handle=await fs.open(name,flags.O_RDWR|flags.O_NOFOLLOW);
+        const raw=await handle.readFile('utf8');
+        requireValue(raw.endsWith('\n')&&raw.trim().split('\n').length===1,'JOURNAL_NOT_PRECLAIM');
+        const prior=JSON.parse(raw);
+        requireValue(prior.state==='STARTED'&&canonical(prior)===canonical(value),'JOURNAL_NOT_PRECLAIM');
+        const proof=await recoverPreclaim(value.packet);
+        requireValue(proof?.recovered_preclaim===true&&proof.dispatch_authorized===false&&
+          proof.review_hash===key&&proof.job_id===value.packet.job_id&&Number.isFinite(proof.checked_at)&&
+          Date.now()/1000-proof.checked_at>=0&&Date.now()/1000-proof.checked_at<30,'PRECLAIM_RECOVERY_INVALID');
+        await handle.write(JSON.stringify({state:'RECOVERED_PRECLAIM',proof})+'\n');await handle.sync();
+        return;
+      }
       await handle.write(JSON.stringify(value)+'\n');await handle.sync();
       const dir=await fs.open(directory,'r');try{await dir.sync();}finally{await dir.close();}
     },

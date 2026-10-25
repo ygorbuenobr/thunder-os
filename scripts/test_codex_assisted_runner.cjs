@@ -25,3 +25,18 @@ test('panel port obtains nonce for each return, no send',async()=>{const calls=[
 test('lost lock after preflight blocks claim',async()=>{const f=fixture();f.ports.withLock.check=async()=>false;await assert.rejects(runAssisted(f.packet,f.ports),/LOCK_NOT_HELD/);assert.equal(f.counts().sends,0);assert.equal(f.counts().claimed,0);});
 
 test('E2 forwards exact reply_message_id and only approved new text',async()=>{const f=fixture();f.packet.payload.reply_message_id='def456';f.packet.payload.payload={mime_type:'text/plain',charset:'UTF-8',body:{content:'Synthetic approved E2'}};f.packet.reply_contract={version:1,message_id:'def456'};delete f.packet.review_hash;f.packet.review_hash=hash(f.packet);f.ports.preflight=async()=>({complete:true,eligible:true,packet_hash:f.packet.review_hash,checked_at:100});let payload;f.ports.gmail.send_email=async p=>{payload=p;return {id:'abc123'};};await runAssisted(f.packet,f.ports);assert.equal(payload.reply_message_id,'def456');assert.equal(payload.payload.body.content,'Synthetic approved E2');});
+test('preclaim recovery appends to same journal exactly once, never resets intent',async()=>{
+ const fs=require('node:fs/promises'),os=require('node:os'),path=require('node:path');
+ const {durableJournal,hash}=require('./codex_assisted_runner.cjs');
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),'synthetic-preclaim-'));
+ try{
+  const packet={job_id:'synthetic-job',payload:{to:'fixture@example.invalid'}};packet.review_hash=hash(packet);
+  const value={state:'STARTED',packet},key=packet.review_hash;
+  let j=await durableJournal(dir);await j.createExclusive(key,value);await j.close();
+  const original=await fs.readFile(path.join(dir,key+'.jsonl'),'utf8');let calls=0;
+  const recovery=async()=>{calls++;return {recovered_preclaim:true,dispatch_authorized:false,review_hash:key,job_id:packet.job_id,checked_at:Date.now()/1000}};
+  j=await durableJournal(dir,{recoverPreclaim:recovery});await j.createExclusive(key,value);await j.close();
+  const after=await fs.readFile(path.join(dir,key+'.jsonl'),'utf8');assert.ok(after.startsWith(original));assert.equal(after.trim().split('\n').length,2);
+  j=await durableJournal(dir,{recoverPreclaim:recovery});await assert.rejects(j.createExclusive(key,value),/NOT_PRECLAIM/);await j.close();assert.equal(calls,1);
+ }finally{await fs.rm(dir,{recursive:true,force:true});}
+});

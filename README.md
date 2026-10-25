@@ -527,3 +527,14 @@ A ausência ou divergência bloqueia **antes** da criação do registro. O worke
 geral mantém os gates comerciais. Dispatch ainda depende de flag explícita e
 política exata; instalar código não ativa envio. Preparar não aprova nem enfileira.
 O pacote final/efeito e a política devem ser lidos de volta antes de executar.
+
+Recuperação excepcional do canário interno antes de claim: `resume_preclaim: true`
+na entrada assistida aceita somente o journal original com uma linha `STARTED`
+exatamente igual ao pacote. Com o lock existente mantido, chama a rota autenticada
+`recover-preclaim`, que exige job pendente sem lease/recibo, nenhuma tentativa,
+nenhum toque/bloqueio e nova política exata de até 15 minutos emitida depois da
+expiração anterior. Renova apenas a validade interna, preserva job e envelope e
+apenda `RECOVERED_PRECLAIM`; pode ocorrer uma vez. Qualquer `SEND_INTENT`, ticket,
+dispatch, recibo ou resultado incerto impede recuperação. Falha entre commit
+remoto e append local fica retida para inspeção, nunca autoriza retry automático.
+Isso não cria permissão de envio, não remove supressões e não substitui preflight.

@@ -101,6 +101,38 @@ class CodexAssisted:
         require(self.reader._binding(receipt)==before,'assisted_predecessor_changed_during_read')
         return contract
 
+    def recover_preclaim(self,cadence_id,step_id,review_hash):
+        """One explicit recovery before any ticket; preserve job, scope and history."""
+        from .internal_canary import PREFIX
+        require(cadence_id.startswith(PREFIX) and step_id=='e1','assisted_recovery_internal_only')
+        require(self.enabled is True and self.ledger is not None,'assisted_dispatch_disabled')
+        policy=self.adapter._policy()
+        with self.repo.transaction():
+            row=self.repo.get_state('internal_canary',cadence_id)
+            require(row and not row.get('preclaim_recovery'),'assisted_recovery_already_used')
+            self.service.check_policy(cadence_id,row['scope'],row['approval_ref'])
+            require(policy['issued_at']>row['expires_at'],'assisted_recovery_fresh_policy_required')
+            packet=self.preview(cadence_id,step_id)
+            require(packet['review_hash']==review_hash,'assisted_review_changed')
+            job=self.repo.effect(packet['job_id']) if packet['job_id'] else None
+            require(job and job['state']=='pending' and not job.get('lease_owner')
+                and not job.get('receipt_ref'),'assisted_recovery_job_not_pending')
+            require(self.repo.get_state('codex_assisted',job['id']) is None
+                and self.repo.get_state('gmail_cadence_attempt',self.adapter._key(policy)) is None,
+                'assisted_recovery_attempt_exists')
+            step,_=self.adapter._scope(policy,job)
+            evidence=self.ledger.preflight(job['effect_key'],step,raise_blocked=True)
+            require(evidence.get('duplicate') is None and evidence.get('blocked') is None,'assisted_recovery_touch_exists')
+            # This transaction rolls back renewal if any original runtime gate fails.
+            clean={k:v for k,v in row.items() if k not in {'version','updated_at','id'}}
+            self.repo.put_state('internal_canary',cadence_id,{**clean,'expires_at':policy['expires_at'],
+                'preclaim_recovery':{'previous_expires_at':row['expires_at'],'at':self.clock(),
+                    'job_id':job['id'],'review_hash':review_hash}})
+            error=self.worker._runtime_gate(job['payload'],step,job['effect_key'])
+            require(error is None,error or 'assisted_gate_failed')
+            return {'recovered_preclaim':True,'review_hash':review_hash,'job_id':job['id'],
+                'dispatch_authorized':False,'send_attempted':False,'checked_at':self.clock()}
+
     def claim(self,cadence_id,step_id,review_hash):
         require(self.enabled is True and self.ledger is not None,'assisted_dispatch_disabled')
         policy=self.adapter._policy()

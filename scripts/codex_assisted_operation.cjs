@@ -10,7 +10,7 @@ function unpack(r){check(!r?.isError,'PROVIDER_ERROR');if(r?.structuredContent)r
 function sessionFetch(base,fetchImpl=fetch){
  const u=new URL(base);check(u.origin==='https://painel.r3xdigital.tech'&&u.pathname==='/'&&!u.search&&!u.hash,'PANEL_ORIGIN_INVALID');
  return async(route,options={})=>{
-  check(/^\/api\/os\/v1\/(session|integrations\/codex-assisted\/(preview|claim|dispatch|receipt-preview|receipt-confirm|prepare-canary|approve-canary|queue-canary))$/.test(route),'PANEL_ROUTE_INVALID');
+  check(/^\/api\/os\/v1\/(session|integrations\/codex-assisted\/(preview|claim|dispatch|receipt-preview|receipt-confirm|recover-preclaim|prepare-canary|approve-canary|queue-canary))$/.test(route),'PANEL_ROUTE_INVALID');
   const method=options.method||'GET';check(['GET','POST'].includes(method),'PANEL_METHOD_INVALID');
   const h=options.headers||{};check(Object.keys(h).every(k=>['Content-Type','X-Thunder-Nonce'].includes(k)),'PANEL_AUTH_HEADER_FORBIDDEN');
   const r=await fetchImpl(u.origin+route,{...options,method,credentials:'include',redirect:'error',signal:AbortSignal.timeout(15000)});
@@ -87,7 +87,8 @@ async function operation(input,{tools,fetchImpl=fetch}={}){
  const result={mode:input.mode,read_only:input.mode==='dry-run',packet_hash:packet?.review_hash||null,calls,observed,blockers:[...new Set(blockers)],send_attempted:false};
  if(input.mode==='dry-run'||blockers.length)return result;
  const lock=await acquireExistingLock(input.lock_holder,input.python);
- return withResources(lock,()=>durableJournal(input.journal_directory),async journal=>{
+ const recoveryPanel=panelPort(panelFetch);
+ return withResources(lock,()=>durableJournal(input.journal_directory,{recoverPreclaim:input.resume_preclaim===true?async p=>recoveryPanel('recover-preclaim',{cadence_id:p.cadence_id,step_id:p.step_id,review_hash:p.review_hash}):undefined}),async journal=>{
   const preflight=async p=>{
    const fresh=await gmailHistory(traced,p.payload.to);
    check(fresh.complete&&JSON.stringify(fresh.message_ids)===JSON.stringify(observed.gmail.message_ids),'HISTORY_CHANGED_OR_INCOMPLETE');
@@ -104,7 +105,7 @@ async function operation(input,{tools,fetchImpl=fetch}={}){
 // Called inside the supported CUA CDP capability of an already-authenticated panel tab.
 // Session/nonce remain in that origin; no cookies, browser storage or auth headers are read.
 async function browserPanelRequest(cdp,request){
- const {route,options={}}=request;check(/^\/api\/os\/v1\/(session|integrations\/codex-assisted\/(preview|claim|dispatch|receipt-preview|receipt-confirm|prepare-canary|approve-canary|queue-canary))$/.test(route),'PANEL_ROUTE_INVALID');
+ const {route,options={}}=request;check(/^\/api\/os\/v1\/(session|integrations\/codex-assisted\/(preview|claim|dispatch|receipt-preview|receipt-confirm|recover-preclaim|prepare-canary|approve-canary|queue-canary))$/.test(route),'PANEL_ROUTE_INVALID');
  check(['GET','POST'].includes(options.method||'GET'),'PANEL_METHOD_INVALID');
  check(Object.keys(options.headers||{}).every(k=>['Content-Type','X-Thunder-Nonce'].includes(k)),'PANEL_AUTH_HEADER_FORBIDDEN');
  const expression='(async()=>{if(location.origin!=="https://painel.r3xdigital.tech")throw Error("PANEL_ORIGIN_INVALID");const q='+JSON.stringify({route,options})+';const r=await fetch(q.route,{...q.options,credentials:"same-origin",redirect:"error",signal:AbortSignal.timeout(15000)});if(!r.ok)throw Error("PANEL_HTTP_"+r.status);return r.json();})()';

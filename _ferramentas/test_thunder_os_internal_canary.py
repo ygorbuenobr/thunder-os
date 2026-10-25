@@ -56,3 +56,30 @@ class CanaryTests(unittest.TestCase):
  def test_missing_policy_fails_closed(self):
   s=InternalCanaryService(self.base,policy_loader=lambda:{})
   with self.assertRaisesRegex(ValueError,'pinned_policy'):s.prepare(self.data,'ygor')
+ def recovery_fixture(self):
+  p=self.s.prepare(self.data,'ygor');c=p['cadence']
+  self.s.approve_cadence(c['id'],'ygor',expected_version=c['version'],review_hash=p['review_hash'],execution_confirmation=p['execution_confirmation'])
+  job=self.s.dispatch_step(c['id'],'e1','ygor')
+  a=CodexAssisted(self.s,self.ledger,enabled=True,policy_loader=lambda:self.policy)
+  packet=a.preview(c['id'],'e1')
+  row=self.repo.get_state('internal_canary',c['id']);row={k:v for k,v in row.items() if k not in {'id','version','updated_at'}}
+  row['expires_at']=time.time()-10;self.repo.put_state('internal_canary',c['id'],row)
+  self.policy['issued_at']=time.time()-1;self.policy['expires_at']=time.time()+600
+  return a,packet,job
+ def test_expired_preclaim_recovery_preserves_job_then_claims_once(self):
+  a,p,j=self.recovery_fixture();before=self.repo.effect(j['id'])
+  proof=a.recover_preclaim(p['cadence_id'],'e1',p['review_hash'])
+  self.assertTrue(proof['recovered_preclaim']);self.assertFalse(proof['dispatch_authorized'])
+  self.assertEqual(self.repo.effect(j['id']),before)
+  self.assertEqual(a.preview(p['cadence_id'],'e1'),p)
+  with self.assertRaisesRegex(ValueError,'already_used'):a.recover_preclaim(p['cadence_id'],'e1',p['review_hash'])
+  self.assertTrue(a.claim(p['cadence_id'],'e1',p['review_hash'])['dispatch_authorized'])
+ def test_recovery_rejects_attempt_and_keeps_expiry(self):
+  a,p,j=self.recovery_fixture();before=self.repo.get_state('internal_canary',p['cadence_id'])
+  self.repo.put_state('codex_assisted',j['id'],{'phase':'issued'})
+  with self.assertRaisesRegex(ValueError,'attempt_exists'):a.recover_preclaim(p['cadence_id'],'e1',p['review_hash'])
+  self.assertEqual(self.repo.get_state('internal_canary',p['cadence_id']),before)
+ def test_recovery_wrong_hash_never_renews(self):
+  a,p,j=self.recovery_fixture();before=self.repo.get_state('internal_canary',p['cadence_id'])
+  with self.assertRaisesRegex(ValueError,'review_changed'):a.recover_preclaim(p['cadence_id'],'e1','0'*64)
+  self.assertEqual(self.repo.get_state('internal_canary',p['cadence_id']),before)
