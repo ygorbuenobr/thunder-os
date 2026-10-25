@@ -89,3 +89,35 @@ class CommercialJourneyTests(unittest.TestCase):
             f.journey.approve_step(f.row['id'], 'E1', 'ygor', current['version'], current['review_hash'])
         self.assertEqual(error.exception.code, 'journey_commercial_research_pending')
         f.assert_no_execution()
+
+    def test_source_changed_during_approval_is_not_silently_approved(self):
+        from unittest.mock import patch
+        f = self.fixture
+        f.ready()
+        previous = deepcopy(f.repo.get_state('journey_draft', f.row['id']))
+        original = f.journey._revalidate
+        def change_after_preflight(*args):
+            original(*args)
+            self.reader.digest = 'b' * 64
+        with patch.object(f.journey, '_revalidate', change_after_preflight):
+            with self.assertRaises(NewJourneyError):
+                f.approve()
+        self.assertEqual(previous, f.repo.get_state('journey_draft', f.row['id']))
+        self.assertEqual(f.journey.get(f.row['id'], 'ygor')['approvals'], {})
+
+    def test_prompt_source_changed_during_approval_is_not_silently_approved(self):
+        from unittest.mock import patch
+        import test_thunder_os_new_journey_prompt_mode as prompts
+        f = prompts.PromptModeTests()
+        f.setUp(); self.addCleanup(f.doCleanups)
+        f.journey.commercial_accounts = self.reader
+        f.prompts()
+        previous = deepcopy(f.repo.get_state('journey_draft', f.row['id']))
+        original = f.journey._revalidate
+        def change_after_preflight(*args):
+            original(*args)
+            self.reader.digest = 'b' * 64
+        with patch.object(f.journey, '_revalidate', change_after_preflight):
+            with self.assertRaises(NewJourneyError):
+                f.approve(f.row['steps'][0]['id'])
+        self.assertEqual(previous, f.repo.get_state('journey_draft', f.row['id']))

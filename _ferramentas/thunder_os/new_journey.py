@@ -270,9 +270,9 @@ class NewJourney:
             bindings.append(deepcopy(matches[0]))
         return bindings
 
-    def _review_hash(self, row, context, sheet):
+    def _review_hash(self, row, context, sheet, *, scope_hash=None):
         return payload_hash({'id': row['id'], 'version': row['version'],
-            'scope_hash': self._scope(row), 'context': context, 'sheet_hash': self._sheet_hash(sheet),
+            'scope_hash': self._scope(row) if scope_hash is None else scope_hash, 'context': context, 'sheet_hash': self._sheet_hash(sheet),
             'approvals': row['approvals']})
 
     def _eligible(self, row):
@@ -720,8 +720,9 @@ class NewJourney:
             row = self._read(ident, expected_version)
             context, sheet = self._campaign(row['campaign_id'])
             _require(sheet['status'] == 'complete', 'journey_sheet_incomplete', 409)
-            _require(isinstance(review_hash, str) and review_hash == self._review_hash(row, context, sheet),
-                     'journey_review_conflict', 409)
+            presented_scope = self._scope(row)
+            _require(isinstance(review_hash, str) and review_hash == self._review_hash(
+                row, context, sheet, scope_hash=presented_scope), 'journey_review_conflict', 409)
             _require(context == row['campaign_context'], 'journey_campaign_changed', 409)
             _require(self._sheet_hash(sheet) == row['sheet_hash'], 'journey_sheet_changed', 409)
         checks = self._run_checks(row)
@@ -743,7 +744,7 @@ class NewJourney:
         else:
             _require(observed == selected, 'journey_sequence_changed', 409)
         _require(self._text_parity(row)['status'] == 'verified', 'journey_apollo_text_unverified', 409)
-        return row, context, sheet
+        return row, context, sheet, presented_scope
 
     def _revalidate(self, row, context, sheet):
         self._running()
@@ -761,15 +762,16 @@ class NewJourney:
             **({'subject': step['subject']} if step['channel'] == 'email' else {})}
 
     def approve_step(self, ident, step_id, actor, expected_version, review_hash):
-        row, context, sheet = self._preflight(ident, actor, expected_version, review_hash)
+        row, context, sheet, presented_scope = self._preflight(ident, actor, expected_version, review_hash)
         step = next((s for s in row['steps'] if s['id'] == step_id), None)
         _require(step is not None, 'journey_step_missing', 404)
         if row.get('approval_mode') == 'apollo_prompts_v1':
             with self.repo.transaction():
                 self._revalidate(row, context, sheet)
                 now = self._now()
+                _require(self._scope(row) == presented_scope, 'journey_context_changed', 409)
                 row['approvals'][step_id] = {
-                    'kind': 'apollo_prompts_v1', 'scope_hash': self._scope(row),
+                    'kind': 'apollo_prompts_v1', 'scope_hash': presented_scope,
                     'input_hash': self._text_parity(row)['input_hash'], 'approved_by': actor,
                     'approved_at': now.isoformat(),
                     'expires_at': (now + timedelta(hours=24)).isoformat(),
@@ -786,7 +788,8 @@ class NewJourney:
                 raise NewJourneyError('journey_approval_denied', 409) from None
             payload = asdict(pack)
             payload.update(approved_at=pack.approved_at.isoformat(), expires_at=pack.expires_at.isoformat())
-            row['approvals'][step_id] = {'scope_hash': self._scope(row), 'pack': payload}
+            _require(self._scope(row) == presented_scope, 'journey_context_changed', 409)
+            row['approvals'][step_id] = {'scope_hash': presented_scope, 'pack': payload}
             return self._view(self._save(row, expected_version))
 
     def _authorize(self, row, step, eligible):
@@ -826,7 +829,7 @@ class NewJourney:
         return self.export(ident, actor, expected_version, review_hash, preview_only=True)
 
     def export(self, ident, actor, expected_version, review_hash, *, preview_only=False):
-        row, context, sheet = self._preflight(ident, actor, expected_version, review_hash)
+        row, context, sheet, presented_scope = self._preflight(ident, actor, expected_version, review_hash)
         with self.repo.transaction():
             self._revalidate(row, context, sheet)
             eligible = self._eligible(row)
@@ -863,7 +866,7 @@ class NewJourney:
                 values.update(apollo_person_id='',
                               apollo_contact_id=bound[lead['source_key']].get('contact_id') or '',
                               hubspot_id=canonical[lead['source_key']].get('contact_id') or '')
-                values.update(campaign_id=row['campaign_id'], journey_id=ident, scope_hash=self._scope(row))
+                values.update(campaign_id=row['campaign_id'], journey_id=ident, scope_hash=presented_scope)
                 values['apollo_sequence_id'] = row['sequence']['apollo_sequence_id']
                 if prompts:
                     values.update(approval_kind='apollo_prompts_v1',
@@ -877,7 +880,8 @@ class NewJourney:
                         values[step['id'] + '_body_template'] = values.pop(step['id'] + '_content')
                 writer.writerow({key: value if key in exact_columns else _safe_cell(value)
                                  for key, value in values.items()})
-            snapshot = {'scope_hash': self._scope(row), 'source_keys': [lead['source_key'] for lead in eligible],
+            _require(self._scope(row) == presented_scope, 'journey_context_changed', 409)
+            snapshot = {'scope_hash': presented_scope, 'source_keys': [lead['source_key'] for lead in eligible],
                         'sequence_id': row['sequence']['apollo_sequence_id'],
                         'account_id': row['sequence']['account_id'], 'recipient_bindings': bound}
             if not preview_only and row.get('export_snapshot') != snapshot:
@@ -889,7 +893,7 @@ class NewJourney:
                 'approval_kind': row.get('approval_mode', 'exact_copy_v1'),
                 'final_email_generated': False if prompts else None,
                 'enrollment_enabled': False, 'manual_export': True, 'version': row['version'],
-                'review_hash': self._review_hash(row, context, sheet), 'scope_hash': self._scope(row),
+                'review_hash': self._review_hash(row, context, sheet, scope_hash=presented_scope), 'scope_hash': presented_scope,
                 'csv_formula_escaped': True, 'reconciliation_required': True}
 
     def reconcile(self, ident, actor, expected_version):

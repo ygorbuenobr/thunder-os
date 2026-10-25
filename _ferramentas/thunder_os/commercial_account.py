@@ -166,11 +166,13 @@ class CommercialAccountReadonly:
         result, profiles = {}, {}
         for row in rows:
             key = row['source_key']
-            profile = self._binding(row, contexts.get(key))
+            profile, binding_status = self._binding(row, contexts.get(key))
             if counts[key] > 1:
                 result[key] = self._empty('ambiguous', ['duplicate_source_key'])
             elif profile is None:
-                result[key] = self._empty('unlinked', ['verified_profile_or_crm_binding_missing_or_mismatched'])
+                result[key] = self._empty(binding_status, [
+                    'canonical_profile_ambiguous' if binding_status == 'ambiguous' else
+                    'verified_profile_or_crm_binding_missing_or_mismatched'])
             else:
                 profiles[key] = profile
         if not profiles:
@@ -243,55 +245,73 @@ class CommercialAccountReadonly:
     def _binding(row, context):
         """Accept only the caller's verified CRM IDs/domain and profile aliases."""
         if not isinstance(row, Mapping) or not isinstance(context, Mapping):
-            return None
+            return None, 'unlinked'
         ids = ('company_id', 'contact_id', 'domain')
         aliases = context.get('verified_linkedin_urls')
-        profile = _profile(row.get('linkedin_url'))
         if (any(not isinstance(context.get(k), str) or not context[k].strip() for k in ids)
-                or not isinstance(aliases, (list, tuple)) or not profile
-                or profile not in {_profile(value) for value in aliases}
+                or not isinstance(aliases, (list, tuple))
                 or row.get('hubspot_id') and row['hubspot_id'] != context['contact_id']):
-            return None
-        return profile
+            return None, 'unlinked'
+        canonical = {_profile(value) for value in aliases} - {None}
+        supplied = row.get('linkedin_url')
+        profile = _profile(supplied)
+        # A supplied CSV URL constrains canonical identity; it cannot override it.
+        if supplied and (profile is None or profile not in canonical):
+            return None, 'unlinked'
+        if len(canonical) > 1:
+            return None, 'ambiguous'
+        if not canonical:
+            return None, 'unlinked'
+        return next(iter(canonical)), 'available'
 
     @staticmethod
     def _project_document(doc, limitations):
         tabs = doc.get('tabs') or {}
         sections = {key: [] for key, _ in SECTIONS}
-        group = None
+        group, historical_block = None, False
         for research in tabs.get('research', []):
             text = research.get('text')
             if not isinstance(text, str) or not text.strip():
                 continue
-            folded = _fold(text.strip().strip('*# '))
-            if _historical_state(text):
-                limitations.append('historical_crm_and_email_claims_only_in_originals')
-                if text.strip().startswith(('**', '#')):
-                    group = None
-                continue
-            # Heading-only lines establish the narrow visitor dialect's groups.
-            if text.strip().startswith(('**', '#')):
-                if folded == 'empresa':
-                    group = 'business'
-                elif folded in ('fit e oferta', 'aderencia', 'fit'):
-                    group = 'fit'
-                elif folded.startswith(('pessoa', 'por que ele', 'por que ela')):
-                    group = 'people'
-                else:
-                    group = None
-                continue
-            selected = group
-            if selected is None:
-                if re.match(r'^-?\s*(empresa|tecelagem|modelo de venda|mercado|vende|o que vende)', folded):
-                    selected = 'business'
-                elif re.match(r'^-?\s*(fit|oferta|aderencia)', folded):
-                    selected = 'fit'
-                elif re.match(r'^-?\s*(cargo|pessoa|escopo comercial|desde quando)', folded):
-                    selected = 'people'
-                elif re.match(r'^-?\s*(sinal|gatilho|fato|momento)', folded):
-                    selected = 'moment'
-            if selected:
-                sections[selected].append(_item(text, research))
+            # The reader may return a heading and body as one paragraph. Read
+            # heading lines individually, retaining every selected literal body.
+            for line in text.splitlines():
+                if not line.strip():
+                    continue
+                folded = _fold(line.strip().strip('*# '))
+                heading = re.fullmatch(r'\s*(?:\*\*[^*]+\*\*|#{1,6}\s+.+)\s*', line)
+                if heading:
+                    if _historical_state(line):
+                        historical_block, group = True, None
+                        limitations.append('historical_crm_and_email_claims_only_in_originals')
+                        continue
+                    if folded == 'empresa':
+                        group = 'business'
+                    elif folded in ('fit e oferta', 'aderencia', 'fit'):
+                        group = 'fit'
+                    elif folded.startswith(('pessoa', 'por que ele', 'por que ela')):
+                        group = 'people'
+                    else:
+                        group = None
+                    # Unknown subheadings do not reopen a historical block.
+                    if group is not None:
+                        historical_block = False
+                    continue
+                if historical_block or _historical_state(line):
+                    limitations.append('historical_crm_and_email_claims_only_in_originals')
+                    continue
+                selected = group
+                if selected is None:
+                    if re.match(r'^-?\s*(empresa|tecelagem|modelo de venda|mercado|vende|o que vende)', folded):
+                        selected = 'business'
+                    elif re.match(r'^-?\s*(fit|oferta|aderencia)', folded):
+                        selected = 'fit'
+                    elif re.match(r'^-?\s*(cargo|pessoa|escopo comercial|desde quando)', folded):
+                        selected = 'people'
+                    elif re.match(r'^-?\s*(sinal|gatilho|fato|momento)', folded):
+                        selected = 'moment'
+                if selected:
+                    sections[selected].append(_item(line, research))
         for entry in tabs.get('dossier', []):
             text, key = entry.get('text'), entry.get('key')
             if not isinstance(text, str) or not text.strip():

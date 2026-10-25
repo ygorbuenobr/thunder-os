@@ -148,6 +148,48 @@ class CommercialAccountTests(unittest.TestCase):
         self.row['linkedin_url'] = 'https://linkedin.com/in/SYNTHETIC-PERSON/?trk=test'
         self.assertEqual(self.project()['status'], 'available')
 
+    def test_unique_canonical_profile_without_csv_and_conflicts_retained(self):
+        self.row.pop('linkedin_url')
+        self.assertEqual(self.project()['status'], 'available')
+        self.context['verified_linkedin_urls'].append('https://www.linkedin.com/in/another-primary')
+        self.assertEqual(self.project()['status'], 'ambiguous')
+        self.row['linkedin_url'] = 'https://www.linkedin.com/in/conflicting-csv'
+        self.assertEqual(self.project()['status'], 'unlinked')
+
+    def test_historical_block_descendants_never_enter_business(self):
+        self.accounts.docs[0]['tabs']['research'] = [
+            {'text': '**Empresa**'}, {'text': 'Vende componentes.'},
+            {'text': '**Histórico no HubSpot**'},
+            {'text': '- Empresa sem negócio aberto em 2020.'},
+            {'text': '**Outros registros antigos**'}, {'text': '- Empresa antiga sem contato.'},
+            {'text': '**Fit e oferta**'}, {'text': '- Fit: indústria B2B.'}]
+        result = self.project()
+        primary = ' '.join(i['text'] for s in result['sections'] for i in s['items'])
+        self.assertNotIn('sem negócio aberto', primary)
+        self.assertNotIn('Empresa antiga', primary)
+        self.assertIn('- Fit: indústria B2B.', primary)
+        self.assertEqual(result['originals']['tabs'], self.accounts.docs[0]['tabs'])
+
+    def test_real_reader_paragraph_headings_preserve_content_and_history_boundary(self):
+        from pathlib import Path
+        import tempfile
+        from thunder_os.account_cadence_readonly import AccountCadenceReadonly
+        text = ('# Cadência · Synthetic · Person\n' + PROFILE + '\n\n## Pesquisa\n\n'
+                '**Empresa**\nVende componentes industriais.\n\n'
+                '**Histórico no HubSpot**\n- Empresa sem negócio aberto em 2020.\n\n'
+                '**Fit e oferta**\n- Fit: indústria B2B.\n')
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'contas/synthetic/cadencia.md'
+            path.parent.mkdir(parents=True)
+            path.write_text(text, encoding='utf-8')
+            result = CommercialAccountReadonly(AccountCadenceReadonly(directory)).project(self.row, self.context)
+            self.assertEqual(result['status'], 'available')
+            sections = {s['key']: s['items'] for s in result['sections']}
+            self.assertEqual(sections['business'][0]['text'], 'Vende componentes industriais.')
+            self.assertEqual(sections['fit'][0]['text'], '- Fit: indústria B2B.')
+            self.assertNotIn('sem negócio aberto', repr(result['sections']))
+            self.assertEqual(result['originals']['source_text'], text)
+
     def test_stale_crm_and_email_not_promoted(self):
         result = self.project()
         primary = ' '.join(i['text'] for s in result['sections'] for i in s['items'])
