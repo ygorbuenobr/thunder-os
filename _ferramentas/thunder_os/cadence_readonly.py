@@ -390,10 +390,10 @@ class _ReadSession:
             if self.adapter.monotonic() >= self.deadline:
                 raise CadenceReadonlyError("read_budget_exhausted") from None
             raise CadenceReadonlyError("provider_read_failed") from None
-        if self.adapter.monotonic() >= self.deadline:
-            raise CadenceReadonlyError("read_budget_exhausted")
         if type(status) is not int or not 200 <= status < 300:
             raise CadenceReadonlyError("provider_http_error", status if type(status) is int else None)
+        if self.adapter.monotonic() >= self.deadline:
+            raise CadenceReadonlyError("read_budget_exhausted")
         try:
             if not isinstance(raw, bytes) or len(raw) > 2_000_000:
                 raise ValueError()

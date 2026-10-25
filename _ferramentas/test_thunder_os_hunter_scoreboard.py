@@ -240,3 +240,13 @@ class DeadlineClassificationTests(unittest.TestCase):
   budget=Mock();budget.call.side_effect=RuntimeError('synthetic')
   session=HubSpotReadonlyAdapter(lambda:'synthetic-token',monotonic=lambda:0,budget_seconds=8,read_budget=budget).session()
   with self.assertRaisesRegex(CadenceReadonlyError,'provider_read_failed'):session.call('GET','/crm/v3/pipelines/deals')
+
+ def test_explicit_denial_at_deadline_is_never_resumable(self):
+  from thunder_os.cadence_readonly import HubSpotReadonlyAdapter
+  for status in (401,403,429):
+   clock=[0];budget=Mock()
+   def denied(*args):clock[0]=8;return status,b'{}'
+   budget.call.side_effect=denied
+   session=HubSpotReadonlyAdapter(lambda:'synthetic-token',monotonic=lambda:clock[0],budget_seconds=8,read_budget=budget).session()
+   with self.assertRaises(CadenceReadonlyError) as caught:session.call('GET','/crm/v3/pipelines/deals')
+   self.assertEqual(caught.exception.code,'provider_http_error');self.assertEqual(caught.exception.status,status)
