@@ -482,8 +482,8 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
       const readiness=page.locator('#nj-operational-readiness');
       assert.match(await readiness.innerText(),/E1 automático observado/);
       assert.match(await readiness.innerText(),/não confirma o estado atual/);
-      assert.match(await readiness.innerText(),/até 10 pessoas/);
-      assert.match(await readiness.innerText(),/não é aplicado à exportação/);
+      assert.match(await readiness.innerText(),/manter a sequência Apollo existente/);
+      assert.match(await readiness.innerText(),/não inicia uma campanha nem aplica um teto dentro do Apollo/);
       assert.match(await readiness.innerText(),/atividade EMAIL no HubSpot/);
       assert.match(await readiness.innerText(),/parada externa com leitura de volta/);
       assert.equal(await page.locator('[data-nj-action=export-preview]').isEnabled(),true,'Diagnostic does not gate preparatory export');

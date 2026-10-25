@@ -129,6 +129,7 @@ ALLOWED_TESTS = {
     "test_thunder_os_linkedin_preparation.py",
     "test_thunder_os_reply_control.py",
     "test_thunder_os_external_email_import.py",
+    "test_thunder_os_hunter_scoreboard.py",
     "test_thunder_os_external_pause_adapters.py",
     "test_thunder_os_apollo_readonly.py",
     "test_thunder_os_instantly_webhook.py",

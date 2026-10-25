@@ -286,16 +286,21 @@ def _management(row, snapshot, replies, *, path=None, batch=None, scoped=False):
 
 
 class CampaignScoreboard:
-    def __init__(self, reader, repo, *, minimum_sample=30, minimum_lift=0.2):
+    def __init__(self, reader, repo, *, minimum_sample=30, minimum_lift=0.2, hunter=None):
         if type(minimum_sample) is not int or minimum_sample < 1:
             raise ValueError('invalid_minimum_sample')
         if (type(minimum_lift) not in (int, float)
                 or not 0 <= minimum_lift <= 0.5):
             raise ValueError('invalid_minimum_lift')
         self.reader, self.repo = reader, repo
+        self.hunter = hunter
         self.engine = LearningEngine(minimum_sample, minimum_lift)
 
-    def snapshot(self):
+    def snapshot(self, *, hunter_cursor=None):
+        if hunter_cursor is not None:
+            if self.hunter is None:
+                raise ValueError('hunter_unavailable')
+            return {'read_only':True,'hunter':self.hunter.continue_snapshot(hunter_cursor)}
         try:
             snapshot = self.reader.snapshot()
         except CadenceReadonlyError as exc:
@@ -365,7 +370,8 @@ class CampaignScoreboard:
                     'comparable': False, 'winner': None, 'ranking': None,
                     'reason': 'cohort_comparability_unverified',
                     'source': path['management']['source'], 'requires_human_approval': True, 'read_only': True})
-        return {'campaigns': campaigns, 'comparisons': comparisons, 'read_only': True,
+        hunter = self.hunter.snapshot(snapshot, replies) if self.hunter is not None else None
+        return {**({'hunter': hunter} if hunter is not None else {}), 'campaigns': campaigns, 'comparisons': comparisons, 'read_only': True,
                 'requires_human_approval': True}
 
     def analyze(self, records, *, campaign_id=None):

@@ -1580,7 +1580,7 @@ class Handler(BaseHTTPRequestHandler):
         if rota.path in {'/api/os/v1/hermes/capabilities','/api/os/v1/hermes/contacts','/api/os/v1/campaign-scoreboard'}:
             if self.thunder_proxy_actor() != 'ygor':
                 raise Erro('Somente Ygor pode consultar o Hermes.',403)
-            if self.command != 'GET' or rota.query:
+            if self.command != 'GET' or (rota.query and rota.path != '/api/os/v1/campaign-scoreboard'):
                 raise Erro('Esta rota permite somente consulta.',405)
             verifier=getattr(self.server,'thunder_panel_verifier',None)
             if rota.path.endswith('/capabilities'):
@@ -1590,7 +1590,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self.responder(200,verifier.contacts())
             scoreboard=getattr(self.server,'thunder_campaign_scoreboard',None)
             if scoreboard is None:raise Erro('Placar indisponível.',503)
-            return self.responder(200,scoreboard.snapshot())
+            query = parse_qs(rota.query, keep_blank_values=True)
+            if query:
+                if (set(query) != {'hunter_cursor'} or len(query['hunter_cursor']) != 1
+                    or not re.fullmatch(r'[A-Za-z0-9_-]{32}', query['hunter_cursor'][0])):
+                    raise Erro('Continuação inválida.',400)
+                try:
+                    return self.responder(200,scoreboard.snapshot(hunter_cursor=query['hunter_cursor'][0]))
+                except ValueError:
+                    raise Erro('Consulta expirou ou mudou. Use Atualizar placar para recomeçar.',409) from None
+            try:
+                return self.responder(200,scoreboard.snapshot())
+            except ValueError:
+                raise Erro('Consulta temporariamente indisponível. Continue a consulta aberta ou aguarde.',409) from None
         if rota.path in {'/api/os/v1/hermes/change-route','/api/os/v1/hermes/send'}:
             if self.thunder_proxy_actor() != 'ygor':raise Erro('Somente Ygor pode solicitar ações.',403)
             raise Erro('Ações e envios estão desligados nesta rodada.',503)
@@ -2408,7 +2420,9 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
                     from thunder_os.campaign_scoreboard import CampaignScoreboard
                     servidor.thunder_panel_verifier=PanelVerification(servidor.thunder_cadence_readonly,HermesVerifyProcess.configured())
                     servidor.thunder_panel_gateway=AgentGateway(servidor.thunder_service,RAIZ)
-                    servidor.thunder_campaign_scoreboard=CampaignScoreboard(servidor.thunder_cadence_readonly,repository)
+                    from thunder_os.hunter_scoreboard import HunterScoreboard
+                    servidor.thunder_campaign_scoreboard=CampaignScoreboard(servidor.thunder_cadence_readonly,repository,
+                        hunter=HunterScoreboard(servidor.thunder_cadence_readonly.adapter, repository))
             crm_write = external_effects_enabled() and not restricted_mode() and os.environ.get('THUNDER_OS_HUBSPOT_WRITE_ENABLED', '') == 'true'
             copilot = external_effects_enabled() and not restricted_mode() and os.environ.get('THUNDER_OS_COPILOT_MODE', '') == 'human_approval'
             servidor.thunder_hubspot_console = HubSpotConsole(servidor.thunder_service.repository,

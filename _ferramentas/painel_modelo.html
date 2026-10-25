@@ -2479,8 +2479,10 @@ $('journey-accounts').addEventListener('keydown',event=>{
 });
 setInterval(()=>{if(!document.hidden&&document.body.dataset.aba==='jornada')carregarJourney(true);},60000);
 // Share only an in-flight GET with Campanhas; never add provider/model calls.
+let campaignScoreboardContinuationPending=null;
 let campaignScoreboardPending=null,journeyScoreBusy=false,journeyScoreSnapshot=null;
-function readCampaignScoreboard(){
+function readCampaignScoreboard(cursor=null){
+  if(cursor!==null){if(!/^[A-Za-z0-9_-]{32}$/.test(cursor))return Promise.reject(Error('Continuação inválida'));if(!campaignScoreboardContinuationPending)campaignScoreboardContinuationPending=apiServidor('/api/os/v1/campaign-scoreboard?hunter_cursor='+encodeURIComponent(cursor)).finally(()=>{campaignScoreboardContinuationPending=null;});return campaignScoreboardContinuationPending;}
   if(!campaignScoreboardPending)campaignScoreboardPending=Promise.resolve().then(()=>apiServidor('/api/os/v1/campaign-scoreboard')).finally(()=>{campaignScoreboardPending=null;});
   return campaignScoreboardPending;
 }
@@ -2498,17 +2500,26 @@ function journeyScoreEvidence(metrics){
   const incomplete=journeyScoreMetrics.some(([key])=>!journeyScoreKnown(metrics[key])||metrics[key].complete!==true);
   return `${incomplete?'<p class="msg">Sem base completa para totalizar. Consulte a fonte.</p>':''}${!journeyScoreKnown(metrics.cost_per_hot)?'<p class="msg">Custo não cadastrado.</p>':''}<details><summary>Fontes, cobertura e motivos das métricas</summary>${journeyScoreMetrics.map(([key,label])=>{const metric=metrics[key];return `<h5>${label}</h5><p class="msg">${metric?.availability==='not_connected'?'Fonte ainda não conectada':metric?.complete===true?'Cobertura completa':metric?.complete===false?'Leitura parcial':'Cobertura não informada'}${metric?.reason?' · '+esc(journeyScoreReason(metric.reason)):''}</p>${metric?.required_decision?`<p class="msg">${esc(metric.required_decision)}</p>`:''}<pre class="journey-original">${esc(JSON.stringify(metric||{value:null,complete:false,reason:'Métrica não fornecida.'},null,2))}</pre>`;}).join('')}</details>`;
 }
+function renderHunterScoreboard(h){
+  if(!h)return '';
+  const labels={reached:'Pessoas abordadas',responded:'Respostas humanas',positive:'Positivas qualificadas',meetings_scheduled:'Reuniões agendadas',meetings_scheduled_due:'Reuniões já vencidas',meetings_held:'Reuniões realizadas',opportunities:'Oportunidades · Qualificado',won:'Ganhos · Ganho'};
+  if(h.error)return `<article id="hunter-scoreboard"><h3>Hunter · Ygor</h3><p class="msg">Fonte indisponível nesta consulta. Nenhum zero foi inferido.</p><details><summary>Motivo e cobertura</summary><pre>${esc(JSON.stringify(h,null,2))}</pre></details></article>`;
+  const number=m=>typeof m?.value==='number'&&Number.isFinite(m.value)?m.value.toLocaleString('pt-BR'):'—';
+  const cards=Object.entries(labels).map(([key,label])=>`<div data-hunter-metric="${key}"><dt>${label}</dt><dd>${esc(number(h.metrics?.[key]))}</dd><small>${h.metrics?.[key]?.complete===true?'Total da fonte consultada':'Evidência observada · cobertura parcial'}</small></div>`).join('');
+  const rates={human_response:'Resposta humana / abordados',qualified_positive:'Positivas qualificadas / abordados',positive_among_responses:'Positivas / respostas',meeting_attendance:'Realizadas / agendadas já vencidas'};
+  return `<article id="hunter-scoreboard"><h3>Hunter · Ygor · todas as campanhas</h3><p>Farmer e Parcerias ficam fora deste placar. Esta visão geral não muda com o seletor de campanha.</p><p>Últimos 30 dias: ${esc(h.period?.start||'—')} → ${esc(h.period?.end||'—')} · UTC</p>${h.progress?`<section data-hunter-progress><p>${Object.entries(h.progress.sources||{}).map(([kind,p])=>`${esc(kind==='deals'?'Negócios':'Reuniões')}: ${esc(p.records)} registros · ${esc(p.pages)} páginas${p.complete?' · listagem concluída':''}`).join(' | ')}</p><p>${h.progress.can_continue?'Há páginas restantes. Continuar mantém o período e as evidências desta consulta; Atualizar placar começa outra.':h.progress.enumeration_finished?'Listagem concluída. As métricas ainda dependem das evidências indicadas.':'Consulta interrompida ou sem cobertura completa. Consulte os motivos da fonte.'}</p>${h.progress.can_continue?'<button class="btn" type="button" data-hunter-continue>Continuar consulta Hunter</button>':''}<small>Sem coleta em segundo plano. A continuação expira após 15 minutos sem uso.</small></section>`:''}<dl class="journey-score-metrics">${cards}</dl><p class="msg">Pessoas únicas com recibo comprovado. Coortes usam o primeiro toque encontrado nas fontes disponíveis; não comprovam o primeiro contato de toda a relação. Maturação de 30 dias, resultados provisórios.</p><p class="msg">Positiva qualificada exige evidência de interesse em parceria externa recorrente. Classificações sem essa evidência permanecem pendentes. Custos completos: desconhecidos, faltam despesas e custo-hora.</p><ul>${Object.entries(rates).map(([key,label])=>{const r=h.rates?.[key];return `<li>${label}: ${Number.isInteger(r?.numerator)?r.numerator:'—'}/${Number.isInteger(r?.denominator)?r.denominator:'—'} · ${typeof r?.value==='number'?(100*r.value).toFixed(1)+'%':'indisponível'} · somente amostra observada</li>`;}).join('')}</ul><h4>Coortes mensais observadas</h4>${(h.cohorts||[]).map(c=>`<p>${esc(c.month)}: ${esc(c.people)} pessoas · ${esc(c.responded)} respostas humanas · ${esc(c.qualified_positive)} positivas comprovadas · provisório</p>`).join('')||'<p>Sem coorte comprovada nas fontes consultadas.</p>'}<h4>Resultados sem atribuição comprovada</h4><p>Um resultado Hunter sem vínculo histórico de campanha permanece aqui; não é distribuído automaticamente entre canais.</p><dl class="journey-score-metrics">${Object.entries(h.unattributed||{}).map(([key,m])=>`<div><dt>${esc(labels[key]||'Pessoas sem campanha comprovada')}</dt><dd>${esc(number(m))}</dd><small>${m.complete?'Fonte consultada completa':'Observado · cobertura parcial'}</small></div>`).join('')}</dl><details><summary>Atribuição por campanha e evidências</summary>${(h.campaigns||[]).map(c=>`<h5>${esc(c.id)}</h5><pre>${esc(JSON.stringify(c,null,2))}</pre>`).join('')}<pre>${esc(JSON.stringify({owner:h.owner,pipeline:h.pipeline,sources:h.sources,exclusions:h.exclusions,limitations:h.limitations,events:h.events},null,2))}</pre></details></article>`;
+}
 function renderJourneyScoreboard(){
   const state=journeyScoreSnapshot;if(!state)return;
   const selected=journeyCampaign(),campaigns=state.campaigns.filter(c=>journeyBR(c.id)&&(!selected||c.id===selected));
   const target=$('journey-score-body');
-  target.innerHTML=campaigns.map(c=>{
+  target.innerHTML=renderHunterScoreboard(state.hunter)+(campaigns.map(c=>{
     const m=c.management||{},metrics=m.metrics||{};
     const period=m.period||{};
     const proposals=journeyRows(m.insights).filter(i=>i?.requires_human_approval===true);
     const old=c.learning?.requires_human_approval===true?c.learning.proposal:null;
     return `<article data-score-campaign="${esc(c.id)}"><h3>${esc(c.id)}</h3><button class="btn" type="button" data-campaign-preparation="${esc(c.id)}" aria-haspopup="dialog">Ver abordagem e sequência</button><p class="msg">${esc(c.platform||'Plataforma não informada')} · ${esc(c.cadence_path||'Caminho não informado')}</p><p>Período: ${esc(period.start?journeyScoreDate(period.start):'Início não informado')} → ${esc(period.end?journeyScoreDate(period.end):'Fim não informado')}</p><p class="msg">${m.coverage?.complete===true?'Leitura completa do período':m.coverage?.complete===false?'Leitura parcial do período':'Cobertura do período não informada'}</p><dl class="journey-score-metrics">${journeyScoreMetrics.map(([key,label])=>journeyScoreMetric(key,label,metrics[key])).join('')}</dl>${journeyScoreEvidence(metrics)}${journeyRows(c.paths).length?`<details><summary>Resultados por lote e caminho</summary>${c.paths.map(path=>`<section><h4>${esc(path.cadence_path||'Caminho não informado')} · ${path.batch_id?'Lote vinculado na fonte':'Lote não informado'}</h4><p class="msg">Período: ${esc(path.management?.period?.start?journeyScoreDate(path.management.period.start):'Início não informado')} → ${esc(path.management?.period?.end?journeyScoreDate(path.management.period.end):'Fim não informado')}</p><dl class="journey-score-metrics">${journeyScoreMetrics.map(([key,label])=>journeyScoreMetric(key,label,path.management?.metrics?.[key])).join('')}</dl>${journeyScoreEvidence(path.management?.metrics||{})}<details><summary>Vínculo, fonte e cobertura do lote</summary><pre class="journey-original">${esc(JSON.stringify({batch_id:path.batch_id,cadence_path:path.cadence_path,source:path.management?.source,coverage:path.management?.coverage},null,2))}</pre></details></section>`).join('')}</details>`:''}<h4>Próximos movimentos · propostas</h4><p class="msg">Revisão humana obrigatória. Nenhuma mudança de regra foi salva por esta consulta.</p>${proposals.map(i=>`<div class="journey-proposal"><p><b>Proposta para revisão</b></p><p>${esc(i.message)}</p>${i.action?`<p>Próxima ação proposta: ${esc(journeyDescribe(i.action))}</p>`:''}<details><summary>Evidências da proposta</summary><pre class="journey-original">${esc(JSON.stringify({source_ids:i.source_ids,requires_human_approval:i.requires_human_approval},null,2))}</pre></details></div>`).join('')}${old?`<div class="journey-proposal"><p><b>Proposta de aprendizado para revisão</b></p><p>${esc(old.hypothesis)}</p><p>${esc(old.limitation)}</p></div>`:''}${!proposals.length&&!old?'<p class="msg">Sem proposta com evidências suficientes nesta leitura.</p>':''}<details><summary>Fontes, hashes e limites da campanha</summary><pre class="journey-original">${esc(JSON.stringify({source:m.source,coverage:m.coverage,period:m.period,platform:c.platform,cadence_path:c.cadence_path,metrics:c.metrics,learning:c.learning},null,2))}</pre></details></article>`;
-  }).join('')||'<p class="vazio">Nenhum placar disponível para esta seleção BR. Use Atualizar placar para consultar novamente.</p>';
+  }).join('')||'<p class="vazio">Nenhum placar disponível para esta seleção BR. Use Atualizar placar para consultar novamente.</p>');
   // A comparison without a verified campaign scope cannot enter the BR view.
   const ids=new Set(campaigns.map(c=>c.id));
   const comparisons=journeyRows(state.comparisons).filter(c=>{
@@ -2517,18 +2528,22 @@ function renderJourneyScoreboard(){
   });
   target.insertAdjacentHTML('beforeend',`<details><summary>Comparações e limites da leitura</summary><p class="msg">Públicos, ofertas, períodos e tamanhos de grupo diferentes não comprovam superioridade de um caminho. Nenhum vencedor é inferido pelo painel.</p>${comparisons.map(c=>`<pre class="journey-original">${esc(JSON.stringify(c,null,2))}</pre>`).join('')||'<p class="msg">Nenhuma comparação com escopo comprovado nesta seleção. Consulte período, cobertura e fontes de cada campanha.</p>'}</details>`);
 }
-async function carregarJourneyScoreboard(){
+async function carregarJourneyScoreboard(continueHunter=false){
+  const cursor=continueHunter===true?journeyScoreSnapshot?.hunter?.progress?.cursor:null;
+  if(continueHunter===true&&!cursor)return;
   if(!journeyScoreVisible()||journeyScoreBusy||!apiServidor)return;
   journeyScoreBusy=true;$('journey-score-refresh').disabled=true;$('journey-score-body').setAttribute('aria-busy','true');$('journey-score-status').textContent=journeyScoreSnapshot?'Atualizando placar… Os valores abaixo são da consulta anterior.':'Consultando placar…';
   try{
-    const data=await readCampaignScoreboard();
+    const fragment=await readCampaignScoreboard(cursor);
+    const data=cursor?{...journeyScoreSnapshot,hunter:fragment.hunter,read_only:fragment.read_only}:fragment;
     if(data?.read_only!==true||!Array.isArray(data.campaigns))throw Error('Contrato do placar inválido');
     if(!journeyScoreVisible())return;
     const changed=JSON.stringify(data)!==JSON.stringify(journeyScoreSnapshot);journeyScoreSnapshot=data;if(changed||!$('journey-score-body').childElementCount)renderJourneyScoreboard();$('journey-score-status').textContent='Placar consultado. Valores parciais e lacunas estão indicados em cada fonte.';
-  }catch(error){if(journeyScoreVisible()){journeyScoreSnapshot=null;$('journey-score-body').replaceChildren();$('journey-score-status').textContent='Não foi possível consultar o placar. Use Atualizar placar para tentar novamente.';}}
+  }catch(error){if(journeyScoreVisible()){if(!journeyScoreSnapshot)$('journey-score-body').replaceChildren();$('journey-score-status').textContent=cursor?'Não foi possível continuar. As evidências anteriores foram preservadas. Tente Continuar; se a consulta expirou, Atualizar placar recomeça.':'Não foi possível consultar o placar. Evidências anteriores, quando disponíveis, foram preservadas. Continue a consulta aberta ou tente Atualizar placar.';}}
   finally{journeyScoreBusy=false;$('journey-score-refresh').disabled=false;$('journey-score-body').setAttribute('aria-busy','false');}
 }
-$('journey-scoreboard').addEventListener('toggle',()=>{if($('journey-scoreboard').open)carregarJourneyScoreboard();});
+$('journey-scoreboard').addEventListener('toggle',()=>{if($('journey-scoreboard').open){if(journeyScoreSnapshot?.hunter?.progress?.can_continue)renderJourneyScoreboard();else carregarJourneyScoreboard();}});
+$('journey-score-body').addEventListener('click',event=>{if(event.target.closest('[data-hunter-continue]'))carregarJourneyScoreboard(true);});
 $('journey-score-refresh').addEventListener('click',carregarJourneyScoreboard);
 // The preparation endpoint grants no execution/approval authority.
 let journeyPreparationActive=null;
@@ -2563,7 +2578,7 @@ $('journey-score-body').addEventListener('click',event=>{const button=event.targ
 $('journey-dialog').addEventListener('click',event=>{if(event.target.closest('[data-preparation-review]'))$('journey-dialog').close();});
 
 $('journey-campaign').addEventListener('change',()=>{if(journeyPreparationActive&&$('journey-dialog').open)$('journey-dialog').close();if(journeyScoreSnapshot)renderJourneyScoreboard();carregarJourneyScoreboard();});
-setInterval(carregarJourneyScoreboard,60000);
+setInterval(()=>{if(!journeyScoreSnapshot?.hunter?.progress?.can_continue)carregarJourneyScoreboard();},60000);
 /* JOURNEY_END */
 /* NEW_JOURNEY_BEGIN: manual preparation only; no dispatch/provider write routes. */
 const njBase='/api/os/v1/new-journey';
@@ -2823,8 +2838,8 @@ function njRenderSequence(){
 function njOperationalReadinessHTML(){
   const pilot=nj.draft?.operational_readiness?.pilot;
   const type=pilot?.e1_observed_type;
-  const observed=type==='manual_email'?'E1 manual observado na sequência salva.':type==='auto_email'?'E1 automático observado na sequência salva; precisa ser manual para o piloto.':'Tipo do E1 não comprovado na sequência salva.';
-  return `<section class="nj-warning" id="nj-operational-readiness"><h4>Antes de operar o piloto</h4><p>${esc(observed)} Essa leitura salva não confirma o estado atual do Apollo.</p><p>Antes da inscrição, confira o E1 como Manual email no Apollo, preservando os prompts e variáveis. Releia a sequência e revise os insumos após qualquer mudança.</p><p>O canário exige autorização específica. O lote inicial de até 10 pessoas revisadas só vem depois de comprovar o ciclo do canário; o E1 continua manual nos primeiros 10 envios. Esse limite não é aplicado à exportação preparatória.</p><p>Esta jornada ainda não comprova recibo do executor, atividade EMAIL no HubSpot, resposta humana na Jornada e parada externa com leitura de volta. Exportação e inscrição observada não comprovam esse ciclo nem autorizam expansão.</p></section>`;
+  const observed=type==='manual_email'?'E1 manual observado na sequência salva.':type==='auto_email'?'E1 automático observado na sequência salva; preservar a sequência existente.':'Tipo do E1 não comprovado na sequência salva.';
+  return `<section class="nj-warning" id="nj-operational-readiness"><h4>Antes de operar o piloto</h4><p>${esc(observed)} Essa leitura salva não confirma o estado atual do Apollo.</p><p>Decisão atual de Ygor: manter a sequência Apollo existente, sem cópia nem alteração de passos, prompts ou E1. Isso substitui a exigência anterior de converter o E1 para manual; não autoriza novas inscrições ou envios.</p><p>Qualquer canário exige autorização específica e evidência da sequência atual. Exportação preparatória não inicia uma campanha nem aplica um teto dentro do Apollo.</p><p>Esta jornada ainda não comprova recibo do executor, atividade EMAIL no HubSpot, resposta humana na Jornada e parada externa com leitura de volta. Exportação e inscrição observada não comprovam esse ciclo nem autorizam expansão.</p></section>`;
 }
 function njRenderManual(){
   const d=nj.draft,r=d?.reconciliation,observed=njRows(r?.rows).filter(row=>row.status==='enrolled');

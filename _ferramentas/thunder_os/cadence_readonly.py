@@ -357,7 +357,11 @@ class _ReadSession:
                    re.fullmatch(r"/crm/v3/properties/(?:tasks|contacts|" + kinds + r")", path) or
                    re.fullmatch(r"/crm/v4/objects/contacts/[1-9][0-9]{0,29}/associations/(?:" + kinds + r")(?:\?[^#]*)?", path) or
                    re.fullmatch(r"/crm/v4/objects/tasks/[1-9][0-9]{0,29}/associations/contacts(?:\?[^#]*)?", path)))
-        allowed = allowed or (method == "POST" and (path in {"/crm/v3/objects/tasks/search", "/crm/v3/objects/emails/search", "/crm/v3/objects/meetings/search"} or
+        allowed = allowed or (method == "GET" and (
+            path == "/crm/v3/pipelines/deals" or
+            re.fullmatch(r"/crm/v3/objects/(?:deals|meetings)\?[^#]+", path) or
+            re.fullmatch(r"/crm/v3/objects/contacts/[1-9][0-9]{0,29}\?properties=hubspot_owner_id(?:&associations=deals)?", path)))
+        allowed = allowed or (method == "POST" and (path in {"/crm/v3/objects/deals/search", "/crm/v3/objects/deals/batch/read", "/crm/v3/objects/tasks/search", "/crm/v3/objects/emails/search", "/crm/v3/objects/meetings/search"} or
                   path in {"/crm/v4/associations/tasks/contacts/batch/read",
                            "/crm/v4/associations/emails/contacts/batch/read"} or
                   re.fullmatch(r"/crm/v3/objects/(?:contacts|" + kinds + r")/batch/read", path)))

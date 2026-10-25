@@ -330,12 +330,13 @@ class NewJourney:
         return {'provider': 'apollo', 'execution_ready': False,
             'enrollment_enabled': False,
             'pilot': {'max_initial_leads': 10, 'limit_enforced_by_export': False,
-                'e1_required_type': 'manual_email', 'e1_observed_type': observed_type,
+                'e1_required_type': None, 'sequence_policy': 'preserve_existing',
+                'historical_e1_requirement': 'manual_email', 'policy_decision_at': '2026-10-25T13:11:56Z', 'e1_observed_type': observed_type,
                 'e1_manual_observed': observed_type == 'manual_email',
                 'observation_scope': 'saved_sequence_snapshot', 'current': False},
             'proofs': proofs,
             'blockers': ['specific_operational_approval_required',
-                         'fresh_manual_e1_readback_required', 'operational_proofs_unverified']}
+                         'fresh_existing_sequence_readback_required', 'operational_proofs_unverified']}
 
     def _view(self, row):
         try:

@@ -443,3 +443,37 @@ identity. Create, source, check, sequence, approve-step, export and reconcile
 operations also require the existing one-use nonce and same-origin boundary.
 Reconciliation is a read of Apollo membership, not enrollment. The automatic
 enrollment capability remains disabled and has no execution endpoint.
+
+
+## Hunter scoreboard (baseline approved 2026-10-25)
+
+The existing scoreboard endpoint now composes a bounded read-only Hunter collector
+for Ygor (owner92901049), separate from Farmer/Parcerias. Deal search is scoped to
+Hunter903417452 and the owner, followed by 50-record history reads. It records
+first observed history entry into Qualificado1366314827 and Ganho1367676183;
+current stage alone never supplies an event or date. Meeting status history and
+canonical event IDs distinguish scheduled, due and completed observations. Current
+CRM associations do not prove historical campaign attribution; these results stay
+unattributed. Missing history, incomplete pagination and malformed/conflicting
+sources remain explicitly incomplete. Default is five pages (250 objects) per
+chunk with an eight-second shared request/time budget. An opaque, Ygor-only
+continuation cursor resumes remaining pages in the same process with fixed period,
+frozen receipt/reply input, dedupe and idempotent replay. The panel displays progress
+and offers Continue; there is no background job. Idle snapshots expire after
+15 minutes or process restart. Enumeration completion does not imply complete
+history or campaign attribution. Reads are paginated, not an atomic CRM snapshot.
+Meetings are filtered by owner and associated Hunter deals before retrieval.
+
+Receipt cohorts require confirmed identity, a real receipt, current Ygor ownership
+and a confirmed current Hunter relation. First-touch scope is the available
+receipt corpus, not the person's global history. Human replies and qualified
+positives are separate; positive requires an explicit human evidence record of
+interest in recurring external partnership. All rates expose n/N and observed
+sample limitations. Costs remain unknown without expenses and hourly cost.
+
+Ygor's 2026-10-25 decision supersedes the proposed clone/manual-E1 requirement:
+preserve the existing Apollo sequence, steps and prompts exactly. This candidate
+changes diagnostics to reflect that decision, not the provider configuration.
+S32's pilot-binding experiment is preserved as a separate local patch and is not
+included or configured here. No enrollment, send, commercial CRM write, runtime
+activation or deployment is performed by the collector.
