@@ -114,19 +114,25 @@ def _historical_state(text):
 # Deliberately bounded documentary status phrases, never an eligibility checker.
 # Ordinary business descriptions (e.g. "vende para clientes") do not match.
 _CURRENT_STATE = re.compile(
-    r'\b(?:(?:e|sao|era|eram|continua sendo) (?:um[a]? )?(?:cliente[s]?|concorrente[s]?|bebidas)'
+    r'\b(?:(?:is_verb|nao e|sao|era|eram|continua sendo) (?:um[a]? )?(?:cliente[s]?|concorrente[s]?|bebidas)'
     r'|(?:sem|nenhum|nao (?:ha|tem|possui|existem?)|tem|possui|ha|com) '
     r'(?:negocios? abertos?|exclusoes)'
     r'|(?:nao )?esta excluid[ao]'
     r'|(?:cliente|concorrente|exclusoes):\s*(?:sim|nao|ativo|inativo))\b')
 
 
+def _state_fold(text):
+    # Preserve the accented verb before accent folding: Portuguese conjunction
+    # "e clientes" describes a market and must not become a client-status claim.
+    return _fold(re.sub(r'\bé\b', 'is_verb', text, flags=re.IGNORECASE))
+
+
 def _without_current_state(text):
     """Select literal sentence fragments; originals retain all removed claims."""
-    if not _CURRENT_STATE.search(_fold(text)):
+    if not _CURRENT_STATE.search(_state_fold(text)):
         return [text]
     return [sentence for sentence in re.split(r'(?<=[.!?;])\s+', text)
-            if sentence.strip() and not _CURRENT_STATE.search(_fold(sentence))]
+            if sentence.strip() and not _CURRENT_STATE.search(_state_fold(sentence))]
 
 
 def _item(text, original=None, classification=None):

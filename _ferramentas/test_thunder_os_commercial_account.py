@@ -216,6 +216,15 @@ class CommercialAccountTests(unittest.TestCase):
         self.assertNotIn('Não é bebidas', repr(result['sections']))
         self.assertEqual(result['originals']['tabs']['research'][1], original)
 
+    def test_conjunction_and_clients_is_business_description_not_status(self):
+        for text in ('Mercado: fabricantes e clientes finais no Brasil.',
+                     'Vende componentes para distribuidores e clientes industriais.'):
+            with self.subTest(text=text):
+                self.accounts.docs[0]['tabs']['research'] = [{'text': '**Empresa**'}, {'text': text}]
+                result = self.project()
+                business = next(s['items'] for s in result['sections'] if s['key'] == 'business')
+                self.assertEqual([item['text'] for item in business], [text])
+
     def test_isolated_current_state_claims_only_in_originals(self):
         for claim in ('Não é cliente conhecido.', 'É concorrente.', 'Sem negócio aberto.',
                       'Não possui negócios abertos.', 'Não há exclusões.', 'É cliente atual.'):
