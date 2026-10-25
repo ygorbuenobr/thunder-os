@@ -82,11 +82,12 @@ def _require_exact_copy(step):
 
 
 class NewJourney:
-    def __init__(self, service, apollo=None, checker=None, clock=None, *, template_reader=None, commercial_accounts=None):
+    def __init__(self, service, apollo=None, checker=None, clock=None, *, template_reader=None, commercial_accounts=None, history_reader=None):
         self.service, self.repo = service, service.repository
         self.apollo, self.checker = apollo, checker
         self.template_reader = template_reader
         self.commercial_accounts = commercial_accounts
+        self.history_reader = history_reader
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.approval_service = ApprovalService(service.global_paused)
 
@@ -172,6 +173,29 @@ class NewJourney:
         self._actor(actor)
         with self.repo.transaction():
             return self._view(self._read(ident))
+
+    def history(self, ident, source_key, actor):
+        """Read the bound person's originals without changing the draft or CRM."""
+        self._actor(actor)
+        _require(_text(source_key, 200), 'journey_recipient_required', 404)
+        with self.repo.transaction():
+            row = self._read(ident)
+            leads = [lead for lead in row['rows'] if lead['source_key'] == source_key]
+            contexts = [item.get('qualification_context') for item in row['checks']
+                        if item['source_key'] == source_key]
+        _require(len(leads) == 1, 'journey_recipient_required', 404)
+        _require(len(contexts) == 1 and isinstance(contexts[0], Mapping)
+                 and _text(contexts[0].get('contact_id'), 128)
+                 and _text(contexts[0].get('company_id'), 128)
+                 and isinstance(contexts[0].get('binding_hash'), str)
+                 and re.fullmatch(r'[a-f0-9]{64}', contexts[0]['binding_hash']) is not None,
+                 'journey_identity_unverified', 409)
+        _require(self.history_reader is not None, 'journey_history_unavailable', 503)
+        result = self.history_reader.read(deepcopy(leads[0]), deepcopy(contexts[0]))
+        _require(isinstance(result, Mapping) and result.get('read_only') is True,
+                 'journey_history_unavailable', 503)
+        return {**deepcopy(result), 'journey_id': row['id'], 'source_key': source_key,
+                'journey_version': row['version'], 'external_writes': 0}
 
     def _commercial(self, row, sheet=None):
         if self.commercial_accounts is None:

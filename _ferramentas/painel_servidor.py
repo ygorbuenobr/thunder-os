@@ -1352,6 +1352,14 @@ class Handler(BaseHTTPRequestHandler):
         prefix = '/api/os/v1/new-journey/'
         target = rota.path[len(prefix):] if rota.path.startswith(prefix) else ''
         try:
+            history_match = re.fullmatch(r'([A-Za-z0-9_-]{1,100})/history/([^/]{1,600})', target)
+            if history_match:
+                if self.command != 'GET':
+                    raise Erro('Histórico permite somente leitura.', 405)
+                source_key = unquote(history_match.group(2))
+                if not re.fullmatch(r'[A-Za-z0-9:_-]{1,200}', source_key):
+                    raise Erro('Vínculo de histórico inválido.', 400)
+                return self.responder(200, wizard.history(history_match.group(1), source_key, 'ygor'))
             if self.command == 'GET':
                 if target == 'catalog':
                     return self.responder(200, wizard.catalog())
@@ -1497,6 +1505,8 @@ class Handler(BaseHTTPRequestHandler):
                 'journey_no_eligible_rows': 'Nenhum contato passou por todas as checagens. Confira os motivos por pessoa.',
                 'journey_review_conflict': 'A revisão mudou. Atualize antes de aprovar ou exportar.',
                 'journey_qualification_invalid': 'Confirme a empresa vinculada, os fatos, a fonte pública e a data da qualificação.',
+                'journey_identity_unverified': 'Refaça as checagens para confirmar o vínculo desta pessoa antes de consultar o histórico.',
+                'journey_history_unavailable': 'O histórico desta pessoa está indisponível. As outras consultas continuam disponíveis.',
                 'journey_apollo_text_unverified': 'O texto do Apollo não está comprovadamente igual ao aprovado. Confira os templates e o conteúdo dinâmico.',
             }
             raise Erro(public_errors.get(getattr(error, 'code', ''),
@@ -1553,6 +1563,20 @@ class Handler(BaseHTTPRequestHandler):
             if today is None:
                 raise Erro('Leitura de Hoje indisponivel.', 503)
             return self.responder(200, today.snapshot())
+        preparation = re.fullmatch(r'/api/os/v1/campaigns/([A-Za-z0-9_-]{1,100})/preparation', rota.path)
+        if preparation:
+            if self.thunder_proxy_actor() != 'ygor':
+                raise Erro('Somente Ygor pode consultar a preparação.', 403)
+            if self.command != 'GET' or rota.query:
+                raise Erro('Preparação permite somente leitura sem parâmetros.', 405)
+            reader = getattr(self.server, 'thunder_cadence_preparation', None)
+            if reader is None:
+                raise Erro('Leitura da preparação indisponível.', 503)
+            from thunder_os.approvals import ApprovalError
+            try:
+                return self.responder(200, reader.snapshot(preparation.group(1)))
+            except (ApprovalError, ValueError):
+                raise Erro('Campanha ou preparação indisponível.', 409) from None
         if rota.path in {'/api/os/v1/hermes/capabilities','/api/os/v1/hermes/contacts','/api/os/v1/campaign-scoreboard'}:
             if self.thunder_proxy_actor() != 'ygor':
                 raise Erro('Somente Ygor pode consultar o Hermes.',403)
@@ -2437,6 +2461,18 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
                         InstantlyMembershipReadOnly(), apollo_account_id=APOLLO_TEAM)
                     if runtime is None else None,
                     refusals=RegisteredRefusalRead() if runtime is None else None))
+            from thunder_os.contact_history import ContactHistoryReadonly
+            servidor.thunder_new_journey.history_reader = ContactHistoryReadonly(
+                servidor.thunder_new_journey.checker.hubspot,
+                getattr(servidor, 'thunder_cadence_readonly', None),
+                seqd=servidor.thunder_seqd_console,
+                repo=servidor.thunder_today_readonly.repo)
+            from thunder_os.cadence_preparation import CadencePreparationReadonly
+            from thunder_os.instantly_sequence_readonly import InstantlySequenceReadonly
+            servidor.thunder_cadence_preparation = CadencePreparationReadonly(
+                servidor.thunder_service, journeys=servidor.thunder_new_journey,
+                accounts=servidor.thunder_account_cadence_readonly,
+                instantly=InstantlySequenceReadonly() if runtime is None else None)
             from thunder_os.new_journey_import import NewJourneyImport
             servidor.thunder_new_journey_import = NewJourneyImport(
                 servidor.thunder_new_journey, servidor.thunder_hubspot_console)

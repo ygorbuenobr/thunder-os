@@ -60,3 +60,40 @@ network access. scripts/test_hubspot_readers.py isolates the volatile budget and
 clock per test, preserving the real budget and provider fixtures. Dedicated
 budget tests assert shared pacing, concurrent schema cache and fresh critical
 schema reads. Browser fixtures do not prove a real CRM write or provider send.
+
+## Commercial history and preparation reads
+
+`GET /api/os/v1/new-journey/{draft}/history/{source_key}` is restricted to the
+existing authenticated Ygor actor. The key must belong to that draft and its
+saved company/contact binding. Before returning originals, the reader verifies
+the current HubSpot identity again. Divergence or a missing link does not expose
+another person's records. It reads associated CRM activities directly, without
+requiring cadence membership or fetching all tasks.
+
+Gmail refreshes only exact, hash-checked known threads whose sender is a verified
+contact alias. The current bridge has no recipient search, so discovery remains
+partial even when a known thread is complete. A latest observed outbound is not
+proof that no later reply exists in another thread. CRM activities and thread
+context are not provider delivery receipts. The route performs no state write.
+
+`GET /api/os/v1/campaigns/{campaign}/preparation` shows existing Apollo draft
+prompt inputs, the pinned Instantly campaign's original sequence, and Thunder
+account cadences explicitly bound to that campaign. It does not assign visitor
+account files by name. The Instantly adapter accepts only its pinned workspace
+and campaign GETs; static originals and unresolved dynamic content remain
+separate. The result grants neither approval nor enrollment authority.
+
+## Management and evidence limits
+
+The Jornada's optional management panel consumes the existing campaign
+scoreboard. Receipt-backed reach and human replies are deduplicated by verified
+identity. Partial coverage keeps total values unknown and any available observed
+count separate. Meetings, opportunities, wins and cost require their own source;
+a reply or completed task is not an outcome. Different audiences, periods and
+offers do not establish a winning platform. Suggestions remain proposals for
+human review and do not update campaign rules, the Brain or provider settings.
+
+Reproduce the browser contract without external network using
+`scripts/test_gtm_commercial_panel.cjs` with Playwright from the configured Node
+runtime. Fixtures cover 320/390/1440px, originals, source escaping, partial data,
+request races, safe links and GET-only history/preparation/management reads.

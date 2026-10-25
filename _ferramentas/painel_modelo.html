@@ -459,6 +459,18 @@ body:has(#new-journey:not([hidden])) #hoje-pedido{display:none}
 @media(min-width:900px){.nj-commercial-sections{grid-template-columns:repeat(2,minmax(0,1fr))}.nj-check-signals{grid-template-columns:repeat(2,minmax(0,1fr));column-gap:28px}}
 @media(max-width:700px){.nj-steps{grid-template-columns:repeat(3,minmax(0,1fr))!important}.nj-grid,.nj-sheet,.nj-sources{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:380px){.nj-steps{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
+/* S29: source-backed management and full, read-only contact history. */
+.journey-scoreboard{margin-top:24px;border-block:1px solid var(--line);min-width:0}
+.journey-scoreboard>summary,.journey-scoreboard summary,.nj-contact-history summary{cursor:pointer;min-height:44px;padding-block:12px;overflow-wrap:anywhere}
+.journey-scoreboard>summary{font-weight:600;color:var(--mostarda)}
+.journey-scoreboard article{padding-block:20px;border-top:1px solid var(--line);min-width:0}
+.journey-scoreboard h3{font-size:18px;margin:0}.journey-scoreboard p,.journey-scoreboard li{overflow-wrap:anywhere;white-space:pre-wrap}
+.journey-score-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px 24px;margin-block:20px}
+.journey-score-metrics>div{min-width:0}.journey-score-metrics dt{font-size:13px;color:var(--muted)}.journey-score-metrics dd{margin:6px 0;font-size:21px;font-weight:600;overflow-wrap:anywhere}.journey-score-metrics p{margin:4px 0}
+@media(min-width:900px){.journey-score-metrics{grid-template-columns:repeat(4,minmax(0,1fr))}}
+.journey-scoreboard pre,.nj-contact-history pre{white-space:pre-wrap;overflow-wrap:anywhere;max-width:100%}
+.journey-proposal{border-inline-start:2px solid var(--roxo);padding-inline-start:16px;margin-block:16px}
+.nj-contact-history{padding-block:16px;border-bottom:1px solid var(--line);min-width:0}.nj-contact-history[data-latest-outbound="true"]{border-inline-start:3px solid var(--mostarda);padding-inline-start:16px}.nj-contact-history h3{font-size:17px;overflow-wrap:anywhere;margin:0}.nj-contact-history .msg{overflow-wrap:anywhere}.nj-history-actions{display:flex;flex-wrap:wrap;gap:8px}
 </style>
 
 <header class="topo">
@@ -480,6 +492,12 @@ body:has(#new-journey:not([hidden])) #hoje-pedido{display:none}
   <header class="journey-head"><h2>Jornada</h2><div class="journey-tools"><button type="button" class="btn pri" id="journey-new">+ Nova jornada</button><label class="journey-field" for="journey-campaign">Campanha<select id="journey-campaign"><option value="">Todas · BR</option></select></label><button type="button" class="btn" id="journey-refresh">Atualizar</button></div></header>
   <p class="msg" id="journey-status" role="status" aria-live="polite">Consultando jornada…</p>
   <div id="journey-content" aria-busy="true"><p class="journey-loading">Carregando indicadores e etapas…</p></div>
+  <details class="journey-scoreboard" id="journey-scoreboard"><summary>Placar e próximos movimentos</summary>
+    <p class="msg">Resultados por campanha e caminho, com período e cobertura da fonte. Propostas dependem de revisão humana.</p>
+    <button class="btn" type="button" id="journey-score-refresh">Atualizar placar</button>
+    <p class="msg" id="journey-score-status" role="status" aria-live="polite">Abra para consultar o placar.</p>
+    <div id="journey-score-body" aria-busy="false"></div>
+  </details>
   </div>
   <div class="new-journey" id="new-journey" hidden aria-labelledby="nj-title">
     <header class="journey-head"><h2 id="nj-title" tabindex="-1">Nova jornada</h2><button class="btn" type="button" id="nj-back">← Voltar para a Jornada</button></header>
@@ -2434,9 +2452,9 @@ function journeyEditorEvent(event){
 for(const id of ['journey-dialog','journey-accounts']){for(const event of ['input','click'])$(id).addEventListener(event,journeyEditorEvent);}
 $('journey-close').addEventListener('click',()=>$('journey-dialog').close());
 $('journey-dialog').addEventListener('close',()=>{
-  ++journeyDetailRequest;journeyDetail=null;
+  ++journeyDetailRequest;journeyDetail=null;njHistoryActive=null;journeyPreparationActive=null;
   const original=journeyDetailFocus?.isConnected?journeyDetailFocus:[...$('journey-content').querySelectorAll('[data-journey-open]')].find(button=>button.dataset.journeyOpen===journeyDetailFocus?.dataset.journeyOpen);
-  (original||$('journey-refresh')).focus({preventScroll:true});
+  (original||[...$('journey-score-body').querySelectorAll('[data-campaign-preparation]')].find(button=>button.dataset.campaignPreparation===journeyDetailFocus?.dataset.campaignPreparation)||$('journey-refresh')).focus({preventScroll:true});
 });
 $('journey-refresh').addEventListener('click',()=>carregarJourney(true));
 $('journey-campaign').addEventListener('change',()=>{
@@ -2460,6 +2478,92 @@ $('journey-accounts').addEventListener('keydown',event=>{
   journeyAccountTab=tabs[next].dataset.journeyTab;renderJourneyAccountTab();tabs[next].focus();
 });
 setInterval(()=>{if(!document.hidden&&document.body.dataset.aba==='jornada')carregarJourney(true);},60000);
+// Share only an in-flight GET with Campanhas; never add provider/model calls.
+let campaignScoreboardPending=null,journeyScoreBusy=false,journeyScoreSnapshot=null;
+function readCampaignScoreboard(){
+  if(!campaignScoreboardPending)campaignScoreboardPending=Promise.resolve().then(()=>apiServidor('/api/os/v1/campaign-scoreboard')).finally(()=>{campaignScoreboardPending=null;});
+  return campaignScoreboardPending;
+}
+const journeyScoreMetrics=[['reached','Pessoas alcançadas com recibo'],['responded','Respostas humanas'],['positive','Respostas positivas'],['meetings_scheduled','Reuniões marcadas'],['meetings_held','Reuniões realizadas'],['opportunities','Oportunidades'],['won','Ganhos'],['cost_per_hot','Custo por lead quente']];
+const journeyScoreVisible=()=>$('journey-scoreboard').open&&document.body.dataset.aba==='jornada'&&!$('journey-overview').hidden&&!document.hidden;
+const journeyScoreDate=value=>/^\d{4}-\d{2}-\d{2}$/.test(value||'')?njDate(value):journeyDate(value);
+const journeyScoreReason=value=>({cost_basis_unavailable:'Custo não cadastrado ou sem base comprovada.',outcome_source_unavailable:'Fonte de resultado indisponível nesta consulta.',source_read_incomplete:'Leitura incompleta da fonte.',identity_or_receipt_unavailable:'Identidade ou recibo não comprovado.',period_unavailable:'Período não informado pela fonte.'})[value]||njReadable(value,'Motivo técnico disponível nos detalhes da fonte.');
+const journeyScoreSource=value=>typeof value==='string'?!!value.trim():Array.isArray(value)?value.some(journeyScoreSource):!!value&&typeof value==='object'&&Object.keys(value).length>0;
+const journeyScoreKnown=metric=>typeof metric?.value==='number'&&Number.isFinite(metric.value)&&metric.value>=0&&(metric.value>0||metric.complete===true)&&journeyScoreSource(metric.source);
+function journeyScoreMetric(key,label,metric){
+  const value=journeyScoreKnown(metric)?metric.value.toLocaleString('pt-BR',key==='cost_per_hot'?{style:'currency',currency:'BRL'}:{}):'—';
+  return `<div data-score-metric="${key}"><dt>${label}</dt><dd>${esc(value)}</dd></div>`;
+}
+function journeyScoreEvidence(metrics){
+  const incomplete=journeyScoreMetrics.some(([key])=>!journeyScoreKnown(metrics[key])||metrics[key].complete!==true);
+  return `${incomplete?'<p class="msg">Sem base completa para totalizar. Consulte a fonte.</p>':''}${!journeyScoreKnown(metrics.cost_per_hot)?'<p class="msg">Custo não cadastrado.</p>':''}<details><summary>Fontes, cobertura e motivos das métricas</summary>${journeyScoreMetrics.map(([key,label])=>{const metric=metrics[key];return `<h5>${label}</h5><p class="msg">${metric?.complete===true?'Cobertura completa':metric?.complete===false?'Leitura parcial':'Cobertura não informada'}${metric?.reason?' · '+esc(journeyScoreReason(metric.reason)):''}</p><pre class="journey-original">${esc(JSON.stringify(metric||{value:null,complete:false,reason:'Métrica não fornecida.'},null,2))}</pre>`;}).join('')}</details>`;
+}
+function renderJourneyScoreboard(){
+  const state=journeyScoreSnapshot;if(!state)return;
+  const selected=journeyCampaign(),campaigns=state.campaigns.filter(c=>journeyBR(c.id)&&(!selected||c.id===selected));
+  const target=$('journey-score-body');
+  target.innerHTML=campaigns.map(c=>{
+    const m=c.management||{},metrics=m.metrics||{};
+    const period=m.period||{};
+    const proposals=journeyRows(m.insights).filter(i=>i?.requires_human_approval===true);
+    const old=c.learning?.requires_human_approval===true?c.learning.proposal:null;
+    return `<article data-score-campaign="${esc(c.id)}"><h3>${esc(c.id)}</h3><button class="btn" type="button" data-campaign-preparation="${esc(c.id)}" aria-haspopup="dialog">Ver abordagem e sequência</button><p class="msg">${esc(c.platform||'Plataforma não informada')} · ${esc(c.cadence_path||'Caminho não informado')}</p><p>Período: ${esc(period.start?journeyScoreDate(period.start):'Início não informado')} → ${esc(period.end?journeyScoreDate(period.end):'Fim não informado')}</p><p class="msg">${m.coverage?.complete===true?'Leitura completa do período':m.coverage?.complete===false?'Leitura parcial do período':'Cobertura do período não informada'}</p><dl class="journey-score-metrics">${journeyScoreMetrics.map(([key,label])=>journeyScoreMetric(key,label,metrics[key])).join('')}</dl>${journeyScoreEvidence(metrics)}${journeyRows(c.paths).length?`<details><summary>Resultados por lote e caminho</summary>${c.paths.map(path=>`<section><h4>${esc(path.cadence_path||'Caminho não informado')} · ${path.batch_id?'Lote vinculado na fonte':'Lote não informado'}</h4><p class="msg">Período: ${esc(path.management?.period?.start?journeyScoreDate(path.management.period.start):'Início não informado')} → ${esc(path.management?.period?.end?journeyScoreDate(path.management.period.end):'Fim não informado')}</p><dl class="journey-score-metrics">${journeyScoreMetrics.map(([key,label])=>journeyScoreMetric(key,label,path.management?.metrics?.[key])).join('')}</dl>${journeyScoreEvidence(path.management?.metrics||{})}<details><summary>Vínculo, fonte e cobertura do lote</summary><pre class="journey-original">${esc(JSON.stringify({batch_id:path.batch_id,cadence_path:path.cadence_path,source:path.management?.source,coverage:path.management?.coverage},null,2))}</pre></details></section>`).join('')}</details>`:''}<h4>Próximos movimentos · propostas</h4><p class="msg">Revisão humana obrigatória. Nenhuma mudança de regra foi salva por esta consulta.</p>${proposals.map(i=>`<div class="journey-proposal"><p><b>Proposta para revisão</b></p><p>${esc(i.message)}</p>${i.action?`<p>Próxima ação proposta: ${esc(journeyDescribe(i.action))}</p>`:''}<details><summary>Evidências da proposta</summary><pre class="journey-original">${esc(JSON.stringify({source_ids:i.source_ids,requires_human_approval:i.requires_human_approval},null,2))}</pre></details></div>`).join('')}${old?`<div class="journey-proposal"><p><b>Proposta de aprendizado para revisão</b></p><p>${esc(old.hypothesis)}</p><p>${esc(old.limitation)}</p></div>`:''}${!proposals.length&&!old?'<p class="msg">Sem proposta com evidências suficientes nesta leitura.</p>':''}<details><summary>Fontes, hashes e limites da campanha</summary><pre class="journey-original">${esc(JSON.stringify({source:m.source,coverage:m.coverage,period:m.period,platform:c.platform,cadence_path:c.cadence_path,metrics:c.metrics,learning:c.learning},null,2))}</pre></details></article>`;
+  }).join('')||'<p class="vazio">Nenhum placar disponível para esta seleção BR. Use Atualizar placar para consultar novamente.</p>';
+  // A comparison without a verified campaign scope cannot enter the BR view.
+  const ids=new Set(campaigns.map(c=>c.id));
+  const comparisons=journeyRows(state.comparisons).filter(c=>{
+    const scope=Array.isArray(c?.campaign_ids)?c.campaign_ids:typeof c?.campaign_id==='string'?[c.campaign_id]:[];
+    return scope.length>0&&scope.every(id=>journeyBR(id)&&ids.has(id));
+  });
+  target.insertAdjacentHTML('beforeend',`<details><summary>Comparações e limites da leitura</summary><p class="msg">Públicos, ofertas, períodos e tamanhos de grupo diferentes não comprovam superioridade de um caminho. Nenhum vencedor é inferido pelo painel.</p>${comparisons.map(c=>`<pre class="journey-original">${esc(JSON.stringify(c,null,2))}</pre>`).join('')||'<p class="msg">Nenhuma comparação com escopo comprovado nesta seleção. Consulte período, cobertura e fontes de cada campanha.</p>'}</details>`);
+}
+async function carregarJourneyScoreboard(){
+  if(!journeyScoreVisible()||journeyScoreBusy||!apiServidor)return;
+  journeyScoreBusy=true;$('journey-score-refresh').disabled=true;$('journey-score-body').setAttribute('aria-busy','true');$('journey-score-status').textContent=journeyScoreSnapshot?'Atualizando placar… Os valores abaixo são da consulta anterior.':'Consultando placar…';
+  try{
+    const data=await readCampaignScoreboard();
+    if(data?.read_only!==true||!Array.isArray(data.campaigns))throw Error('Contrato do placar inválido');
+    if(!journeyScoreVisible())return;
+    const changed=JSON.stringify(data)!==JSON.stringify(journeyScoreSnapshot);journeyScoreSnapshot=data;if(changed||!$('journey-score-body').childElementCount)renderJourneyScoreboard();$('journey-score-status').textContent='Placar consultado. Valores parciais e lacunas estão indicados em cada fonte.';
+  }catch(error){if(journeyScoreVisible()){journeyScoreSnapshot=null;$('journey-score-body').replaceChildren();$('journey-score-status').textContent='Não foi possível consultar o placar. Use Atualizar placar para tentar novamente.';}}
+  finally{journeyScoreBusy=false;$('journey-score-refresh').disabled=false;$('journey-score-body').setAttribute('aria-busy','false');}
+}
+$('journey-scoreboard').addEventListener('toggle',()=>{if($('journey-scoreboard').open)carregarJourneyScoreboard();});
+$('journey-score-refresh').addEventListener('click',carregarJourneyScoreboard);
+// The preparation endpoint grants no execution/approval authority.
+let journeyPreparationActive=null;
+function journeyPreparationReview(url,platform){
+  if(platform!=='apollo'||typeof url!=='string'||!/^#jornada\/nova\/[^/?#\s]+\/4$/.test(url))return '';
+  try{const part=url.split('/')[2],id=decodeURIComponent(part);if(!/^[A-Za-z0-9_-]{1,128}$/.test(id))return '';return `<a class="journey-source" href="${esc('#jornada/nova/'+encodeURIComponent(id)+'/4')}" data-preparation-review>Abrir revisão dos prompts ou textos na Nova jornada ↗</a>`;}catch{return '';}
+}
+function journeyPreparationOriginal(value){
+  if(value===null||value===undefined)return '<p class="msg">Original não fornecido pela fonte.</p>';
+  if(typeof value!=='object')return `<pre class="journey-original">${esc(String(value))}</pre>`;
+  if(Array.isArray(value))return value.length?value.map(item=>`<div class="nj-contact-history">${journeyPreparationOriginal(item)}</div>`).join(''):'<p class="msg">Nenhum item fornecido nesta leitura.</p>';
+  return `<dl class="nj-original-fields">${Object.entries(value).map(([key,item])=>`<div><dt>${esc(key)}</dt><dd>${journeyPreparationOriginal(item)}</dd></div>`).join('')}</dl>`;
+}
+function journeyPreparationHTML(data){
+  const contract=data.approval_contract||{};
+  return `<p>Plataforma: ${esc(data.platform||'Não informada')}</p><p class="msg">Somente leitura. Esta consulta não aprova conteúdo nem autoriza envio ou inscrição.</p><p><b>${esc(contract.label||'Contrato de aprovação não informado')}</b></p><p class="msg">Prompts são instruções para gerar conteúdo; sua revisão não comprova aprovação de um e-mail final. Textos finais precisam corresponder ao original de cada toque.</p>${journeyRows(data.drafts).map(d=>`<section><h3>${esc(d.name||'Rascunho da campanha')}</h3><p>${d.approval_mode==='apollo_prompts_v1'?'Revisão de prompts e instruções · e-mail final não aprovado':d.approval_mode==='exact_copy_v1'?'Revisão do texto exato por toque':'Modo de aprovação a conferir no contrato da fonte'}</p><details><summary>Abordagem e sequência originais do rascunho</summary>${journeyPreparationOriginal(d.steps)}</details>${journeyPreparationReview(d.review_url,data.platform)}<details><summary>Estado e referências do rascunho</summary>${journeyPreparationOriginal({id:d.id,approval_mode:d.approval_mode,counts:d.counts,can_export:d.can_export})}</details></section>`).join('')}${data.sequence?`<section><h3>Sequência original da plataforma</h3><details><summary>Ler assuntos, conteúdos e variantes originais</summary>${journeyPreparationOriginal(data.sequence)}</details></section>`:''}${journeyRows(data.accounts).map(account=>`<section><h3>${esc(account.name||'Conta da campanha')}</h3><details><summary>Abordagem original por toque</summary>${journeyPreparationOriginal(account.touches)}</details><details><summary>Fonte da conta</summary>${journeyPreparationOriginal({id:account.id,source:account.source})}</details></section>`).join('')}${!journeyRows(data.drafts).length&&!data.sequence&&!journeyRows(data.accounts).length?'<p class="vazio">Nenhuma abordagem ou sequência disponível nesta leitura. Confira as limitações da fonte ou tente novamente.</p>':''}<section><h3>Limitações da leitura</h3><ul>${journeyRows(data.limitations).map(l=>`<li class="journey-original">${esc(l)}</li>`).join('')||'<li>Nenhuma limitação descrita pelo servidor; isso não comprova cobertura completa.</li>'}</ul><details><summary>Contrato e identidade da consulta</summary>${journeyPreparationOriginal({id:data.id,platform:data.platform,approval_contract:contract,read_only:data.read_only,execution_authorized:data.execution_authorized})}</details></section>`;
+}
+async function abrirCampaignPreparation(id,trigger){
+  if(!apiServidor||!journeyBR(id)||journeyCampaign()&&journeyCampaign()!==id||!journeyRows(journeyScoreSnapshot?.campaigns).some(c=>c.id===id))return;
+  if(journeyPreparationActive?.busy&&journeyPreparationActive.id===id)return;
+  njHistoryActive=null;
+  const request=++journeyDetailRequest,dialog=$('journey-dialog'),active={id,request,busy:true};journeyPreparationActive=active;journeyDetail=null;journeyDetailFocus=trigger;
+  const current=()=>journeyPreparationActive===active&&request===journeyDetailRequest&&dialog.open&&journeyScoreVisible()&&(!journeyCampaign()||journeyCampaign()===id);
+  $('journey-detail-title').textContent='Abordagem e sequência · '+id;$('journey-detail-status').textContent='Consultando originais da campanha…';$('journey-detail-body').replaceChildren();$('journey-detail-body').setAttribute('aria-busy','true');if(!dialog.open)dialog.showModal();
+  try{const data=await apiServidor('/api/os/v1/campaigns/'+encodeURIComponent(id)+'/preparation');if(!current())return;
+    if(data?.id!==id||data.read_only!==true||data.execution_authorized!==false||!Array.isArray(data.drafts)||!Array.isArray(data.accounts)||!Array.isArray(data.limitations))throw Error('Contrato da preparação não confirmado.');
+    $('journey-detail-status').textContent='Originais recebidos para consulta. Confira o tipo de aprovação e as limitações.';$('journey-detail-body').innerHTML=journeyPreparationHTML(data);
+  }catch(error){if(current()){$('journey-detail-status').textContent='Não foi possível consultar a abordagem. Tente novamente.';const retry=document.createElement('button');retry.type='button';retry.className='btn';retry.textContent='Tentar novamente';retry.addEventListener('click',()=>abrirCampaignPreparation(id,trigger));$('journey-detail-body').replaceChildren(retry);}}
+  finally{active.busy=false;if(current())$('journey-detail-body').setAttribute('aria-busy','false');}
+}
+$('journey-score-body').addEventListener('click',event=>{const button=event.target.closest('[data-campaign-preparation]');if(button)abrirCampaignPreparation(button.dataset.campaignPreparation,button);});
+$('journey-dialog').addEventListener('click',event=>{if(event.target.closest('[data-preparation-review]'))$('journey-dialog').close();});
+
+$('journey-campaign').addEventListener('change',()=>{if(journeyPreparationActive&&$('journey-dialog').open)$('journey-dialog').close();if(journeyScoreSnapshot)renderJourneyScoreboard();carregarJourneyScoreboard();});
+setInterval(carregarJourneyScoreboard,60000);
 /* JOURNEY_END */
 /* NEW_JOURNEY_BEGIN: manual preparation only; no dispatch/provider write routes. */
 const njBase='/api/os/v1/new-journey';
@@ -2621,11 +2725,51 @@ function njHubSpotLinks(context){
   const links=[['company_id','0-2','Empresa no HubSpot'],['contact_id','0-1','Contato no HubSpot']].filter(([key])=>/^\d+$/.test(String(context[key]||'')));
   return links.length?`<footer class="nj-account-links" aria-label="Registros vinculados no HubSpot">${links.map(([key,type,label])=>`<a href="https://app.hubspot.com/contacts/51412240/record/${type}/${encodeURIComponent(context[key])}" target="_blank" rel="noopener noreferrer">${label} ↗</a>`).join('')}</footer>`:'';
 }
+// Read-only conversation; never reuse qualification or mutation operations.
+let njHistoryActive=null;
+function njHistoryContext(key){return njRows(nj.draft?.checks).find(c=>c.source_key===key)?.qualification_context||null;}
+function njHistoryInvalidate(){
+  if(!njHistoryActive)return;
+  njHistoryActive=null;++journeyDetailRequest;
+  if($('journey-dialog').open)$('journey-dialog').close();
+}
+function njHistoryHTML(data){
+  const dated=event=>typeof event.date==='string'?Date.parse(event.date):NaN;
+  const events=data.events.map((event,index)=>({...event,_index:index})).sort((a,b)=>{
+    const x=dated(a),y=dated(b);return Number.isFinite(x)&&Number.isFinite(y)?x-y||a._index-b._index:Number.isFinite(x)?-1:Number.isFinite(y)?1:a._index-b._index;
+  });
+  const outbound=events.filter(e=>['outbound','outgoing'].includes(e.direction)&&Number.isFinite(dated(e)));
+  const latest=outbound.at(-1),unknownOutbound=events.some(e=>['outbound','outgoing'].includes(e.direction)&&!Number.isFinite(dated(e)));
+  const complete=data.complete===true&&data.sources.length>0&&data.sources.every(source=>source.complete===true&&!['error','offline','unavailable','partial','disabled','stale'].includes(source.status))&&events.every(e=>e.body_complete===true);
+  const statuses={ok:'Disponível',complete:'Completa',partial:'Leitura parcial',error:'Fonte fora do ar',offline:'Fonte fora do ar',unavailable:'Fonte indisponível',disabled:'Fonte desligada',pending:'Leitura pendente',stale:'Leitura desatualizada'};
+  return `<p>Histórico somente leitura · consultado em ${esc(journeyDate(data.observed_at))}.</p><p class="msg">${complete?'Consulta completa segundo as fontes.':'Leitura parcial ou indisponível. Não é possível concluir ausência de histórico.'} Ler esta conversa não altera checagens nem autoriza abordagem.</p><ul>${data.sources.map(source=>`<li><b>${esc(source.provider||'Fonte não identificada')}</b> · ${esc(statuses[source.status]||'Status não confirmado')} · ${source.complete===true?'cobertura completa':'cobertura parcial ou desconhecida'}${source.reason?`<p>${esc(njReadable(source.reason,'Fonte com limitação de leitura; consulte os detalhes técnicos.'))}</p>`:''}</li>`).join('')||'<li>Fontes não informadas; cobertura desconhecida.</li>'}</ul><p class="msg">Ordem cronológica pelas datas da fonte; eventos sem data ficam ao final. Entrada não confirma resposta humana: mensagens automáticas podem estar incluídas.${unknownOutbound?' Há saída sem data: a última saída global não pode ser confirmada.':''}</p>${events.map(e=>{
+    const isLatest=e===latest,direction=['outbound','outgoing'].includes(e.direction)?'Saída':['inbound','incoming'].includes(e.direction)?'Entrada · autoria humana não confirmada':e.direction==='automated'?'Mensagem automática':'Direção não classificada';
+    return `<article class="nj-contact-history" data-history-event="${esc(e.id)}" data-latest-outbound="${isLatest}"><h3>${isLatest?unknownOutbound?'Última saída com data comprovada':'Última saída observada':direction}</h3><p class="msg">${esc(e.provider||'Fonte não informada')} · ${esc(journeyDate(e.date))} · ${esc(direction)}</p><p>${esc(e.subject||'Sem assunto informado')}</p>${e.body_complete===true?'':'<p class="msg">Original incompleto na fonte. O conteúdo disponível abaixo não comprova leitura integral.</p>'}<details${isLatest?' open':''}><summary>Ler texto original${e.body_complete===true?' integral':' disponível'}</summary><pre class="journey-original">${typeof e.text==='string'&&e.text.length?esc(e.text):'Texto original indisponível na fonte.'}</pre></details>${journeyLink(e.source_url,'Abrir evento na fonte')}<details><summary>Identidade, data e fio do evento</summary><pre class="journey-original">${esc(JSON.stringify({id:e.id,date:e.date,direction:e.direction,thread_id:e.thread_id,body_complete:e.body_complete},null,2))}</pre></details></article>`;
+  }).join('')||`<p class="vazio">${complete?'Nenhum evento retornado na consulta completa das fontes declaradas.':'Nenhum evento disponível nesta leitura parcial. Tente novamente quando as fontes estiverem disponíveis.'}</p>`}<details><summary>Vínculos e fontes da consulta</summary><pre class="journey-original">${esc(JSON.stringify({contact_id:data.contact_id,company_id:data.company_id,observed_at:data.observed_at,sources:data.sources,complete:data.complete,read_only:data.read_only},null,2))}</pre></details>`;
+}
+async function njReadHistory(key,trigger){
+  if(!apiServidor||!nj.id||!njRows(nj.draft?.rows).some(row=>row.source_key===key))return;
+  const context=njHistoryContext(key);if(!context?.contact_id||!context?.company_id)return;
+  if(njHistoryActive?.busy&&njHistoryActive.id===nj.id&&njHistoryActive.key===key)return;
+  const id=nj.id,path=njPath(),request=++journeyDetailRequest,dialog=$('journey-dialog');
+  const active={id,key,request,busy:true};njHistoryActive=active;journeyDetail=null;journeyDetailFocus=trigger;
+  const row=nj.draft.rows.find(row=>row.source_key===key);
+  $('journey-detail-title').textContent='Histórico · '+(row.name||row.email||'Pessoa vinculada');$('journey-detail-status').textContent='Consultando histórico completo…';$('journey-detail-body').replaceChildren();$('journey-detail-body').setAttribute('aria-busy','true');
+  if(!dialog.open)dialog.showModal();
+  const current=()=>njHistoryActive===active&&request===journeyDetailRequest&&nj.id===id&&dialog.open&&!$('new-journey').hidden&&njRows(nj.draft?.rows).some(r=>r.source_key===key)&&String(njHistoryContext(key)?.contact_id)===String(context.contact_id)&&String(njHistoryContext(key)?.company_id)===String(context.company_id);
+  try{
+    const data=await apiServidor(path+'/history/'+encodeURIComponent(key));if(!current())return;
+    if(data?.read_only!==true||data.journey_id!==undefined&&data.journey_id!==id||data.source_key!==undefined&&data.source_key!==key||String(data.contact_id)!==String(context.contact_id)||String(data.company_id)!==String(context.company_id)||!Array.isArray(data.events)||!Array.isArray(data.sources)||typeof data.complete!=='boolean')throw Error('Vínculo ou contrato do histórico inválido.');
+    $('journey-detail-status').textContent=data.complete===true?'Histórico recebido. Confira a cobertura de cada fonte.':'Histórico recebido com cobertura parcial. Contato permanece sujeito às checagens atuais.';
+    $('journey-detail-body').innerHTML=njHistoryHTML(data);
+  }catch(error){if(current()){$('journey-detail-status').textContent='Não foi possível ler o histórico ou confirmar seus vínculos. Tente novamente.';$('journey-detail-body').replaceChildren();const retry=document.createElement('button');retry.type='button';retry.className='btn';retry.textContent='Tentar novamente';retry.addEventListener('click',()=>njReadHistory(key,trigger));$('journey-detail-body').append(retry);}}
+  finally{active.busy=false;if(current())$('journey-detail-body').setAttribute('aria-busy','false');}
+}
 function njRenderChecks(){
   const rows=njRows(nj.draft?.rows),checks=njRows(nj.draft?.checks);
   return `<p>Entenda a conta, confira os sinais atuais e revise as pendências. Cada contato precisa das seis checagens do servidor; estado desconhecido permanece retido.</p><div class="nj-actions"><button class="btn pri" type="button" data-nj-action="check" ${!rows.length||njDirty()||nj.stale?'disabled':''}>Conferir seleção</button></div>${rows.map(row=>{
     const result=checks.find(c=>c.source_key===row.source_key),list=njRows(result?.checks||row.checks),context=result?.qualification_context;
-    return `<article class="nj-record"><header class="journey-row-head"><div><h4>${esc(row.name||[row.first_name,row.last_name].filter(Boolean).join(' ')||row.email||'Identidade não informada')}</h4><p class="msg">${esc(context?.company_name||row.company||row.organization_name||'Empresa não informada')} · ${esc(row.email||'E-mail não revelado')}</p></div><span class="nj-state">${row.eligible===true?'Liberado pelas checagens do servidor':'Retido'}</span></header>${njCommercialHTML(row)}<section class="nj-live-checks" aria-label="Checagens atuais do contato"><div class="nj-checks-header"><div><h5>Checagens atuais</h5><p class="msg">Última checagem salva · use Conferir seleção para atualizar. O histórico da pesquisa não substitui esta leitura.</p>${nj.draft?.updated_at?`<p class="msg">Rascunho atualizado em: ${njDate(nj.draft.updated_at)}</p>`:''}</div>${context?`<button class="btn" type="button" data-nj-review-company="${esc(row.source_key)}">Revisar empresa</button>`:''}</div><div class="nj-check-signals">${Object.keys(njCheckLabels).map(key=>njCheckSignal(key,list.find(c=>c.key===key))).join('')}</div></section><details class="nj-history"><summary>Ver checagens e fontes · diagnóstico completo</summary><p class="msg">Resultados do servidor, com motivos integrais e evidências técnicas.</p><ul>${Object.entries(njCheckLabels).map(([key,label])=>{const c=list.find(c=>c.key===key);return `<li><details><summary>${label} · ${esc(njStatusLabels[c?.status]||njStatusLabels.unknown)}</summary><p>${esc(njReason(c?.reason))}</p><p class="msg">Conferida em: ${njDate(c?.checked_at||c?.date)}</p><details class="nj-technical"><summary>Fonte, IDs, cobertura e observação</summary><pre>${esc(JSON.stringify(c||{},null,2))}</pre></details></details></li>`;}).join('')}</ul><details class="nj-technical"><summary>Identidade e bloqueios técnicos do contato</summary><pre>${esc(JSON.stringify({source_key:row.source_key,qualification_context:context,blockers:row.blockers},null,2))}</pre></details></details>${njImportHTML(row)}${njHubSpotLinks(context)}</article>`;
+    return `<article class="nj-record"><header class="journey-row-head"><div><h4>${esc(row.name||[row.first_name,row.last_name].filter(Boolean).join(' ')||row.email||'Identidade não informada')}</h4><p class="msg">${esc(context?.company_name||row.company||row.organization_name||'Empresa não informada')} · ${esc(row.email||'E-mail não revelado')}</p></div><span class="nj-state">${row.eligible===true?'Liberado pelas checagens do servidor':'Retido'}</span></header>${njCommercialHTML(row)}<section class="nj-live-checks" aria-label="Checagens atuais do contato"><div class="nj-checks-header"><div><h5>Checagens atuais</h5><p class="msg">Última checagem salva · use Conferir seleção para atualizar. O histórico da pesquisa não substitui esta leitura.</p>${nj.draft?.updated_at?`<p class="msg">Rascunho atualizado em: ${njDate(nj.draft.updated_at)}</p>`:''}</div>${context?`<button class="btn" type="button" data-nj-review-company="${esc(row.source_key)}">Revisar empresa</button>`:''}</div>${context?.contact_id&&context?.company_id?`<div class="nj-history-actions"><button class="btn" type="button" data-nj-history="${esc(row.source_key)}" aria-haspopup="dialog">Ler histórico completo</button></div>`:'<p class="msg">Histórico indisponível até confirmar o vínculo entre pessoa e empresa.</p>'}<div class="nj-check-signals">${Object.keys(njCheckLabels).map(key=>njCheckSignal(key,list.find(c=>c.key===key))).join('')}</div></section><details class="nj-history"><summary>Ver checagens e fontes · diagnóstico completo</summary><p class="msg">Resultados do servidor, com motivos integrais e evidências técnicas.</p><ul>${Object.entries(njCheckLabels).map(([key,label])=>{const c=list.find(c=>c.key===key);return `<li><details><summary>${label} · ${esc(njStatusLabels[c?.status]||njStatusLabels.unknown)}</summary><p>${esc(njReason(c?.reason))}</p><p class="msg">Conferida em: ${njDate(c?.checked_at||c?.date)}</p><details class="nj-technical"><summary>Fonte, IDs, cobertura e observação</summary><pre>${esc(JSON.stringify(c||{},null,2))}</pre></details></details></li>`;}).join('')}</ul><details class="nj-technical"><summary>Identidade e bloqueios técnicos do contato</summary><pre>${esc(JSON.stringify({source_key:row.source_key,qualification_context:context,blockers:row.blockers},null,2))}</pre></details></details>${njImportHTML(row)}${njHubSpotLinks(context)}</article>`;
   }).join('')||'<p class="vazio">Importe uma lista ou busque contatos para iniciar a checagem.</p>'}`;
 }
 function njQualificationHTML(){
@@ -2731,6 +2875,7 @@ async function njLoad(){
   finally{if(request===nj.request){nj.busy=false;nj.loading=false;njRender();}}
 }
 function njRoute(raw){
+  if(njHistoryActive)njHistoryInvalidate();
   $('new-journey').hidden=!raw;$('journey-overview').hidden=!!raw;if(!raw)return;
   const match=raw.match(/^jornada\/nova(?:\/([^/]+))?(?:\/([1-5]))?$/);if(!match){mostrarAba('jornada');return;}
   let id=null,step=Number(match[2]||1);
@@ -2767,6 +2912,7 @@ $('nj-prev').addEventListener('click',()=>nj.step===1?$('nj-back').click():njGo(
 $('nj-next').addEventListener('click',()=>nj.step===5?$('nj-back').click():njGo(nj.step+1));
 $('nj-reload').addEventListener('click',njLoad);$('nj-retry').addEventListener('click',njLoad);
 $('new-journey').addEventListener('click',event=>{
+  const historyButton=event.target.closest('[data-nj-history]');if(historyButton){njReadHistory(historyButton.dataset.njHistory,historyButton);return;}
   const confirmImport=event.target.closest('[data-nj-import-confirm]');
   const reconcileImport=event.target.closest('[data-nj-import-reconcile]');
   if(confirmImport||reconcileImport){const p=nj.importPreview;if(!p||nj.busy)return;const b={preview_id:p.id,expected_version:p.version,preview_hash:p.preview_hash};if(confirmImport){if(p.can_execute!==true)return;b.confirm=true;}njImportRequest(confirmImport?'hubspot-execute':'hubspot-reconcile',b);return;}
@@ -3088,7 +3234,7 @@ async function atualizarCadencias(){
 async function carregarPlacarAprendizados(){
   const target=$('cad-learning');
   try{
-    const state=await apiServidor('/api/os/v1/campaign-scoreboard');
+    const state=await readCampaignScoreboard();
     const proposals=(state.campaigns||[]).filter(c=>c.learning?.proposal&&c.learning?.requires_human_approval===true);
     target.innerHTML=proposals.length?proposals.map(c=>`<details><summary>${esc(c.id)} · proposta para sua revisão</summary><p>${esc(c.learning.proposal.hypothesis)}</p><p>${esc(c.learning.proposal.limitation)}</p></details>`).join(''):'<p>Ainda não há base suficiente para propor um aprendizado.</p>';
   }catch(error){target.textContent='Aprendizados não verificados.';}

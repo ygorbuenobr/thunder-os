@@ -84,6 +84,36 @@ class NewJourneyHTTPTests(unittest.TestCase):
         self.assertEqual(self.request('draft-test/company-execute',method='POST',body=execute,nonce=True)[0],200)
         reviewer.execute.assert_called_once_with(execute,'ygor')
 
+    def test_preparation_only_authenticated_get_and_registered_source(self):
+        reader=Mock();reader.snapshot.return_value={'read_only':True,'platform':'apollo','drafts':[]}
+        self.server.thunder_cadence_preparation=reader
+        def request(method='GET', actor='ygor', query=''):
+            connection=HTTPConnection('127.0.0.1',self.server.server_port,timeout=3)
+            self.addCleanup(connection.close)
+            connection.request(method,'/api/os/v1/campaigns/BR-APOLLO-01/preparation'+query,
+                               headers={'X-Authenticated-User':actor})
+            response=connection.getresponse();response.read();return response.status
+        self.assertEqual(request(actor='codex'),403)
+        reader.snapshot.assert_not_called()
+        self.assertEqual(request(),200)
+        reader.snapshot.assert_called_once_with('BR-APOLLO-01')
+        self.assertEqual(request('POST'),405)
+        self.assertEqual(request(query='?execute=true'),405)
+        reader.snapshot.side_effect=ValueError('unregistered')
+        self.assertEqual(request(),409)
+
+    def test_history_is_authenticated_get_of_exact_draft_person(self):
+        self.wizard.history.return_value={'read_only':True,'events':[],'complete':False}
+        self.assertEqual(self.request('draft-test/history/csv%3A1',actor='codex')[0],403)
+        self.wizard.history.assert_not_called()
+        self.assertEqual(self.request('draft-test/history/csv%3A1')[0],200)
+        self.wizard.history.assert_called_once_with('draft-test','csv:1','ygor')
+        for method in ('POST','PATCH','DELETE'):
+            self.assertEqual(self.request('draft-test/history/csv%3A1',method=method,body={})[0],405)
+        self.assertEqual(self.request('draft-test/history/csv%2F1')[0],400)
+        self.wizard.check.assert_not_called()
+        self.wizard.export.assert_not_called()
+
     def test_N09_only_authenticated_ygor_reads_catalog_and_drafts(self):
         self.assertEqual(self.request('catalog')[0], 200)
         self.assertEqual(self.request('draft-test')[0], 200)

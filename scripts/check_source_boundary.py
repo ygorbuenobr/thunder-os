@@ -6,6 +6,7 @@ from pathlib import PurePosixPath
 
 
 ALLOWED_FILES = {
+    "scripts/test_gtm_commercial_panel.cjs",
     "_ferramentas/test_campaign_sheet_support.py",
     "scripts/test_campaign_sheet_panel.cjs",
     "scripts/test_today_panel.cjs",
@@ -83,6 +84,10 @@ ALLOWED_FILES = {
     "_ferramentas/painel_modelo.html",
 }
 ALLOWED_TESTS = {
+    "test_thunder_os_cadence_preparation.py",
+    "test_thunder_os_instantly_sequence_readonly.py",
+    "test_thunder_os_contact_history.py",
+    "test_thunder_os_contact_history_journey.py",
     "test_thunder_os_commercial_account.py",
     "test_thunder_os_registered_refusal_observation.py",
     "test_thunder_os_commercial_journey.py",
