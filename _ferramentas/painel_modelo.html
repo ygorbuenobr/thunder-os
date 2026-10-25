@@ -2293,7 +2293,7 @@ function journeyEditor(key,original,approvalReason,binding=null){
   if(!journeyEdits.has(key))journeyEdits.set(key,{original,text:original,originalSubject:binding?.subject??null,subject:binding?.subject??null,binding,review:null,busy:false,message:'',savedEdited:false});
   const edit=journeyEdits.get(key),edited=edit.text!==edit.original;
   edit.binding=binding;
-  return `<div class="journey-edit" data-journey-editor="${esc(key)}"><label>Rascunho · edição local<textarea rows="9" data-journey-text aria-label="Rascunho para revisar">${esc(edit.text)}</textarea></label>${binding?`<label data-journey-subject-field${edit.subject===null?' hidden':''}>Assunto<input type="text" data-journey-subject maxlength="1000" value="${esc(edit.subject||'')}"></label>`:''}<p class="msg" data-journey-words>${edit.text.trim()?edit.text.trim().split(/\s+/u).length:0} palavras</p><p class="journey-local" data-journey-edited>${edited?'Versão editada localmente. Não salva nem aprovada.':'Texto original. Edições ficam apenas nesta página.'}</p>${binding?`<p class="msg">Toque canônico: <b>${esc(binding.step_id)}</b> · Cadência: ${esc(binding.cadence_id)}</p><div class="acoes"><button type="button" class="btn" data-journey-review>Revisar toque para execução</button><button type="button" class="btn" data-journey-revise disabled>Salvar revisão do toque</button></div><div data-journey-review-body></div><p class="msg" role="status" aria-live="polite" data-journey-operation>${esc(edit.message)}</p>`:`<p class="msg" data-journey-approval-reason>${esc(approvalReason||'Sem vínculo canônico para aprovação. Edição apenas local.')}</p><p class="msg" data-journey-approval>${edited?'Aprovar versão editada':'Aprovar como está'} · indisponível</p>`}<div class="acoes"><button type="button" class="btn" data-journey-reset>Voltar ao original</button><button type="button" class="btn fraco" data-journey-discard>Descartar edição</button></div></div>`;
+  return `<div class="journey-edit" data-journey-editor="${esc(key)}"><label>Rascunho · edição local<textarea rows="9" data-journey-text aria-label="Rascunho para revisar">${esc(edit.text)}</textarea></label>${binding?`<label data-journey-subject-field${edit.subject===null?' hidden':''}>Assunto<input type="text" data-journey-subject maxlength="1000" value="${esc(edit.subject||'')}"></label>`:''}<p class="msg" data-journey-words>${edit.text.trim()?edit.text.trim().split(/\s+/u).length:0} palavras</p><p class="journey-local" data-journey-edited>${edited?'Versão editada localmente. Não salva nem aprovada.':'Texto original. Edições ficam apenas nesta página.'}</p>${binding?`<p class="msg">Toque canônico: <b>${esc(binding.step_id)}</b> · Cadência: ${esc(binding.cadence_id)}</p><div class="acoes"><button type="button" class="btn" data-journey-review>Revisar toque para execução</button><button type="button" class="btn" data-journey-assisted>Preparar pacote para Codex</button><button type="button" class="btn" data-journey-revise disabled>Salvar revisão do toque</button></div><div data-journey-review-body></div><p class="msg" role="status" aria-live="polite" data-journey-operation>${esc(edit.message)}</p>`:`<p class="msg" data-journey-approval-reason>${esc(approvalReason||'Sem vínculo canônico para aprovação. Edição apenas local.')}</p><p class="msg" data-journey-approval>${edited?'Aprovar versão editada':'Aprovar como está'} · indisponível</p>`}<div class="acoes"><button type="button" class="btn" data-journey-reset>Voltar ao original</button><button type="button" class="btn fraco" data-journey-discard>Descartar edição</button></div></div>`;
 }
 function journeySyncEditor(container){
   const edit=journeyEdits.get(container.dataset.journeyEditor);if(!edit)return;
@@ -2332,6 +2332,19 @@ function journeyValidateReview(data,edit){
 function journeyInvalidateCadence(cadence){
   for(const edit of journeyEdits.values())if(edit.binding?.cadence_id===cadence)edit.review=null;
   for(const container of document.querySelectorAll('[data-journey-editor]'))if(journeyEdits.get(container.dataset.journeyEditor)?.binding?.cadence_id===cadence)journeyRenderReview(container);
+}
+async function journeyAssistedPackage(container){
+  const edit=journeyEdits.get(container.dataset.journeyEditor);if(!edit?.binding||edit.busy)return;
+  if(edit.text!==edit.original||edit.subject!==edit.originalSubject){edit.message='Salve e revise as alterações antes de preparar o pacote.';journeySyncEditor(container);return;}
+  edit.busy=true;journeySyncEditor(container);
+  try{
+    const packet=await apiServidor('/api/os/v1/integrations/codex-assisted/preview','POST',{cadence_id:edit.binding.cadence_id,step_id:edit.binding.step_id});
+    if(packet?.schema!=='thunder_codex_assisted_v1'||packet.dispatch_authorized!==false||packet.cadence_id!==edit.binding.cadence_id||packet.step_id!==edit.binding.step_id)throw new Error('Pacote não confirmado.');
+    const blob=new Blob([JSON.stringify(packet,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');
+    a.href=url;a.download='thunder-codex-pacote.json';a.click();URL.revokeObjectURL(url);
+    edit.message='Pacote preparado para revisão no Codex. Não autoriza envio. '+(packet.job_id?'':'Este toque ainda não foi encaminhado para execução.');
+  }catch(error){edit.message=error.message||'Pacote indisponível.';}
+  finally{edit.busy=false;journeySyncEditor(container);}
 }
 async function journeyStepOperation(container,operation){
   const edit=journeyEdits.get(container.dataset.journeyEditor);if(!edit?.binding||edit.busy)return;
@@ -2445,6 +2458,7 @@ function journeyEditorEvent(event){
   if(event.type==='input'&&event.target.matches('[data-journey-confirm],[data-journey-discard-reason]'))journeySyncEditor(container);
   if(event.type==='click'&&event.target.closest('[data-journey-reset],[data-journey-discard]')){edit.text=edit.original;edit.subject=edit.originalSubject;const confirm=container.querySelector('[data-journey-confirm]');if(confirm)confirm.checked=false;journeySyncEditor(container);container.querySelector('textarea').focus();}
   if(event.type==='click'){
+    if(event.target.closest('[data-journey-assisted]')){journeyAssistedPackage(container);return;}
     const action=event.target.closest('[data-journey-review],[data-journey-revise],[data-journey-approve],[data-journey-discard-step]');
     if(action)journeyStepOperation(container,action.hasAttribute('data-journey-review')?'review':action.hasAttribute('data-journey-revise')?'revise':action.hasAttribute('data-journey-approve')?'approve':'discard');
   }

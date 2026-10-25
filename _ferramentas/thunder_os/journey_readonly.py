@@ -286,10 +286,14 @@ class JourneyReadonly:
 
     def _effects(self):
         with self.repo._connect() as con:
-            rows = con.execute('SELECT payload,state,receipt_ref FROM thunder_effect_jobs ORDER BY id LIMIT 10001').fetchall()
+            rows = con.execute('SELECT id,payload,state,receipt_ref FROM thunder_effect_jobs ORDER BY id LIMIT 10001').fetchall()
         if len(rows) > 10000:
             raise TodayError('journey_effect_read_limit', 503)
-        return [{**dict(row), 'payload': json.loads(row['payload'])} for row in rows]
+        assisted = {row['id']: row for row in self.repo.list_state('codex_assisted')}
+        return [{**dict(row), 'payload': json.loads(row['payload']),
+                 'assisted_evidence': {k: assisted[row['id']].get(k) for k in
+                     ('verification','attempt_attribution','limitation')} if row['id'] in assisted else None}
+                for row in rows]
 
     @staticmethod
     def _validate_campaign(campaign):
@@ -624,6 +628,10 @@ class JourneyReadonly:
                 blocks.sort(key=lambda b: b.get('date') or '~')
                 related = [e for e in effects or [] if e['payload'].get('cadence_id') == canonical_id
                            and (e['payload'].get('step') or {}).get('id') == sid]
+                for effect in related:
+                    evidence = effect.get('assisted_evidence')
+                    if evidence and evidence.get('attempt_attribution') == 'operator_reported':
+                        blocks.append(_block(evidence['limitation'], label='Recibo da execução assistida'))
                 editable = (effects is not None and cadence_row.get('status') in {'ready_for_review', 'approved'}
                     and step.get('status') in {'draft', 'approved'} and not step.get('discarded')
                     and not any(e.get('receipt_ref') or e.get('state') != 'failed' for e in related))

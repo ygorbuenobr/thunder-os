@@ -6,6 +6,9 @@ from pathlib import PurePosixPath
 
 
 ALLOWED_FILES = {
+    "scripts/codex_assisted_runner.cjs",
+    "scripts/test_codex_assisted_runner.cjs",
+    "_ferramentas/test_thunder_os_codex_assisted.py",
     "scripts/test_gtm_commercial_panel.cjs",
     "_ferramentas/test_campaign_sheet_support.py",
     "scripts/test_campaign_sheet_panel.cjs",

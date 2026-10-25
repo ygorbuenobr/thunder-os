@@ -75,6 +75,11 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
         let data = [];
         const send = value => route.fulfill({contentType: 'application/json', body: JSON.stringify(value)});
         const failure = () => route.fulfill({status: 503, contentType: 'application/json', body: '{}'});
+        if (url.pathname === '/api/os/v1/integrations/codex-assisted/preview') {
+          assert.equal(request.method(),'POST');assert.equal(request.headers()['x-thunder-nonce'],'fixture-nonce');
+          const body=request.postDataJSON();
+          return send({schema:'thunder_codex_assisted_v1',dispatch_authorized:false,...body,job_id:null});
+        }
         if (url.pathname.startsWith('/api/os/v1/journey/steps/')) {
           assert.equal(canonical, true, 'Raw sources cannot write');
           assert.equal(request.method(), 'POST');
@@ -424,6 +429,12 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
       await canonicalEditor.locator('[data-journey-confirm]').waitFor();
       assert.match(await canonicalEditor.locator('[data-journey-review-body]').innerText(), /BR-UI-FIXTURE[\s\S]*fixture-v1[\s\S]*rules-fixture-v1/);
       assert.equal(await canonicalEditor.locator('[data-journey-approve]').isDisabled(), true);
+      const downloadPromise=page.waitForEvent('download');
+      await canonicalEditor.locator('[data-journey-assisted]').click();
+      const packetDownload=await downloadPromise;assert.equal(packetDownload.suggestedFilename(),'thunder-codex-pacote.json');
+      await page.waitForFunction(()=>document.querySelector('#journey-detail-body [data-journey-operation]').textContent.includes('Não autoriza envio'));
+      assert.equal(requests.filter(r=>r.path.includes('/codex-assisted/')&&!r.path.endsWith('/preview')).length,0,'Preparing package never claims or dispatches');
+
       await canonicalEditor.locator('[data-journey-confirm]').check();
       await page.screenshot({path: path.join(output, `canonical-review-${viewport.width}.png`)});
       await canonicalEditor.locator('[data-journey-approve]').click();

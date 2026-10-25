@@ -1865,6 +1865,25 @@ class Handler(BaseHTTPRequestHandler):
             raise Erro('Rota Thunder OS inválida', 405)
         actor = self.thunder_actor()
         body = self.corpo()
+        if rota.path.startswith('/api/os/v1/integrations/codex-assisted/'):
+            if actor != 'ygor' or rota.query or not isinstance(body, dict):
+                raise Erro('Integração assistida não autorizada.', 403)
+            assisted = getattr(self.server, 'thunder_codex_assisted', None)
+            if assisted is None:
+                raise Erro('Integração assistida indisponível.', 503)
+            action = rota.path.rsplit('/', 1)[-1]
+            fields = {'preview': {'cadence_id','step_id'},
+                      'claim': {'cadence_id','step_id','review_hash'},
+                      'dispatch': {'job_id','ticket_hash'},
+                      'receipt-preview': {'job_id','receipt'},
+                      'receipt-confirm': {'job_id','receipt','review_hash'}}
+            if action not in fields or set(body) != fields[action] or any(not isinstance(v,str) for v in body.values()):
+                raise Erro('Pacote assistido inválido.')
+            if action in {'claim','dispatch'} and (not external_effects_enabled() or restricted_mode()):
+                raise Erro('Execução assistida desabilitada.', 403)
+            method = {'preview': assisted.preview, 'claim': assisted.claim, 'dispatch': assisted.dispatch,
+                      'receipt-preview': assisted.receipt_preview, 'receipt-confirm': assisted.receipt_confirm}[action]
+            return self.responder(200, method(**body))
         if rota.path.startswith('/api/os/v1/integrations/thunder-email/'):
             if actor != 'ygor' or rota.query or not isinstance(body, dict):
                 raise Erro('Operação Thunder email não autorizada.', 403)
@@ -2426,6 +2445,8 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
                 external_pause_enabled=False)
             from thunder_os.thunder_email_runtime import configured_cycle
             servidor.thunder_email_cycle = configured_cycle(repository)
+            from thunder_os.codex_assisted import configured_assisted
+            servidor.thunder_codex_assisted = configured_assisted(servidor.thunder_service)
             from thunder_os.linkedin_preparation import LinkedInPreparation
             servidor.thunder_linkedin_preparation=LinkedInPreparation(CampaignRegistry(repository))
             from thunder_os.campaign_sources import CampaignSources
