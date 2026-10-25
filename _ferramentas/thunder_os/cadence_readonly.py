@@ -387,6 +387,8 @@ class _ReadSession:
         except hubspot_read_budget.HubSpotReadBudgetError as exc:
             raise CadenceReadonlyError(exc.code, exc.status) from None
         except Exception:
+            if self.adapter.monotonic() >= self.deadline:
+                raise CadenceReadonlyError("read_budget_exhausted") from None
             raise CadenceReadonlyError("provider_read_failed") from None
         if self.adapter.monotonic() >= self.deadline:
             raise CadenceReadonlyError("read_budget_exhausted")

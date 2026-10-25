@@ -226,3 +226,17 @@ class CleanupTests(unittest.TestCase):
    with self.assertRaisesRegex(ValueError,'hunter_busy'):collector.snapshot({},[])
    self.assertLess(time.monotonic()-started,0.8)
   finally:release.set();worker.join()
+
+class DeadlineClassificationTests(unittest.TestCase):
+ def test_transport_timeout_at_deadline_is_resumable_budget(self):
+  from thunder_os.cadence_readonly import HubSpotReadonlyAdapter
+  clock=[0];budget=Mock()
+  def exhausted(*args):clock[0]=8;raise TimeoutError('synthetic transport timeout')
+  budget.call.side_effect=exhausted
+  session=HubSpotReadonlyAdapter(lambda:'synthetic-token',monotonic=lambda:clock[0],budget_seconds=8,read_budget=budget).session()
+  with self.assertRaisesRegex(CadenceReadonlyError,'read_budget_exhausted'):session.call('GET','/crm/v3/pipelines/deals')
+ def test_non_deadline_transport_error_remains_terminal(self):
+  from thunder_os.cadence_readonly import HubSpotReadonlyAdapter
+  budget=Mock();budget.call.side_effect=RuntimeError('synthetic')
+  session=HubSpotReadonlyAdapter(lambda:'synthetic-token',monotonic=lambda:0,budget_seconds=8,read_budget=budget).session()
+  with self.assertRaisesRegex(CadenceReadonlyError,'provider_read_failed'):session.call('GET','/crm/v3/pipelines/deals')
