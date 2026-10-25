@@ -389,6 +389,20 @@ class ManagementScoreboardTests(unittest.TestCase):
         self.assertIsNone(result['comparisons'][2]['offer'])
         self.assertEqual(result['comparisons'][2]['metadata_reasons']['offer'], 'offer_unavailable')
 
+    def test_codex_local_registry_and_explicit_thunder_share_one_path(self):
+        snapshot = self.snapshot(tasks=[self.task('one', '1', batch_id='batch-1'),
+            self.task('two', '2', cadence_path='thunder', batch_id='batch-1')],
+            registry={'id': 'A', 'platform': 'codex_local'})
+        result = self.board(snapshot).snapshot()
+        campaign = result['campaigns'][0]
+        self.assertEqual(campaign['platform'], 'codex_local')
+        self.assertEqual(campaign.get('cadence_path'), 'thunder')
+        self.assertEqual(len(campaign['paths']), 1)
+        path = campaign['paths'][0]
+        self.assertEqual((path['cadence_path'], path['batch_id']), ('thunder', 'batch-1'))
+        self.assertEqual(path['management']['metrics']['reached']['value'], 2)
+        self.assertEqual(result['comparisons'][0]['cadence_path'], 'thunder')
+
     def test_paths_and_batches_do_not_borrow_other_evidence(self):
         tasks = [self.task('thunder', batch_id='batch-1'),
                  self.task('apollo', '2', cadence_path='apollo', batch_id='batch-2')]

@@ -65,7 +65,7 @@ def _path(row, fallback=None):
         provider = _mapping(row.get('source')).get('provider')
         platform = provider if provider in ('apollo', 'instantly') else fallback
     return {'apollo': 'apollo', 'instantly': 'instantly',
-            'thunder_os': 'thunder', 'thunder': 'thunder'}.get(platform) if _text(platform) else None
+            'codex_local': 'thunder', 'thunder_os': 'thunder', 'thunder': 'thunder'}.get(platform) if _text(platform) else None
 
 
 def _receipt_key(receipt):
