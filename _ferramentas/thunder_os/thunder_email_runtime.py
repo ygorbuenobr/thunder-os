@@ -232,7 +232,7 @@ class ThunderEmailCycle:
         job,cadence,context,binding=before
         step=job['payload']['step'];contact=cadence.get('hubspot_contact_id')
         require(isinstance(contact,str) and re.fullmatch(r'[1-9][0-9]{0,29}',contact),'gmail_canonical_contact_required')
-        event=self.reader.read_sent_event(receipt,{'mailbox':MAILBOX,'to':step['recipient'],'subject':step['subject'],'content':step['content']})
+        event=self.reader.read_bound_sent_event(receipt)
         require(self.reader._binding(receipt)==before,'gmail_receipt_binding_changed')
         event['source'].update(campaign_id=context['campaign_id'],external_campaign_id=context['campaign_id'])
         plan=plan_email(event,contact,source_validator=gmail_source)
@@ -257,8 +257,7 @@ class ThunderEmailCycle:
                 and review['actor']=='ygor' and review['human_reply'] is True,'gmail_human_review_required')
         before=self.reader._binding(receipt)
         job,cadence,context,_=before
-        outgoing=self.reader.read_sent_event(receipt,{'mailbox':MAILBOX,'to':job['payload']['step']['recipient'],
-            'subject':job['payload']['step']['subject'],'content':job['payload']['step']['content']})
+        outgoing=self.reader.read_bound_sent_event(receipt)
         response=self.client.conversation(thread_id);thread=response.get('thread',{})
         require(response.get('mailbox')==MAILBOX and thread.get('id')==thread_id,'gmail_thread_mismatch')
         events=[ContactHistoryReadonly._gmail_event(m,thread_id,{outgoing['lead_email']}) for m in thread.get('messages',[])]

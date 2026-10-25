@@ -23,7 +23,7 @@ class EmailReadbackError(ValueError):
 
 def _readonly_request(method, path, body, headers, timeout):
     _require(method == 'GET' and body is None and
-             (path == '/v1/status' or re.fullmatch(r'/v1/messages/[a-f0-9]{1,64}', path)),
+             (path == '/v1/status' or re.fullmatch(r'/v1/(?:messages|threads)/[a-f0-9]{1,64}', path)),
              'email_route_blocked')
     return _seqd_request(method, path, None, headers, min(timeout, 5))
 
@@ -121,7 +121,7 @@ class GmailReceiptReader:
         self.repository = repository
         self.client = client if client is not None else SEQDClient(request=_readonly_request)
 
-    def read_message(self, receipt_ref):
+    def read_message(self, receipt_ref, *, reply_metadata=False):
         """Observe one message without requiring or creating an internal job."""
         identifier = _receipt_id(receipt_ref)
         try:
@@ -151,8 +151,27 @@ class GmailReceiptReader:
             _require(sender == MAILBOX, 'email_sender_mismatch')
             subject = _text(observed.get('subject'), 2048)
             _require(not any(ord(c) < 32 or ord(c) == 127 for c in subject))
+            metadata = {}
+            if reply_metadata:
+                headers = message.get('payload', {}).get('headers') if 'payload' in message else message.get('headers')
+                _require('payload' in message or message.get('headers_complete') is True, 'email_reply_headers_incomplete')
+                _require(isinstance(headers,list) and len(headers)<=500,'email_reply_headers_incomplete')
+                selected = {}
+                for item in headers:
+                    _require(isinstance(item,dict) and isinstance(item.get('name'),str) and isinstance(item.get('value'),str),'email_reply_headers_invalid')
+                    name,value=item['name'].lower(),item['value']
+                    if name in {'message-id','in-reply-to','references'}:
+                        _require(name not in selected and len(value)<=8192 and not any(ord(c)<32 or ord(c)==127 for c in value),'email_reply_headers_ambiguous')
+                        selected[name]=value
+                mid=selected.get('message-id','')
+                _require(observed.get('message_id') in (None,mid),'email_reply_headers_mismatch')
+                _require(re.fullmatch(r'<[^<>\s]{1,500}>',mid),'email_reply_message_id_invalid')
+                thread=message.get('thread_id',message.get('threadId'))
+                _require(isinstance(thread,str) and re.fullmatch(r'[a-f0-9]{1,64}',thread),'email_reply_thread_invalid')
+                metadata={'source_thread_id':thread,'source_message_id':mid,
+                          'source_in_reply_to':selected.get('in-reply-to',''),'source_references':selected.get('references','')}
             return {'id': identifier, 'mailbox': response['mailbox'], 'from': sender, 'to': target,
-                    'subject': subject,
+                    'subject': subject, **metadata,
                     'content': _text(observed.get('body'), 65536), 'sent': True,
                     **({'source_message_id':observed['message_id']} if observed.get('message_id') is not None else {}),
                     **({'source_date':observed['date']} if observed.get('date') is not None else {})}
@@ -190,6 +209,19 @@ class GmailReceiptReader:
                 'time_source':'provider_message_date_header', 'receipt_ref':receipt_ref,
                 'scope':'sent_copy_not_delivery', 'read_only':True, 'external_writes':0}
 
+    def read_bound_sent_event(self, receipt_ref):
+        before=self._binding(receipt_ref);job=before[0];step=job['payload']['step']
+        assisted=self.repository.get_state('codex_assisted',job['id']) or {}
+        contract=assisted.get('ticket',{}).get('reply_contract')
+        content=step['content']
+        if contract:
+            _require(assisted.get('phase')=='confirmed','email_followup_not_confirmed')
+            content=verify_followup(self.read_message(receipt_ref,reply_metadata=True),contract,step['content'])
+        event=self.read_sent_event(receipt_ref,{'mailbox':MAILBOX,'to':step['recipient'],'subject':step['subject'],'content':content})
+        _require(self._binding(receipt_ref)==before,'email_binding_changed')
+        if contract:event.update(approved_new_text=step['content'],quote_source_id=contract['message_id'])
+        return event
+
     def _binding(self, receipt_ref):
         identifier = _receipt_id(receipt_ref)
         aliases = {'gmail:'+identifier, 'email:gmail:'+identifier}
@@ -223,6 +255,10 @@ class GmailReceiptReader:
         try:
             before = self._binding(receipt_ref)
             message = self.read_message(receipt_ref)
+            assisted=self.repository.get_state('codex_assisted',before[0]['id']) or {}
+            if assisted.get('ticket',{}).get('reply_contract'):
+                event=self.read_bound_sent_event(receipt_ref)
+                message['content']=event['approved_new_text']
             _require(self._binding(receipt_ref) == before, 'email_binding_changed')
             step = before[0]['payload']['step']
             return {'target': message['to'], 'subject': message['subject'],
@@ -237,3 +273,17 @@ def configured_email_readers(repository, *, read_enabled=None, client=None):
     if read_enabled is None:
         read_enabled = os.environ.get('THUNDER_OS_SEQD_READ_ENABLED') == 'true'
     return {'email': GmailReceiptReader(repository, client)} if read_enabled is True else {}
+
+
+def followup_body(contract,new_text):
+    _require(isinstance(contract,dict) and contract.get('version')==1,'email_followup_contract_invalid')
+    return new_text+'\n\nOn '+contract['source_date']+', '+MAILBOX+' wrote:\n'+'\n'.join('> '+line for line in contract['original_text'].split('\n'))
+
+
+def verify_followup(message,contract,new_text):
+    expected=followup_body(contract,new_text)
+    _require(message.get('source_thread_id')==contract['thread_id']
+        and message.get('source_in_reply_to')==contract['rfc_message_id']
+        and message.get('source_references')==contract['rfc_message_id'], 'email_followup_thread_mismatch')
+    _require(message.get('content')==expected,'email_followup_quote_mismatch')
+    return expected

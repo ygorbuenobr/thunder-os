@@ -11,7 +11,12 @@ class AssistedTests(unittest.TestCase):
   email_fixtures.ThunderEmailTests.setUp(self)
   scenario=ledger_fixtures.EvalTrajectoryTests();scenario.setUp();self.addCleanup(scenario.doCleanups)
   self.ledger=scenario.ledger;self.worker.ledger=self.ledger;self.cycle.ledger=self.ledger
-  self.assisted=CodexAssisted(self.service,self.ledger,reader=self.reader,enabled=True,policy_loader=lambda:deepcopy(self.policy))
+  import time
+  from datetime import datetime,timezone
+  from email.utils import format_datetime
+  fixture_now=int(time.time());self.policy.update(issued_at=fixture_now-1,expires_at=fixture_now+250)
+  self.mail.date=format_datetime(datetime.fromtimestamp(fixture_now,timezone.utc))
+  self.assisted=CodexAssisted(self.service,self.ledger,reader=self.reader,enabled=True,policy_loader=lambda:deepcopy(self.policy),clock=lambda:fixture_now)
   self.mail.envelope={'to':self.step['recipient'],'subject':self.step['subject'],'body':self.step['content'],'thread_id':None}
  def packet(self):return self.assisted.preview('batch-1','s1')
  def claim(self):
@@ -98,7 +103,95 @@ class AssistedTests(unittest.TestCase):
    try:return self.assisted.claim('batch-1','s1',p['review_hash'])['dispatch_authorized']
    except ValueError:return False
   with ThreadPoolExecutor(max_workers=2) as pool:self.assertEqual(sorted(pool.map(attempt,range(2))),[False,True])
+ def followup(self):
+  from thunder_os.email_readback import followup_body
+  from thunder_os.models import payload_hash
+  import time
+  from datetime import datetime,timezone
+  from email.utils import format_datetime
+  self.mail.date=format_datetime(datetime.now(timezone.utc))
+  self.claim();p=self.assisted.receipt_preview(self.job['id'],'gmail:abc123')
+  self.assisted.receipt_confirm(self.job['id'],'gmail:abc123',p['review_hash'])
+  e1=deepcopy(self.mail.read('abc123'));m=e1['message'];m['headers_complete']=True
+  m['headers']=[{'name':'Message-ID','value':m['message_id']}]
+  messages={'abc123':e1}
+  self.mail.read=lambda mid:deepcopy(messages[mid])
+  fixed_time=str(int(time.time()*1000))
+  def thread(tid):
+   rows=[]
+   for mid,response in messages.items():
+    m=response['message'];rows.append({'id':mid,'thread_id':tid,'from':m['from'],'to':m['to'],
+      'subject':m['subject'],'cc':'','bcc':'','labelIds':['SENT'],
+      'internal_date':fixed_time,'bodies':{'text':m['body']},'complete':True,'coverage':{'reasons':[]}})
+   return {'mailbox':e1['mailbox'],'status':'ok','thread':{'id':tid,'messages':rows,'complete':True,'truncated':False,'coverage':{'reasons':[]}}}
+  self.mail.conversation=thread
+  c=self.repo.get_state('cadence','batch-1');c['steps'][1]['subject']='Re: '+self.step['subject']
+  c['steps'][1]['content']='Synthetic E2 new text.\n\nNo real recipient.'
+  c['steps'].append({**c['steps'][1],'id':'s3','order':3,'predecessor_id':'s2','subject':'Synthetic E3 never sent','content':'Synthetic blocked follow-up.'})
+  self.repo.put_state('cadence','batch-1',c)
+  email_fixtures.CampaignConfirmationTests.approve(self)
+  second=self.service.dispatch_step('batch-1','s2','ygor');step=second['payload']['step']
+  self.policy.update(step_id='s2',effect_key=second['effect_key'],subject=step['subject'],content_hash=payload_hash(step['content']))
+  packet=self.assisted.preview('batch-1','s2');self.policy['packet_review_hash']=packet['review_hash']
+  def observed():
+   copy=deepcopy(e1);m=copy['message'];m.update(id='abc125',date=format_datetime(datetime.now(timezone.utc)),subject=step['subject'],body=followup_body(packet['reply_contract'],step['content']),message_id='<synthetic-e2@example.invalid>')
+   m['headers']=[{'name':'Message-ID','value':m['message_id']},{'name':'In-Reply-To','value':packet['reply_contract']['rfc_message_id']},{'name':'References','value':packet['reply_contract']['rfc_message_id']}]
+   messages['abc125']=copy
+  return packet,second,messages,observed
+ def test_e2_full_chain_exact_quote_thread_crm_and_reply_stop(self):
+  packet,second,messages,observed=self.followup()
+  self.assertEqual(packet['payload']['reply_message_id'],'abc123')
+  ticket=self.assisted.claim('batch-1','s2',packet['review_hash']);self.assisted.dispatch(second['id'],ticket['ticket_hash'])
+  observed() # synthetic provider's complete sent copy, no network
+  p=self.assisted.receipt_preview(second['id'],'gmail:abc125');self.assisted.receipt_confirm(second['id'],'gmail:abc125',p['review_hash'])
+  plan=self.cycle.prepare_email('gmail:abc125');self.assertIn('On ',plan['properties']['hs_email_text'])
+  self.cycle.log_email(plan);self.cycle.log_email(plan);self.assertEqual(len(self.crm.writes),1)
+  self.assertEqual(self.reader.readback('gmail:abc125')['content'],second['payload']['step']['content'])
+  third=self.service.dispatch_step('batch-1','s3','ygor')
+  prior=self.mail.conversation
+  def reply(tid):
+   response=prior(tid);m=deepcopy(response['thread']['messages'][-1]);m.update(id='abc126',from_=None)
+   m['from']=self.step['recipient'];m['to']=response['mailbox'];m['labelIds']=['INBOX'];m['bodies']={'text':'Synthetic response: stop.'};response['thread']['messages'].append(m);return response
+  self.mail.conversation=reply
+  p=self.cycle.preview_reply('gmail:abc125','def456','abc126')
+  self.cycle.receive_reply('gmail:abc125','def456','abc126',review={'actor':'ygor','human_reply':True,'message_hash':p['message_hash']})
+  self.assertEqual(self.repo.get_state('cadence','batch-1')['status'],'paused_reply')
+  self.worker.process_one();self.assertEqual(self.repo.effect(third['id'])['state'],'failed')
+  self.assertEqual(self.repo.get_state('cadence','batch-1')['steps'][2]['status'],'skipped_reply')
+  with self.assertRaises(ValueError):self.assisted.dispatch(second['id'],ticket['ticket_hash'])
+ def test_e2_missing_packet_approval_blocks(self):
+  packet,_,_,_=self.followup();self.policy.pop('packet_review_hash')
+  with self.assertRaisesRegex(ValueError,'packet_not_approved'):self.assisted.claim('batch-1','s2',packet['review_hash'])
+ def test_e2_response_between_claim_and_dispatch_blocks(self):
+  packet,second,messages,observed=self.followup();ticket=self.assisted.claim('batch-1','s2',packet['review_hash']);observed()
+  with self.assertRaisesRegex(ValueError,'thread_changed_or_response'):self.assisted.dispatch(second['id'],ticket['ticket_hash'])
+ def test_e2_packet_revoked_during_final_history_read(self):
+  packet,second,_,_=self.followup();ticket=self.assisted.claim('batch-1','s2',packet['review_hash'])
+  original=self.mail.conversation
+  def revoked(tid):
+   data=original(tid);self.policy['packet_review_hash']='0'*64;return data
+  self.mail.conversation=revoked
+  with self.assertRaisesRegex(ValueError,'packet_not_approved'):self.assisted.dispatch(second['id'],ticket['ticket_hash'])
+  self.assertEqual(self.repo.get_state('codex_assisted',second['id'])['phase'],'issued')
+ def test_e2_bad_thread_headers_or_quote_never_confirm(self):
+  packet,second,messages,observed=self.followup();ticket=self.assisted.claim('batch-1','s2',packet['review_hash']);self.assisted.dispatch(second['id'],ticket['ticket_hash']);observed()
+  original=deepcopy(messages['abc125'])
+  for change in ('thread','header','quote','new_text','duplicate_header'):
+   messages['abc125']=deepcopy(original);m=messages['abc125']['message']
+   if change=='thread':m['thread_id']='bad123'
+   elif change=='header':m['headers'][1]['value']='<wrong@example.invalid>'
+   elif change=='quote':m['body']+='\n> injected'
+   elif change=='new_text':m['body']='changed'+m['body']
+   else:m['headers'].append(deepcopy(m['headers'][1]))
+   with self.subTest(change=change),self.assertRaises(ValueError):self.assisted.receipt_preview(second['id'],'gmail:abc125')
+  self.assertEqual(self.repo.effect(second['id'])['state'],'uncertain')
+ def test_e2_partial_thread_blocks_preview(self):
+  _,_,_,_=self.followup();prior=self.mail.conversation
+  def partial(tid):
+   d=prior(tid);d['thread']['complete']=False;return d
+  self.mail.conversation=partial
+  with self.assertRaisesRegex(ValueError,'coverage_incomplete'):self.assisted.preview('batch-1','s2')
  def test_followup_has_no_false_threading_contract(self):
-  with self.assertRaisesRegex(ValueError,'first_email_only'):self.assisted.preview('batch-1','s2')
+  with self.assertRaisesRegex(ValueError,'predecessor_unconfirmed'):self.assisted.preview('batch-1','s2')
 
 if __name__=='__main__':unittest.main()
