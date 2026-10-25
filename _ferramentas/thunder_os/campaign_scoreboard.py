@@ -218,11 +218,42 @@ def _management(row, snapshot, replies, *, path=None, batch=None, scoped=False):
     }
     for name, people in (('reached', reached), ('responded', responded), ('positive', positives)):
         metrics[name]['person_ids'] = sorted(people)
-    # No current reader supplies attributed scheduled/held/deal or cost proofs.
-    # Neither meeting tasks nor a classification such as agenda/price is proof.
-    for name in ('meetings_scheduled', 'meetings_held', 'opportunities', 'won', 'cost_per_hot'):
-        metrics[name] = {'value': None, 'source': [], 'complete': False,
-                         'reason': 'cost_basis_unavailable' if name == 'cost_per_hot' else 'outcome_source_unavailable'}
+    # These are missing reader contracts, not an observed empty result set.
+    # Timeline meetings are contact context; follow-up deals only cover open
+    # records due today. Neither provides historical campaign attribution.
+    # A CRM field/enum existing does not establish its mapping to this registry.
+    outcome_contracts = {
+        'meetings_scheduled': (
+            'meeting_campaign_attribution_unavailable',
+            ['historical_meeting_campaign_binding', 'confirmed_scheduled_time_semantics',
+             'meeting_read_population_period_coverage'],
+            'Confirmar o vínculo histórico da reunião à campanha e a data que define reunião marcada.'),
+        'meetings_held': (
+            'meeting_campaign_attribution_unavailable',
+            ['historical_meeting_campaign_binding', 'confirmed_meeting_outcome_semantics',
+             'meeting_read_population_period_coverage'],
+            'Confirmar o vínculo histórico da reunião à campanha e qual estado comprova sua realização.'),
+        'opportunities': (
+            'opportunity_definition_and_campaign_attribution_unverified',
+            ['canonical_opportunity_pipeline_stages', 'deal_campaign_registry_mapping',
+             'deal_read_population_period_coverage'],
+            'Definir os pipelines/estágios que contam como oportunidade e validar o vínculo do negócio à campanha.'),
+        'won': (
+            'won_outcome_and_campaign_attribution_unverified',
+            ['confirmed_closed_won_semantics', 'deal_campaign_registry_mapping',
+             'confirmed_won_time_semantics', 'deal_read_population_period_coverage'],
+            'Validar o estado de ganho, a data de fechamento e o vínculo do negócio à campanha; fechado não significa ganho.'),
+        'cost_per_hot': (
+            'cost_allocation_and_hot_population_unverified',
+            ['attributed_cost_source_currency_and_period', 'cost_allocation_rule',
+             'canonical_hot_population_with_campaign_and_time'],
+            'Definir fonte/moeda e alocação dos custos e a população Hot por campanha e período; o rótulo Hot isolado não define a base.'),
+    }
+    for name, (reason, missing, decision) in outcome_contracts.items():
+        metrics[name] = {'value': None, 'observed_value': None, 'source': [], 'source_ids': [],
+                         'complete': False, 'availability': 'not_connected', 'reason': reason,
+                         'missing_evidence': missing, 'required_decision': decision}
+
     insights = []
 
     def insight(code, message, ids, action):

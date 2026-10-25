@@ -18,7 +18,9 @@ def canonical(value):
 
 
 class SEQDError(ValueError):
-    pass
+    def __init__(self, code, status=None):
+        self.status = status
+        super().__init__(code)
 
 
 def credential_file():
@@ -67,7 +69,7 @@ class SEQDClient:
                 body['approval_signature'] = hmac.new(token.encode(), b'seqd-approval-v1\n'+canonical(body), hashlib.sha256).hexdigest()
             status, raw = self._request(method, path, body, {'Authorization': 'Bearer '+token, 'Content-Type': 'application/json'}, 40)
             if type(status) is not int or not 200 <= status < 300:
-                raise SEQDError('seqd_http_error')
+                raise SEQDError('seqd_http_error', status if type(status) is int else None)
             if not isinstance(raw, bytes) or len(raw)>1_000_000:
                 raise SEQDError('seqd_invalid_response')
             data=json.loads(raw)
@@ -81,6 +83,32 @@ class SEQDClient:
 
     def status(self):
         return self._call('GET', '/v1/status')
+
+    def contact_search(self, email, cursor=None):
+        if (not isinstance(email, str) or len(email) > 254 or not re.fullmatch(
+                r'[a-z0-9][a-z0-9._+-]{0,63}@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+', email)):
+            raise SEQDError('invalid_contact_email')
+        query = {'email': email}
+        if cursor is not None:
+            if not isinstance(cursor, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,4096}\.[a-f0-9]{64}', cursor):
+                raise SEQDError('invalid_search_cursor')
+            query['cursor'] = cursor
+        data = self._call('GET', '/v1/contact-search?' + urlencode(query))
+        coverage = data.get('coverage')
+        expected_query = f'in:anywhere {{from:{email} to:{email} cc:{email} bcc:{email}}} -in:drafts'
+        if (data.get('status') != 'ok' or data.get('email') != email or data.get('query') != expected_query
+                or data.get('context_only') is not True or data.get('receipt_eligible') is not False
+                or not isinstance(data.get('messages'), list) or len(data['messages']) > 10
+                or not all(isinstance(row, dict) and all(isinstance(row.get(key), str)
+                    and re.fullmatch(r'[a-f0-9]{1,64}', row[key]) for key in ('id', 'thread_id')) for row in data['messages'])
+                or not isinstance(coverage, dict) or coverage.get('scope') != 'mailbox_verified_alias'
+                or coverage.get('include_spam_trash') is not True or coverage.get('window_days') is not None
+                or type(coverage.get('listing_complete')) is not bool
+                or coverage['listing_complete'] != (data.get('next_cursor') is None)
+                or data.get('next_cursor') is not None and (not isinstance(data['next_cursor'], str)
+                    or not re.fullmatch(r'[A-Za-z0-9_-]{1,4096}\.[a-f0-9]{64}', data['next_cursor']))):
+            raise SEQDError('invalid_contact_search')
+        return data
 
     def messages(self, limit=10, cursor=None):
         if type(limit) is not int or not 1<=limit<=10:

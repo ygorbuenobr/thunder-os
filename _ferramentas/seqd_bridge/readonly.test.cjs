@@ -168,7 +168,7 @@ test('normalized provider omissions and mismatched header copies fail at bridge 
 });
 test('native readonly session exposes only profile and read ports, no quota or writer',()=>{
  const transporter={request(){throw Error('transport_not_called');}},gmail={context:{_options:{auth:{transporter}}}};
- assert.deepEqual(Object.keys(nativeSession(gmail,new Proxy({}, {get(){throw Error('quota_forbidden');}}),{readOnly:true})).sort(),['get','list','readThread','verifyProfile']);
+ assert.deepEqual(Object.keys(nativeSession(gmail,new Proxy({}, {get(){throw Error('quota_forbidden');}}),{readOnly:true})).sort(),['contactSearch','get','list','readThread','verifyProfile']);
 });
 test('native wire permits only pinned GETs and the existing refresh-token exchange',async()=>{
  const seen=[],transporter={async request(options){seen.push(options);return {data:{}};}};

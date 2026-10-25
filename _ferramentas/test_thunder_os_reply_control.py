@@ -84,6 +84,24 @@ class ReplyControlTests(unittest.TestCase):
         self.assertFalse(result['external_pause_enabled'])
         self.assertEqual(self.repo.outbox(),[])
 
+    def test_malformed_pause_diagnostic_preserves_internal_stop(self):
+        for index, status in enumerate(([], {}, True, 202)):
+            with self.subTest(status=status):
+                self.repo.put_state('cadence', 'cadence-1', deepcopy(self.cadence))
+                control = ReplyControl(self.repo, self.registry,
+                    external_adapters={'apollo': {'status': status}})
+                value = event()
+                value['source']['provider_message_id'] = 'malformed-' + str(index)
+                result = control.ingest(value, 'verified_source')
+                self.assertEqual(result['status'], 'paused_internal')
+                self.assertEqual(self.repo.get_state('cadence', 'cadence-1')['status'], 'paused_reply')
+                self.assertEqual(result['alerts'][0]['reason'], 'external_pause_failed')
+                self.assertEqual(len(self.repo.list_state('reply')), index + 1)
+                self.assertEqual(len(self.repo.list_state('operator_alert')), index + 1)
+                self.assertFalse(result['external_pause_enabled'])
+                self.assertEqual(self.repo.effects(), [])
+                self.assertEqual(self.repo.outbox(), [])
+
     def test_unknown_auto_identity_and_account_do_not_pause(self):
         for change in ({'human_reply':False},{'human_reply':None},{'identity_verified':False},
                        {'hubspot_contact_id':None},{'source':{**event()['source'],'account_id':'other'}}):

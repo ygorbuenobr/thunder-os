@@ -305,6 +305,38 @@ class NewJourney:
                 and _valid_email(item['email']) and len(checks.get(item['source_key'], [])) == 6
                 and all(c['status'] == 'pass' for c in checks[item['source_key']])]
 
+    @staticmethod
+    def _operational_readiness(row):
+        """Preparation diagnostics only; saved inputs are not live pilot evidence.
+
+        This projection never authorizes enrollment, adds an export gate or
+        attests provider/CRM results. Existing reviewed export remains separate.
+        """
+        sequence = row.get('sequence')
+        snapshot = sequence.get('template_snapshot') if isinstance(sequence, Mapping) else None
+        observed_type = None
+        if (isinstance(snapshot, Mapping) and snapshot.get('status') == 'ok'
+                and snapshot.get('complete') is True and isinstance(snapshot.get('items'), list)):
+            first = [item for item in snapshot['items'] if isinstance(item, Mapping)
+                     and type(item.get('order')) is int and item['order'] == 1]
+            if len(first) == 1 and first[0].get('channel') == 'email':
+                flags = first[0].get('flags')
+                raw_type = flags.get('raw_step_type') if isinstance(flags, Mapping) else None
+                if isinstance(raw_type, str) and raw_type in {'auto_email', 'manual_email'}:
+                    observed_type = raw_type
+        proofs = {key: 'unverified_by_this_journey' for key in (
+            'provider_receipt', 'hubspot_email_activity', 'human_reply_in_journey',
+            'external_stop_readback')}
+        return {'provider': 'apollo', 'execution_ready': False,
+            'enrollment_enabled': False,
+            'pilot': {'max_initial_leads': 10, 'limit_enforced_by_export': False,
+                'e1_required_type': 'manual_email', 'e1_observed_type': observed_type,
+                'e1_manual_observed': observed_type == 'manual_email',
+                'observation_scope': 'saved_sequence_snapshot', 'current': False},
+            'proofs': proofs,
+            'blockers': ['specific_operational_approval_required',
+                         'fresh_manual_e1_readback_required', 'operational_proofs_unverified']}
+
     def _view(self, row):
         try:
             context, sheet = self._campaign(row['campaign_id'])
@@ -362,6 +394,7 @@ class NewJourney:
             'enrollment_enabled': False, 'external_writes': 0, 'manual_export': True,
             'can_export': not blockers, 'check_keys': list(CHECK_KEYS),
             'apollo_text_parity': parity, 'approval_validity_hours': 24,
+            'operational_readiness': self._operational_readiness(row),
             'approval_mode': row.get('approval_mode', 'exact_copy_v1'),
             'commercial_accounts': self._commercial(row, sheet),
             'cadence_paths': [
@@ -914,6 +947,7 @@ class NewJourney:
             return {'filename': ident + '.csv', 'csv_text': '\ufeff' + stream.getvalue(),
                 'rows': len(eligible), 'credits': 0, 'external_writes': 0,
                 'preview_only': preview_only,
+                'operational_readiness': self._operational_readiness(row),
                 'approval_kind': row.get('approval_mode', 'exact_copy_v1'),
                 'final_email_generated': False if prompts else None,
                 'enrollment_enabled': False, 'manual_export': True, 'version': row['version'],

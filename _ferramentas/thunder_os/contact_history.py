@@ -16,9 +16,12 @@ CRM logs/thread context are not delivery receipts or authorization to act.
 HubSpot uses the current v3 batch-read/v4 association contracts, pinned portal
 and owner, pagination, timeouts and shared read admission of cadence_readonly.
 Fresh eligibility is constructed per invocation. No retries are added.
-Gmail uses ONLY known, hash-checked thread IDs bound to freshly verified email
-aliases; the bridge has no contact search. Even complete known threads cannot
-prove discovery coverage, so Gmail and overall completeness remain false.
+Gmail searches exact freshly verified email aliases through the read-only bridge,
+with bounded pagination; older bridges fall back to hash-checked known threads.
+Search coverage is limited to this mailbox and these aliases. Overall person
+completeness remains false, including when mailbox discovery terminates.
+Gmail coverage counts describe this bounded request only. HTTP 429 stops further
+Gmail reads in this request, preserving earlier observations and independent CRM.
 No provider SDK, network transport, credential discovery or SQL is added here.
 """
 from collections.abc import Mapping
@@ -230,35 +233,110 @@ class ContactHistoryReadonly:
 
     def _gmail(self, aliases, contact_id):
         reasons, events = ['gmail_discovery_incomplete'], []
+        coverage = {'scope': 'verified_known_threads', 'discovery_complete': False,
+                    'thread_limit': 10, 'budget_seconds': 15, 'selected_threads': 0,
+                    'attempted_threads': 0, 'read_threads': 0, 'observed_messages': 0,
+                    'stopped_reason': None}
+        def source(reason, status):
+            coverage['observed_messages'] = len({event['id'] for event in events})
+            return {**_source('gmail', reason=reason, status=status), 'coverage': coverage}
         if self.seqd is None:
-            return events, _source('gmail', reason='gmail_not_configured;gmail_discovery_incomplete', status='unavailable')
+            return events, source('gmail_not_configured;gmail_discovery_incomplete', 'unavailable')
         client = self.seqd
         if hasattr(client, 'port'):
             if client.read_enabled is not True:
-                return events, _source('gmail', reason='gmail_read_disabled;gmail_discovery_incomplete', status='unavailable')
+                return events, source('gmail_read_disabled;gmail_discovery_incomplete', 'unavailable')
             client = client.port
         threads, limitations = self._known_threads(set(aliases), contact_id)
         reasons.extend(limitations)
+        coverage['selected_threads'] = len(threads)
         if not threads:
             reasons.append('gmail_no_verified_known_threads')
         deadline = time.monotonic() + 15
         statuses = []
+        supports_search = callable(getattr(client, 'contact_search', None))
         if isinstance(client, SEQDClient):
             original = client
             def bounded(method, path, body, headers, timeout):
                 remaining = deadline - time.monotonic()
-                if method != 'GET' or not re.fullmatch(r'/v1/threads/[a-f0-9]{1,64}', path) or remaining <= 0:
+                if (method != 'GET' or not (re.fullmatch(r'/v1/threads/[a-f0-9]{1,64}', path)
+                        or path.startswith('/v1/contact-search?')) or remaining <= 0 or 429 in statuses):
                     raise SEQDError('contact_history_read_budget')
                 response = original._request(method, path, body, headers, min(4, remaining))
                 if isinstance(response, tuple) and response and type(response[0]) is int:
                     statuses.append(response[0])
                 return response
             client = SEQDClient(original._loader, request=bounded)
+        if supports_search:
+            search = {'scope': 'mailbox_verified_aliases', 'mailbox': MAILBOX,
+                      'alias_limit': 5, 'page_limit': 5, 'thread_limit': 50,
+                      'aliases_requested': len(set(aliases)), 'aliases_completed': 0,
+                      'pages_read': 0, 'include_spam_trash': True, 'window_days': None,
+                      'complete': False, 'complete_scope': None}
+            discovered, failed = set(), False
+            for alias in sorted(set(aliases))[:5]:
+                cursor, seen = None, set()
+                while search['pages_read'] < 5 and time.monotonic() < deadline:
+                    try:
+                        page = client.contact_search(alias, cursor)
+                    except SEQDError as exc:
+                        if exc.status == 404:
+                            reasons.append('gmail_contact_search_unsupported')
+                        elif exc.status == 429 or 429 in statuses:
+                            reasons.append('gmail_http_429')
+                            coverage['stopped_reason'] = 'http_429'
+                        else:
+                            reasons.append('gmail_contact_search_unavailable')
+                        failed = True
+                        break
+                    except Exception:
+                        reasons.append('gmail_contact_search_unavailable')
+                        failed = True
+                        break
+                    search['pages_read'] += 1
+                    discovered.update(row['thread_id'] for row in page['messages'])
+                    next_cursor = page.get('next_cursor')
+                    if next_cursor is None:
+                        search['aliases_completed'] += 1
+                        break
+                    if next_cursor == cursor or next_cursor in seen or not page['messages']:
+                        reasons.append('gmail_contact_search_cursor_loop')
+                        failed = True
+                        break
+                    seen.add(next_cursor)
+                    cursor = next_cursor
+                if failed or search['pages_read'] >= 5 or time.monotonic() >= deadline:
+                    break
+            search['complete'] = (not failed and search['aliases_completed'] == len(set(aliases)))
+            if search['pages_read']:
+                coverage['thread_limit'] = 50
+                combined = sorted(set(threads) | discovered)
+                threads = combined[:50]
+                if len(combined) > 50:
+                    reasons.append('gmail_search_thread_limit')
+                    search['complete'] = False
+                coverage['scope'] = 'verified_alias_mailbox_search_and_known_threads'
+                coverage['selected_threads'] = len(threads)
+            if threads and 'gmail_no_verified_known_threads' in reasons:
+                reasons.remove('gmail_no_verified_known_threads')
+            search['complete_scope'] = 'mailbox_verified_aliases' if search['complete'] else None
+            coverage['search'] = search
+            coverage['discovery_complete'] = search['complete']
+            if search['complete']:
+                reasons.remove('gmail_discovery_incomplete')
+                reasons.append('gmail_mailbox_alias_search_observed;person_global_coverage_unverified')
+            elif not failed:
+                reasons.append('gmail_contact_search_bound_exhausted')
         for ident in threads:
+            if 429 in statuses or coverage['stopped_reason'] == 'http_429':
+                coverage['stopped_reason'] = 'http_429'
+                break
             if time.monotonic() >= deadline:
                 reasons.append('gmail_read_budget_exhausted')
+                coverage['stopped_reason'] = 'read_budget_exhausted'
                 break
             try:
+                coverage['attempted_threads'] += 1
                 response = client.conversation(ident)
                 if response.get('mailbox') != MAILBOX or response.get('status') != 'ok':
                     raise ValueError()
@@ -268,6 +346,7 @@ class ContactHistoryReadonly:
                         or not isinstance(thread.get('messages'), list) or not 1 <= len(thread['messages']) <= 100
                         or not isinstance(thread.get('coverage'), Mapping)):
                     raise ValueError()
+                coverage['read_threads'] += 1
                 if thread.get('complete') is not True or thread.get('truncated') is not False or thread['coverage'].get('reasons'):
                     reasons.append('gmail_known_thread_partial')
                 for message in thread['messages']:
@@ -280,14 +359,23 @@ class ContactHistoryReadonly:
                         reasons.append('gmail_message_partial')
             except Exception:
                 reasons.append('gmail_thread_unavailable')
+            if 429 in statuses:
+                coverage['stopped_reason'] = 'http_429'
+                break
         reasons.extend('gmail_http_' + str(status) for status in statuses if status >= 400)
         status = 'unavailable' if threads and not events and 'gmail_thread_unavailable' in reasons else 'partial'
-        return events, _source('gmail', reason=';'.join(dict.fromkeys(reasons)), status=status)
+        return events, source(';'.join(dict.fromkeys(reasons)), status)
 
     @staticmethod
     def _gmail_event(message, ident, aliases):
         if (not isinstance(message, Mapping) or not _hex(message.get('id'))
                 or message.get('thread_id') != ident):
+            return None
+        message_coverage = message.get('coverage')
+        if (not isinstance(message_coverage, Mapping) or not isinstance(message_coverage.get('reasons'), list)
+                or any(reason in {'headers_missing', 'headers_invalid', 'header_limit',
+                                  'headers_incomplete', 'headers_ambiguous'}
+                       for reason in message_coverage['reasons'])):
             return None
         sender = _addresses(message.get('from'))
         recipients = set().union(*(_addresses(message.get(field)) for field in ('to', 'cc', 'bcc')))

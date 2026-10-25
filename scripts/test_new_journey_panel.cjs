@@ -46,7 +46,7 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
       const uiCheck=(ok,message)=>{if(!ok)deficiencies.push(viewport.width+': '+message);};
       let draft=null,complete=false,checker='unknown',failCatalog=true,emptyCatalog=false,failGet=false,denySource=false,denySequences=false;
       let holdApprove=false,releaseApprove,selectedSequence='',observedEnrollment=false;
-      let parityStatus='verified';
+      let parityStatus='verified',readinessType='auto_email';
       let companyPreview=null,promptHash='e'.repeat(64);
       const row = (n=1,email='fixture@example.invalid')=>({source_key:'source-'+n,name:'Pessoa sintética '+n,email,company:'Empresa sintética',linkedin_url:'https://www.linkedin.com/in/fixture-'+n,blockers:[],variables:{}});
       const checkRows=()=>draft.rows.map(r=>({source_key:r.source_key,qualification_context:checker==='pass'?{company_id:'123',contact_id:'42',company_name:'Empresa sintética',domain:'example.invalid',binding_hash:'f'.repeat(64)}:null,checks:keys.map(key=>({key,status:checker,
@@ -73,6 +73,7 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
             checks:draft.checks.find(c=>c.source_key===r.source_key)?.checks||keys.map(key=>({key,status:'unknown',reason:'Prova ausente.'}))})),
           blockers,can_export:!blockers.length,counts:{total:draft.rows.length,eligible,retained:draft.rows.length-eligible},
           apollo_text_parity:{status:parityStatus,reason:parityStatus==='verified'?'apollo_static_text_exact_match':'apollo_template_text_mismatch',steps:draft.steps.map(s=>({...s,...(draft.approval_mode==='apollo_prompts_v1'?{variants:promptVariants}:{})})),...(draft.approval_mode==='apollo_prompts_v1'?{input_hash:promptHash,approval_kind:'prompts',final_email_parity:false}:{})},
+          operational_readiness:{execution_ready:false,pilot:{current:false,e1_observed_type:readinessType}},
           enrollment_enabled:false,external_writes:0,cost:{credits:0,paid_lookup_enabled:false},credits:0};
       };
       const changed=()=>{draft.version++;return view();};
@@ -467,6 +468,8 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
       assert.equal(draft.approval_mode,'apollo_prompts_v1');
       assert.equal(await page.locator('#nj-body input,#nj-body textarea,#nj-body select,[data-nj-remove]').count(),0,'Original Apollo prompts have no editor or mutation control');
       assert.match(await page.locator('#nj-body').innerText(),/Modo Apollo · aprovação da versão dos prompts/);
+      assert.doesNotMatch(await page.locator('#nj-body').innerText(),/A aprovação libera somente o texto exato/);
+      assert.match(await page.locator('#nj-body').innerText(),/Não confirma um e-mail dinâmico ainda não gerado/);
       await page.getByText('Prompts e variáveis originais · passo 1',{exact:true}).click();
       assert.deepEqual(JSON.parse(await page.locator('#nj-body pre').innerText()),promptVariants,'Full original prompts, instructions and variables survive escaping');
       assert.equal(await page.locator('#new-journey img,#new-journey script').count(),0);
@@ -476,6 +479,15 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
       assert.equal(draft.approvals['prompt-step-1'].kind,'apollo_prompts_v1','Prompt approval retains its separate server approval kind');
       assert.match(await page.locator('[data-nj-approve]').innerText(),/prompts aprovada/);
       await go(5);const promptPreviewDownloads=downloads.length,promptPreviewTraffic=traffic.length;
+      const readiness=page.locator('#nj-operational-readiness');
+      assert.match(await readiness.innerText(),/E1 automático observado/);
+      assert.match(await readiness.innerText(),/não confirma o estado atual/);
+      assert.match(await readiness.innerText(),/até 10 pessoas/);
+      assert.match(await readiness.innerText(),/não é aplicado à exportação/);
+      assert.match(await readiness.innerText(),/atividade EMAIL no HubSpot/);
+      assert.match(await readiness.innerText(),/parada externa com leitura de volta/);
+      assert.equal(await page.locator('[data-nj-action=export-preview]').isEnabled(),true,'Diagnostic does not gate preparatory export');
+
       await click('[data-nj-action=export-preview]');
       assert.match(await page.locator('#nj-manual pre').innerText(),/approval_kind,approved_prompt_hash/);
       assert.match(await page.locator('#nj-manual pre').innerText(),new RegExp('apollo_prompts_v1,'+promptHash));
@@ -492,6 +504,15 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
       await click('#nj-reload');assert.match(await page.locator('[data-nj-approval-state]').innerText(),/Aguardando aprovação/);
       await go(5);assert.equal(await page.locator('[data-nj-action=export-preview]').isDisabled(),true,'Changed prompt inputs revoke export until renewed review');
       assert.equal(traffic.filter(t=>t.path.endsWith('/apollo-prompts')).length,1,'Reading originals and approval never alters Apollo prompts');
+      for(const type of ['manual_email',null,'<img src=x onerror=alert(1)>']){
+        readinessType=type;await click('#nj-reload');await go(5);
+        const text=await page.locator('#nj-operational-readiness').innerText();
+        assert.match(text,type==='manual_email'?/E1 manual observado/:/Tipo do E1 não comprovado/);
+        assert.match(text,/não confirma o estado atual/);
+        assert.match(text,/não autorizam expansão|nem autorizam expansão/);
+        await noOverflow();
+      }
+
       assert.equal(await page.locator('#new-journey img,#new-journey script').count(),0);assert.equal(await page.evaluate(()=>window.injected),undefined);
       assert.deepEqual(errors,[]);await noOverflow();
       assert.equal(traffic.filter(t=>t.method!=='GET'&&!t.path.startsWith(base+'/')).length,0,'No effect calls');

@@ -20,11 +20,38 @@ function createBridge({provider,credential,journalDir,sendEnabled=false,readOnly
   async function profile(){active=provider.session?await provider.session():provider;const result=await active.verifyProfile();check(result===EXPECTED.email,'provider_account_mismatch',503);}
   const parsed=new URL(url,'http://bridge.invalid');check(parsed.origin==='http://bridge.invalid'&&!parsed.hash,'invalid_route');
   const route=parsed.pathname;
-  if(readOnly)check(url===route+parsed.search&&(route==='/v1/status'||route==='/v1/messages'||/^\/v1\/(messages|threads)\/[a-f0-9]{1,64}$/.test(route))&&
-   (route==='/v1/messages'||!parsed.search),'read_only_route',404);
+  if(readOnly)check(url===route+parsed.search&&(route==='/v1/status'||route==='/v1/messages'||route==='/v1/contact-search'||/^\/v1\/(messages|threads)\/[a-f0-9]{1,64}$/.test(route))&&
+   (route==='/v1/messages'||route==='/v1/contact-search'||!parsed.search),'read_only_route',404);
   if(method==='GET'&&route==='/v1/status'){
    check(!parsed.search,'invalid_query');await profile();if(sendEnabled){check(typeof active.quotaStatus==='function','quota_unavailable',503);const status=await active.quotaStatus();check(status?.ready===true,'quota_unavailable',503);}
    return scoped({status:'ready',send_enabled:sendEnabled});
+  }
+  if(readOnly&&method==='GET'&&route==='/v1/contact-search'){
+   const {contactQuery}=require('./native.cjs'),crypto=require('node:crypto');
+   const keys=[...parsed.searchParams.keys()];
+   check(keys.every(key=>key==='email'||key==='cursor')&&new Set(keys).size===keys.length,'invalid_query');
+   const email=parsed.searchParams.get('email'),query=contactQuery(email),cursor=parsed.searchParams.get('cursor');
+   const sign=value=>crypto.createHmac('sha256',credential).update('contact-search-v1\n'+value).digest('hex');
+   let token=null,expires=now()+300000;
+   if(cursor!==null){
+    // 1024 ASCII token bytes may double under JSON escaping; plus email254 and metadata.
+    // 4096 base64url characters cover that envelope while retaining a fixed cap.
+    check(/^[A-Za-z0-9_-]{1,4096}\.[a-f0-9]{64}$/.test(cursor),'invalid_search_cursor');
+    const [encoded,signature]=cursor.split('.');check(safeEqual(signature,sign(encoded)),'invalid_search_cursor');
+    let data;try{data=JSON.parse(Buffer.from(encoded,'base64url').toString('utf8'));}catch{throw new BridgeError('invalid_search_cursor');}
+    check(data&&data.email===email&&data.mailbox===EXPECTED.email&&typeof data.token==='string'&&/^[\x21-\x7e]{1,1024}$/.test(data.token)&&
+     Number.isSafeInteger(data.expires)&&data.expires>=now()&&data.expires<=now()+300000,'invalid_search_cursor');token=data.token;expires=data.expires;
+   }
+   await profile();check(typeof active.contactSearch==='function','contact_search_unavailable',404);
+   const result=await active.contactSearch({email,cursor:token});
+   check(result&&Array.isArray(result.messages)&&result.messages.length<=10&&result.messages.every(row=>row&&typeof row.id==='string'&&typeof row.thread_id==='string'&&/^[a-f0-9]{1,64}$/.test(row.id)&&/^[a-f0-9]{1,64}$/.test(row.thread_id)),'invalid_provider_response',503);
+   let next=null;
+   if(result.next_cursor!=null){
+    check(typeof result.next_cursor==='string'&&/^[\x21-\x7e]{1,1024}$/.test(result.next_cursor)&&result.next_cursor!==token,'invalid_search_cursor',503);
+    const encoded=Buffer.from(JSON.stringify({email,mailbox:EXPECTED.email,token:result.next_cursor,expires})).toString('base64url');next=encoded+'.'+sign(encoded);
+   }
+   return scoped({status:'ok',context_only:true,receipt_eligible:false,email,query,messages:result.messages,next_cursor:next,
+    coverage:{scope:'mailbox_verified_alias',include_spam_trash:true,window_days:null,limit:10,listing_complete:next===null}});
   }
   if(method==='GET'&&route==='/v1/messages'){
    check([...parsed.searchParams.keys()].every(k=>k==='cursor'||k==='limit')&&new Set(parsed.searchParams.keys()).size===[...parsed.searchParams.keys()].length,'invalid_query');

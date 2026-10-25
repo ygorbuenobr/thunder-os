@@ -367,6 +367,47 @@ class ManagementScoreboardTests(unittest.TestCase):
             self.assertTrue(metric['reason'], key)
             self.assertEqual(metric['source'], [])
 
+    def test_unconnected_outcomes_explain_required_contract_not_just_missing_data(self):
+        result = self.management()
+        expected = {
+            'meetings_scheduled': ('meeting_campaign_attribution_unavailable',
+                                   'historical_meeting_campaign_binding'),
+            'meetings_held': ('meeting_campaign_attribution_unavailable',
+                              'confirmed_meeting_outcome_semantics'),
+            'opportunities': ('opportunity_definition_and_campaign_attribution_unverified',
+                              'canonical_opportunity_pipeline_stages'),
+            'won': ('won_outcome_and_campaign_attribution_unverified',
+                    'confirmed_closed_won_semantics'),
+            'cost_per_hot': ('cost_allocation_and_hot_population_unverified',
+                             'canonical_hot_population_with_campaign_and_time'),
+        }
+        for name, (reason, missing) in expected.items():
+            with self.subTest(metric=name):
+                metric = result['metrics'][name]
+                self.assertIsNone(metric['value'])
+                self.assertIsNone(metric['observed_value'])
+                self.assertFalse(metric['complete'])
+                self.assertEqual(metric['availability'], 'not_connected')
+                self.assertEqual(metric['reason'], reason)
+                self.assertIn(missing, metric['missing_evidence'])
+                self.assertTrue(metric['required_decision'].strip())
+                self.assertEqual(metric['source'], [])
+                self.assertEqual(metric['source_ids'], [])
+
+    def test_schema_labels_and_open_followup_never_invent_outcome_attribution(self):
+        snapshot = self.snapshot(period=self.period,
+            metrics={'won': 12, 'opportunities': 4, 'cost_per_hot': 0},
+            activities=[{'id': 'meetings:1', 'status': 'COMPLETED', 'type': 'meeting',
+                         'campaign': 'A', 'attribution': 'contact_current_campaign'}],
+            deals=[{'id': '7', 'thunder_campaign_id': 'A', 'hs_is_closed': 'true',
+                    'temperatura_do_lead': 'Hot', 'notes_next_activity_date': self.stamp}])
+        result = self.management(snapshot)
+        for key in ('meetings_scheduled', 'meetings_held', 'opportunities', 'won', 'cost_per_hot'):
+            self.assertIsNone(result['metrics'][key]['value'])
+            self.assertEqual(result['metrics'][key]['availability'], 'not_connected')
+        result['metrics']['won']['missing_evidence'].clear()
+        self.assertTrue(self.management(snapshot)['metrics']['won']['missing_evidence'])
+
     def test_cross_cohort_comparison_never_ranks_a_path(self):
         snapshot = self.snapshot(period=self.period, offer='Offer A', segment='Textile',
                                  population={'id': 'group-A', 'size': 100})

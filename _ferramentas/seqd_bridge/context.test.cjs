@@ -217,3 +217,81 @@ test('existing HTTP handler exposes context safely without listening and sanitiz
   const failed=await request('GET','/v1/threads/'+THREAD);assert.equal(failed.code,503);assert.equal(failed.body.error_code,'bridge_unavailable');assert.equal(JSON.stringify(failed).includes('synthetic-private-detail'),false);
  }finally{server.close();}
 });
+
+
+test('contact search exact query and signed cursor bind alias mailbox expiry and reject tampering',async()=>{
+ const {contactQuery}=require('./native.cjs');
+ const key='s'.repeat(64),email='person+tag@example.invalid',calls=[];let tick=1000;
+ const provider={async verifyProfile(){return EXPECTED.email;},async contactSearch(value){calls.push(value);return {messages:[{id:'aaa',thread_id:'bbb'}],next_cursor:value.cursor===null?'opaque-token':null};}};
+ const bridge=createBridge({provider,credential:key,readOnly:true,now:()=>tick});
+ const call=url=>bridge.handle({method:'GET',url,authorization:'Bearer '+key});
+ const url='/v1/contact-search?email='+encodeURIComponent(email),first=await call(url);
+ assert.equal(first.query,contactQuery(email));assert.equal(first.receipt_eligible,false);
+ assert.equal(first.coverage.include_spam_trash,true);assert.equal(first.coverage.window_days,null);
+ assert.equal(first.coverage.listing_complete,false);
+ const second=await call(url+'&cursor='+encodeURIComponent(first.next_cursor));
+ assert.equal(second.coverage.listing_complete,true);assert.equal(calls[1].cursor,'opaque-token');
+ const count=calls.length;
+ for(const value of [first.next_cursor.slice(0,-1)+'z','opaque-token'])await assert.rejects(call(url+'&cursor='+encodeURIComponent(value)),/invalid_search_cursor/);
+ await assert.rejects(call('/v1/contact-search?email=other@example.invalid&cursor='+encodeURIComponent(first.next_cursor)),/invalid_search_cursor/);
+ tick+=300001;await assert.rejects(call(url+'&cursor='+encodeURIComponent(first.next_cursor)),/invalid_search_cursor/);
+ assert.equal(calls.length,count);assert.equal(bridge.journal,null);
+});
+
+test('contact search rejects query operators duplicated parameters and all mutation verbs',async()=>{
+ const key='s'.repeat(64);let calls=0;
+ const provider={async verifyProfile(){calls++;return EXPECTED.email;},async contactSearch(){calls++;throw Error('not reached');}};
+ const bridge=createBridge({provider,credential:key,readOnly:true});
+ for(const email of ['x@example.invalid OR from:anyone','x} to:y@example.invalid','x"@example.invalid','x\n@example.invalid'])
+  await assert.rejects(bridge.handle({method:'GET',url:'/v1/contact-search?email='+encodeURIComponent(email),authorization:'Bearer '+key}),/invalid_contact_email/);
+ for(const suffix of ['&email=other@example.invalid','&q=in:anywhere','&limit=100'])
+  await assert.rejects(bridge.handle({method:'GET',url:'/v1/contact-search?email=x@example.invalid'+suffix,authorization:'Bearer '+key}),/invalid_query/);
+ for(const method of ['POST','PUT','PATCH','DELETE'])
+  await assert.rejects(bridge.handle({method,url:'/v1/contact-search?email=x@example.invalid',authorization:'Bearer '+key}),/read_only_method/);
+ assert.equal(calls,0);
+});
+
+test('native contact search includes spam trash through bounded existing GET transport and preserves429',async()=>{
+ const {contactQuery}=require('./native.cjs');const wires=[];let fail=false;
+ const transporter={async request(options){wires.push(options);if(fail)throw {response:{status:429}};return {data:{messages:[{id:'aaa',threadId:'bbb'}],nextPageToken:'next'}};}};
+ const gmail={context:{_options:{auth:{transporter}}},users:{messages:{async list(params,options){return transporter.request({...options,url:'https://gmail.googleapis.com/gmail/v1/users/me/messages',method:'GET',params:{fields:params.fields,q:params.q,maxResults:params.maxResults,includeSpamTrash:params.includeSpamTrash,...(params.pageToken?{pageToken:params.pageToken}:{})}});}}}};
+ const session=nativeSession(gmail,null,{readOnly:true});
+ const result=await session.contactSearch({email:'x@example.invalid',cursor:null});
+ assert.deepEqual(result,{messages:[{id:'aaa',thread_id:'bbb'}],next_cursor:'next'});
+ assert.equal(wires[0].params.q,contactQuery('x@example.invalid'));assert.equal(wires[0].params.includeSpamTrash,true);assert.equal(wires[0].params.maxResults,10);
+ assert.equal(wires[0].retry,false);assert.equal(wires[0].maxRedirects,0);
+ fail=true;await assert.rejects(session.contactSearch({email:'x@example.invalid',cursor:'next'}),error=>error.status===429&&error.code==='provider_rate_limited');
+ assert.equal(wires.length,2);
+});
+
+test('wire only accepts canonical equal-participant query with explicit spam trash and no mutations',async()=>{
+ const {contactQuery}=require('./native.cjs');let calls=0;const transporter={async request(){calls++;return {};}};
+ guardReadWire({context:{_options:{auth:{transporter}}}});
+ const params={fields:'messages(id,threadId),nextPageToken',q:contactQuery('x@example.invalid'),maxResults:10,includeSpamTrash:true};
+ const url='https://gmail.googleapis.com/gmail/v1/users/me/messages';
+ await transporter.request({url,method:'GET',params});
+ for(const extra of [{q:'in:anywhere'},{q:params.q.replace('to:x@','to:y@')},{includeSpamTrash:false},{maxResults:11}])
+  assert.throws(()=>transporter.request({url,method:'GET',params:{...params,...extra}}),/read_wire_blocked/);
+ assert.throws(()=>transporter.request({url,method:'POST',params}),/read_wire_blocked/);
+ assert.equal(calls,1);
+});
+
+
+test('largest escaped provider cursor roundtrips at max email length without weakening signature',async()=>{
+ const key='s'.repeat(64),email='x'.repeat(64)+'@'+'a'.repeat(63)+'.'+'b'.repeat(63)+'.'+'c'.repeat(61);
+ assert.equal(email.length,254);
+ for(const token of ['\\'.repeat(1024),'"'.repeat(1024)]){
+  const calls=[];
+  const provider={async verifyProfile(){return EXPECTED.email;},async contactSearch(value){calls.push(value);return {messages:[{id:'aaa',thread_id:'bbb'}],next_cursor:value.cursor===null?token:null};}};
+  const bridge=createBridge({provider,credential:key,readOnly:true,now:()=>1792929600000});
+  const url='/v1/contact-search?email='+encodeURIComponent(email);
+  const request=url=>bridge.handle({method:'GET',url,authorization:'Bearer '+key});
+  const first=await request(url);
+  assert.ok(first.next_cursor.length>1900);assert.ok(first.next_cursor.split('.')[0].length<=4096);
+  const second=await request(url+'&cursor='+encodeURIComponent(first.next_cursor));
+  assert.equal(second.next_cursor,null);assert.equal(second.coverage.listing_complete,true);assert.equal(calls[1].cursor,token);
+  const altered=first.next_cursor.slice(0,-1)+(first.next_cursor.endsWith('a')?'b':'a');
+  await assert.rejects(request(url+'&cursor='+encodeURIComponent(altered)),/invalid_search_cursor/);
+  assert.equal(calls.length,2);
+ }
+});

@@ -140,6 +140,8 @@ class ContactHistoryTests(unittest.TestCase):
             self.assertEqual((method, body), ('GET', None))
             return 200, json.dumps(self.gmail_response).encode()
         self.seqd = SEQDClient(lambda: 'x' * 48, request=request)
+        # Legacy read-port fixture; search-capable transport has separate proofs.
+        self.seqd.contact_search = None
 
     def read(self, *, gmail=False, **kwargs):
         from thunder_os.contact_history import ContactHistoryReadonly
@@ -306,6 +308,240 @@ class ContactHistoryTests(unittest.TestCase):
         self.assertIn('429', self.source(result, 'gmail')['reason'])
         self.assertEqual(self.source(result, 'gmail')['status'], 'unavailable')
 
+    def test_gmail_429_stops_remaining_threads_and_preserves_prior_observations(self):
+        self.repo.rows = [persisted('abc123'), persisted('abc124'), persisted('abc125')]
+        calls = []
+        def request(method, path, body, headers, timeout):
+            calls.append(path)
+            if path.endswith('abc124'):
+                return 429, b'{}'
+            ident = path.rsplit('/', 1)[-1]
+            return 200, json.dumps(thread_response([
+                message('aa1', 'Observed before limit', thread=ident)], ident)).encode()
+        self.seqd._request = request
+        result = self.read(gmail=True)
+        self.assertEqual(calls, ['/v1/threads/abc123', '/v1/threads/abc124'])
+        self.assertEqual([event['text'] for event in result['events']
+                          if event['provider'] == 'gmail'], ['Observed before limit'])
+        source = self.source(result, 'gmail')
+        self.assertFalse(source['complete'])
+        self.assertIn('gmail_http_429', source['reason'])
+        self.assertEqual(source['coverage'], {
+            'scope': 'verified_known_threads', 'discovery_complete': False,
+            'thread_limit': 10, 'budget_seconds': 15, 'selected_threads': 3,
+            'attempted_threads': 2, 'read_threads': 1, 'observed_messages': 1,
+            'stopped_reason': 'http_429'})
+        self.assertTrue(any(event['provider'] == 'hubspot' for event in result['events']))
+
+    def test_gmail_coverage_bounds_and_zero_are_observed_not_global(self):
+        self.repo.rows = [persisted(format(i + 100, 'x')) for i in range(12)]
+        def request(method, path, body, headers, timeout):
+            ident = path.rsplit('/', 1)[-1]
+            return 200, json.dumps(thread_response([
+                message(ident, 'Known message', thread=ident)], ident)).encode()
+        self.seqd._request = request
+        result = self.read(gmail=True)
+        coverage = self.source(result, 'gmail')['coverage']
+        self.assertEqual(coverage['selected_threads'], 10)
+        self.assertEqual(coverage['attempted_threads'], 10)
+        self.assertEqual(coverage['read_threads'], 10)
+        self.assertEqual(coverage['observed_messages'], 10)
+        self.assertFalse(coverage['discovery_complete'])
+        self.assertIn('gmail_known_thread_limit', self.source(result, 'gmail')['reason'])
+        self.repo.rows = []
+        empty = self.source(self.read(gmail=True), 'gmail')
+        self.assertEqual(empty['coverage']['selected_threads'], 0)
+        self.assertEqual(empty['coverage']['observed_messages'], 0)
+        self.assertFalse(empty['complete'])
+        self.assertFalse(empty['coverage']['discovery_complete'])
+
+    def test_hubspot_activity_429_stops_provider_transport_but_gmail_survives(self):
+        target = '/crm/v4/objects/contacts/123/associations/emails'
+        self.activity.fail[target] = 429
+        result = self.read(gmail=True)
+        paths = [urlsplit(path).path for _, path, _ in self.activity.calls]
+        self.assertEqual(paths[-1], target)
+        self.assertEqual(paths.count(target), 1)
+        self.assertFalse(self.source(result, 'hubspot')['complete'])
+        self.assertTrue(any(event['provider'] == 'gmail' for event in result['events']))
+
+    def test_hubspot_eligibility_429_stops_provider_transport(self):
+        target = '/crm/v3/properties/companies'
+        self.http.fail[target] = 429
+        result = self.read(gmail=True)
+        paths = [urlsplit(path).path for _, path, *_ in self.http.calls]
+        self.assertEqual(paths[-1], target)
+        self.assertEqual(paths.count(target), 1)
+        self.assertEqual(self.activity.calls, [])
+        self.assertFalse(result['complete'])
+
+    def search_transport(self, pages, threads=None, failure=None):
+        del self.seqd.contact_search
+        calls = []
+        def request(method, path, body, headers, timeout):
+            calls.append(path)
+            self.assertEqual((method, body), ('GET', None))
+            self.assertLessEqual(timeout, 4)
+            query = parse_qs(urlsplit(path).query)
+            if path.startswith('/v1/contact-search?'):
+                if failure:
+                    return failure, b'{}'
+                alias = query['email'][0]
+                cursor = query.get('cursor', [None])[0]
+                rows, next_cursor = pages(alias, cursor)
+                data = {'mailbox': MAILBOX, 'status': 'ok', 'context_only': True,
+                        'receipt_eligible': False, 'email': alias,
+                        'query': f'in:anywhere {{from:{alias} to:{alias} cc:{alias} bcc:{alias}}} -in:drafts',
+                        'messages': rows, 'next_cursor': next_cursor,
+                        'coverage': {'scope': 'mailbox_verified_alias', 'include_spam_trash': True,
+                                     'window_days': None, 'limit': 10, 'listing_complete': next_cursor is None}}
+            else:
+                ident = path.rsplit('/', 1)[-1]
+                data = (threads or {}).get(ident, thread_response([
+                    message('aa1', 'Discovered outbound', outgoing=True, thread=ident)], ident))
+            return 200, json.dumps(data).encode()
+        self.seqd._request = request
+        return calls
+
+    def test_search_finds_unpersisted_outbound_across_verified_aliases_and_pages(self):
+        self.repo.rows = []
+        cursor = 'abc.' + 'a' * 64
+        def pages(alias, current):
+            if alias == EMAIL and current is None:
+                return [{'id': 'aa1', 'thread_id': 'def123'}], cursor
+            return [], None
+        calls = self.search_transport(pages)
+        result = self.read(gmail=True)
+        source = self.source(result, 'gmail')
+        self.assertEqual([event['text'] for event in result['events'] if event['provider'] == 'gmail'],
+                         ['Discovered outbound'])
+        self.assertEqual(source['coverage']['search']['pages_read'], 3)
+        self.assertEqual(source['coverage']['search']['aliases_completed'], 2)
+        self.assertTrue(source['coverage']['discovery_complete'])
+        self.assertEqual(source['coverage']['search']['complete_scope'], 'mailbox_verified_aliases')
+        self.assertFalse(source['complete'])
+        self.assertFalse(result['complete'])
+        self.assertEqual(sum(path == '/v1/threads/def123' for path in calls), 1)
+        self.assertNotIn('gmail_no_verified_known_threads', source['reason'])
+
+    def test_old_bridge_404_falls_back_to_known_thread_with_explicit_limit(self):
+        calls = self.search_transport(lambda *_: ([], None), failure=404)
+        result = self.read(gmail=True)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[-1], '/v1/threads/abc123')
+        self.assertIn('gmail_contact_search_unsupported', self.source(result, 'gmail')['reason'])
+        self.assertFalse(self.source(result, 'gmail')['coverage']['discovery_complete'])
+
+    def test_search_429_stops_before_known_threads_and_preserves_crm(self):
+        calls = self.search_transport(lambda *_: ([], None), failure=429)
+        result = self.read(gmail=True)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(result['events']), 3)
+        self.assertEqual(self.source(result, 'gmail')['coverage']['stopped_reason'], 'http_429')
+
+    def test_search_page_cap_and_loop_never_claim_discovery_complete(self):
+        counter = [0]
+        def pages(*_):
+            counter[0] += 1
+            return [{'id': 'aa1', 'thread_id': 'def123'}], format(counter[0], 'x') + '.' + 'a' * 64
+        calls = self.search_transport(pages)
+        result = self.read(gmail=True)
+        source = self.source(result, 'gmail')
+        self.assertEqual(source['coverage']['search']['pages_read'], 5)
+        self.assertFalse(source['coverage']['discovery_complete'])
+        self.assertIn('bound_exhausted', source['reason'])
+        self.seqd.contact_search = None
+        self.search_transport(lambda *_: ([{'id': 'aa1', 'thread_id': 'def123'}], 'abc.' + 'a' * 64))
+        result = self.read(gmail=True)
+        self.assertIn('cursor_loop', self.source(result, 'gmail')['reason'])
+        self.assertFalse(self.source(result, 'gmail')['coverage']['discovery_complete'])
+
+    def test_search_unrelated_or_ambiguous_headers_are_not_projected(self):
+        self.repo.rows = []
+        unrelated = message('aa1', 'Unrelated secret', alias='other@mail.invalid', thread='def123')
+        ambiguous = message('aa2', 'Ambiguous secret', thread='def123')
+        ambiguous['coverage']['reasons'] = ['headers_ambiguous']
+        self.search_transport(lambda *_: ([{'id': 'aa1', 'thread_id': 'def123'}], None),
+                              {'def123': thread_response([unrelated, ambiguous], 'def123')})
+        result = self.read(gmail=True)
+        self.assertFalse(any(event['provider'] == 'gmail' for event in result['events']))
+        self.assertNotIn('secret', json.dumps(result))
+        self.assertIn('identity_unverified', self.source(result, 'gmail')['reason'])
+
+    def test_search_alias_cap_and_time_budget_are_explicit(self):
+        from thunder_os.contact_history import ContactHistoryReadonly
+        calls = self.search_transport(lambda *_: ([], None))
+        reader = ContactHistoryReadonly(self.hubspot, self.cadence, seqd=self.seqd, repo=Repo([]))
+        aliases = [f'alias{i}@mail.invalid' for i in range(7)]
+        events, source = reader._gmail(aliases, '123')
+        self.assertEqual(len(calls), 5)
+        self.assertEqual(source['coverage']['search']['aliases_requested'], 7)
+        self.assertEqual(source['coverage']['search']['aliases_completed'], 5)
+        self.assertFalse(source['coverage']['discovery_complete'])
+        self.assertIsNone(source['coverage']['search']['complete_scope'])
+        self.assertIn('bound_exhausted', source['reason'])
+        ticks = [0.0]
+        original = self.seqd._request
+        def slow(*args):
+            result = original(*args)
+            ticks[0] += 16
+            return result
+        self.seqd._request = slow
+        before = len(calls)
+        with patch('thunder_os.contact_history.time', SimpleNamespace(monotonic=lambda: ticks[0])):
+            _, source = reader._gmail([EMAIL, 'alias@mail.invalid'], '123')
+        self.assertEqual(len(calls) - before, 1)
+        self.assertFalse(source['coverage']['discovery_complete'])
+        self.assertIn('bound_exhausted', source['reason'])
+
+    def test_search_malformed_scope_and_cursor_cannot_attest_coverage(self):
+        self.search_transport(lambda *_: ([], None))
+        original = self.seqd._request
+        def invalid(*args):
+            status, raw = original(*args)
+            data = json.loads(raw)
+            if args[1].startswith('/v1/contact-search?'):
+                data['coverage']['include_spam_trash'] = False
+            return status, json.dumps(data).encode()
+        self.seqd._request = invalid
+        result = self.read(gmail=True)
+        source = self.source(result, 'gmail')
+        self.assertFalse(source['coverage']['discovery_complete'])
+        self.assertIn('contact_search_unavailable', source['reason'])
+        self.assertTrue(any(event['provider'] == 'gmail' for event in result['events']))
+
+    def test_search_query_injection_and_unbound_cursor_rejected_before_transport(self):
+        client = SEQDClient(lambda: 'x' * 48, request=lambda *_: self.fail('transport forbidden'))
+        for alias in ('person@mail.invalid OR from:anyone', 'x} to:anyone@host.invalid',
+                      'x\n@mail.invalid', 'x"@mail.invalid', 'x@mail.invalid?'):
+            with self.subTest(alias=alias), self.assertRaisesRegex(ValueError, 'invalid_contact_email'):
+                client.contact_search(alias)
+        with self.assertRaisesRegex(ValueError, 'invalid_search_cursor'):
+            client.contact_search(EMAIL, 'provider-token-direct')
+
+    def test_search_signed_cursor_encoding_bound_matches_bridge_continuation(self):
+        cursor = 'a' * 4096 + '.' + 'b' * 64
+        calls = []
+        def request(method, path, body, headers, timeout):
+            calls.append(path)
+            continued = 'cursor=' in path
+            if continued:
+                self.assertEqual(parse_qs(urlsplit(path).query)['cursor'], [cursor])
+            data = {'mailbox': MAILBOX, 'status': 'ok', 'context_only': True,
+                    'receipt_eligible': False, 'email': EMAIL,
+                    'query': f'in:anywhere {{from:{EMAIL} to:{EMAIL} cc:{EMAIL} bcc:{EMAIL}}} -in:drafts',
+                    'messages': [], 'next_cursor': None if continued else cursor,
+                    'coverage': {'scope': 'mailbox_verified_alias', 'include_spam_trash': True,
+                                 'window_days': None, 'limit': 10, 'listing_complete': continued}}
+            return 200, json.dumps(data).encode()
+        client = SEQDClient(lambda: 'x' * 48, request=request)
+        first = client.contact_search(EMAIL)
+        self.assertEqual(first['next_cursor'], cursor)
+        self.assertIsNone(client.contact_search(EMAIL, first['next_cursor'])['next_cursor'])
+        with self.assertRaisesRegex(ValueError, 'invalid_search_cursor'):
+            client.contact_search(EMAIL, 'a' * 4097 + '.' + 'b' * 64)
+        self.assertEqual(len(calls), 2)
+
     def test_one_failed_known_thread_does_not_hide_another(self):
         self.repo.rows.append(persisted('abc124'))
         def request(method, path, body, headers, timeout):
@@ -375,7 +611,10 @@ class ContactHistoryTests(unittest.TestCase):
             self.assertEqual(set(event), {'id', 'provider', 'date', 'direction', 'subject',
                 'text', 'body_complete', 'source_url', 'thread_id'})
         for source in first['sources']:
-            self.assertEqual(set(source), {'provider', 'status', 'complete', 'reason'})
+            expected = {'provider', 'status', 'complete', 'reason'}
+            if source['provider'] == 'gmail':
+                expected.add('coverage')
+            self.assertEqual(set(source), expected)
 
     def test_unconfigured_gmail_and_empty_known_threads_never_claim_absence(self):
         result = self.read()

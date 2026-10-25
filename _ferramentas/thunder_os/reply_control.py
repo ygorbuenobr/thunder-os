@@ -39,7 +39,11 @@ def assess_external_pause(result):
     """A generic port result is never evidence of a paused provider in this slice."""
     if not isinstance(result, Mapping):
         return 'external_pause_failed'
-    if result.get('status') in {'failed', 'uncertain'}:
+    status = result.get('status')
+    # A malformed diagnostic must not roll back the internal reply/stop transaction.
+    if status is not None and not isinstance(status, str):
+        return 'external_pause_failed'
+    if status in {'failed', 'uncertain'}:
         return 'external_pause_failed'
     if result.get('http_status') == 202:
         return 'external_pause_readback_required'
