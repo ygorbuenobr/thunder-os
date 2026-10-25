@@ -10,7 +10,7 @@ function unpack(r){check(!r?.isError,'PROVIDER_ERROR');if(r?.structuredContent)r
 function sessionFetch(base,fetchImpl=fetch){
  const u=new URL(base);check(u.origin==='https://painel.r3xdigital.tech'&&u.pathname==='/'&&!u.search&&!u.hash,'PANEL_ORIGIN_INVALID');
  return async(route,options={})=>{
-  check(/^\/api\/os\/v1\/(session|integrations\/codex-assisted\/(preview|claim|dispatch|receipt-preview|receipt-confirm|recover-preclaim|prepare-canary|approve-canary|queue-canary))$/.test(route),'PANEL_ROUTE_INVALID');
+  check(/^\/api\/os\/v1\/(session|integrations\/codex-assisted\/(preview|claim|dispatch|receipt-preview|receipt-confirm|recover-preclaim|recover-pre-dispatch|reconcile-reservation|prepare-canary|approve-canary|queue-canary))$/.test(route),'PANEL_ROUTE_INVALID');
   const method=options.method||'GET';check(['GET','POST'].includes(method),'PANEL_METHOD_INVALID');
   const h=options.headers||{};check(Object.keys(h).every(k=>['Content-Type','X-Thunder-Nonce'].includes(k)),'PANEL_AUTH_HEADER_FORBIDDEN');
   const r=await fetchImpl(u.origin+route,{...options,method,credentials:'include',redirect:'error',signal:AbortSignal.timeout(15000)});
@@ -39,13 +39,63 @@ async function acquireExistingLock(holder,python='python3'){
  try{await new Promise((resolve,reject)=>{let out='';const t=setTimeout(()=>reject(Error('LOCK_TIMEOUT')),5000);child.once('error',()=>{clearTimeout(t);reject(Error('LOCK_UNAVAILABLE'));});child.once('exit',()=>{clearTimeout(t);reject(Error('LOCK_BUSY_OR_EXITED'));});child.stdout.on('data',b=>{out+=b;if(out.includes('\n')){clearTimeout(t);out.trim()==='LOCK_HELD'?resolve():reject(Error('LOCK_NOT_HELD'));}});});}
  catch(e){child.kill();throw e;}
  const verify=async()=>{if(child.exitCode!==null||child.signalCode!==null)return false;try{process.kill(child.pid,0);return true;}catch{return false;}};
- return {port:heldLockPort(child,verify),close:async()=>{child.kill('SIGTERM');await new Promise(r=>child.exitCode!==null||child.signalCode!==null?r():child.once('exit',r));}};
+ return {pid:child.pid,port:heldLockPort(child,verify),close:async()=>{child.kill('SIGTERM');await new Promise(r=>child.exitCode!==null||child.signalCode!==null?r():child.once('exit',r));}};
 }
 async function withResources(lock,makeJournal,work){
- let journal;try{journal=await makeJournal();return await work(journal);}finally{try{if(journal)await journal.close();}finally{await lock.close();}}
+ let journal,result,failure;const cleanup=[];
+ try{journal=await makeJournal();result=await work(journal);}catch(error){failure=error;}
+ try{if(journal)await journal.close();}catch{cleanup.push('JOURNAL_CLOSE_FAILED');}
+ try{await lock.close();}catch{cleanup.push('LOCK_CLOSE_FAILED');}
+ const readback={journal_closed:!cleanup.includes('JOURNAL_CLOSE_FAILED'),lock_released:!cleanup.includes('LOCK_CLOSE_FAILED'),attempt_reservations:'retained_no_release',production_policy_cleanup:'operator_required_not_performed'};
+ if(failure){failure.cleanup_readback=readback;if(cleanup.length)failure.cleanup_errors=cleanup;throw failure;}
+ if(cleanup.length){const error=Error('CLEANUP_FAILED');error.cleanup_errors=cleanup;error.cleanup_readback=readback;
+  error.assisted={phase:'CLEANUP',send_attempted:result?.send_attempted===true,receipt:result?.receipt?.receipt||null,retry_write:false,outcome:result?.receipt?.status==='confirmed'?'receipt_confirmed':'unknown'};throw error;}
+ return result&&typeof result==='object'?{...result,cleanup:readback}:result;
 }
-async function operation(input,{tools,fetchImpl=fetch}={}){
+// Uses the same private journal directory. Partial/failed writes retain markers: never release an attempt.
+async function consumeHostAttempt(directory,attempt){
+ const keys=[['packet',attempt.packet_hash],['ticket',attempt.ticket_hash]];
+ check(path.isAbsolute(directory||'')&&keys.every(([,v])=>/^[a-f0-9]{64}$/.test(v))&&typeof attempt.job_id==='string','HOST_ATTEMPT_INVALID');
+ const stat=await fs.lstat(directory);check(stat.isDirectory()&&!stat.isSymbolicLink(),'JOURNAL_DIRECTORY_INVALID');directory=await fs.realpath(directory);
+ for(const [kind,key] of keys){
+  let h;try{
+   h=await fs.open(path.join(directory,'host-'+kind+'-'+key+'.json'),require('node:fs').constants.O_WRONLY|require('node:fs').constants.O_CREAT|require('node:fs').constants.O_EXCL|require('node:fs').constants.O_NOFOLLOW,0o600);
+   await h.writeFile(JSON.stringify(attempt)+'\n');await h.sync();
+   const dir=await fs.open(directory,'r');try{await dir.sync();}finally{await dir.close();}
+  }catch(e){if(e.code==='EEXIST')throw Error('RPC_ALREADY_ATTEMPTED');throw e;}finally{if(h)await h.close();}
+ }
+ const dir=await fs.open(directory,'r');try{await dir.sync();}finally{await dir.close();}return true;
+}
+async function hostGuard(request){
+ // Context must come from this operation's host_context event, never from a Gmail RPC.
+ const context=request.context;
+ check(context&&Number.isSafeInteger(context.lock_pid)&&context.lock_pid>1&&typeof context.journal_directory==='string','HOST_CONTEXT_INVALID');
+ const alive=()=>{try{process.kill(context.lock_pid,0);return true;}catch{return false;}};
+ if(request.action==='check-lock')return {held:alive()};
+ check(request.action==='consume-attempt','HOST_GUARD_ACTION_INVALID');check(alive(),'LOCK_LOST_BEFORE_SEND');
+ return {consumed:await consumeHostAttempt(context.journal_directory,request.attempt)};
+}
+// Self-contained host-V8 factory: uses only the supported executor tool and local guard CLI.
+// Paths/context are operator-held; never accept them from a Gmail tool request.
+function executorHostGuards(tools,context,{scriptPath,nodePath}={}){
+ const check=(ok,code)=>{if(!ok)throw Error(code);};
+ check(typeof tools?.exec_command==='function'&&typeof scriptPath==='string'&&scriptPath.startsWith('/')&&typeof nodePath==='string'&&nodePath.startsWith('/'),'HOST_EXECUTOR_REQUIRED');
+ const pinned=JSON.parse(JSON.stringify(context));
+ const quote=value=>"'"+value.replaceAll("'","'\\''")+"'";
+ const invoke=async request=>{
+  const input=JSON.stringify({...request,context:pinned});
+  const cmd="printf '%s' "+quote(input)+' | '+quote(nodePath)+' '+quote(scriptPath)+' --host-guard';
+  const result=await tools.exec_command({cmd,max_output_tokens:1000,yield_time_ms:1000});
+  check(result.exit_code===0&&typeof result.output==='string','HOST_GUARD_EXECUTION_FAILED');
+  let value;try{value=JSON.parse(result.output);}catch{throw Error('HOST_GUARD_RESULT_INVALID');}
+  check(value&&!value.error,'HOST_GUARD_REJECTED');return value;
+ };
+ return {checkLock:async()=>(await invoke({action:'check-lock'})).held===true,
+         consumeAttempt:async attempt=>(await invoke({action:'consume-attempt',attempt})).consumed===true};
+}
+async function operation(input,{tools,fetchImpl=fetch,onHostContext=()=>{}}={}){
  check(input&&['dry-run','execute'].includes(input.mode),'MODE_REQUIRED');
+ check(['resume_preclaim','resume_pre_dispatch','resume_reservation'].filter(k=>input[k]===true).length<=1,'RECOVERY_MODE_CONFLICT');
  check(input.scope?.kind==='internal_canary'&&input.scope.max_attempts===1&&input.scope.no_followup===true,'INTERNAL_SINGLE_CANARY_SCOPE_REQUIRED');
  check(input.scope.from===MAILBOX&&typeof input.scope.subject==='string'&&typeof input.scope.content==='string','SCOPE_INVALID');
  const calls=[],observed={},blockers=[];
@@ -88,7 +138,10 @@ async function operation(input,{tools,fetchImpl=fetch}={}){
  if(input.mode==='dry-run'||blockers.length)return result;
  const lock=await acquireExistingLock(input.lock_holder,input.python);
  const recoveryPanel=panelPort(panelFetch);
- return withResources(lock,()=>durableJournal(input.journal_directory,{recoverPreclaim:input.resume_preclaim===true?async p=>recoveryPanel('recover-preclaim',{cadence_id:p.cadence_id,step_id:p.step_id,review_hash:p.review_hash}):undefined}),async journal=>{
+ return withResources(lock,()=>durableJournal(input.journal_directory,{recoverPreclaim:input.resume_preclaim===true?p=>recoveryPanel('recover-preclaim',{cadence_id:p.cadence_id,step_id:p.step_id,review_hash:p.review_hash}):undefined,
+  recoverPreDispatch:input.resume_pre_dispatch===true?p=>recoveryPanel('recover-pre-dispatch',{cadence_id:p.cadence_id,step_id:p.step_id,review_hash:p.review_hash}):undefined,
+  reconcileReservation:input.resume_reservation===true?p=>recoveryPanel('reconcile-reservation',{cadence_id:p.cadence_id,step_id:p.step_id,review_hash:p.review_hash}):undefined}),async journal=>{
+  await onHostContext({lock_pid:lock.pid,journal_directory:input.journal_directory});
   const preflight=async p=>{
    const fresh=await gmailHistory(traced,p.payload.to);
    check(fresh.complete&&JSON.stringify(fresh.message_ids)===JSON.stringify(observed.gmail.message_ids),'HISTORY_CHANGED_OR_INCOMPLETE');
@@ -105,7 +158,7 @@ async function operation(input,{tools,fetchImpl=fetch}={}){
 // Called inside the supported CUA CDP capability of an already-authenticated panel tab.
 // Session/nonce remain in that origin; no cookies, browser storage or auth headers are read.
 async function browserPanelRequest(cdp,request){
- const {route,options={}}=request;check(/^\/api\/os\/v1\/(session|integrations\/codex-assisted\/(preview|claim|dispatch|receipt-preview|receipt-confirm|recover-preclaim|prepare-canary|approve-canary|queue-canary))$/.test(route),'PANEL_ROUTE_INVALID');
+ const {route,options={}}=request;check(/^\/api\/os\/v1\/(session|integrations\/codex-assisted\/(preview|claim|dispatch|receipt-preview|receipt-confirm|recover-preclaim|recover-pre-dispatch|reconcile-reservation|prepare-canary|approve-canary|queue-canary))$/.test(route),'PANEL_ROUTE_INVALID');
  check(['GET','POST'].includes(options.method||'GET'),'PANEL_METHOD_INVALID');
  check(Object.keys(options.headers||{}).every(k=>['Content-Type','X-Thunder-Nonce'].includes(k)),'PANEL_AUTH_HEADER_FORBIDDEN');
  const expression='(async()=>{if(location.origin!=="https://painel.r3xdigital.tech")throw Error("PANEL_ORIGIN_INVALID");const q='+JSON.stringify({route,options})+';const r=await fetch(q.route,{...q.options,credentials:"same-origin",redirect:"error",signal:AbortSignal.timeout(15000)});if(!r.ok)throw Error("PANEL_HTTP_"+r.status);return r.json();})()';
@@ -113,7 +166,7 @@ async function browserPanelRequest(cdp,request){
  check(!value.exceptionDetails&&value.result?.type==='object'&&value.result.value,'BROWSER_PANEL_REQUEST_FAILED');return value.result.value;
 }
 // Run this handler in the Codex tool host, not in the child process. Check at effect time.
-async function invokeConnectedRequest(request,tools,{allowSend=false,packet,grant,used,now=()=>Date.now()/1000}={}){
+async function invokeConnectedRequest(request,tools,{allowSend=false,packet,grant,used,consumeAttempt,checkLock,now=()=>Date.now()/1000}={}){
  // packet is the operator-held authenticated preview, NEVER a field from the RPC request.
  const check=(ok,code)=>{if(!ok)throw Error(code);};
  const canonical=v=>JSON.stringify(v&&typeof v==='object'?(Array.isArray(v)?v.map(x=>JSON.parse(canonical(x))):Object.fromEntries(Object.keys(v).sort().map(k=>[k,JSON.parse(canonical(v[k]))]))):v);
@@ -121,11 +174,18 @@ async function invokeConnectedRequest(request,tools,{allowSend=false,packet,gran
  const reads=['mcp__codex_apps__gmail_get_profile','mcp__codex_apps__gmail_search_email_ids','mcp__codex_apps__gmail_read_email'];
  if(request.tool==='mcp__codex_apps__gmail_send_email'){
   const a=request.authority;check(allowSend===true&&used instanceof Set&&packet&&grant?.dispatch_authorized===true,'SEND_NOT_AUTHORIZED');
-  check(a?.ticket_hash===grant.ticket_hash&&a?.not_after===grant.expires_at,'RPC_GRANT_MISMATCH');
+  check(a?.ticket_hash===grant.ticket_hash&&a?.not_after===grant.expires_at&&a?.job_id===packet.job_id&&
+   grant.job_id===packet.job_id&&grant.packet_hash===packet.review_hash,'RPC_GRANT_MISMATCH');
   const review_hash=packet.review_hash;
   check(/^[a-f0-9]{64}$/.test(review_hash||'')&&a?.packet_hash===review_hash&&canonical(request.args)===canonical(packet.payload),'RPC_SEND_SCOPE_MISMATCH');
   check(/^[a-f0-9]{64}$/.test(a.ticket_hash||'')&&Number.isFinite(a.not_after)&&a.not_after>now()&&a.not_after-now()<=5,'RPC_DISPATCH_EXPIRED');
-  check(!used.has(review_hash),'RPC_ALREADY_ATTEMPTED');used.add(review_hash);
+  check(typeof consumeAttempt==='function'&&typeof checkLock==='function','HOST_DURABLE_GUARDS_REQUIRED');
+  check(!used.has(review_hash)&&!used.has(a.ticket_hash),'RPC_ALREADY_ATTEMPTED');
+  check(await checkLock()===true,'LOCK_LOST_BEFORE_SEND');
+  used.add(review_hash);used.add(a.ticket_hash);
+  check(await consumeAttempt({packet_hash:review_hash,ticket_hash:a.ticket_hash,job_id:packet.job_id,not_after:a.not_after})===true,'HOST_ATTEMPT_NOT_DURABLE');
+  check(await checkLock()===true,'LOCK_LOST_BEFORE_SEND');
+  check(a.not_after>now()&&a.not_after-now()<=5,'RPC_DISPATCH_EXPIRED');
   // Never retry after this invocation, including a timeout or lost result.
   return tools.mcp__codex_apps__gmail_send_email(request.args);
  }
@@ -138,10 +198,13 @@ async function invokeConnectedRequest(request,tools,{allowSend=false,packet,gran
  }
  return raw;
 }
-module.exports={operation,sessionFetch,gmailHistory,acquireExistingLock,withResources,browserPanelRequest,invokeConnectedRequest};
+module.exports={operation,sessionFetch,gmailHistory,acquireExistingLock,withResources,browserPanelRequest,invokeConnectedRequest,consumeHostAttempt,hostGuard,executorHostGuards};
 // JSON-lines broker: Codex supplies only named connected-tool results; no eval or shell commands.
-if(require.main===module){
+if(require.main===module&&process.argv.includes('--host-guard')){
+ let input='';process.stdin.setEncoding('utf8');process.stdin.on('data',s=>{input+=s;if(input.length>16384){process.stderr.write('HOST_GUARD_INPUT_TOO_LARGE\n');process.exit(1);}});
+ process.stdin.on('end',()=>Promise.resolve().then(()=>hostGuard(JSON.parse(input))).then(result=>console.log(JSON.stringify(result))).catch(e=>{console.log(JSON.stringify({error:/^[A-Z0-9_]+$/.test(e.message)?e.message:'HOST_GUARD_FAILED'}));process.exitCode=1;}));
+}else if(require.main===module){
  const readline=require('node:readline');const lines=readline.createInterface({input:process.stdin});let seq=0,pending=null,started=false;
  const tools=new Proxy({}, {get:(_,tool)=>(args,authority)=>new Promise((resolve,reject)=>{check(!pending,'RPC_CONCURRENCY');const id=++seq;const timer=setTimeout(()=>{pending=null;reject(Error('CONNECTED_TOOL_TIMEOUT'));},60000);pending={id,resolve,reject,timer};process.stdout.write(JSON.stringify({type:'tool_call',id,tool,args,...(authority?{authority}:{})})+'\n');})});
- lines.on('line',line=>{try{const data=JSON.parse(line);if(!started){started=true;operation(data,{tools}).then(result=>{console.log(JSON.stringify({type:'result',result}));lines.close();}).catch(e=>{console.log(JSON.stringify({type:'error',code:e.message}));lines.close();process.exitCode=1;});}else{check(pending&&data.id===pending.id,'RPC_REPLY_MISMATCH');const p=pending;pending=null;clearTimeout(p.timer);data.error?p.reject(Error('CONNECTED_TOOL_ERROR')):p.resolve(data.result);}}catch{console.log(JSON.stringify({type:'error',code:'RPC_INPUT_INVALID'}));process.exitCode=1;lines.close();}});
+ lines.on('line',line=>{try{const data=JSON.parse(line);if(!started){started=true;operation(data,{tools,onHostContext:async context=>{process.stdout.write(JSON.stringify({type:'host_context',context})+'\n');}}).then(result=>{console.log(JSON.stringify({type:'result',result}));lines.close();}).catch(e=>{console.log(JSON.stringify({type:'error',code:/^[A-Z0-9_]+$/.test(e.message)?e.message:'OPERATION_FAILED',...(e.assisted?{outcome:e.assisted}:{}),...(e.cleanup_errors?{cleanup_errors:e.cleanup_errors}:{}),...(e.cleanup_readback?{cleanup:e.cleanup_readback}:{})}));lines.close();process.exitCode=1;});}else{check(pending&&data.id===pending.id,'RPC_REPLY_MISMATCH');const p=pending;pending=null;clearTimeout(p.timer);data.error?p.reject(Error('CONNECTED_TOOL_ERROR')):p.resolve(data.result);}}catch{console.log(JSON.stringify({type:'error',code:'RPC_INPUT_INVALID'}));process.exitCode=1;lines.close();}});
 }

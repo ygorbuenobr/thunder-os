@@ -1,8 +1,8 @@
 """Read-only SEQD receipt evidence; no send, reconciliation or OAuth fallback.
 
-The deployed bridge's normalized message omits SENT and Cc/Bcc evidence and
-therefore cannot satisfy this contract. A complete raw Gmail full message or an
-explicitly complete normalized message is required; missing evidence fails closed.
+A complete raw Gmail full message or an explicitly complete normalized message
+is required. Historical HTML/thread context is not receipt evidence. Missing or
+contradictory MIME evidence fails closed; reviewed line endings remain exact.
 """
 import base64
 from copy import deepcopy
@@ -72,7 +72,8 @@ def _raw_message(message):
         _require(isinstance(header, dict) and isinstance(header.get('name'), str)
                  and isinstance(header.get('value'), str))
         name, value = header['name'].lower(), header['value']
-        if name in {'from', 'to', 'subject', 'cc', 'bcc', 'date', 'message-id'}:
+        if name in {'from', 'to', 'subject', 'cc', 'bcc', 'date', 'message-id',
+                    'content-type', 'content-disposition', 'content-transfer-encoding'}:
             _require(name not in values and not any(ord(c) < 32 or ord(c) == 127 for c in value))
             values[name] = value
     _require(not values.get('cc') and not values.get('bcc'), 'email_multiple_recipients')
@@ -80,6 +81,9 @@ def _raw_message(message):
         subject = HeaderParser(policy=policy.default).parsestr('Subject: '+values['subject']+'\n\n')['Subject']
         _require(not subject.defects)
         values['subject'] = str(subject)
+    disposition = values.get('content-disposition', '')
+    _require(not re.match(r'attachment\b', disposition, re.I)
+             and not re.search(r'(?:^|;)\s*filename\s*=', disposition, re.I), 'email_mime_unsupported')
     parts, decoded, nodes = [], 0, 0
 
     def visit(part, depth):
@@ -92,16 +96,22 @@ def _raw_message(message):
         if mime == 'text/plain':
             part_headers = part.get('headers', [])
             _require(isinstance(part_headers, list))
+            ascii_charset = False
             for header in part_headers:
                 _require(isinstance(header, dict) and isinstance(header.get('name'), str)
                          and isinstance(header.get('value'), str))
                 if header['name'].lower() == 'content-type':
+                    _require(re.match(r'^text/plain(?:\s*;|$)', header['value'], re.I)
+                             and len(re.findall(r'(?:^|;)\s*charset\s*=', header['value'], re.I)) <= 1,
+                             'email_mime_unsupported')
                     charset = re.search(r'charset\s*=\s*["\']?([^;\s"\']+)', header['value'], re.I)
                     _require(charset is None or charset.group(1).lower() in {'utf-8', 'us-ascii'})
+                    ascii_charset = charset is not None and charset.group(1).lower() == 'us-ascii'
             data = body.get('data')
             _require(isinstance(data, str) and len(data) <= 90000
                      and re.fullmatch(r'[A-Za-z0-9_-]*={0,2}', data) is not None and len(data) % 4 != 1)
             raw = base64.b64decode(data+'='*((-len(data)) % 4), altchars=b'-_', validate=True)
+            _require(not ascii_charset or raw.isascii(), 'email_mime_unsupported')
             _require(type(body.get('size')) is int and body['size'] == len(raw))
             decoded += len(raw)
             _require(decoded <= 65536)
@@ -133,6 +143,9 @@ class GmailReceiptReader:
                      and response.get('status') == 'ok', 'email_account_mismatch')
             message = response.get('message')
             _require(isinstance(message, dict) and message.get('id') == identifier, 'email_message_id_mismatch')
+            for scope in (response, message):
+                _require(scope.get('context_only', False) is False
+                         and scope.get('receipt_eligible', True) is True, 'email_context_not_receipt')
             _require(not message.get('truncated'), 'email_body_incomplete')
             if 'payload' in message:
                 observed = _raw_message(message)

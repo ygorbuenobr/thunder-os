@@ -83,3 +83,21 @@ class CanaryTests(unittest.TestCase):
   a,p,j=self.recovery_fixture();before=self.repo.get_state('internal_canary',p['cadence_id'])
   with self.assertRaisesRegex(ValueError,'review_changed'):a.recover_preclaim(p['cadence_id'],'e1','0'*64)
   self.assertEqual(self.repo.get_state('internal_canary',p['cadence_id']),before)
+
+ def test_administrative_recovery_preserves_consumed_history_and_requires_new_policy(self):
+  a,p,j=self.recovery_fixture()
+  a.recover_preclaim(p['cadence_id'],'e1',p['review_hash'])
+  original=self.repo.get_state('internal_canary',p['cadence_id'])
+  with self.assertRaisesRegex(ValueError,'fresh_policy'):a.recover_pre_dispatch(p['cadence_id'],'e1',p['review_hash'])
+  # Only the fixture clock advances; no production policy or job is changed.
+  now=self.policy['expires_at']+1
+  self.policy.update(issued_at=now,expires_at=now+600)
+  a.clock=lambda:now;a.adapter.clock=lambda:now
+  with patch('thunder_os.internal_canary.time.time',return_value=now):
+   result=a.recover_pre_dispatch(p['cadence_id'],'e1',p['review_hash'])
+  after=self.repo.get_state('internal_canary',p['cadence_id'])
+  self.assertEqual(after['preclaim_recovery'],original['preclaim_recovery'])
+  self.assertEqual(len(after['recovery_history']),2)
+  self.assertEqual(result['job_id'],j['id'])
+  self.assertEqual(self.repo.effect(j['id'])['state'],'pending')
+  self.assertIsNone(self.repo.get_state('codex_assisted',j['id']))

@@ -640,6 +640,20 @@ class JourneyTests(unittest.TestCase):
             item = next(i for i in self.stage(snap, 'abordagem')['items'] if i['summary'].startswith('Passo canonico'))
             self.assertFalse(self.adapter.detail(item['id'])['editable'])
 
+    def test_confirmed_effect_projects_sent_without_mutating_approved_cadence(self):
+        row=self.canonical()
+        job=self.repo.enqueue_effect('fixture-confirmed',{'cadence_id':'actual-cadence','step':{'id':'E1'}})
+        self.repo.finish_effect(job['id'],'sent','gmail:synthetic-confirmed',None)
+        before=self.database()
+        snap=self.adapter.snapshot()
+        item=next(i for i in self.stage(snap,'abordagem')['items'] if i['summary'].startswith('Passo canonico'))
+        detail=self.adapter.detail(item['id'])
+        self.assertEqual(detail['step_status'],'sent')
+        self.assertIn(': sent',item['summary'])
+        self.assertFalse(detail['editable'])
+        self.assertEqual(self.repo.get_state('cadence','actual-cadence'),row)
+        self.assertEqual(before,self.database())
+
     def test_namespaced_canonical_ids_survive_projection_without_get_authority(self):
         original = self.canonical()
         payload = {k: v for k, v in original.items() if k not in {'id', 'version', 'updated_at'}}

@@ -8,9 +8,9 @@ function fixture(){
  journal:{createExclusive:async()=>{if(records.length)throw Error('EXISTS');records.push('created');},append:async r=>records.push(r)},
  gmail:{send_email:async()=>{sends++;return {id:'abc123'};}},panel:async(a,b)=>{
   if(a==='claim'){claimed++;const t={...packet,dispatch_authorized:true,expires_at:160};t.ticket_hash=hash(t);return t;}
-  if(a==='dispatch')return {ticket_hash:b.ticket_hash,dispatch_authorized:true,expires_at:105};
-  if(a==='receipt-preview')return {review_hash:'fixture-review'};
-  return {status:'confirmed',receipt:b.receipt};}};
+  if(a==='dispatch')return {ticket_hash:b.ticket_hash,dispatch_authorized:true,expires_at:105,packet_hash:packet.review_hash,job_id:packet.job_id};
+  if(a==='receipt-preview')return {review_hash:'a'.repeat(64),receipt:b.receipt,verification:'provider_sent_copy',attempt_attribution:'operator_reported'};
+  return {status:'confirmed',review_hash:'a'.repeat(64),receipt:b.receipt,send_attempted:false,retry_write:false,verification:'provider_sent_copy',attempt_attribution:'operator_reported'};}};
  ports.withLock.check=async()=>true;
  return {packet,ports,records,counts:()=>({sends,claimed})};
 }
@@ -20,7 +20,7 @@ test('partial history never claims or sends',async()=>{const f=fixture();f.ports
 test('changed packet rejected',async()=>{const f=fixture();f.packet.payload.to='other@example.invalid';await assert.rejects(runAssisted(f.packet,f.ports),/CHANGED/);assert.deepEqual(f.counts(),{sends:0,claimed:0});});
 test('expired ticket never sends',async()=>{const f=fixture(),old=f.ports.panel;f.ports.panel=async(...args)=>{const t=await old(...args);t.expires_at=99;delete t.ticket_hash;t.ticket_hash=hash(t);return t;};await assert.rejects(runAssisted(f.packet,f.ports),/TICKET_INVALID/);assert.equal(f.counts().sends,0);});
 test('durable journal exclusive across instances',async()=>{const fs=require('node:fs/promises'),os=require('node:os'),path=require('node:path');const dir=await fs.mkdtemp(path.join(os.tmpdir(),'assisted-fixture-'));const a=await durableJournal(dir),b=await durableJournal(dir);try{await a.createExclusive('a'.repeat(64),{synthetic:true});await a.append({state:'UNCERTAIN'});await assert.rejects(b.createExclusive('a'.repeat(64),{}),/EEXIST/);assert.equal((await fs.readFile(path.join(dir,'a'.repeat(64)+'.jsonl'),'utf8')).trim().split('\n').length,2);}finally{await a.close();await b.close();await fs.rm(dir,{recursive:true});}});
-test('panel port obtains nonce for each return, no send',async()=>{const calls=[];const port=panelPort(async(p,o)=>{calls.push([p,o]);return p.endsWith('/session')?{actor:'ygor',nonce:'synthetic'}:{review_hash:'proof',status:'confirmed'};});await reconcileAssisted({job_id:'fixture',receipt:'gmail:abc123'},port);assert.equal(calls.length,4);assert.equal(calls[1][1].headers['X-Thunder-Nonce'],'synthetic');});
+test('panel port obtains nonce for each return, no send',async()=>{const calls=[];const port=panelPort(async(p,o)=>{calls.push([p,o]);return p.endsWith('/session')?{actor:'ygor',nonce:'synthetic'}:{review_hash:'a'.repeat(64),status:'confirmed',receipt:'gmail:abc123',send_attempted:false,retry_write:false,verification:'provider_sent_copy',attempt_attribution:'operator_reported'};});await reconcileAssisted({job_id:'fixture',receipt:'gmail:abc123'},port);assert.equal(calls.length,4);assert.equal(calls[1][1].headers['X-Thunder-Nonce'],'synthetic');});
 
 test('lost lock after preflight blocks claim',async()=>{const f=fixture();f.ports.withLock.check=async()=>false;await assert.rejects(runAssisted(f.packet,f.ports),/LOCK_NOT_HELD/);assert.equal(f.counts().sends,0);assert.equal(f.counts().claimed,0);});
 
@@ -39,4 +39,56 @@ test('preclaim recovery appends to same journal exactly once, never resets inten
   const after=await fs.readFile(path.join(dir,key+'.jsonl'),'utf8');assert.ok(after.startsWith(original));assert.equal(after.trim().split('\n').length,2);
   j=await durableJournal(dir,{recoverPreclaim:recovery});await assert.rejects(j.createExclusive(key,value),/NOT_PRECLAIM/);await j.close();assert.equal(calls,1);
  }finally{await fs.rm(dir,{recursive:true,force:true});}
+});
+
+test('mismatched grant cannot dispatch even when ticket is valid',async()=>{
+ const f=fixture(),panel=f.ports.panel;f.ports.panel=async(...args)=>{const r=await panel(...args);return args[0]==='dispatch'?{...r,job_id:'other-job'}:r;};
+ await assert.rejects(runAssisted(f.packet,f.ports),/DISPATCH_REVOKED/);assert.equal(f.counts().sends,0);
+});
+test('invalid receipt preview or confirmation never reports a confirmed return',async()=>{
+ for(const action of ['receipt-preview','receipt-confirm']){
+  const f=fixture(),panel=f.ports.panel;f.ports.panel=async(...args)=>args[0]===action?{status:'blocked',receipt:'gmail:def',review_hash:'x'}:panel(...args);
+  await assert.rejects(runAssisted(f.packet,f.ports),e=>{assert.equal(e.assisted.receipt,'gmail:abc123');assert.equal(e.assisted.send_attempted,true);assert.equal(e.assisted.outcome,'provider_receipt_known_confirmation_pending');return /RECEIPT_/.test(e.message);});
+  assert.equal(f.counts().sends,1);assert.notEqual(f.records.at(-1).state,'RECEIPT_RETURNED');
+ }
+});
+test('provider receipt remains in error evidence when journal append fails',async()=>{
+ const f=fixture();f.ports.journal.append=async()=>{if(f.counts().sends)throw Error('disk failed');};
+ await assert.rejects(runAssisted(f.packet,f.ports),e=>{assert.equal(e.assisted.receipt,'gmail:abc123');assert.equal(e.journal_error,'JOURNAL_WRITE_FAILED');return true;});
+ assert.equal(f.counts().sends,1);
+});
+
+test('explicit administrative recovery preserves a bounded append-only chain and rejects send intent',async()=>{
+ const fs=require('node:fs/promises'),os=require('node:os'),path=require('node:path');
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),'pre-dispatch-chain-'));const f=fixture(),value={state:'STARTED',packet:f.packet},key=f.packet.review_hash;
+ const proof=()=>({recovered_preclaim:true,dispatch_authorized:false,review_hash:key,job_id:f.packet.job_id,checked_at:Date.now()/1000});let j,calls=0;
+ try{
+  j=await durableJournal(dir);await j.createExclusive(key,value);await j.close();
+  j=await durableJournal(dir,{recoverPreclaim:async()=>proof()});await j.createExclusive(key,value);await j.close();
+  for(let i=0;i<3;i++){j=await durableJournal(dir,{recoverPreDispatch:async()=>{calls++;return proof();}});await j.createExclusive(key,value);await j.close();}
+  let rows=(await fs.readFile(path.join(dir,key+'.jsonl'),'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(rows.length,5);assert.deepEqual(rows[0],value);assert.equal(calls,3);
+  j=await durableJournal(dir,{recoverPreDispatch:async()=>proof()});await j.createExclusive(key,value);await j.append({state:'SEND_INTENT'});await j.close();
+  j=await durableJournal(dir,{recoverPreDispatch:async()=>{calls++;return proof();}});await assert.rejects(j.createExclusive(key,value),/NOT_PRECLAIM/);assert.equal(calls,3);
+ }finally{if(j)await j.close();await fs.rm(dir,{recursive:true,force:true});}
+});
+test('reservation reconciliation reuses returned ticket without a second claim',async()=>{
+ const fs=require('node:fs/promises'),os=require('node:os'),path=require('node:path');const dir=await fs.mkdtemp(path.join(os.tmpdir(),'reservation-ticket-'));
+ const f=fixture(),value={state:'STARTED',packet:f.packet};let j;
+ try{
+  j=await durableJournal(dir);await j.createExclusive(f.packet.review_hash,value);await j.close();
+  let recovered=0;const ticket={...f.packet,dispatch_authorized:true,expires_at:Date.now()/1000+60};ticket.ticket_hash=hash(ticket);
+  j=await durableJournal(dir,{reconcileReservation:async()=>{recovered++;return ticket;}});f.ports.journal=j;
+  const result=await runAssisted(f.packet,f.ports);assert.equal(result.status,'confirmed');assert.equal(recovered,1);assert.equal(f.counts().claimed,0);assert.equal(f.counts().sends,1);await j.close();
+  j=await durableJournal(dir,{reconcileReservation:async()=>{recovered++;return ticket;}});await assert.rejects(j.createExclusive(f.packet.review_hash,value),/NOT_PRECLAIM/);assert.equal(recovered,1);
+ }finally{if(j)await j.close();await fs.rm(dir,{recursive:true,force:true});}
+});
+test('confirmation must echo the exact independently previewed review hash',async()=>{
+ const f=fixture(),panel=f.ports.panel;f.ports.panel=async(...a)=>{const r=await panel(...a);return a[0]==='receipt-confirm'?{...r,review_hash:'b'.repeat(64)}:r;};
+ await assert.rejects(runAssisted(f.packet,f.ports),/CONFIRMATION_INVALID/);assert.equal(f.counts().sends,1);
+});
+
+test('confirmed receipt is not downgraded when final journal persistence fails',async()=>{
+ const f=fixture(),append=f.ports.journal.append;f.ports.journal.append=async row=>{if(row.state==='RECEIPT_RETURNED')throw Error('journal full');return append(row);};
+ await assert.rejects(runAssisted(f.packet,f.ports),e=>e.assisted.outcome==='receipt_confirmed_journal_pending'&&e.assisted.receipt==='gmail:abc123');assert.equal(f.counts().sends,1);
 });

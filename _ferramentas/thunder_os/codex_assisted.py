@@ -101,7 +101,15 @@ class CodexAssisted:
         require(self.reader._binding(receipt)==before,'assisted_predecessor_changed_during_read')
         return contract
 
-    def recover_preclaim(self,cadence_id,step_id,review_hash):
+    def recover_pre_dispatch(self,cadence_id,step_id,review_hash):
+        """Explicit administrative renewal, no ticket/dispatch/attempt may exist.
+
+        Each renewal requires a newly approved policy after previous expiry. Keep
+        the original recovery and append audit history; never reopen dispatch.
+        """
+        return self.recover_preclaim(cadence_id,step_id,review_hash,_administrative=True)
+
+    def recover_preclaim(self,cadence_id,step_id,review_hash,*,_administrative=False):
         """One explicit recovery before any ticket; preserve job, scope and history."""
         from .internal_canary import PREFIX
         require(cadence_id.startswith(PREFIX) and step_id=='e1','assisted_recovery_internal_only')
@@ -109,7 +117,7 @@ class CodexAssisted:
         policy=self.adapter._policy()
         with self.repo.transaction():
             row=self.repo.get_state('internal_canary',cadence_id)
-            require(row and not row.get('preclaim_recovery'),'assisted_recovery_already_used')
+            require(row and (_administrative or not row.get('preclaim_recovery')),'assisted_recovery_already_used')
             self.service.check_policy(cadence_id,row['scope'],row['approval_ref'])
             require(policy['issued_at']>row['expires_at'],'assisted_recovery_fresh_policy_required')
             packet=self.preview(cadence_id,step_id)
@@ -126,16 +134,34 @@ class CodexAssisted:
             # This transaction rolls back renewal if any original runtime gate fails.
             clean={k:v for k,v in row.items() if k not in {'version','updated_at','id'}}
             self.repo.put_state('internal_canary',cadence_id,{**clean,'expires_at':policy['expires_at'],
-                'preclaim_recovery':{'previous_expires_at':row['expires_at'],'at':self.clock(),
-                    'job_id':job['id'],'review_hash':review_hash}})
+                'preclaim_recovery':row.get('preclaim_recovery') or {'previous_expires_at':row['expires_at'],'at':self.clock(),
+                    'job_id':job['id'],'review_hash':review_hash},
+                'recovery_history':row.get('recovery_history',[])+[{'previous_expires_at':row['expires_at'],
+                    'at':self.clock(),'job_id':job['id'],'review_hash':review_hash,
+                    'policy_hash':payload_hash(policy),'administrative':_administrative}]})
             error=self.worker._runtime_gate(job['payload'],step,job['effect_key'])
             require(error is None,error or 'assisted_gate_failed')
             return {'recovered_preclaim':True,'review_hash':review_hash,'job_id':job['id'],
                 'dispatch_authorized':False,'send_attempted':False,'checked_at':self.clock()}
 
-    def claim(self,cadence_id,step_id,review_hash):
+    def reconcile_reservation(self,cadence_id,step_id,review_hash):
+        """Explicit recovery of our pre-ticket reservation, never a provider retry."""
+        return self.claim(cadence_id,step_id,review_hash,_reconcile=True)
+
+    def claim(self,cadence_id,step_id,review_hash,*,_reconcile=False):
         require(self.enabled is True and self.ledger is not None,'assisted_dispatch_disabled')
         policy=self.adapter._policy()
+        # Commit intent BEFORE crossing databases. Failure keeps a durable checkpoint.
+        with self.repo.transaction():
+            packet=self.preview(cadence_id,step_id)
+            require(packet['review_hash']==review_hash,'assisted_review_changed')
+            ident=packet['job_id'];prior=self.repo.get_state('assisted_reservation_intent',ident)
+            if prior:
+                require(prior['review_hash']==review_hash,'assisted_reservation_intent_changed')
+            else:
+                require(not _reconcile,'assisted_reservation_intent_missing')
+                self.repo.append_state('assisted_reservation_intent',ident,
+                    {'review_hash':review_hash,'job_id':ident,'created_at':self.clock()})
         with self.repo.transaction():
             packet=self.preview(cadence_id,step_id)
             require(packet['review_hash']==review_hash,'assisted_review_changed')
@@ -150,8 +176,14 @@ class CodexAssisted:
             require(self.adapter._policy()==policy,'assisted_policy_changed')
             if packet.get('reply_contract'):
                 require(self.policy_loader().get('packet_review_hash')==review_hash,'assisted_followup_packet_not_approved')
-            created,touch=self.ledger.reserve(job['effect_key'],step_id,step)
-            require(created,'assisted_touch_already_reserved')
+            owned=self.ledger.reservation(job['effect_key'],step)
+            if owned:
+                require(_reconcile and owned['status']=='reserved' and not owned.get('receipt_ref'),
+                        'assisted_reservation_reconciliation_required')
+                touch=owned
+            else:
+                created,touch=self.ledger.reserve(job['effect_key'],step_id,step,strict_new=True)
+                require(created,'assisted_touch_already_reserved')
             # No retryable pending job can survive handing authority to another process.
             self.repo.finish_effect(job['id'],'uncertain',None,'assisted_receipt_pending')
             ticket={**packet,'dispatch_authorized':True,'issued_at':int(self.clock()),
@@ -189,7 +221,11 @@ class CodexAssisted:
                 require(error is None,error or 'assisted_gate_failed')
             if row['ticket'].get('reply_contract'):
                 require(self.policy_loader().get('packet_review_hash')==row['ticket']['review_hash'],'assisted_followup_packet_not_approved')
-            grant={'ticket_hash':ticket_hash,'dispatch_authorized':True,'issued_at':int(self.clock()),
+            reserved=self.ledger.reservation(job['effect_key'],step)
+            require(reserved and reserved['id']==row['ticket']['reservation_id']
+                    and reserved['status']=='reserved' and not reserved.get('receipt_ref'),
+                    'assisted_reservation_changed')
+            grant={'ticket_hash':ticket_hash,'packet_hash':row['ticket']['review_hash'],'job_id':job_id,'dispatch_authorized':True,'issued_at':int(self.clock()),
                    'expires_at':int(min(row['ticket']['expires_at'],self.clock()+5))}
             self.repo.put_state('codex_assisted',job_id,{**row,'phase':'dispatch_issued','grant':grant})
             return grant
@@ -237,13 +273,13 @@ class CodexAssisted:
             self.repo.put_state('codex_assisted',job_id,{**proof['row'],'phase':'confirmed','receipt':receipt,
                 'verification':'provider_sent_copy','attempt_attribution':'operator_reported',
                 'limitation':'Cópia enviada confirmada no Gmail; vínculo à tentativa informado pelo operador.'})
-        return {'status':'confirmed','receipt':receipt,'send_attempted':False,'retry_write':False,'verification':'provider_sent_copy','attempt_attribution':'operator_reported'}
+        return {'status':'confirmed','receipt':receipt,'review_hash':review_hash,'send_attempted':False,'retry_write':False,'verification':'provider_sent_copy','attempt_attribution':'operator_reported'}
 
 
-def configured_assisted(service):
-    from .touch_ledger import TouchLedger
+def configured_assisted(service, *, ledger_reader=None, ledger_writer=None):
+    from .touch_ledger import TouchLedger, AssistedLedger
     enabled=(os.environ.get('THUNDER_OS_CODEX_ASSISTED_DISPATCH')=='true' and
              os.environ.get('THUNDER_EXTERNAL_EFFECTS_ENABLED')=='true')
     from .internal_canary import InternalCanaryService
-    return CodexAssisted(InternalCanaryService(service),TouchLedger(),enabled=enabled,
+    return CodexAssisted(InternalCanaryService(service),AssistedLedger(ledger_reader or TouchLedger(),ledger_writer),enabled=enabled,
         policy_loader=lambda:pinned_policy('THUNDER_OS_CODEX_ASSISTED_POLICY'))

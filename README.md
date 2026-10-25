@@ -496,7 +496,7 @@ CDP suportada de uma aba já autenticada **na origem do painel**. O helper usa
 fetch same-origin/nonce existente; não lê cookies, storage ou credenciais.
 Para Gmail, usar `invokeConnectedRequest` no host das ferramentas conectadas.
 Essa função é autocontida (também pode ser carregada literalmente no host JS do
-Codex); manter um único `used: Set` por execução. Em dry-run, `allowSend` permanece
+Codex); manter um único `used: Set` por execução, além dos guards duráveis descritos abaixo. Em dry-run, `allowSend` permanece
 false. Em execução, o `packet` do helper é a cópia autenticada guardada pelo
 operador, nunca dado do pedido RPC. `grant` também é guardado pelo operador a partir da resposta autenticada
 do painel; nunca aceitar autoridade autodeclarada do pedido RPC. O runner verifica seu hash completo; o host
@@ -538,3 +538,74 @@ apenda `RECOVERED_PRECLAIM`; pode ocorrer uma vez. Qualquer `SEND_INTENT`, ticke
 dispatch, recibo ou resultado incerto impede recuperação. Falha entre commit
 remoto e append local fica retida para inspeção, nunca autoriza retry automático.
 Isso não cria permissão de envio, não remove supressões e não substitui preflight.
+
+
+### S38: composição local fail-closed (não publicada)
+
+`configured_assisted(service, ledger_reader=..., ledger_writer=...)` separa as
+capacidades. Sem writer explícito, a reserva falha com
+`assisted_writer_not_configured`; não descobre credenciais, não altera PGOPTIONS
+nem utiliza a conexão do leitor para escrever. O wrapper só expõe reserva e
+confirmação exatas. A produção permanece sem esse binding; configurar um writer
+real exige aprovação específica. O ledger SEQD não é substituto automático.
+
+Antes de reservar, uma intenção imutável é persistida no SQLite. Reserva e ticket
+não são uma transação distribuída: falha após commit PostgreSQL conserva a reserva
+exata. `reconcile-reservation` é uma operação explícita autenticada e revalida os
+gates, intenção/hash/job e propriedade da reserva antes de emitir o único ticket.
+Não adota duplicatas de outros efeitos, não libera toque e não recria job.
+Confirmação que falhe depois do commit do ledger pode ser repetida com o mesmo
+recibo verificado; nenhuma dessas operações reenvia mensagem.
+
+`resume_pre_dispatch` permite a recuperação administrativa de um journal contendo
+somente STARTED e provas pré-dispatch verificadas, após nova política exata emitida
+depois da expiração anterior. Mantém a recuperação original e acrescenta histórico.
+`resume_reservation` reconcilia a reserva pelo mesmo pacote. Ambos são explícitos;
+SEND_INTENT, ticket, resultado do provider ou incerteza bloqueiam reabertura.
+Nenhuma recuperação desta candidata foi aplicada ao job de produção.
+
+No host conectado, guardar `host_context` emitido pela entrada (PID do holder e
+diretório do journal), pacote e grant autenticados fora do RPC de envio. Usar os
+guards reais de `codex_assisted_operation.cjs`: consumo exclusivo/fsync por pacote
+e ticket no mesmo diretório, e checagem do holder imediatamente antes da chamada.
+`used:Set` é apenas uma barreira adicional, nunca a persistência. Sem guards, o host
+recusa envio. Grant vincula job, pacote e ticket. O prazo de cinco segundos não foi
+ampliado: expiração durante transporte/consumo bloqueia sem chamar provider.
+A decisão local e a chamada remota não são atômicas; resultado perdido continua
+incerto e não autoriza retry. Testes com CLI/DB reais locais não medem latência do
+conector Gmail em produção.
+
+Retorno confirmado exige recibo, hash de revisão, status e proveniência exatos.
+Erro mantém fase e recibo conhecido; confirmação pendente nunca vira sucesso.
+A Jornada projeta `sent` a partir do efeito confirmado, sem alterar aprovação ou
+prometer entrega. Histórico HTML/multipart/context-only não prova o texto exato
+enviado. Resposta verificada pode pausar a cadência vinculada sem contato CRM;
+nenhum contato é inventado e nenhuma escrita CRM decorre dessa correlação.
+
+Cleanup do entrypoint fecha journal e holder em sucesso/falha e reporta erros.
+Remoção da política/flags do serviço é uma ação operacional separada e aparece
+como `operator_required_not_performed`; o runner não alega ter alterado produção.
+Antes de qualquer futura execução, o plano aprovado deve incluir restauração OFF
+por leitura de volta, mesmo se não houver envio. Não há scheduler novo.
+
+
+Composição concreta no host conectado (nenhum comando de envio neste exemplo):
+```javascript
+const guards = executorHostGuards(tools, trustedHostContext, {scriptPath, nodePath});
+// trustedHostContext vem do evento host_context desta operação; paths são locais
+// confiáveis e fixados pelo operador, nunca argumentos do RPC Gmail.
+const result = await invokeConnectedRequest(request, tools, {
+  allowSend: false, packet: authenticatedPacket, grant: authenticatedGrant,
+  used: executionUsedSet, ...guards
+});
+```
+A factory chama somente o helper local `--host-guard` pelo executor existente;
+não precisa filesystem no V8 nem cookies/credenciais. O teste integrado executa
+helper CLI real, journal real e provider substituído, inclusive perda de resultado,
+replay por nova factory e expiração durante o consumo. O exemplo mantém envio OFF.
+
+Regressão local: 225 testes Python focados; 34 Node; 8 testes PostgreSQL/DBAPI
+opt-in com schema/roles sintéticos e reader readonly. O teste PG exige cluster
+Unix privado descartável indicado no módulo e psycopg2 já instalado; sem opt-in
+é NOT RUN, não PASS. Triggers de produção cuja leitura foi negada não são
+reproduzidos nem considerados validados. Nenhuma instalação foi necessária.

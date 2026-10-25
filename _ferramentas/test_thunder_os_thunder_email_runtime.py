@@ -51,6 +51,9 @@ class ThunderEmailTests(unittest.TestCase):
   second={**self.step,'id':'s2','order':2,'subject':'Synthetic second, never sent','content':'Never send this fixture', 'predecessor_id':'s1'}
   self.cadence=self.repo.put_state('cadence','batch-1',{**self.cadence,'execution_context':registry['context'],
       'hubspot_contact_id':'100','steps':[self.step,second],'status':'ready_for_review'})
+  if self._testMethodName.startswith('test_crm_free'):
+   value=dict(self.cadence);value.pop('hubspot_contact_id',None)
+   self.cadence=self.repo.put_state('cadence','batch-1',value)
   CampaignConfirmationTests.approve(self)
   self.job=CampaignConfirmationTests.queue(self)
   self.mail=Mail();self.policy={'version':1,'approval_ref':'synthetic-approval','mailbox':MAILBOX,
@@ -84,6 +87,56 @@ class ThunderEmailTests(unittest.TestCase):
   self.assertEqual(self.repo.effect(second['id'])['error_code'],'cadence_not_approved')
   self.assertEqual(len(self.mail.sends),1)
   self.assertTrue(self.repo.list_state('reply'));self.assertTrue(self.repo.list_state('operator_alert'))
+ def crm_free_reply_fixture(self):
+  self.sent()
+  self.assertNotIn('hubspot_contact_id',self.repo.get_state('cadence','batch-1'))
+  preview=self.cycle.preview_reply('gmail:abc123','def456','abc124')
+  return {'actor':'ygor','human_reply':True,'message_hash':preview['message_hash']}
+ def test_crm_free_verified_reply_pauses_exact_cadence_and_blocks_future_send(self):
+  review=self.crm_free_reply_fixture()
+  second=self.service.dispatch_step('batch-1','s2','ygor')
+  other=self.repo.get_state('cadence','batch-1')
+  self.repo.put_state('cadence','unrelated',{**other,'person_key':'different-person'})
+  result=self.cycle.receive_reply('gmail:abc123','def456','abc124',review=review)
+  self.assertEqual(result['status'],'paused_internal')
+  self.assertIsNone(result['reply']['hubspot_contact_id'])
+  self.assertEqual(result['reply']['identity_basis'],'verified_provider_receipt')
+  self.assertEqual(result['reply']['paused_cadence_ids'],['batch-1'])
+  self.assertEqual(result['cadence_readback']['steps'][1]['status'],'skipped_reply')
+  self.assertEqual(self.repo.get_state('cadence','unrelated')['status'],'approved')
+  self.worker.process_one()
+  self.assertEqual(self.repo.effect(second['id'])['state'],'failed')
+  self.assertEqual(len(self.mail.sends),1);self.assertEqual(self.crm.writes,[])
+  duplicate=self.cycle.receive_reply('gmail:abc123','def456','abc124',review=review)
+  self.assertTrue(duplicate['duplicate']);self.assertEqual(len(self.repo.list_state('reply')),1)
+ def test_crm_free_unbound_reply_stays_in_triage(self):
+  self.crm_free_reply_fixture()
+  result=self.cycle.reply_control.ingest({'id':'unbound','channel':'email','content':'Synthetic reply',
+   'received_at':datetime.now(timezone.utc).isoformat(),'hubspot_contact_id':None,
+   'campaign_id':self.config['campaign_id'],'human_reply':True,'identity_verified':True,
+   'source':{'provider':'gmail','account_id':MAILBOX,'provider_message_id':'unbound'}},'verified_source')
+  self.assertEqual(result['status'],'triage');self.assertFalse(result['reply']['identity_confirmed'])
+  self.assertEqual(self.repo.get_state('cadence','batch-1')['status'],'approved')
+ def test_crm_free_wrong_sender_cannot_pause(self):
+  review=self.crm_free_reply_fixture();thread=self.mail.conversation('def456')
+  thread['thread']['messages'][1]['from']='other@example.invalid'
+  with patch.object(self.mail,'conversation',return_value=thread):
+   with self.assertRaisesRegex(ValueError,'gmail_thread_evidence_incomplete'):
+    self.cycle.receive_reply('gmail:abc123','def456','abc124',review=review)
+  self.assertEqual(self.repo.list_state('reply'),[])
+  self.assertEqual(self.repo.get_state('cadence','batch-1')['status'],'approved')
+ def test_crm_free_reply_stale_binding_rejected_inside_reply_transaction(self):
+  review=self.crm_free_reply_fixture();original=self.cycle.reply_control.ingest
+  def changed(*args,**kwargs):
+   cadence=self.repo.get_state('cadence','batch-1')
+   self.repo.put_state('cadence','batch-1',{**cadence,'person_key':'changed-person'})
+   return original(*args,**kwargs)
+  with patch.object(self.cycle.reply_control,'ingest',side_effect=changed):
+   with self.assertRaisesRegex(ValueError,'reply_provider_binding_changed'):
+    self.cycle.receive_reply('gmail:abc123','def456','abc124',review=review)
+  self.assertEqual(self.repo.list_state('reply'),[])
+  self.assertEqual(self.repo.get_state('cadence','batch-1')['status'],'approved')
+  self.assertEqual(self.crm.writes,[])
  def test_direct_adapter_send_requires_worker_fence(self):
   self.adapter.prepare_job(self.job)
   effect={'target':self.step['recipient'],'subject':self.step['subject'],'content':self.step['content'],'effect_id':'s1'}

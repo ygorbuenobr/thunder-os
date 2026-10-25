@@ -632,6 +632,8 @@ class JourneyReadonly:
                     evidence = effect.get('assisted_evidence')
                     if evidence and evidence.get('attempt_attribution') == 'operator_reported':
                         blocks.append(_block(evidence['limitation'], label='Recibo da execução assistida'))
+                projected_status = ('sent' if any(e.get('state') == 'sent' and e.get('receipt_ref') for e in related)
+                                    else step.get('status'))
                 editable = (effects is not None and cadence_row.get('status') in {'ready_for_review', 'approved'}
                     and step.get('status') in {'draft', 'approved'} and not step.get('discarded')
                     and not any(e.get('receipt_ref') or e.get('state') != 'failed' for e in related))
@@ -641,11 +643,11 @@ class JourneyReadonly:
                     blocks or [_block(label='Conversa original nao observada para este passo')],
                     draft={'text': _text(step['content']), 'subject': _text(step.get('subject')) or None,
                            'origin': 'canonical_cadence_state'},
-                    summary='Passo canonico ' + sid + ': ' + str(step.get('status') or 'status desconhecido'))
+                    summary='Passo canonico ' + sid + ': ' + str(projected_status or 'status desconhecido'))
                 details[ident].update(canonical_cadence_id=canonical_id, canonical_step_id=sid,
                     canonical_account_id=cadence_row.get('account_id'), campaign_id=cid,
                     canonical_cadence_version=cadence_row.get('version'), channel=step.get('channel'),
-                    step_status=step.get('status'), date=cadence_row.get('updated_at'), editable=bool(editable),
+                    step_status=projected_status, date=cadence_row.get('updated_at'), editable=bool(editable),
                     approval_reason='Revisao obrigatoria no backend para o toque exato; este GET nao autoriza execucao.',
                     source_links=sorted([dict(pair) for pair in {tuple(sorted(link.items())) for link in links}],
                                         key=lambda link: (link['url'], link['label'])))

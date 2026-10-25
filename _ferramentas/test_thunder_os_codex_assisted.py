@@ -42,6 +42,65 @@ class AssistedTests(unittest.TestCase):
   self.cycle.receive_reply('gmail:abc123','def456','abc124',review={'actor':'ygor','human_reply':True,'message_hash':reply['message_hash']})
   self.worker.process_one();self.assertEqual(self.repo.effect(second['id'])['state'],'failed')
   self.assertEqual(self.repo.get_state('cadence','batch-1')['status'],'paused_reply');self.assertEqual(len(self.mail.sends),1)
+ def test_reservation_crash_requires_explicit_same_identity_reconciliation(self):
+  packet=self.packet();original=self.repo.append_state
+  def fault(kind,*args,**kwargs):
+   if kind=='codex_assisted':raise RuntimeError('synthetic crash after PostgreSQL commit')
+   return original(kind,*args,**kwargs)
+  with patch.object(self.repo,'append_state',side_effect=fault):
+   with self.assertRaisesRegex(RuntimeError,'synthetic crash'):self.assisted.claim('batch-1','s1',packet['review_hash'])
+  self.assertEqual(self.repo.effect(self.job['id'])['state'],'pending')
+  self.assertIsNone(self.repo.get_state('codex_assisted',self.job['id']))
+  owned=self.ledger.reservation(self.job['effect_key'],self.job['payload']['step'])
+  self.assertEqual(owned['status'],'reserved')
+  with self.assertRaisesRegex(ValueError,'reconciliation_required'):self.assisted.claim('batch-1','s1',packet['review_hash'])
+  ticket=self.assisted.reconcile_reservation('batch-1','s1',packet['review_hash'])
+  self.assertEqual(ticket['reservation_id'],owned['id'])
+  self.assertEqual(ticket['job_id'],self.job['id'])
+  self.assertEqual(self.mail.sends,[])
+  with self.assertRaisesRegex(ValueError,'unavailable'):self.assisted.reconcile_reservation('batch-1','s1',packet['review_hash'])
+ def test_reader_only_composition_never_falls_back_to_generic_writer(self):
+  from thunder_os.touch_ledger import AssistedLedger,TouchBlocked
+  self.assisted.ledger=AssistedLedger(self.ledger)
+  self.assisted.worker.ledger=self.assisted.ledger
+  with self.assertRaisesRegex(TouchBlocked,'writer_not_configured'):self.assisted.claim('batch-1','s1',self.packet()['review_hash'])
+  self.assertIsNone(self.ledger.reservation(self.job['effect_key'],self.job['payload']['step']))
+  self.assertEqual(self.mail.sends,[])
+ def test_explicit_writer_composition_and_grant_bound_to_packet(self):
+  from thunder_os.touch_ledger import AssistedLedger
+  self.assisted.ledger=AssistedLedger(self.ledger,self.ledger)
+  self.assisted.worker.ledger=self.assisted.ledger
+  packet=self.packet();ticket=self.assisted.claim('batch-1','s1',packet['review_hash'])
+  grant=self.assisted.dispatch(ticket['job_id'],ticket['ticket_hash'])
+  self.assertEqual(grant['packet_hash'],packet['review_hash'])
+  self.assertEqual(grant['job_id'],packet['job_id'])
+  self.assertLessEqual(grant['expires_at']-grant['issued_at'],5)
+ def test_foreign_duplicate_cannot_be_adopted_during_reconciliation(self):
+  self.ledger.reserve('foreign-synthetic-effect','s1',self.job['payload']['step'])
+  packet=self.packet()
+  for invoke in (self.assisted.claim,self.assisted.reconcile_reservation):
+   with self.assertRaisesRegex(ValueError,'already_reserved'):invoke('batch-1','s1',packet['review_hash'])
+  self.assertIsNone(self.ledger.reservation(self.job['effect_key'],self.job['payload']['step']))
+  self.assertEqual(self.mail.sends,[])
+ def test_reservation_changed_before_dispatch_never_authorizes_call(self):
+  ticket=self.assisted.claim('batch-1','s1',self.packet()['review_hash'])
+  self.ledger.finish(self.job['effect_key'],'sent','gmail:already-synthetic')
+  with self.assertRaisesRegex(ValueError,'reservation_changed'):
+   self.assisted.dispatch(ticket['job_id'],ticket['ticket_hash'])
+  self.assertEqual(self.mail.sends,[])
+ def test_confirmation_cross_database_crash_reconciles_same_receipt_without_send(self):
+  self.claim()
+  preview=self.assisted.receipt_preview(self.job['id'],'gmail:abc123')
+  with patch.object(self.repo,'confirm_uncertain_receipt',side_effect=RuntimeError('synthetic crash after ledger confirmation')):
+   with self.assertRaises(RuntimeError):self.assisted.receipt_confirm(self.job['id'],'gmail:abc123',preview['review_hash'])
+  self.assertEqual(self.repo.effect(self.job['id'])['state'],'uncertain')
+  self.assertEqual(self.ledger.reservation(self.job['effect_key'],self.job['payload']['step'])['status'],'sent')
+  preview=self.assisted.receipt_preview(self.job['id'],'gmail:abc123')
+  result=self.assisted.receipt_confirm(self.job['id'],'gmail:abc123',preview['review_hash'])
+  self.assertEqual(result['review_hash'],preview['review_hash'])
+  self.assertEqual(result['status'],'confirmed')
+  self.assertEqual(self.repo.effect(self.job['id'])['state'],'sent')
+  self.assertEqual(self.mail.sends,[])
  def test_default_off_preview_does_not_authorize(self):
   with patch.dict('os.environ',{},clear=True):app=configured_assisted(self.service)
   self.assertFalse(app.preview('batch-1','s1')['dispatch_authorized'])

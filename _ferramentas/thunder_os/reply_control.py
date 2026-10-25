@@ -166,7 +166,25 @@ class ReplyControl:
                 and (row.get('hubspot_contact_id') == contact
                     or (row.get('hubspot_contact_id') is None and row.get('person_key') in keys))]
 
-    def ingest(self, payload, actor):
+    def _provider_match(self, value, correlation):
+        # Trusted runtime entry only: revalidate persisted receipt ownership inside
+        # the same transaction as the pause. No network or CRM identity inference.
+        from .email_readback import GmailReceiptReader
+        _require(isinstance(correlation, Mapping) and set(correlation) == {'receipt', 'binding'},
+                 'reply_provider_correlation_invalid')
+        _require(value['source']['provider'] == 'gmail' and value['channel'] == 'email'
+                 and value['identity_verified'] is True and value['hubspot_contact_id'] is None,
+                 'reply_provider_correlation_invalid')
+        current = GmailReceiptReader(self.repo)._binding(correlation['receipt'])
+        _require(current == correlation['binding'], 'reply_provider_binding_changed')
+        job, cadence, context, binding = current
+        _require(cadence.get('hubspot_contact_id') is None
+                 and context['campaign_id'] == value['campaign_id']
+                 and binding['provider_accounts']['email'] == value['source']['account_id']
+                 and _text(cadence.get('person_key')), 'reply_provider_correlation_invalid')
+        return cadence
+
+    def ingest(self, payload, actor, *, provider_correlation=None):
         self._validate(payload, actor)
         _require(getattr(self.repo._local, 'connection', None) is None,
                  'reply_outer_transaction_blocked')
@@ -179,14 +197,20 @@ class ReplyControl:
             if existing is not None:
                 _require(existing.get('input_hash') == fingerprint, 'reply_event_conflict')
                 return self._result(existing, duplicate=True)
-            verified = self._identity(value)
+            correlated = (self._provider_match(value, provider_correlation)
+                          if provider_correlation is not None else None)
+            verified = correlated is not None or self._identity(value)
             human = value['human_reply'] is True
-            matches = self._matches(value['hubspot_contact_id']) if verified and human else []
+            matches = ([correlated] if correlated is not None else
+                       self._matches(value['hubspot_contact_id'])) if verified and human else []
             bridge = _CadenceBridge(self.repo, matches)
             incoming = {**value, 'id': ident, 'event_id': value['id'], 'actor': actor,
                         'input_hash': fingerprint, 'control_source': 'reply_control',
                         'identity_confirmed': verified, 'paused_cadence_ids': [r['id'] for r in matches],
                         'external_pauses_enabled': False}
+            if correlated is not None:
+                incoming['identity_basis'] = 'verified_provider_receipt'
+                incoming['provider_receipt'] = provider_correlation['receipt']
             if matches:
                 incoming.update(person_key=matches[0].get('person_key') or 'hubspot:' + value['hubspot_contact_id'],
                                 account_slug=matches[0].get('account_id') or 'internal',

@@ -272,9 +272,11 @@ class ThunderEmailCycle:
         if _preview:
             return {'message':event,'message_hash':payload_hash(event),'external_writes':0,'send_attempted':False}
         result=self.reply_control.ingest({'id':'gmail-'+message_id,'channel':'email','content':event['text'],
-            'received_at':event['date'],'hubspot_contact_id':cadence['hubspot_contact_id'],
+            'received_at':event['date'],'hubspot_contact_id':cadence.get('hubspot_contact_id'),
             'campaign_id':context['campaign_id'],'human_reply':True,'identity_verified':True,
-            'source':{'provider':'gmail','account_id':MAILBOX,'provider_message_id':message_id}},'verified_source')
+            'source':{'provider':'gmail','account_id':MAILBOX,'provider_message_id':message_id}},'verified_source',
+            provider_correlation=({'receipt':receipt,'binding':before}
+                                  if cadence.get('hubspot_contact_id') is None else None))
         current=self.repo.get_state('cadence',cadence['id'])
         return {**result,'cadence_readback':{'id':cadence['id'],'status':current.get('status'),
             'steps':deepcopy(current['steps'])},'external_writes':0,'send_attempted':False}

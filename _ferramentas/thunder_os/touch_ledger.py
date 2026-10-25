@@ -116,7 +116,7 @@ class TouchLedger:
                 "SELECT pg_advisory_xact_lock(hashtext(" + marker + "))", (f"{channel}:{person}",)
             )
 
-    def reserve(self, effect_key: str, step_id: str, step: Mapping[str, Any]) -> tuple[bool, dict[str, Any]]:
+    def reserve(self, effect_key: str, step_id: str, step: Mapping[str, Any], *, strict_new=False) -> tuple[bool, dict[str, Any]]:
         channel, action, person, target = self._scope(step, effect_key)
         with self._banco() as (connection, marker):
             self._lock(connection, marker, channel, person)
@@ -141,6 +141,9 @@ class TouchLedger:
             )
             existing = cursor.fetchone()
             if existing:
+                if strict_new:
+                    return False, {'id':str(existing[0]),'status':STATUS_FROM_DB[existing[1]],
+                                   'receipt_ref':existing[2],'error_code':existing[3]}
                 cursor.execute(
                     "INSERT INTO thunder_effect_touches(effect_key,touch_id) VALUES ("
                     + marker + "," + marker + ") ON CONFLICT(effect_key) DO NOTHING",
@@ -163,6 +166,21 @@ class TouchLedger:
                 (effect_key, touch_id),
             )
             return True, {"id": str(touch_id), "status": "reserved"}
+
+    def reservation(self, effect_key, step):
+        """Read exact ownership; an unrelated duplicate is never recoverable."""
+        scope = self._scope(step, effect_key)
+        with self._banco() as (connection, marker):
+            cursor = connection.cursor()
+            cursor.execute('SELECT t.id,t.canal,t.acao,t.pessoa_chave,t.alvo,t.ref,t.status,t.provider_id '
+                           'FROM thunder_effect_touches e JOIN toques t ON t.id=e.touch_id WHERE e.effect_key='+marker,
+                           (effect_key,))
+            row = cursor.fetchone()
+        if not row:
+            return None
+        if tuple(row[1:6]) != (*scope, step['id']):
+            raise TouchBlocked('reservation ownership conflict')
+        return {'id':str(row[0]),'status':STATUS_FROM_DB[row[6]],'receipt_ref':row[7]}
 
     def preflight(
         self, effect_key: str, step: Mapping[str, Any], *, raise_blocked: bool = False,
@@ -354,3 +372,33 @@ class TouchLedger:
             if classification in {"negative", "opt_out", "risk"}:
                 self._write_suppressions(cursor, marker, scope, classification)
             return reply_id
+
+
+class AssistedLedger:
+    """Separate read capability from explicitly supplied writer. No credentials/env overrides.
+
+    Production composition deliberately supplies no writer until separately authorized.
+    A writer must implement the same exact-scope reserve/confirm contract; generic
+    SQL connections and alternative credentials are not discovered by this class.
+    """
+    def __init__(self, reader, writer=None):
+        self.reader, self.writer = reader, writer
+
+    def preflight(self, *args, **kwargs):
+        return self.reader.preflight(*args, **kwargs)
+
+    def reservation(self, *args, **kwargs):
+        return self.reader.reservation(*args, **kwargs)
+
+    def validate_identity(self, *args, **kwargs):
+        return self.reader.validate_identity(*args, **kwargs)
+
+    def reserve(self, *args, **kwargs):
+        if self.writer is None:
+            raise TouchBlocked('assisted_writer_not_configured')
+        return self.writer.reserve(*args, **kwargs)
+
+    def confirm_receipt(self, *args, **kwargs):
+        if self.writer is None:
+            raise TouchBlocked('assisted_writer_not_configured')
+        return self.writer.confirm_receipt(*args, **kwargs)

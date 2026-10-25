@@ -23,8 +23,8 @@ RECEIPT = 'gmail:'+IDENTIFIER
 
 
 def message():
-    # Complete normalized evidence is a synthetic contract fixture. The current
-    # deployed bridge does NOT expose sent/cc/bcc and cannot produce this shape.
+    # Complete normalized evidence is synthetic; this fixture does not claim
+    # deployment or live provider qualification.
     return {'mailbox': MAILBOX, 'status': 'ok', 'message': {
         'id': IDENTIFIER, 'thread_id': 'def456', 'from': 'Synthetic Sender <'+MAILBOX+'>',
         'to': 'Synthetic Target <recipient@example.invalid>', 'subject': 'Synthetic subject',
@@ -179,6 +179,44 @@ class EmailReadbackTests(unittest.TestCase):
             self.client.response = row
             with self.subTest(index=index), self.assertRaises(EmailReadbackError):
                 self.reader.read_message(RECEIPT)
+
+    def test_context_only_history_never_becomes_exact_receipt(self):
+        for scope in ('response', 'message'):
+            for flag, value in (('context_only', True), ('receipt_eligible', False)):
+                response = message()
+                (response if scope == 'response' else response['message'])[flag] = value
+                self.client.response = response
+                with self.subTest(scope=scope, flag=flag), self.assertRaisesRegex(
+                        EmailReadbackError, 'email_context_not_receipt'):
+                    self.reader.read_message(RECEIPT)
+
+    def test_raw_ambiguous_mime_headers_and_attachment_disposition_fail_closed(self):
+        variants = [
+            [('Content-Type', 'text/html; charset=UTF-8')],
+            [('content-type', 'text/plain; charset=UTF-8'), ('Content-Type', 'text/plain; charset=UTF-8')],
+            [('Content-Type', 'text/plain; charset=UTF-8; charset=iso-8859-1')],
+            [('Content-Type', 'text/plain; charset=UTF-8'), ('Content-Disposition', 'attachment')],
+            [('Content-Type', 'text/plain; charset=UTF-8'), ('Content-Disposition', 'inline; filename=hidden.txt')],
+            [('Content-Type', 'text/plain; charset=UTF-8'), ('Content-Disposition', 'inline'), ('content-disposition', 'attachment')],
+        ]
+        for extra in variants:
+            response = raw_message()
+            payload = response['message']['payload']
+            payload['headers'] = [h for h in payload['headers'] if h['name'].lower() != 'content-type']
+            payload['headers'] += [{'name': name, 'value': value} for name, value in extra]
+            self.client.response = response
+            with self.subTest(headers=extra), self.assertRaises(EmailReadbackError):
+                self.reader.read_message(RECEIPT)
+
+    def test_raw_ascii_claim_cannot_hide_non_ascii_utf8(self):
+        response = raw_message()
+        body = 'Conteúdo não ASCII'.encode('utf-8')
+        payload = response['message']['payload']
+        payload['body'] = {'size': len(body), 'data': base64.urlsafe_b64encode(body).decode()}
+        next(h for h in payload['headers'] if h['name'] == 'Content-Type')['value'] = 'text/plain; charset=us-ascii'
+        self.client.response = response
+        with self.assertRaises(EmailReadbackError):
+            self.reader.read_message(RECEIPT)
 
     def test_binding_missing_wrong_state_and_ambiguous_reject_before_get(self):
         with self.assertRaises(EmailReadbackError):self.reader.readback(RECEIPT)
@@ -446,6 +484,35 @@ class OneShotEvidenceTests(unittest.TestCase):
         result=GmailReceiptReader(Mock(),ReadClient(row)).read_sent_event(RECEIPT,self.expected())
         self.assertEqual(result['occurred_at'],'2026-10-25T13:00:00.000Z')
         self.assertEqual(result['scope'],'sent_copy_not_delivery');self.assertEqual(result['external_writes'],0)
+    def test_plain_crlf_is_preserved_and_requires_exact_reviewed_line_endings(self):
+        response = raw_message()
+        body = b'Synthetic content\r\nSecond line.'
+        response['message']['payload']['body'] = {
+            'size': len(body), 'data': base64.urlsafe_b64encode(body).decode().rstrip('=')}
+        response['message']['payload']['headers'].append({
+            'name': 'Date', 'value': 'Sun, 25 Oct 2026 13:00:00 +0000'})
+        reader = GmailReceiptReader(Mock(), ReadClient(response))
+        self.assertEqual(reader.read_message(RECEIPT)['content'], body.decode())
+        with self.assertRaisesRegex(EmailReadbackError, 'email_reviewed_content_mismatch'):
+            reader.read_sent_event(RECEIPT, self.expected())
+        exact = dict(self.expected(), content=body.decode())
+        event = reader.read_sent_event(RECEIPT, exact)
+        self.assertEqual(event['text'], body.decode())
+        self.assertEqual(event['scope'], 'sent_copy_not_delivery')
+        self.assertEqual(event['external_writes'], 0)
+
+    def test_historical_html_with_visible_matching_text_is_not_exact_mime_proof(self):
+        for mime in ('text/html', 'multipart/alternative'):
+            response = raw_message()
+            plain = deepcopy(response['message']['payload'])
+            html = '<p>Synthetic content<br>Second line.</p>'.encode()
+            response['message']['payload'] = {
+                **plain, 'mimeType': mime,
+                'body': {'size': len(html), 'data': base64.urlsafe_b64encode(html).decode()},
+                **({'parts': [plain]} if mime.startswith('multipart') else {})}
+            with self.subTest(mime=mime), self.assertRaisesRegex(EmailReadbackError, 'email_mime_unsupported'):
+                GmailReceiptReader(Mock(), ReadClient(response)).read_sent_event(RECEIPT, self.expected())
+
     def test_missing_naive_or_invalid_date_is_not_collection_time(self):
         for date in (None,'bad','Sun, 25 Oct 2026 10:00:00 -0000'):
             row=message();row['message']['date']=date
