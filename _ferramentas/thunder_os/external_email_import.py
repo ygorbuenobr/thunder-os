@@ -128,10 +128,10 @@ def plan_contact(contact, snapshot):
     return _seal({**base, 'action': 'create', 'properties': properties})
 
 
-def plan_email(event, contact_id):
+def plan_email(event, contact_id, *, source_validator=source_identity):
     """The caller must obtain event from a provider read, not a webhook alone."""
     require(isinstance(event, Mapping), 'invalid_email_event')
-    source = source_identity(event.get('source'))
+    source = source_validator(event.get('source'))
     require(record_id(contact_id), 'invalid_contact_id')
     kind = event.get('event_type')
     require(kind in ('email_sent', 'reply_received', 'auto_reply_received'), 'invalid_event_type')
@@ -153,7 +153,7 @@ def plan_email(event, contact_id):
                   'effect_id': reference})
 
 
-def _validate_plan(plan):
+def _validate_plan(plan, *, source_validator=source_identity):
     require(isinstance(plan, Mapping), 'invalid_plan')
     value = {key: item for key, item in plan.items() if key != 'plan_hash'}
     require(plan.get('plan_hash') == payload_hash(value) and plan.get('portal_id') == PORTAL_ID,
@@ -170,7 +170,7 @@ def _validate_plan(plan):
         if plan['action'] == 'existing':
             require(record_id(plan.get('record_id')) and not props, 'contact_overwrite_blocked')
     else:
-        source_identity(plan.get('source'))
+        source_validator(plan.get('source'))
         require(record_id(plan.get('contact_id')) and set(plan.get('properties', {})) == set(EMAIL_PROPERTIES),
                 'invalid_email_plan')
         require(plan.get('event_type') == 'email_sent' or
@@ -183,11 +183,12 @@ def _validate_plan(plan):
 
 class HubSpotExternalEmail:
     """Fixed origin. Canonical reads plus two opt-in CRM log/create operations."""
-    def __init__(self, credential_loader=None, *, request=None, enabled=False, authorize=None, timeout=15):
+    def __init__(self, credential_loader=None, *, request=None, enabled=False, authorize=None, timeout=15, plan_validator=None):
         require(type(timeout) in (int, float) and math.isfinite(timeout) and 0 < timeout <= 30,
                 'invalid_timeout')
         self._loader, self._request = credential_loader, request or _https_request
         self.enabled, self.authorize, self.timeout = enabled, authorize, timeout
+        self.validate_plan = plan_validator or _validate_plan
 
     def _call(self, method, path, body=None):
         require(callable(self._loader), 'configuration_pending')
@@ -276,7 +277,7 @@ class HubSpotExternalEmail:
         A possible legacy duplicate cannot be attributed to this provider ID;
         retain it for human reconciliation rather than logging a second EMAIL.
         """
-        _validate_plan(plan)
+        self.validate_plan(plan)
         require(plan['object_type'] == 'emails', 'invalid_object_type')
         cursor, seen, records, unknown = None, set(), [], 0
         suffix = '\n\n[Thunder OS source: ' + plan['effect_id'] + ']'
@@ -313,7 +314,7 @@ class HubSpotExternalEmail:
         raise ExternalEmailError('incomplete_email_dedupe')
 
     def write(self, plan):
-        _validate_plan(plan)
+        self.validate_plan(plan)
         require(self.enabled is True, 'email_writers_disabled')
         require(callable(self.authorize) and self.authorize(deepcopy(plan)) is True,
                 'email_write_not_authorized')
@@ -331,9 +332,10 @@ class ExternalEmailImport:
     The same callback authorizes the existing human click/delegated operation.
     It is not a new approval type. Readback does not establish causation.
     """
-    def __init__(self, repository, transport, *, enabled=False, authorize=None):
+    def __init__(self, repository, transport, *, enabled=False, authorize=None, plan_validator=None):
         self.repo, self.transport = repository, transport
         self.enabled, self.authorize = enabled, authorize
+        self.validate_plan = plan_validator or _validate_plan
 
     def _authority(self, plan):
         require(self.enabled is True, 'email_writers_disabled')
@@ -357,7 +359,7 @@ class ExternalEmailImport:
         return effect, keys
 
     def execute(self, plan):
-        _validate_plan(plan)
+        self.validate_plan(plan)
         plan = deepcopy(plan)
         self._authority(plan)  # OFF before Repository, credentials and provider access.
         require(getattr(self.repo._local, 'connection', None) is None,
@@ -423,7 +425,7 @@ class ExternalEmailImport:
                             {**self.repo.get_state('hubspot_attempt', effect), **updates})
 
     def reconcile(self, plan, *, recovered_id=None):
-        _validate_plan(plan)
+        self.validate_plan(plan)
         self._authority(plan)
         self.transport.portal()
         effect, _ = self._keys(plan)

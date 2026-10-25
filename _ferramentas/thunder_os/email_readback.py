@@ -8,6 +8,8 @@ import base64
 from copy import deepcopy
 from email import policy
 from email.parser import HeaderParser
+from email.utils import parsedate_to_datetime
+from datetime import timezone
 import os
 import re
 
@@ -70,7 +72,7 @@ def _raw_message(message):
         _require(isinstance(header, dict) and isinstance(header.get('name'), str)
                  and isinstance(header.get('value'), str))
         name, value = header['name'].lower(), header['value']
-        if name in {'from', 'to', 'subject', 'cc', 'bcc'}:
+        if name in {'from', 'to', 'subject', 'cc', 'bcc', 'date', 'message-id'}:
             _require(name not in values and not any(ord(c) < 32 or ord(c) == 127 for c in value))
             values[name] = value
     _require(not values.get('cc') and not values.get('bcc'), 'email_multiple_recipients')
@@ -108,7 +110,7 @@ def _raw_message(message):
     visit(payload, 0)
     _require(len(parts) == 1)
     return {'from': values.get('from'), 'to': values.get('to'), 'subject': values.get('subject'),
-            'body': ''.join(parts), 'sent': True, 'cc': '', 'bcc': '', 'truncated': False}
+            'body': ''.join(parts), 'sent': True, 'cc': '', 'bcc': '', 'truncated': False, 'date': values.get('date'), 'message_id':values.get('message-id')}
 
 
 class GmailReceiptReader:
@@ -135,7 +137,7 @@ class GmailReceiptReader:
             if 'payload' in message:
                 observed = _raw_message(message)
                 # If both schemas are supplied they must describe the same message.
-                for field in ('from', 'to', 'subject', 'body', 'sent', 'cc', 'bcc', 'truncated'):
+                for field in ('from', 'to', 'subject', 'body', 'sent', 'cc', 'bcc', 'truncated', 'date', 'message_id'):
                     _require(field not in message or message[field] == observed[field], 'email_raw_mismatch')
             else:
                 observed = message
@@ -151,11 +153,42 @@ class GmailReceiptReader:
             _require(not any(ord(c) < 32 or ord(c) == 127 for c in subject))
             return {'id': identifier, 'mailbox': response['mailbox'], 'from': sender, 'to': target,
                     'subject': subject,
-                    'content': _text(observed.get('body'), 65536), 'sent': True}
+                    'content': _text(observed.get('body'), 65536), 'sent': True,
+                    **({'source_message_id':observed['message_id']} if observed.get('message_id') is not None else {}),
+                    **({'source_date':observed['date']} if observed.get('date') is not None else {})}
         except EmailReadbackError:
             raise
         except Exception:
             raise EmailReadbackError('email_read_unavailable') from None
+
+    def read_sent_event(self, receipt_ref, expected):
+        """Prepare evidence for an exact reviewed one-shot; never create CRM data.
+
+        Date comes from the provider's sent message, never the collector clock.
+        This proves a sent copy in the mailbox, not delivery or a human reply.
+        No cadence/effect is fabricated for a SEQD one-shot receipt.
+        """
+        _require(isinstance(expected, dict) and set(expected) == {'mailbox','to','subject','content'},
+                 'email_expected_scope_invalid')
+        _require(expected.get('mailbox') == MAILBOX, 'email_account_mismatch')
+        observed = self.read_message(receipt_ref)
+        _require(all(observed.get(key) == expected[key] for key in expected), 'email_reviewed_content_mismatch')
+        try:
+            raw = observed.get('source_date')
+            _require(isinstance(raw,str) and 0 < len(raw) <= 128
+                     and not any(ord(c)<32 or ord(c)==127 for c in raw), 'email_source_time_missing')
+            when = parsedate_to_datetime(raw)
+            _require(when.tzinfo is not None, 'email_source_time_unverified')
+            occurred = when.astimezone(timezone.utc).isoformat(timespec='milliseconds').replace('+00:00','Z')
+        except EmailReadbackError:
+            raise
+        except Exception:
+            raise EmailReadbackError('email_source_time_unverified') from None
+        return {'event_type':'email_sent','source':{'provider':'gmail','account_id':MAILBOX,
+                'provider_id':observed['id']}, 'lead_email':observed['to'],
+                'subject':observed['subject'], 'text':observed['content'], 'occurred_at':occurred,
+                'time_source':'provider_message_date_header', 'receipt_ref':receipt_ref,
+                'scope':'sent_copy_not_delivery', 'read_only':True, 'external_writes':0}
 
     def _binding(self, receipt_ref):
         identifier = _receipt_id(receipt_ref)

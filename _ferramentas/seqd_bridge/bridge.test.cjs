@@ -79,3 +79,42 @@ test('send-enabled readiness requires working quota but read-only status does no
 test('native bootstrap pins legacy sender guard before permitting any session',()=>{
  assert.equal(require('./native.cjs').PINS['chunks/3317.js'],'d63f208341bdb2cbce20edfbfea9c2ef9dca32977ded98bd9af5818c949e1267');
 });
+test('scoped bridge pins recipient content expiry and one journal attempt across restart',async t=>{
+ const {createScopedBridge}=require('./server.cjs');const f=await fixture(t),e=envelope();
+ const p={approval_ref:'synthetic-only',mailbox:EXPECTED.email,to:e.to,subject:e.subject,body_hash:hash(e.body),idempotency_key:e.idempotency_key,issued_at:NOW-1,expires_at:NOW+300000,max_attempts:1};
+ const options={readProvider:f.provider,writeProvider:f.provider,credential:KEY,journalDir:f.dir,policyLoader:()=>p,now:()=>NOW};
+ const bridge=createScopedBridge(options);
+ for(const changed of [{to:'other@example.invalid'},{body:'changed'},{subject:'changed'},{idempotency_key:'other'},{thread_id:'thread-other'}])
+  await assert.rejects(call(bridge,'POST','/v1/send',envelope(changed)),/scoped_policy_mismatch/);
+ assert.equal(f.sends(),0);
+ assert.equal((await call(bridge,'POST','/v1/send',e)).status,'sent');
+ assert.equal((await call(createScopedBridge(options),'POST','/v1/send',e)).status,'sent');assert.equal(f.sends(),1);
+ p.expires_at=NOW;await assert.rejects(call(bridge,'POST','/v1/send',e),/scoped_policy_mismatch/);assert.equal(f.sends(),1);
+ // Read requests still use the richer read-only path, never the mutable provider.
+ assert.equal((await call(bridge,'GET','/v1/status')).send_enabled,false);
+});
+test('scoped authority revoked during provider read blocks before send',async t=>{
+ const f=await fixture(t);let authorized=true;
+ f.provider.findDuplicates=async()=>{authorized=false;return {messages:[],complete:true};};
+ const bridge=createBridge({...f.options,sendAuthority:()=>authorized});
+ assert.equal((await call(bridge,'POST','/v1/send',envelope())).status,'uncertain');assert.equal(f.sends(),0);
+ assert.equal((await call(createBridge({...f.options,sendEnabled:false}),'POST','/v1/reconcile',{idempotency_key:'effect-1'})).status,'uncertain');
+});
+test('scoped native quota wait cannot outlive or revoke approval',async t=>{
+ const {createScopedBridge}=require('./server.cjs');
+ for(const revoke of [false,true]){
+  const f=await fixture(t),e=envelope();let tick=NOW,sends=0;
+  const p={approval_ref:'synthetic-only',mailbox:EXPECTED.email,to:e.to,subject:e.subject,body_hash:hash(e.body),idempotency_key:e.idempotency_key,issued_at:NOW-1,expires_at:NOW+300000,max_attempts:1};
+  const native=nativeSession({users:{messages:{async send(){sends++;throw Error('must not reach Gmail');}}}},
+   {async reserve(){},async assertCurrent(){if(revoke)p.body_hash='revoked';else tick=NOW+300000;}});
+  f.provider.reserveQuota=native.reserveQuota;f.provider.send=native.send;
+  const bridge=createScopedBridge({readProvider:f.provider,writeProvider:f.provider,credential:KEY,journalDir:f.dir,policyLoader:()=>p,now:()=>tick});
+  assert.equal((await call(bridge,'POST','/v1/send',e)).status,'uncertain');assert.equal(sends,0);
+ }
+});
+test('wire authority is rechecked after auth refresh before resource request',()=>{
+ let allowed=true,wires=0;const transporter={request(){wires++;return {};}};
+ const restore=guardSendWire({context:{_options:{auth:{transporter}}}},()=>{assert.ok(allowed,'revoked');});
+ allowed=false;assert.throws(()=>transporter.request({url:'https://gmail.googleapis.com/gmail/v1/users/me/messages/send',method:'POST'}),/revoked/);
+ assert.equal(wires,0);restore();
+});

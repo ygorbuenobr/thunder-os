@@ -208,7 +208,7 @@ function mime(mail,reference){
  if(reference){check(/^<[^<>\s\r\n]{1,500}>$/.test(reference),'invalid_thread_reference');headers.push('In-Reply-To: '+reference,'References: '+reference);}
  return Buffer.from(headers.join('\r\n')+'\r\n\r\n'+Buffer.from(mail.body).toString('base64').match(/.{1,76}/g).join('\r\n')).toString('base64url');
 }
-function guardSendWire(gmail){
+function guardSendWire(gmail,authorize=null){
  const auth=gmail?.context?._options?.auth,transporter=auth?.transporter;
  check(transporter&&typeof transporter.request==='function','wire_guard_unavailable',503);
  const original=transporter.request;let sends=0;
@@ -216,6 +216,7 @@ function guardSendWire(gmail){
   const url=new URL(String(options.url));
   if(url.hostname==='gmail.googleapis.com'&&url.pathname==='/gmail/v1/users/me/messages/send'){
    check(url.protocol==='https:'&&String(options.method).toUpperCase()==='POST'&&++sends===1,'send_retry_blocked',503);
+   if(authorize!==null)authorize();
    options={...options,maxRedirects:0,retry:false,retryConfig:{...options.retryConfig,retry:0}};
   }else{check(url.protocol==='https:'&&url.hostname==='oauth2.googleapis.com'&&url.pathname==='/token','unexpected_native_request',503);}
   return original.call(this,options,...rest);
@@ -313,7 +314,7 @@ function nativeSession(gmail,quota,{readOnly=false}={}){
    const normalizedBody=value=>value.replace(/\r\n/g,'\n').normalize('NFC');
    return {complete:true,messages:rows.filter(row=>row.sent&&addresses(row.to).includes(mail.to)&&row.subject.normalize('NFC')===mail.subject.normalize('NFC')&&normalizedBody(row.body)===normalizedBody(mail.body))};
   },
-  async send(mail){
+  async send(mail,{authorize=null}={}){
    let reference;
    if(mail.thread_id){
     const result=await gmail.users.threads.get({userId:'me',id:mail.thread_id,format:'metadata',metadataHeaders:['Message-ID','From','To','Subject'],fields:'id,messages(id,payload(headers(name,value)))'},options());
@@ -328,7 +329,8 @@ function nativeSession(gmail,quota,{readOnly=false}={}){
    }
    check(quotaProof&&quotaProof.to===mail.to&&quotaProof.messageId===mail.message_id&&quotaProof.effect===hash(business(mail)),'quota_proof_missing',503);
    await quota.assertCurrent(quotaProof);quotaProof=null;
-   const restore=guardSendWire(gmail);
+   if(authorize!==null)authorize();
+   const restore=guardSendWire(gmail,authorize);
    try{const result=await gmail.users.messages.send({userId:'me',requestBody:{raw:mime(mail,reference),...(mail.thread_id?{threadId:mail.thread_id}:{})}},options());return {id:result?.data?.id,thread_id:result?.data?.threadId};}finally{restore();}
   }
  };

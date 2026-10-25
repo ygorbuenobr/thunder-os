@@ -1,7 +1,7 @@
 'use strict';
 const {EXPECTED,BridgeError,check,hash,business,validate,safeEqual,identifier}=require('./contract.cjs');
 const {Journal}=require('./journal.cjs');
-function createBridge({provider,credential,journalDir,sendEnabled=false,readOnly=false,now=()=>Date.now()}){
+function createBridge({provider,credential,journalDir,sendEnabled=false,readOnly=false,sendAuthority=null,now=()=>Date.now()}){
  check(typeof credential==='string'&&/^[A-Za-z0-9_-]{32,4096}$/.test(credential),'credential_unavailable',503);
  check(typeof readOnly==='boolean','read_only_config_invalid',503);
  const journal=readOnly?null:new Journal(journalDir);
@@ -97,22 +97,24 @@ function createBridge({provider,credential,journalDir,sendEnabled=false,readOnly
   }
   if(method==='POST'&&route==='/v1/send'){
    check(!parsed.search,'invalid_query');check(sendEnabled,'send_disabled',503);
+   const authorize=()=>{if(sendAuthority!==null)check(sendAuthority(body,now())===true,'send_scope_not_authorized',403);};
+   authorize();
    const info=validate(body,credential,now());
-   await profile();validate(body,credential,now());
+   await profile();validate(body,credential,now());authorize();
    const reserved=await journal.reserve(body.idempotency_key,{...info,requestedThreadId:body.thread_id??null});
    if(!reserved.execute)return scoped({...await journal.state(info.businessHash),deduplicated:true});
    // Expiry rechecked after fsync. Reservation remains uncertain on any failure.
-   try{validate(body,credential,now());
+   try{validate(body,credential,now());authorize();
     check(typeof active.findDuplicates==='function','duplicate_check_unavailable',503);
     const duplicates=await active.findDuplicates({to:body.to,subject:body.subject,body:body.body});
     if(duplicates?.complete!==true||!Array.isArray(duplicates.messages)||duplicates.messages.length){
       return scoped({...await journal.uncertain(info.businessHash,'possible_duplicate'),'error_code':'possible_duplicate'});
     }
-    validate(body,credential,now());
+    validate(body,credential,now());authorize();
     check(typeof active.reserveQuota==='function'&&typeof active.finishQuota==='function','quota_unavailable',503);
     await active.reserveQuota({effect:info.businessHash,to:body.to,messageId:info.messageId});
-    validate(body,credential,now());
-    const result=await active.send({to:body.to,subject:body.subject,body:body.body,thread_id:body.thread_id??null,message_id:info.messageId});
+    validate(body,credential,now());authorize();
+    const result=await active.send({to:body.to,subject:body.subject,body:body.body,thread_id:body.thread_id??null,message_id:info.messageId},{authorize:()=>{validate(body,credential,now());authorize();}});
     return scoped(await receipt(info,result,active));
    }catch(error){return scoped(await journal.uncertain(info.businessHash,'send_outcome_uncertain'));}
   }

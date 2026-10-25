@@ -1865,6 +1865,40 @@ class Handler(BaseHTTPRequestHandler):
             raise Erro('Rota Thunder OS inválida', 405)
         actor = self.thunder_actor()
         body = self.corpo()
+        if rota.path.startswith('/api/os/v1/integrations/thunder-email/'):
+            if actor != 'ygor' or rota.query or not isinstance(body, dict):
+                raise Erro('Operação Thunder email não autorizada.', 403)
+            cycle = getattr(self.server, 'thunder_email_cycle', None)
+            if cycle is None:
+                raise Erro('Thunder email não configurado.', 503)
+            action = rota.path.rsplit('/', 1)[-1]
+            fields = {'receipt-preview': {'receipt'}, 'email-execute': {'plan'},
+                      'reply-preview': {'receipt', 'thread_id', 'message_id'},
+                      'reply-ingest': {'receipt', 'thread_id', 'message_id', 'review'},
+                      'reconcile-preview': {'cadence_id','step_id'},
+                      'reconcile-confirm': {'cadence_id','step_id','review_hash'}}
+            if action not in fields or set(body) != fields[action]:
+                raise Erro('Contrato Thunder email inválido.')
+            if action.startswith('reconcile-'):
+                if any(not isinstance(body[k],str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}',body[k]) for k in ('cadence_id','step_id')):
+                    raise Erro('Vínculo da reconciliação inválido.')
+                if action == 'reconcile-preview':
+                    return self.responder(200,cycle.preview_reconciliation(body['cadence_id'],body['step_id']))
+                return self.responder(200,cycle.confirm_reconciliation(body['cadence_id'],body['step_id'],body['review_hash']))
+            if action == 'email-execute':
+                if not external_effects_enabled() or restricted_mode():
+                    raise Erro('Escrita CRM desabilitada.', 403)
+                return self.responder(200, cycle.log_email(body['plan']))
+            if not isinstance(body['receipt'], str) or not re.fullmatch(r'gmail:[a-f0-9]{1,64}', body['receipt']):
+                raise Erro('Recibo Gmail inválido.')
+            if action == 'receipt-preview':
+                return self.responder(200, cycle.prepare_email(body['receipt']))
+            if any(not isinstance(body[key], str) or not re.fullmatch(r'[a-f0-9]{1,64}', body[key]) for key in ('thread_id', 'message_id')):
+                raise Erro('Identidade Gmail inválida.')
+            args = (body['receipt'], body['thread_id'], body['message_id'])
+            if action == 'reply-preview':
+                return self.responder(200, cycle.preview_reply(*args))
+            return self.responder(200, cycle.receive_reply(*args, review=body['review']))
         if journey_step_action:
             if actor != 'ygor':
                 raise Erro('Somente Ygor pode decidir sobre um toque.', 403)
@@ -2390,6 +2424,8 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
             from thunder_os.campaign_registry import CampaignRegistry
             servidor.thunder_reply_control = ReplyControl(repository, CampaignRegistry(repository),
                 external_pause_enabled=False)
+            from thunder_os.thunder_email_runtime import configured_cycle
+            servidor.thunder_email_cycle = configured_cycle(repository)
             from thunder_os.linkedin_preparation import LinkedInPreparation
             servidor.thunder_linkedin_preparation=LinkedInPreparation(CampaignRegistry(repository))
             from thunder_os.campaign_sources import CampaignSources

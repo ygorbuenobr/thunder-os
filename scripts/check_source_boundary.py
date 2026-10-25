@@ -119,6 +119,7 @@ ALLOWED_TESTS = {
     "test_thunder_os_today_readonly.py",
     "test_thunder_os_email_context.py",
     "test_thunder_os_email_readback.py",
+    "test_thunder_os_thunder_email_runtime.py",
     "test_thunder_os_effect_reconciliation.py",
     "test_thunder_os_instantly_reader.py",
     "test_thunder_os_instantly_ingress.py",

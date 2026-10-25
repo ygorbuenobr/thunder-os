@@ -184,6 +184,13 @@ class WorkerRuntime:
         if adapter is None or getattr(adapter, "capability", None) == "disabled":
             finish("failed", None, "channel_not_configured")
             return True
+        prepare = getattr(adapter, "prepare_job", None)
+        if callable(prepare):
+            try:
+                prepare(job)
+            except Exception:
+                finish("failed", None, "adapter_scope_not_authorized")
+                return True
         try:
             created, touch = self.ledger.reserve(expected, str(step["id"]), step)
             if not created:
@@ -488,6 +495,7 @@ def build_runtime(*, connectsafely_app=None) -> WorkerRuntime | DisabledRuntime:
         raise RuntimeError("THUNDER_OS_DB or PAINEL_DB is required")
     ledger = TouchLedger()
     ledger.migrate()
+    repository = Repository(database)
     fake = os.environ.get("THUNDER_OS_FAKE_PROVIDERS") == "1"
     adapters: dict[str, Any]
     if fake:
@@ -496,11 +504,13 @@ def build_runtime(*, connectsafely_app=None) -> WorkerRuntime | DisabledRuntime:
             "email": EmailAdapter("fake", _FakeTransport("email")),
         }
     else:
-        adapters = {"email": EmailAdapter(None, _FakeTransport("disabled"))}
-    for adapter in adapters.values():
-        adapter.capability = "simulated" if fake else "disabled"
+        from .thunder_email_runtime import configured_adapter
+        adapters = {"email": configured_adapter(repository)}
+    if fake:
+        for adapter in adapters.values():
+            adapter.capability = "simulated"
     return WorkerRuntime(
-        Repository(database), ledger, adapters,
+        repository, ledger, adapters,
         worker_id=os.environ.get("THUNDER_OS_WORKER_ID", "worker-1"),
         health_path=Path(os.environ.get("THUNDER_OS_WORKER_HEALTH", "/var/lib/thunder-os/worker-health.json")),
         revision=os.environ.get("THUNDER_OS_SOURCE_SHA", "unknown"),

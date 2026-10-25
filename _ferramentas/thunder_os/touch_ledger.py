@@ -230,6 +230,26 @@ class TouchLedger:
                 "receipt_ref": stored[2], "error_code": stored[3],
             }
 
+    def confirm_receipt(self, effect_key, step, receipt):
+        """Confirm only the original reservation and scope; never reserve/release/send."""
+        channel, action, person, target = self._scope(step, effect_key)
+        if channel != 'email' or not isinstance(receipt, str) or not receipt.startswith('gmail:'):
+            raise TouchBlocked('invalid reconciliation receipt')
+        with self._banco() as (connection, marker):
+            self._lock(connection, marker, channel, person)
+            cursor = connection.cursor()
+            cursor.execute('SELECT t.id,t.canal,t.acao,t.pessoa_chave,t.alvo,t.ref,t.status,t.provider_id '
+                           'FROM thunder_effect_touches e JOIN toques t ON t.id=e.touch_id WHERE e.effect_key='+marker,
+                           (effect_key,))
+            row = cursor.fetchone()
+            if (not row or tuple(row[1:6]) != (channel, action, person, target, step['id'])
+                    or row[6] not in {'reservado','incerto','feito'} or row[7] not in (None, receipt)):
+                raise TouchBlocked('reconciliation scope or receipt conflict')
+            cursor.execute("UPDATE toques SET status='feito',provider_id="+marker+
+                           ',detalhe=NULL,atualizado_em=CURRENT_TIMESTAMP WHERE id='+marker,
+                           (receipt,row[0]))
+            return {'id':str(row[0]),'status':'sent','receipt_ref':receipt,'error_code':None}
+
     def release_failed_for_retry(self, effect_key: str) -> dict[str, Any]:
         with self._banco() as (connection, marker):
             cursor = connection.cursor()

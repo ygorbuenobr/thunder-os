@@ -465,6 +465,29 @@ class Repository:
                 })
         return True
 
+    def validate_uncertain_receipt(self, snapshot, receipt):
+        """Preflight under the caller's write transaction before a ledger commit."""
+        if getattr(self._local,'connection',None) is None:
+            raise RepositoryConflict('reconciliation transaction required')
+        current = self.effect(snapshot['id'])
+        if current != snapshot or current['state'] not in {'uncertain','needs_reconciliation','sent'}:
+            raise RepositoryConflict('reconciliation snapshot changed')
+        if (current.get('error_code') == 'duplicate_consumed_effect'
+                or current.get('lease_owner') or current.get('receipt_ref') not in (None, receipt)):
+            raise RepositoryConflict('reconciliation receipt conflict')
+        if self._local.connection.execute('SELECT id FROM thunder_effect_jobs WHERE receipt_ref IN (?,?) AND id<>?',
+                (receipt,'email:'+receipt,current['id'])).fetchone():
+            raise RepositoryConflict('receipt already bound')
+        return current
+
+    def confirm_uncertain_receipt(self, snapshot, receipt):
+        """CAS historical confirmation. Never queue work or renew approval."""
+        with self.transaction() as con:
+            current = self.validate_uncertain_receipt(snapshot,receipt)
+            con.execute("UPDATE thunder_effect_jobs SET state='sent',receipt_ref=?,error_code=NULL,updated_at=? WHERE id=?",
+                        (receipt,datetime.now(timezone.utc).isoformat(),current['id']))
+            return self.effect(current['id'])
+
     def requeue_confirmed_effect(self, snapshot: dict[str, Any], confirmation_hash: str) -> dict[str, Any]:
         """CAS a safely failed effect after the caller persists fresh campaign authority."""
         if not isinstance(confirmation_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", confirmation_hash):

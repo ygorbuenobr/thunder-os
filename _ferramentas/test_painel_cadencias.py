@@ -322,7 +322,7 @@ class CadencePanelTests(unittest.TestCase):
         self.assertIn('cad-read-events', section)
         self.assertNotIn('data-os-approve', section)
         self.assertNotIn('data-os-cancel', section)
-        self.assertIn("document.body.dataset.aba==='cadencias'", html)
+        self.assertIn("['cadencias','sistema'].includes(document.body.dataset.aba)", html)
         self.assertIn('60000', html)
 
     def test_main_wires_existing_repository_registry_into_read_console(self):

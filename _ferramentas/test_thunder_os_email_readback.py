@@ -436,5 +436,31 @@ class EmailReadbackTests(unittest.TestCase):
                     health.assert_called_once();request.assert_not_called()
 
 
+
+class OneShotEvidenceTests(unittest.TestCase):
+    def expected(self):
+        return {'mailbox':MAILBOX,'to':'recipient@example.invalid',
+                'subject':'Synthetic subject','content':'Synthetic content\nSecond line.'}
+    def test_provider_date_and_exact_reviewed_content(self):
+        row=message();row['message']['date']='Sun, 25 Oct 2026 10:00:00 -0300'
+        result=GmailReceiptReader(Mock(),ReadClient(row)).read_sent_event(RECEIPT,self.expected())
+        self.assertEqual(result['occurred_at'],'2026-10-25T13:00:00.000Z')
+        self.assertEqual(result['scope'],'sent_copy_not_delivery');self.assertEqual(result['external_writes'],0)
+    def test_missing_naive_or_invalid_date_is_not_collection_time(self):
+        for date in (None,'bad','Sun, 25 Oct 2026 10:00:00 -0000'):
+            row=message();row['message']['date']=date
+            with self.assertRaises(EmailReadbackError):
+                GmailReceiptReader(Mock(),ReadClient(row)).read_sent_event(RECEIPT,self.expected())
+    def test_review_mismatch_and_no_fabricated_campaign(self):
+        row=message();row['message']['date']='Sun, 25 Oct 2026 13:00:00 +0000'
+        expected=self.expected();expected['to']='other@example.invalid'
+        with self.assertRaises(EmailReadbackError):GmailReceiptReader(Mock(),ReadClient(row)).read_sent_event(RECEIPT,expected)
+        result=GmailReceiptReader(Mock(),ReadClient(row)).read_sent_event(RECEIPT,self.expected())
+        self.assertNotIn('campaign_id',result['source'])
+    def test_raw_date_header_supported(self):
+        row=raw_message();row['message']['payload']['headers'].append({'name':'Date','value':'Sun, 25 Oct 2026 13:00:00 +0000'})
+        result=GmailReceiptReader(Mock(),ReadClient(row)).read_sent_event(RECEIPT,self.expected())
+        self.assertEqual(result['occurred_at'],'2026-10-25T13:00:00.000Z')
+
 if __name__ == '__main__':
     unittest.main()
