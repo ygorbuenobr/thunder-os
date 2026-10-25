@@ -111,6 +111,24 @@ def _historical_state(text):
             bool(re.search(r'e-?mail|mailbox|caixa de entrada', folded)))
 
 
+# Deliberately bounded documentary status phrases, never an eligibility checker.
+# Ordinary business descriptions (e.g. "vende para clientes") do not match.
+_CURRENT_STATE = re.compile(
+    r'\b(?:(?:e|sao|era|eram|continua sendo) (?:um[a]? )?(?:cliente[s]?|concorrente[s]?|bebidas)'
+    r'|(?:sem|nenhum|nao (?:ha|tem|possui|existem?)|tem|possui|ha|com) '
+    r'(?:negocios? abertos?|exclusoes)'
+    r'|(?:nao )?esta excluid[ao]'
+    r'|(?:cliente|concorrente|exclusoes):\s*(?:sim|nao|ativo|inativo))\b')
+
+
+def _without_current_state(text):
+    """Select literal sentence fragments; originals retain all removed claims."""
+    if not _CURRENT_STATE.search(_fold(text)):
+        return [text]
+    return [sentence for sentence in re.split(r'(?<=[.!?;])\s+', text)
+            if sentence.strip() and not _CURRENT_STATE.search(_fold(sentence))]
+
+
 def _item(text, original=None, classification=None):
     original = original or {}
     published = original.get('published_on')
@@ -342,6 +360,13 @@ class CommercialAccountReadonly:
         limitations.extend(('manual_next_action_owner_unknown', 'manual_next_action_date_unknown'))
         sections['next_action'].extend(reserved_actions)
         for key, label in SECTIONS:
+            retained = []
+            for item in sections[key]:
+                fragments = _without_current_state(item['text'])
+                if fragments != [item['text']]:
+                    limitations.append('current_commercial_state_claims_only_in_originals')
+                retained.extend({**item, 'text': fragment} for fragment in fragments)
+            sections[key] = retained
             if not sections[key]:
                 sections[key].append(_item('Pendente de pesquisa: ' + label + '.'))
                 limitations.append('commercial_section_pending:' + key)

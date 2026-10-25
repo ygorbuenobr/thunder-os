@@ -198,6 +198,35 @@ class CommercialAccountTests(unittest.TestCase):
         self.assertNotIn('Obter e-mail', primary)
         self.assertIn('historical_crm_and_email_claims_only_in_originals', result['limitations'])
 
+    def test_mixed_fit_preserves_literal_icp_without_current_state_claims(self):
+        fit = ('- Fit: **alto (tier A)**. Indústria B2B brasileira, vende componentes, '
+               'sinal recente (ago/2026). Não é bebidas, não é cliente conhecido, não é concorrente.')
+        original = {'text': fit, 'source_url': 'https://example.test/industry',
+                    'published_on': '2000-01-01', 'label': 'contexto'}
+        self.accounts.docs[0]['tabs']['research'] = [{'text': '**Fit e oferta**'}, original]
+        result = self.project()
+        fit_items = next(s['items'] for s in result['sections'] if s['key'] == 'fit')
+        self.assertEqual([i['text'] for i in fit_items], [
+            '- Fit: **alto (tier A)**.',
+            'Indústria B2B brasileira, vende componentes, sinal recente (ago/2026).'])
+        self.assertTrue(all(i['context_only'] for i in fit_items))
+        self.assertTrue(all(i['source_url'] == original['source_url'] for i in fit_items))
+        self.assertNotIn('cliente conhecido', repr(result['sections']))
+        self.assertNotIn('concorrente', repr(result['sections']))
+        self.assertNotIn('Não é bebidas', repr(result['sections']))
+        self.assertEqual(result['originals']['tabs']['research'][1], original)
+
+    def test_isolated_current_state_claims_only_in_originals(self):
+        for claim in ('Não é cliente conhecido.', 'É concorrente.', 'Sem negócio aberto.',
+                      'Não possui negócios abertos.', 'Não há exclusões.', 'É cliente atual.'):
+            with self.subTest(claim=claim):
+                self.accounts.docs[0]['tabs']['research'] = [{'text': '**Empresa**'}, {'text': claim}]
+                result = self.project()
+                business = next(s['items'] for s in result['sections'] if s['key'] == 'business')
+                self.assertEqual(business[0]['text'], 'Pendente de pesquisa: Empresa e mercado.')
+                self.assertIn('current_commercial_state_claims_only_in_originals', result['limitations'])
+                self.assertEqual(result['originals']['tabs']['research'][1]['text'], claim)
+
     def test_thesis_is_hypothesis_and_pending_actions_precede_reserve(self):
         result = self.project()
         sections = {s['key']: s['items'] for s in result['sections']}
