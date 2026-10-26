@@ -355,7 +355,12 @@ class JourneyReadonly:
                 # Error code is intentionally read here, not exposed in the general effects projection.
                 if current.get('error_code') != 'proved_not_sent':
                     return None
-                return {'cadence': cadence, 'status': 'proved_not_sent', 'event': None}
+                observed_at = next(e['created_at'] for e in audit
+                    if e['type'] == 'assisted_proved_not_sent'
+                    and e['payload'].get('record_hash') == payload_hash(manual)
+                    and e['payload'].get('record') == manual)
+                return {'cadence': cadence, 'status': 'proved_not_sent', 'event': None,
+                        'observed_at': observed_at}
             event = assisted['operator_receipt_event']
             if not (job['state'] == 'sent' and assisted['phase'] == 'confirmed'
                     and assisted.get('verification') == 'provider_sent_copy'
@@ -387,7 +392,7 @@ class JourneyReadonly:
         blocks.append(_block('Copia enviada nao comprova entrega. Vinculo a tentativa informado pelo operador.'
                              if event else 'Somente observacao; sem autorizacao de envio ou nova tentativa.',
                              label='Limite da evidencia'))
-        timeline = [{'id': ident, 'date': event['occurred_at'] if event else cadence.get('updated_at'),
+        timeline = [{'id': ident, 'date': event['occurred_at'] if event else verified.get('observed_at'),
             'label': 'Enviado · teste interno' if event else 'Nao enviado · teste interno',
             'summary': 'Copia enviada confirmada no Gmail; atribuicao pelo operador.' if event else 'proved_not_sent',
             'detail_id': ident}]

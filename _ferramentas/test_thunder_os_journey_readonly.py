@@ -236,6 +236,11 @@ class JourneyTests(unittest.TestCase):
         item, = self.stage(snap, 'abordagem')['items']
         detail = self.adapter.detail(item['id'], cid)
         self.assertEqual(detail['step_status'], 'proved_not_sent')
+        reconciled_at = next(e['created_at'] for e in self.repo.events(job)
+                             if e['type'] == 'assisted_proved_not_sent')
+        self.assertEqual(snap['timeline']['events'][0]['date'], reconciled_at)
+        self.assertEqual(item['date'], reconciled_at)
+        self.assertNotEqual(reconciled_at, cadence['updated_at'])
         self.assertEqual(detail['canonical_cadence_id'], cid)
         self.assertFalse(detail['editable'])
         self.assertEqual(self.stage(snap, 'icp')['items'], [])
