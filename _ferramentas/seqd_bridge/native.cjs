@@ -59,8 +59,9 @@ function readbackText(payload){
  let ascii=false;
  for(const item of headers){
    check(item&&typeof item.name==='string'&&typeof item.value==='string','read_body_incomplete',503);
-   if(item.name.toLowerCase()==='content-disposition')check(!/^attachment\b/i.test(item.value)&&!/(?:^|;)\s*filename\s*=/i.test(item.value),'read_body_incomplete',503);
+   if(item.name.toLowerCase()==='content-disposition')check(!/^attachment\b/i.test(item.value)&&!/(?:^|;)\s*filename(?:\*\d*\*?)?\s*=/i.test(item.value),'read_body_incomplete',503);
    if(item.name.toLowerCase()==='content-type'){
+    check(!/(?:^|;)\s*name(?:\*\d*\*?)?\s*=/i.test(item.value),'read_body_incomplete',503);
     check(/^text\/plain(?:\s*;|$)/i.test(item.value)&&[...item.value.matchAll(/(?:^|;)\s*charset\s*=/gi)].length<=1,'read_body_charset',503);
     const charset=/charset\s*=\s*["']?([^;\s"']+)/i.exec(item.value)?.[1];
     check(!charset||/^(utf-8|us-ascii)$/i.test(charset),'read_body_charset',503);ascii=charset?.toLowerCase()==='us-ascii';
@@ -75,11 +76,35 @@ function readbackText(payload){
  check(body.trim().length>0&&!body.includes('\ufffd'),'read_body_incomplete',503);
  return {body,truncated:false};
 }
+// Multipart evidence is readable context, never an exact plain-send receipt.
+function readbackMime(payload){
+ if(payload?.mimeType!=='multipart/alternative')return readbackText(payload);
+ check(!payload.filename&&!payload.body?.attachmentId&&(!payload.body?.data)&&(!payload.body?.size),'read_body_incomplete',503);
+ const types=payload.headers?.filter(h=>h.name.toLowerCase()==='content-type')??[];
+ check(types.length===1&&/^multipart\/alternative(?:\s*;|$)/i.test(types[0].value),'read_body_unsupported',503);
+ check(!payload.headers.some(h=>h.name.toLowerCase()==='content-disposition'),'read_body_unsupported',503);
+ check(Array.isArray(payload.parts)&&payload.parts.length>=1&&payload.parts.length<=2,'read_body_unsupported',503);
+ const seen=new Set(),alternatives=[];
+ for(const part of payload.parts){
+  check(['text/plain','text/html'].includes(part.mimeType)&&!seen.has(part.mimeType),'read_body_unsupported',503);seen.add(part.mimeType);
+  check(Array.isArray(part.headers),'read_body_incomplete',503);
+  check(!part.headers.some(h=>h.name.toLowerCase()==='content-disposition'),'read_body_unsupported',503);
+  const ct=part.headers.filter(h=>h.name.toLowerCase()==='content-type');
+  check(ct.length===1&&ct[0].value.toLowerCase().startsWith(part.mimeType),'read_body_unsupported',503);
+  // Reuse strict byte/charset/attachment validation; retain original type and bytes.
+  const checked=readbackText({...part,mimeType:'text/plain',headers:part.headers.map(h=>h.name.toLowerCase()==='content-type'?{...h,value:h.value.replace(/^text\/html/i,'text/plain')}:h)});
+  alternatives.push({mime_type:part.mimeType,body:checked.body,part_id:part.partId??null});
+ }
+ check(seen.has('text/plain'),'read_body_unsupported',503);
+ check(alternatives.reduce((n,p)=>n+Buffer.byteLength(p.body),0)<=65536,'read_body_incomplete',503);
+ return {body:alternatives.find(p=>p.mime_type==='text/plain').body,truncated:false,
+  context_only:true,receipt_eligible:false,mime_evidence:{root_type:'multipart/alternative',selected_type:'text/plain',alternatives}};
+}
 function normalizedReadOnly(message){
  check(message&&identifier(message.id)&&identifier(message.threadId)&&message.truncated!==true,'read_message_invalid',503);
  check(Array.isArray(message.labelIds)&&message.labelIds.every(value=>typeof value==='string')&&message.labelIds.length<=500,'read_labels_incomplete',503);
  return {id:message.id,thread_id:message.threadId,...readbackHeaders(message.payload),
-  labelIds:[...message.labelIds],sent:message.labelIds.includes('SENT'),...readbackText(message.payload)};
+  labelIds:[...message.labelIds],sent:message.labelIds.includes('SENT'),...readbackMime(message.payload)};
 }
 const CONTEXT_LIMITS=Object.freeze({http_bytes:1000000,text_bytes:65536,messages:100,parts_per_message:64,parts_per_thread:512,depth:8});
 const LIST_FIELDS='messages(id,threadId),nextPageToken';

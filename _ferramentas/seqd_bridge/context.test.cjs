@@ -164,7 +164,11 @@ test('HTML multipart context never bypasses the strict exact message receipt rea
   const f=fixture(),data=conversation(),plain=data.messages[0].payload;
   data.messages[0].payload=mimeType==='text/html'?{...part('text/html','<p>extra content</p>'),headers:mimeHeaders(plain.headers,mimeType)}:{mimeType,headers:mimeHeaders(plain.headers,mimeType),body:{size:0},parts:[plain,part('text/html','<p>extra content</p>')]};
   f.setData(data);assert.equal((await call(f.bridge,'/v1/threads/'+THREAD)).thread.context_only,true);
-  await assert.rejects(call(f.bridge,'/v1/messages/'+ID),/read_body_unsupported/);
+  if(mimeType==='multipart/alternative'){
+   const observed=(await call(f.bridge,'/v1/messages/'+ID)).message;
+   assert.equal(observed.context_only,true);assert.equal(observed.receipt_eligible,false);
+   assert.equal(observed.mime_evidence.alternatives[1].body,'<p>extra content</p>');
+  }else await assert.rejects(call(f.bridge,'/v1/messages/'+ID),/read_body_unsupported/);
  }
 });
 test('new context routes reject write verbs before provider and native wire blocks all mutations',async()=>{

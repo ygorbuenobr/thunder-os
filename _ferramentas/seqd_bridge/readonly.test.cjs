@@ -206,3 +206,24 @@ test('read failure is not retried and legacy app pins are retained',async()=>{
  call(f.bridge,'GET','/v1/messages/'+ID).then(value=>process.stdout.write(JSON.stringify(value)+'\n'))
   .catch(()=>{process.stderr.write('synthetic_fixture_failed\n');process.exitCode=1;});
 }
+
+test('multipart preserves full signed text and HTML as non-receipt evidence',async()=>{
+ const data=raw(),plain=structuredClone(data.payload),body='Approved text.\r\nSignature https://example.invalid\r\n';
+ plain.body={size:Buffer.byteLength(body),data:Buffer.from(body).toString('base64url')};
+ const html={mimeType:'text/html',headers:[{name:'Content-Type',value:'text/html; charset=UTF-8'}],body:{size:12,data:Buffer.from('<p>Other</p>').toString('base64url')}};
+ data.payload={mimeType:'multipart/alternative',headers:data.payload.headers.map(h=>h.name==='Content-Type'?{...h,value:'multipart/alternative; boundary=synthetic'}:h),body:{size:0},parts:[plain,html]};
+ const f=fixture();f.setData(data);const result=(await call(f.bridge,'GET','/v1/messages/'+ID)).message;
+ assert.equal(result.body,body);assert.equal(result.receipt_eligible,false);assert.equal(result.context_only,true);
+ assert.equal(result.mime_evidence.alternatives[1].body,'<p>Other</p>');
+ for(const mutate of [d=>d.payload.parts.push(plain),d=>d.payload.parts=[plain,plain],d=>d.payload.parts=[html],
+  d=>d.payload.parts[0].filename='file.txt',d=>d.payload.parts[1].body.attachmentId='file',
+  d=>d.payload.parts[0].parts=[plain],d=>d.payload.parts[1].body.size++,
+  d=>d.payload.parts[1].headers.push({name:'Content-Type',value:'text/html'}),
+  d=>d.payload.parts[0].headers.push({name:'Content-Disposition',value:'attachment'}),
+  d=>d.payload.parts[0].headers.push({name:'Content-Disposition',value:' attachment'}),
+  d=>d.payload.parts[0].headers.push({name:'Content-Disposition',value:"inline; filename*=UTF-8''file.txt"}),
+  d=>d.payload.parts[0].headers.push({name:'Content-Disposition',value:'inline; filename*0*=file'}),
+  d=>d.payload.parts[0].headers.find(h=>h.name==='Content-Type').value+="; name*=UTF-8''file.txt"]){
+  const bad=structuredClone(data);mutate(bad);assert.throws(()=>normalizedReadOnly(bad),/read_body/);
+ }
+});

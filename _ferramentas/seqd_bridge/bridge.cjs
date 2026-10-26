@@ -89,7 +89,8 @@ function createBridge({provider,credential,journalDir,sendEnabled=false,readOnly
     const observed=require('./native.cjs').readbackHeaders({headers:message.headers});
     for(const key of ['from','to','subject','cc','bcc','date','message_id'])check(typeof message[key]==='string'&&message[key]===observed[key],'read_headers_mismatch',503);
     return scoped({status:'ok',message:{id:message.id,thread_id:message.thread_id,body:message.body,truncated:false,
-     sent:message.sent,labelIds:[...message.labelIds],...observed}});
+     sent:message.sent,labelIds:[...message.labelIds],...observed,
+     ...(message.context_only===true?{context_only:true,receipt_eligible:false,mime_evidence:message.mime_evidence}:{})}});
    }
    const visible={id:message.id,thread_id:message.thread_id,body:message.body,truncated:message.truncated===true};
    for(const key of ['from','to','subject','date'])visible[key]=typeof message[key]==='string'?message[key].slice(0,2048):'';
