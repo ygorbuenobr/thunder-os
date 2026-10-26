@@ -1887,6 +1887,19 @@ class Handler(BaseHTTPRequestHandler):
                 if action == 'queue-canary' and set(body) == {'cadence_id'}:
                     return self.responder(200, canary.dispatch_step(body['cadence_id'], 'e1', actor))
                 raise Erro('Preparação interna inválida.')
+            if action.startswith('manual-observation-'):
+                from thunder_os.manual_observation import ManualObservation
+                observer = ManualObservation(assisted)
+                routes = {
+                    'manual-observation-preview': (observer.preview, {'job_id','message_id','declared_author'}),
+                    'manual-observation-record': (observer.record, {'job_id','message_id','declared_author','review_hash','approval'}),
+                    'manual-observation-reply-preview': (observer.reply_preview, {'job_id','message_id'}),
+                    'manual-observation-reply-record': (observer.reply_record, {'job_id','message_id','review_hash','approval'}),
+                }
+                if action not in routes or set(body) != routes[action][1]:
+                    raise Erro('Observação manual inválida.')
+                method = routes[action][0]
+                return self.responder(200, method(**body, **({'actor':actor} if action.endswith('-record') else {})))
             fields = {'preview': {'cadence_id','step_id'},
                       'recover-preclaim': {'cadence_id','step_id','review_hash'},
                       'recover-pre-dispatch': {'cadence_id','step_id','review_hash'},

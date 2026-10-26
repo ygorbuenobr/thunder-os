@@ -412,6 +412,29 @@ class JourneyReadonly:
                 blocks.append(_block('Cadencia pausada por resposta. Parada externa nao confirmada.', label='Parada interna'))
                 timeline.append({'id': ident + '_stop', 'date': cadence.get('updated_at'),
                     'label': 'Parada interna', 'summary': 'paused_reply; parada externa nao confirmada.', 'detail_id': ident})
+        # Separate manual evidence never turns the failed automatic job into a send.
+        from .codex_assisted import MANUAL_JOB_ID
+        from .manual_observation import verified_record
+        observed = verified_record(self.repo, 'manual_observation', MANUAL_JOB_ID)
+        manual_reply = verified_record(self.repo, 'manual_observed_reply', MANUAL_JOB_ID)
+        if observed and verified['status'] == 'proved_not_sent':
+            proof = observed.get('proof', {})
+            if proof.get('cadence_id') == cadence['id'] and proof.get('classification') == 'manual_divergent_observation':
+                evidence = proof['observation']
+                blocks.append(_block(evidence['message']['body'], label='Observacao manual divergente · nao e recibo automatico',
+                                     date=evidence['occurred_at'], direction='outgoing', complete=True))
+                blocks.append(_block('Autoria declarada: ' + proof['declared_author'] + '. Tentativa automatica permanece nao enviada.', label='Atribuicao nao verificada'))
+                timeline.append({'id':ident+'_manual','date':evidence['occurred_at'], 'label':'Observacao manual divergente',
+                                 'summary':'Fora do envelope exato; sem sucesso automatico.', 'detail_id':ident})
+                if manual_reply and manual_reply.get('proof', {}).get('observation_hash') == proof['review_hash']:
+                    response = manual_reply['proof']['reply']
+                    blocks.append(_block(response['message']['body'], label='Resposta ao envio manual observado',
+                                         date=response['occurred_at'], direction='incoming', complete=True))
+                    if (cadence.get('status') == 'paused_reply' and cadence.get('manual_observation_job_id') == MANUAL_JOB_ID
+                            and manual_reply.get('paused_cadence_hash') == payload_hash(cadence)):
+                        blocks.append(_block('Pausa interna por resposta manual; sem CRM ou parada externa.', label='Pausa interna distinta'))
+                        timeline.append({'id':ident+'_manual_stop','date':response['occurred_at'], 'label':'Resposta manual e pausa interna',
+                                         'summary':'Job automatico preservado como proved_not_sent.', 'detail_id':ident})
         detail = {'id': ident, 'title': 'Teste interno', 'meta': 'Teste interno · excluido das metricas BR',
             'internal_test': True, 'canonical_cadence_id': cadence['id'], 'canonical_step_id': step['id'],
             'canonical_cadence_version': cadence['version'], 'campaign_id': cadence['id'], 'channel': step['channel'],

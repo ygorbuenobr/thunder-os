@@ -401,3 +401,40 @@ sequences and other sender accounts are not silently mapped to Gmail. The five
 second timeout bounds each socket operation, not an absolute wall-clock deadline
 against a peer streaming arbitrarily slowly. Backend availability/schema and any
 service/credential deployment still require an explicit operational decision.
+
+### Manual divergent internal observation (local candidate; not activation)
+
+This path does not confirm a receipt, attribute an automatic send, renew an observation
+window, release a reservation or retry a job. It is restricted by the existing internal
+canary binding and requires the original `failed/proved_not_sent` job and its original
+24-hour observation window. The original job, assisted record, grant and journal remain
+unchanged. Multipart bodies are contextual evidence, not exact-send receipt evidence.
+
+The authenticated Ygor POST routes under `/api/os/v1/integrations/codex-assisted/`
+use the existing origin and nonce checks:
+
+* `manual-observation-preview`: `job_id`, `message_id`, `declared_author`.
+* `manual-observation-record`: those fields plus `review_hash` and `approval`.
+  Approval must be exactly `{action: "record_manual_divergence", review_hash, confirmed: true}`.
+* `manual-observation-reply-preview`: `job_id`, `message_id` (incoming reply).
+* `manual-observation-reply-record`: those fields plus `review_hash` and `approval`.
+  Approval must be exactly `{action: "record_manual_reply_and_pause", review_hash, confirmed: true}`.
+
+A message's text is never authorization. Each record requires separate explicit approval
+of the current preview by the authenticated operator. Declared authorship is stored as
+unverified, alongside complete observed content, MIME alternatives, headers, source IDs,
+hashes, expected content and differences. Fresh reads bind the reply to the same identities,
+thread and RFC In-Reply-To. Reply approval includes the current cadence hash; concurrent
+cancellation invalidates it. One SQLite transaction records the reply and internal pause,
+with immutable observation/audit records and idempotent retries. No PostgreSQL write,
+CRM call or external pause is part of this operation.
+
+The Journey projection labels manual divergence and manual response separately, retains
+`proved_not_sent` for the automatic step, and excludes the internal test from commercial
+metrics. A hash, approval and matching audit event are required for that projection.
+
+Promotion of the panel and read-only Gmail bridge code requires separate approval and
+release/rollback verification. Recording either real observation or real reply requires
+its own explicit approval after fresh previews; publication alone authorizes neither.
+The existing observation deadline is not extended by this candidate. After expiry, these
+operations fail closed. No live execution was performed while implementing this path.
