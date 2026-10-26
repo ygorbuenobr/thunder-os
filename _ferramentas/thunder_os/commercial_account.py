@@ -215,10 +215,14 @@ def _research_fields(sections):
         folded = _fold(text)
         values = {}
         foreign_country = re.search(r'\b(?:pais\s*:\s*|sede (?:na|no|em)\s+)(?:argentina|equador|mexico|portugal|estados unidos|canada|chile|colombia|peru|uruguai|espanha|franca|alemanha|reino unido)\b[^.;\n]*', folded)
+        foreign_statement = ''
+        if foreign_country:
+            start = max(folded.rfind(boundary, 0, foreign_country.start()) for boundary in '.;\n') + 1
+            foreign_statement = folded[start:foreign_country.end()]
         if re.search(r'\b(?:pais|sede)\s*:\s*brasil\b|\bsede no brasil\b|\b(?:empresa|industria|tecelagem) (?:b2b )?brasileira\b', folded) and not re.search(r'\bnao\b|\b(?:sede|pais) (?:incert|nao confirm)', folded):
             values['country'] = 'BR'
         elif (foreign_country and not re.search(
-                r'\b(?:nao|desconhecid\w*|pendente\w*|incert\w*|confirmar|talvez)\b', foreign_country.group())):
+                r'\b(?:nao|sem|desconhecid\w*|pendente\w*|incert\w*|confirmar|confirmacao|verificar|talvez)\b', foreign_statement)):
             values['country'] = 'OTHER'
         if re.search(r'\bb2b\b', folded) and not re.search(r'\b(?:talvez|possivel\w*|confirmar|incert\w*|nao confirmad\w*)\b|\bb2b\s+nao\b', folded):
             values['is_b2b'] = 'false' if re.search(r'\bnao(?:\s+\w+){0,4}\s+b2b\b|\bnao (?:vende |atende )?para empresas', folded) else 'true'

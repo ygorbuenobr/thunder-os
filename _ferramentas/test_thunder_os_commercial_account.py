@@ -300,6 +300,16 @@ class CommercialAccountTests(unittest.TestCase):
             doc['tabs']['research'][1]['text'] = 'País: ' + value + '.'
             self.assertEqual(self.project()['research_fields']['country']['value'], 'OTHER', value)
 
+    def test_foreign_country_checks_negation_in_the_entire_local_statement(self):
+        doc = self.accounts.docs[0]
+        for text in ('Não tem sede na Argentina.', 'Sem sede na Argentina.',
+                     'Talvez tenha sede no México.', 'País: Portugal (a verificar).'):
+            doc['tabs']['research'] = [{'text': '**Empresa**'}, {'text': text,
+                'source_url': 'https://example.test/source', 'published_on': '2026-08-24'}]
+            self.assertNotIn('country', self.project()['research_fields'], text)
+        doc['tabs']['research'][1]['text'] = 'País: Argentina. Não é B2B.'
+        self.assertEqual(self.project()['research_fields']['country']['value'], 'OTHER')
+
     def test_revenue_prefill_is_literal_historical_year_never_annualized(self):
         doc = self.accounts.docs[0]
         entry = {'text': 'Receita anual de R$ 3,2 bi em 2022.',
