@@ -1635,6 +1635,34 @@ class Handler(BaseHTTPRequestHandler):
                 raise Erro('Controle de respostas indisponível.', 503)
             return self.responder(200, control.snapshot())
         external_email_base = '/api/os/v1/integrations/external-email'
+        if rota.path == '/api/os/v1/integrations/apollo/reader':
+            if self.thunder_proxy_actor() != 'ygor':
+                raise Erro('Somente Ygor pode consultar integrações.', 403)
+            if self.command != 'GET' or rota.query:
+                raise Erro('Leitor permite apenas consulta.', 405)
+            reader = getattr(self.server, 'thunder_apollo_reader', None)
+            if reader is None:
+                raise Erro('Leitor Apollo indisponível.', 503)
+            state = reader.snapshot()
+            service = getattr(self.server, 'thunder_service', None)
+            sync = service.repository.get_state('apollo_hubspot_sync', 'BR-APOLLO-01') if service else None
+            state['crm_sync'] = sync or {'enabled': False, 'status': 'configuration_pending',
+                'permission_status': 'unverified', 'error_code': 'email_write_permission_unverified'}
+            # Canonical contact hints come only from a previous complete CRM
+            # read, keyed by Apollo ID AND literal email; never join by name.
+            bindings = (sync or {}).get('contact_bindings', {})
+            if isinstance(bindings, dict):
+                for lead in state.get('leads', []):
+                    binding = bindings.get(lead.get('id'), {})
+                    contact_id = binding.get('hubspot_contact_id')
+                    if (binding.get('portal_id') == '51412240'
+                            and binding.get('email') == lead.get('email')
+                            and isinstance(contact_id, str)
+                            and re.fullmatch(r'[1-9][0-9]{0,29}', contact_id)):
+                        lead['hubspot_contact_id'] = contact_id
+                        lead['hubspot_contact_url'] = 'https://app.hubspot.com/contacts/51412240/record/0-1/' + contact_id
+                        lead['hubspot_binding_observed_at'] = binding.get('observed_at')
+            return self.responder(200, state)
         if rota.path == '/api/os/v1/integrations/instantly/reader':
             if self.thunder_proxy_actor() != 'ygor':
                 raise Erro('Somente Ygor pode consultar integrações.', 403)
@@ -1664,15 +1692,18 @@ class Handler(BaseHTTPRequestHandler):
             if self.command != 'GET' or rota.query:
                 raise Erro('Disponibilidade permite apenas consulta.', 405)
             from thunder_os.apollo_readonly import contract_status as apollo_status
+            apollo_reader = getattr(self.server, 'thunder_apollo_reader', None)
+            apollo_state = apollo_reader.snapshot() if apollo_reader is not None else {'enabled': False, 'status': 'disabled'}
             from thunder_os.instantly_webhook import contract_status as instantly_status
             receiver = getattr(self.server, 'thunder_instantly_capture', None)
             capture_enabled = receiver is not None and receiver.enabled is True
             reader = getattr(self.server, 'thunder_instantly_reader', None)
             reader_state = reader.snapshot() if reader is not None else {'enabled':False,'status':'disabled'}
             return self.responder(200, {'schema_version':1,'read_only':True,
-                'automatic_reader_enabled':False,'crm_import_enabled':False,
+                'automatic_reader_enabled':apollo_state.get('enabled') is True,'crm_import_enabled':False,
                 'webhook_enabled':capture_enabled,'webhook_mode':'capture_only' if capture_enabled else 'disabled',
-                'apollo':apollo_status(),'instantly':{**instantly_status(),
+                'apollo':{**apollo_status(), **{k: apollo_state[k] for k in ('enabled','status','last_success_at','coverage','error_code') if k in apollo_state},
+                    'automatic_reader_enabled':apollo_state.get('enabled') is True, 'writer_enabled':False},'instantly':{**instantly_status(),
                     'capture_enabled':capture_enabled,'writer_enabled':False,
                     'enabled':reader_state['enabled'],'status':reader_state['status'],
                     'configuration_pending':not reader_state['enabled'] or reader_state.get('error_code') in (
@@ -2540,9 +2571,14 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
             from thunder_os.journey_readonly import JourneyReadonly
             servidor.thunder_account_cadence_readonly = AccountCadenceReadonly(
                 RAIZ, repo=servidor.thunder_today_readonly.repo)
+            from thunder_os.apollo_campaign_reader import ApolloCampaignReader
+            servidor.thunder_apollo_reader = ApolloCampaignReader(repository) if runtime is None else None
+            if servidor.thunder_apollo_reader is not None:
+                servidor.thunder_apollo_reader.start()
             servidor.thunder_journey_readonly = JourneyReadonly(servidor.thunder_today_readonly,
                 cadence_reader=getattr(servidor, 'thunder_cadence_readonly', None),
-                accounts=servidor.thunder_account_cadence_readonly)
+                accounts=servidor.thunder_account_cadence_readonly,
+                apollo=servidor.thunder_apollo_reader)
             from thunder_os.apollo_prospect_readonly import ApolloProspectReadonly
             from thunder_os.apollo_sequence_readonly import ApolloSequenceReadonly
             from thunder_os.instantly_reader import private_text

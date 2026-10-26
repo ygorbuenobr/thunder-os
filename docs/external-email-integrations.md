@@ -438,3 +438,38 @@ release/rollback verification. Recording either real observation or real reply r
 its own explicit approval after fresh previews; publication alone authorizes neither.
 The existing observation deadline is not extended by this candidate. After expiry, these
 operations fail closed. No live execution was performed while implementing this path.
+
+## S46 — Apollo sequence → Thunder OS → HubSpot
+
+The existing Apollo sequence is the source, not a CSV produced by the OS.
+`apollo_campaign_reader.py` observes literal sequence membership and original
+provider messages. The panel consumes the existing `thunder_state` cache; an
+HTTP page load never performs an Apollo or CRM write. The private opt-in marker
+`/etc/thunder-os/apollo_reader_enabled` contains `read-only-v1`. Remove this
+reader-specific marker to stop observation; it does not govern other resources.
+The reader verifies account, sequence owner and message owner independently of
+the API key's authenticated user. Missing/partial pagination remains visible.
+An Apollo reply flag is a signal only; incoming Gmail originals preserve the
+actual sender, including a third party forwarding the original email.
+
+`apollo_hubspot_sync.py` prepares bounded factual reconciliation using the
+existing contact/alias matcher and EMAIL attempt journals. Default is dry-run,
+maximum ten contacts per explicit run. Existing contacts are never patched;
+new contacts can carry source name, company text and job title. A company name
+alone never creates a company association. Activities require original text,
+source message ID, date, direction and canonical contact readback. Uncertain
+writes remain retained rather than retried. A continuation cursor binds the
+same snapshot and selection. Two passes are covered by fake-provider tests.
+
+Activation is intentionally separate from reading: `enabled=True`, a scoped
+authorizer and an actual current `EMAIL.write = AVAILABLE` permission check
+are all required. No runtime writer or automated backfill is enabled in S46.
+On 26 October, reconnection still returned
+`REQUIRES_PERMISSION_MODIFICATION` for EMAIL in portal 51412240 / owner
+92901049. Contact/Company permissions do not satisfy that gate. SEQD source
+at `/root/projects/seqd` (3306c00) has no HubSpot EMAIL writer; the active
+`thunder-seqd-readonly` bridge supplies Gmail reading only. Do not start the
+legacy SEQD web/Redis, fabricate a NOTE, or swap credentials to bypass this.
+Once EMAIL permission is genuinely available, run one existing-contact canary,
+read back its EMAIL and association, then repeat the exact run and verify zero
+new activities before any broader reconciliation.

@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 from .apollo_sent_audit import audit_sent_email, DEFAULT_FORBIDDEN_PHRASES
 from .cadence_readonly import PORTAL_ID, _date, _id, plain_text
 from .campaign_registry import CampaignRegistry
-from .external_email_import import _validate_plan
+from .external_email_import import _validate_plan, APOLLO_TEAM, APOLLO_SEQUENCE
 from .instantly_reader import InstantlyReader
 from .models import payload_hash
 from .seqd_client import MAILBOX
@@ -64,7 +64,8 @@ def _links(action):
         elif parsed.netloc == 'app.instantly.ai':
             allowed = parsed.path == '/app/unibox' and not parsed.fragment
         elif parsed.netloc == 'app.apollo.io':
-            allowed = parsed.path in {'', '/', '/#/emails'} and not parsed.fragment
+            allowed = (parsed.path in {'', '/'} and parsed.fragment == '/sequences/' + APOLLO_SEQUENCE
+                       or parsed.path in {'', '/', '/#/emails'} and not parsed.fragment)
     return [{'label': plain_text(action.get('label')) or 'Abrir fonte', 'url': url}] if allowed else []
 
 
@@ -138,8 +139,9 @@ def _audit_summary(summary, audits):
 
 
 class JourneyReadonly:
-    def __init__(self, today, *, cadence_reader=None, accounts=None):
+    def __init__(self, today, *, cadence_reader=None, accounts=None, apollo=None):
         self.today, self.cadence_reader, self.accounts = today, cadence_reader, accounts
+        self.apollo = apollo
         self.repo = ReadonlyRepository(today.repo.path)
         self.service = copy(today.service)
         self.service.repository = self.repo
@@ -533,6 +535,7 @@ class JourneyReadonly:
         kinds = ('campaign_config', 'reply', 'cadence', 'meeting', 'research', 'hubspot_attempt',
                  'internal_canary', 'codex_assisted')
         instant = None
+        apollo = None
         effects = None
         try:
             with self.repo.transaction():
@@ -540,6 +543,8 @@ class JourneyReadonly:
                 states = {kind: read('local:' + kind, lambda kind=kind: self.repo.list_state(kind), []) for kind in kinds}
                 effects = read('local:effects', self._effects, None)
                 internal = read('local:internal_canary_projection', lambda: self._internal_canary(states, effects), None)
+                if self.apollo is not None:
+                    apollo = read('apollo_cache', self.apollo.snapshot, None)
                 if self.today.instantly is not None:
                     instant = read('instantly_cache', lambda: InstantlyReader(self.repo,
                         enable_check=self.today.instantly.enable_check, clock=self.today.instantly.clock).snapshot(), None)
@@ -860,6 +865,80 @@ class JourneyReadonly:
                     source_links=sorted([dict(pair) for pair in {tuple(sorted(link.items())) for link in links}],
                                         key=lambda link: (link['url'], link['label'])))
 
+        # Apollo owns sequence execution. Import its observed cohort directly;
+        # documentary drafts/CSV exports are not required for visibility.
+        apollo_people = set()
+        if (isinstance(apollo, dict) and apollo.get('enabled') is True
+                and apollo.get('status') in {'ok', 'partial', 'stale'}
+                and apollo.get('account_id') == APOLLO_TEAM
+                and apollo.get('external_campaign_id') == APOLLO_SEQUENCE
+                and apollo.get('campaign_id') == 'BR-APOLLO-01'
+                and apollo.get('campaign_id') in campaigns and selected(apollo)):
+            sources.setdefault('apollo_cache', {}).update(id='apollo_cache', status=apollo['status'],
+                collected_at=apollo.get('last_success_at') or apollo.get('observed_at'),
+                coverage=deepcopy(apollo.get('coverage', {})))
+            for lead in apollo.get('leads', []):
+                address = lead.get('email')
+                if not isinstance(address, str) or not re.fullmatch(r'[^\s@<>]+@[^\s@<>]+', address):
+                    continue
+                row = {'campaign_id': 'BR-APOLLO-01', 'name': lead.get('name') or address,
+                    'company': lead.get('company'), 'person_keys': [address.lower()],
+                    'date': lead.get('membership', {}).get('added_at') if isinstance(lead.get('membership'), dict) else None,
+                    'action': {'label': 'Abrir no Apollo',
+                        'url': 'https://app.apollo.io/#/sequences/' + APOLLO_SEQUENCE}}
+                blocks, observed_events = [], []
+                for observed_event in lead.get('events', []):
+                    kind = observed_event.get('event_type')
+                    outgoing = kind == 'email_sent'
+                    if kind not in {'email_sent', 'reply_received', 'auto_reply_received',
+                                    'unclassified_reply', 'third_party_reply'}:
+                        continue
+                    provider_id = observed_event.get('provider_id')
+                    if not isinstance(provider_id, str) or not provider_id:
+                        continue
+                    sender = observed_event.get('sender') or observed_event.get('from_email')
+                    event_provider = observed_event.get('provider') or ('apollo' if outgoing else 'gmail')
+                    keys = [event_provider + ':' + provider_id]
+                    if outgoing and observed_event.get('provider_message_id'):
+                        keys.append('gmail:' + str(observed_event['provider_message_id']))
+                    projected = {**row, 'id': provider_id, 'source_id': keys[0], 'message_keys': keys,
+                        'date': _date(observed_event.get('occurred_at')),
+                        'subject': observed_event.get('subject'), 'text': observed_event.get('text'),
+                        'body_complete': observed_event.get('content_complete') is True,
+                        'direction': 'outgoing' if outgoing else 'incoming', 'sender': sender,
+                        'automatic': kind == 'auto_reply_received', 'unsent': False,
+                        'human_reply': observed_event.get('human_reply') is True if kind == 'reply_received' else None,
+                        'receipt': {'provider': 'apollo', 'message_id': provider_id,
+                            'verification': 'provider_read'} if outgoing else None}
+                    # A forwarding colleague is not the enrolled recipient.
+                    if not outgoing and sender and sender.lower() != address.lower():
+                        projected['person_keys'] = [sender.lower()]
+                        projected['human_reply'] = None
+                    observed_events.append(projected)
+                    events.append(projected)
+                    blocks.append(_block(projected.get('text'),
+                        label='E-mail enviado pelo Apollo' if outgoing else 'Mensagem recebida na conversa',
+                        date=projected['date'], sender=sender, direction=projected['direction'],
+                        complete=projected['body_complete']))
+                observed_events.sort(key=lambda e: e.get('date') or '')
+                incoming = [e for e in observed_events if e['direction'] == 'incoming' and not e['automatic']]
+                latest = observed_events[-1] if observed_events else None
+                pending = bool(incoming and latest and latest['direction'] == 'incoming')
+                state = lead.get('membership_status') or (lead.get('membership') or {}).get('status') or 'desconhecido'
+                summary = ('Mensagem recebida na conversa; confira o remetente e o original.' if pending else
+                           'Apollo: ' + str(state) + '. ' +
+                           ('Resposta sinalizada pelo Apollo; original não confirmado.' if any(
+                               e.get('event_type') == 'reply_signal' or e.get('reply_signal') or e.get('replied')
+                               for e in lead.get('events', [])) else
+                            'Execução observada na sequência existente.'))
+                row['date'] = latest['date'] if latest else row.get('date')
+                put('resposta' if pending else 'abordagem', ['apollo_cohort', lead.get('id'), APOLLO_SEQUENCE],
+                    row, blocks or [_block(label='Nenhum envio com conteúdo observado para este inscrito')],
+                    summary=summary, audit_events=observed_events)
+                apollo_people.add((address.lower(), row['campaign_id']))
+            if apollo.get('status') != 'ok' or not apollo.get('coverage', {}).get('complete'):
+                partial_stages.update({'abordagem', 'resposta'})
+
         # Meeting records are preparation context, never evidence that a call happened.
         research = {r['id']: r for r in states['research']}
         for row in states['meeting']:
@@ -938,6 +1017,8 @@ class JourneyReadonly:
             e['person'] = who
 
         for key, e in first_touches.items():
+            if any((str(p).lower(), e.get('campaign_id')) in apollo_people for p in e.get('person_keys', [])):
+                continue
             put('abordagem', ['first_touch', *key], {**e, 'title': e.get('name') or e.get('subject')},
                 [_block(e.get('text'), date=e.get('date'), sender=e.get('sender'),
                         direction='outgoing', complete=e.get('body_complete') is True)],
@@ -966,7 +1047,7 @@ class JourneyReadonly:
         # Complete Instantly classification can prove zero; other bounded sources
         # cannot prove a global absence of human replies or positive interest.
         metric_sources = sorted(k for k in sources if k in {'gmail', 'seqd', 'instantly', 'cadence',
-                                                          'instantly_cache', 'local:hubspot_attempt', 'local:reply'})
+                                                          'instantly_cache', 'apollo_cache', 'local:hubspot_attempt', 'local:reply'})
 
         def metric(value, reason, complete=False, observed_count=None):
             return {'value': value, 'source': metric_sources, 'reason': reason,

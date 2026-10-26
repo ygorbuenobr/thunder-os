@@ -76,6 +76,54 @@ class JourneyTests(unittest.TestCase):
             'providers': {'email': 'fake-email'}, 'rules': 'Synthetic isolated fixture only.',
             'configuration': {'flow_version': '1', 'provider_accounts': {'email': 'fixture'}}}, 'ygor', 0)
 
+    def test_apollo_sequence_cohort_and_originals_are_visible_without_export_or_crm_import(self):
+        from thunder_os.external_email_import import APOLLO_TEAM, APOLLO_SEQUENCE
+        self.register('BR-APOLLO-01')
+        before = self.database()
+        data = {'enabled': True, 'status': 'ok', 'account_id': APOLLO_TEAM,
+            'campaign_id': 'BR-APOLLO-01', 'external_campaign_id': APOLLO_SEQUENCE,
+            'last_success_at': NOW.isoformat(), 'coverage': {'complete': True},
+            'leads': [{'id': 'apollo-a', 'name': 'Apollo A', 'email': PEER, 'company': 'Example',
+                'membership_status': 'active', 'events': [{'provider_id': 'sent-a',
+                    'event_type': 'email_sent', 'occurred_at': NOW.isoformat(),
+                    'text': 'Complete sent original', 'subject': 'Sent subject', 'content_complete': True},
+                    {'provider_id': 'sent-a:reply_signal', 'event_type': 'reply_signal', 'human_reply': None}]},
+                {'id': 'apollo-b', 'name': 'Apollo B', 'email': 'other@example.invalid',
+                 'company': 'Other', 'membership_status': 'finished', 'events': [
+                    {'provider_id': 'sent-b', 'event_type': 'email_sent',
+                     'occurred_at': '2026-10-23T12:00:00Z', 'text': 'Second sent original',
+                     'subject': 'Other subject', 'content_complete': True},
+                    {'provider_id': 'incoming-original', 'provider': 'gmail',
+                     'event_type': 'third_party_reply', 'sender': 'colleague@example.invalid',
+                     'occurred_at': NOW.isoformat(), 'text': 'Full colleague original',
+                     'subject': 'Re: Other subject', 'content_complete': True}]}]}
+        self.adapter.apollo = SimpleNamespace(snapshot=lambda: deepcopy(data))
+        result = self.adapter.snapshot(campaign='BR-APOLLO-01')
+        outgoing = self.stage(result, 'abordagem')['items']
+        incoming = self.stage(result, 'resposta')['items']
+        self.assertEqual([x['name'] for x in outgoing], ['Apollo A'])
+        self.assertIn('Resposta sinalizada pelo Apollo; original não confirmado.', outgoing[0]['summary'])
+        self.assertEqual([x['name'] for x in incoming], ['Apollo B'])
+        self.assertEqual(result['metrics']['reached']['value'], 2)
+        self.assertIsNone(result['metrics']['replied']['value'])
+        detail = self.adapter.detail(incoming[0]['id'], campaign='BR-APOLLO-01')
+        self.assertIn('Full colleague original', [b['text'] for b in detail['blocks']])
+        self.assertEqual(detail['blocks'][-1]['sender'], 'colleague@example.invalid')
+        self.assertFalse(detail['approval_available'])
+        self.assertEqual(self.database(), before)
+
+    def test_apollo_cache_wrong_scope_disabled_and_failure_never_fabricate_activity(self):
+        from thunder_os.external_email_import import APOLLO_TEAM, APOLLO_SEQUENCE
+        self.register('BR-APOLLO-01')
+        for account, enabled, status in ((APOLLO_TEAM, False, 'ok'), ('other-team', True, 'ok'),
+                                         (APOLLO_TEAM, True, 'error')):
+            self.adapter.apollo = SimpleNamespace(snapshot=lambda: {'enabled': enabled, 'status': status,
+                'account_id': account, 'external_campaign_id': APOLLO_SEQUENCE,
+                'campaign_id': 'BR-APOLLO-01', 'leads': [{'id':'x','email':PEER}]})
+            result = self.adapter.snapshot(campaign='BR-APOLLO-01')
+            self.assertEqual(self.stage(result, 'abordagem')['items'], [])
+            self.assertIsNone(result['metrics']['reached']['value'])
+
     def mail_threads(self):
         result = {'status': 'ok', 'respond': [], 'do': []}
         for row in self.rows:

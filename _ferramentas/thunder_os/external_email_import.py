@@ -125,6 +125,12 @@ def plan_contact(contact, snapshot):
         if value:
             require(isinstance(value, str) and len(value) <= 200, 'invalid_contact_name')
             properties[key.replace('_', '')] = value
+    # Factual display fields on CREATE only; company text is not an association.
+    for source_key, property_name in (('company', 'company'), ('title', 'jobtitle')):
+        value = contact.get(source_key)
+        if value:
+            require(isinstance(value, str) and len(value) <= 200, 'invalid_contact_' + source_key)
+            properties[property_name] = value
     return _seal({**base, 'action': 'create', 'properties': properties})
 
 
@@ -163,9 +169,11 @@ def _validate_plan(plan, *, source_validator=source_identity):
     if kind == 'contacts':
         require(plan.get('action') in ('existing', 'create', 'no_email'), 'invalid_action')
         props = plan.get('properties', {})
-        require(isinstance(props, Mapping) and set(props) <= {'email', 'firstname', 'lastname'},
+        require(isinstance(props, Mapping) and set(props) <= {'email', 'firstname', 'lastname', 'company', 'jobtitle'},
                 'contact_overwrite_blocked')
         if plan['action'] == 'create':
+            require(all(isinstance(props[key], str) and 0 < len(props[key]) <= 200
+                        for key in ('company', 'jobtitle') if key in props), 'invalid_contact_display_fields')
             require(email(props.get('email')) in plan['identifiers'], 'invalid_contact_identity')
         if plan['action'] == 'existing':
             require(record_id(plan.get('record_id')) and not props, 'contact_overwrite_blocked')
@@ -264,7 +272,7 @@ class HubSpotExternalEmail:
 
     def read_object(self, kind, ident, properties):
         require(kind in ('contacts', 'emails') and record_id(ident), 'invalid_target')
-        allowed = set(EMAIL_PROPERTIES) if kind == 'emails' else set(CONTACT_PROPERTIES) | {'firstname', 'lastname'}
+        allowed = set(EMAIL_PROPERTIES) if kind == 'emails' else set(CONTACT_PROPERTIES) | {'firstname', 'lastname', 'company', 'jobtitle'}
         require(set(properties) <= allowed, 'invalid_properties')
         query = {'properties': ','.join(sorted(properties))}
         if kind == 'emails':

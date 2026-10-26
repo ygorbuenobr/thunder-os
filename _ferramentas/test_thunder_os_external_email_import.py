@@ -136,6 +136,62 @@ class ExternalEmailImportTests(unittest.TestCase):
         self.assertFalse(result['email_logged'])
         self.assertEqual(len(self.crm.writes), 1)
 
+    def test_factual_company_and_title_create_only_and_readback(self):
+        source = {**contact(), 'company': 'Synthetic Manufacturing', 'title': 'Operations Director'}
+        plan = plan_contact(source, snapshot())
+        self.assertEqual(plan['properties'], {'email': 'person@example.invalid',
+            'firstname': 'Synthetic', 'lastname': 'Contact',
+            'company': 'Synthetic Manufacturing', 'jobtitle': 'Operations Director'})
+        self.crm.contact_snapshot = lambda identifiers: snapshot()
+        self.crm.contact = {**record('500'), 'properties': {**record('500')['properties'],
+            'company': 'Synthetic Manufacturing', 'jobtitle': 'Operations Director'}}
+        result = self.service.execute(plan)
+        self.assertEqual(result['status'], 'verified_state')
+        self.assertEqual(len(self.crm.writes), 1)
+        self.assertNotIn('associations', plan)
+
+    def test_company_and_title_never_patch_existing_contact(self):
+        from thunder_os.external_email_import import _validate_plan
+        from thunder_os.models import payload_hash
+        source = {**contact(), 'company': 'Source Company', 'title': 'Source Title'}
+        canonical = record()
+        canonical['properties'].update(company='Preserve Company', jobtitle='Preserve Title')
+        plan = plan_contact(source, snapshot([canonical]))
+        self.assertEqual(plan['action'], 'existing')
+        self.assertEqual(plan['properties'], {})
+        before = deepcopy(canonical)
+        self.crm.contact = canonical
+        self.assertEqual(self.service.execute(plan)['status'], 'verified_state')
+        self.assertEqual(self.crm.writes, [])
+        self.assertEqual(self.crm.contact, before)
+        for field in ('company', 'jobtitle'):
+            changed = {**plan, 'properties': {field: 'Attempted overwrite'}}
+            changed['plan_hash'] = payload_hash({k: v for k, v in changed.items() if k != 'plan_hash'})
+            with self.subTest(field=field), self.assertRaisesRegex(ExternalEmailError, 'contact_overwrite_blocked'):
+                _validate_plan(changed)
+
+    def test_contact_company_and_title_validate_and_wire_readback_allowlist(self):
+        from thunder_os.external_email_import import _validate_plan
+        from thunder_os.models import payload_hash
+        for key in ('company', 'title'):
+            for invalid in ({'name': 'Not a factual string'}, 'x' * 201):
+                with self.subTest(key=key, invalid=invalid), self.assertRaises(ExternalEmailError):
+                    plan_contact({**contact(), key: invalid}, snapshot())
+        for key in ('company', 'jobtitle'):
+            plan = plan_contact(contact(), snapshot())
+            plan['properties'][key] = {'invalid': 'value'}
+            plan['plan_hash'] = payload_hash({k: v for k, v in plan.items() if k != 'plan_hash'})
+            with self.subTest(key=key), self.assertRaisesRegex(ExternalEmailError, 'invalid_contact_display_fields'):
+                _validate_plan(plan)
+        calls = []
+        def request(method, path, body, headers, timeout):
+            calls.append((method, path))
+            return 200, b'{"id":"100"}'
+        port = HubSpotExternalEmail(lambda: 'synthetic-token', request=request)
+        port.read_object('contacts', '100', ['email', 'company', 'jobtitle'])
+        self.assertEqual(calls[0][0], 'GET')
+        self.assertEqual(parse_qs(urlsplit(calls[0][1]).query)['properties'], ['company,email,jobtitle'])
+
     def test_provider_id_is_not_rfc_message_id(self):
         plan = plan_email(event('internal-apollo-id'), '100')
         self.assertNotIn('hs_email_message_id', plan['properties'])

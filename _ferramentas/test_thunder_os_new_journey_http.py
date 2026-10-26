@@ -52,6 +52,28 @@ class NewJourneyHTTPTests(unittest.TestCase):
         response = connection.getresponse()
         return response.status, json.loads(response.read())
 
+    def test_apollo_reader_route_is_authenticated_cache_only_and_never_writes(self):
+        self.server.thunder_apollo_reader = SimpleNamespace(snapshot=Mock(return_value={
+            'enabled': True, 'status': 'ok', 'campaign_id': 'BR-APOLLO-01', 'leads': []}))
+        self.server.thunder_service.repository.get_state.return_value = None
+        def read(method='GET', actor='ygor', query=''):
+            connection = HTTPConnection('127.0.0.1', self.server.server_port, timeout=3)
+            self.addCleanup(connection.close)
+            connection.request(method, '/api/os/v1/integrations/apollo/reader'+query,
+                               headers={'X-Authenticated-User': actor})
+            response = connection.getresponse()
+            return response.status, json.loads(response.read())
+        self.assertEqual(read(actor='codex')[0], 403)
+        self.server.thunder_apollo_reader.snapshot.assert_not_called()
+        code, result = read()
+        self.assertEqual(code, 200)
+        self.assertEqual(result['campaign_id'], 'BR-APOLLO-01')
+        self.assertFalse(result['crm_sync']['enabled'])
+        self.assertEqual(read(query='?refresh=true')[0], 405)
+        self.assertNotEqual(read(method='POST')[0], 200)
+        self.server.thunder_apollo_reader.snapshot.assert_called_once()
+        self.wizard.export.assert_not_called()
+
     def test_prompt_and_export_preview_routes_require_exact_inputs(self):
         self.wizard.select_apollo_prompts.return_value = {'approval_mode':'apollo_prompts_v1'}
         self.wizard.export_preview.return_value = {'preview_only':True, 'external_writes':0}
