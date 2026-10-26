@@ -261,6 +261,32 @@ class JourneyTests(unittest.TestCase):
         self.assertTrue(all(m['value'] is None for m in snap['metrics'].values()))
         self.assertEqual(before, self.database())
 
+    def test_internal_normalized_receipt_revalidates_body_and_preserves_full_original(self):
+        cid, job, cadence = self.internal_fixture(sent=True)
+        row = self.repo.get_state('codex_assisted', job)
+        event = row['operator_receipt_event']
+        approved = cadence['steps'][0]['content']
+        original = approved.replace('Synthetic internal', 'Synthetic\ninternal') + '\n\nYgor\nThunder'
+        evidence = {'mime_type': 'multipart/alternative', 'html_body': '<div>Approved body</div><div class="gmail_signature">Ygor<br>Thunder</div>',
+                    'mime_complete': True, 'attachment_count': 0}
+        event.update(text=original, approved_text=approved, signature_excluded=True, content_evidence=evidence)
+        self.repo.put_state('codex_assisted', job, row)
+        snap = self.adapter.snapshot(cid)
+        item, = self.stage(snap, 'abordagem')['items']
+        detail = self.adapter.detail(item['id'], cid)
+        self.assertIn(original, [b['text'] for b in detail['blocks']])
+        self.assertTrue(self.stage(snap, 'resposta')['items'])
+        self.assertEqual(snap['timeline']['events'][-1]['label'], 'Parada interna')
+        for key, value in [('text', original.replace('Synthetic', 'Changed', 1)),
+                           ('approved_text', approved + ' changed'), ('content_evidence', {}),
+                           ('content_evidence', {**evidence, 'html_body': '<div class="gmail_signature">Different signature</div>'})]:
+            mutated = deepcopy(row);mutated['operator_receipt_event'][key] = value
+            self.repo.put_state('codex_assisted', job, mutated)
+            hidden = self.adapter.snapshot(cid)
+            self.assertNotIn(cid, [c['id'] for c in hidden['campaigns']], key)
+            self.assertFalse(any(s['items'] for s in hidden['stages']), key)
+        self.repo.put_state('codex_assisted', job, row)
+
     def test_internal_scope_manual_hash_and_provider_conflicts_fail_closed(self):
         cid, job, _ = self.internal_fixture(sent=True)
         for kind, ident, key, value in [('internal_canary', cid, 'scope_hash', '0'*64),

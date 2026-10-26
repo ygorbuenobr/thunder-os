@@ -379,6 +379,18 @@ class JourneyReadonly:
                 return {'cadence': cadence, 'status': 'proved_not_sent', 'event': None,
                         'observed_at': observed_at}
             event = assisted['operator_receipt_event']
+            content_matches = event.get('text') == scope['content']
+            if not content_matches and event.get('approved_text') == scope['content']:
+                # Replay the receipt reader's proof; a stored flag alone is not evidence.
+                from .email_readback import _approved_body, EmailReadbackError
+                evidence = event.get('content_evidence')
+                if isinstance(evidence, dict) and not set(evidence) - {
+                        'mime_type', 'html_body', 'mime_complete', 'attachment_count'}:
+                    try:
+                        signature = _approved_body({'content': event.get('text'), **evidence}, scope['content'])
+                        content_matches = type(event.get('signature_excluded')) is bool and event['signature_excluded'] == signature
+                    except EmailReadbackError:
+                        pass
             if not (job['state'] == 'sent' and assisted['phase'] == 'confirmed'
                     and assisted.get('verification') == 'provider_sent_copy'
                     and assisted.get('attempt_attribution') == 'operator_reported'
@@ -387,7 +399,7 @@ class JourneyReadonly:
                     and event['source'] == {'provider': 'gmail', 'account_id': MAILBOX,
                                           'provider_id': job['receipt_ref'].split(':', 1)[1]}
                     and event.get('event_type') == 'email_sent' and event.get('lead_email') == scope['to']
-                    and event.get('subject') == scope['subject'] and event.get('text') == scope['content']
+                    and event.get('subject') == scope['subject'] and content_matches
                     and event.get('scope') == 'sent_copy_not_delivery' and event.get('occurred_at')):
                 return None
             if not any(e['type'] == 'assisted_operator_receipt_confirmed'

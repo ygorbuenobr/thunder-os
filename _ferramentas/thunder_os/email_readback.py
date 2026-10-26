@@ -420,6 +420,8 @@ class GmailReceiptReader:
                 'provider_id':observed['id']}, 'lead_email':observed['to'],
                 'subject':observed['subject'], 'text':observed['content'], 'occurred_at':occurred,
                 'approved_text':expected['content'], 'signature_excluded':signature,
+                'content_evidence':{key:observed[key] for key in
+                    ('mime_type','html_body','mime_complete','attachment_count') if key in observed},
                 **({'source_context_only':True, 'content_validation':'approved_prefix_and_signature'}
                    if observed.get('source_context_only') is True else {}),
                 'time_source':'provider_message_date_header', 'receipt_ref':receipt_ref,

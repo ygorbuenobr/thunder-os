@@ -165,6 +165,9 @@ class EmailReadbackTests(unittest.TestCase):
         self.assertEqual(event['text'], observed['content'], 'The original is never replaced by the approved excerpt')
         self.assertEqual(event['approved_text'], self.step['content'])
         self.assertTrue(event['signature_excluded'])
+        self.assertEqual(event['content_evidence']['html_body'], observed['html_body'])
+        self.assertIs(event['content_evidence']['mime_complete'], True)
+        self.assertEqual(event['content_evidence']['attachment_count'], 0)
 
     def test_alternative_changed_prefix_or_extra_non_signature_text_stays_blocked(self):
         self.seed()
