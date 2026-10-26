@@ -67,6 +67,7 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
             sections:['business','fit','moment','people','thesis','next_action'].map(key=>({key,items:[
               {text:'COMMERCIAL_'+key+' · '+attack,classification:key==='thesis'?'hipotese':'nao_classificado',published_on:key==='moment'?'2023-01-01':null,source_url:key==='fit'?'javascript:alert(1)':'https://example.invalid/research',context_only:key==='moment'},
               {text:'SECOND_'+key,classification:'reserva'}, {text:'LONG_ORIGINAL_'+key+' '.repeat(2)+'Detalhe original. '.repeat(100),classification:'nao_classificado'}]})),
+            research_fields:{country:{value:'BR',source_url:'https://example.invalid/research',source_date:'2023-03-14'},sector:{value:'industria_b2b',source_url:'https://example.invalid/research',source_date:'2023-03-14'},is_b2b:{value:'true',source_url:'https://example.invalid/research',source_date:'2023-03-14'},annual_revenue_brl:{value:3200000000,reference_year:'2022',source_url:'https://example.invalid/history',source_date:'2023-03-14'}},
             originals:{account_id:'source-fixture',source_text:'CRM histórico de 2023: não existe contato. ORIGINAL_RESEARCH_END',tabs:{context:[{path:'fixtures/brain.md',sha256:'7'.repeat(64)}]}},limitations:['synthetic_fixture']
           }])):{},
           steps,rows:draft.rows.map(r=>({...r,eligible:!!(r.email&&draft.checks.find(c=>c.source_key===r.source_key)?.checks.every(c=>c.status==='pass')),
@@ -84,6 +85,7 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
         assert.equal(url.host,'new-journey.test','No external network allowed');
         traffic.push({path:url.pathname,method:req.method(),body});
         const send=(value,status=200)=>route.fulfill({status,contentType:'application/json',body:JSON.stringify(value)});
+        if(url.pathname==='/api/os/v1/journey/accounts/source-fixture')return send({id:'source-fixture',name:'Conta sintética',campaign_id:campaign,contact:'Pessoa sintética',tabs:{research:[],dossier:[],context:[],cadence:[],before_approval:[]}});
         if(url.pathname==='/')return route.fulfill({contentType:'text/html',body:html});
         if(url.pathname===base+'/catalog'){
           if(failCatalog)return send({erro:'Catálogo temporariamente indisponível.'},503);
@@ -196,7 +198,7 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
       });
       const settled=()=>page.waitForFunction(()=>document.querySelector('#nj-body').getAttribute('aria-busy')==='false');
       const go=async step=>{await page.locator('#nj-steps [data-nj-step="'+step+'"]').click();await settled();assert.equal(await page.locator('#nj-steps [aria-current=step]').getAttribute('data-nj-step'),String(step));};
-      const click=async selector=>{await page.locator(selector).click();await settled();};
+      const click=async selector=>{const button=page.locator(selector);await button.evaluate(el=>{const fold=el.closest('#nj-operations');if(fold)fold.open=true;});await button.click();await settled();};
       const composition=async()=>{
         const result=await page.locator('#new-journey').evaluate(root=>{
           const failures=[],check=(ok,label)=>{if(!ok)failures.push(label);};
@@ -204,11 +206,11 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
           const contains=(parent,...nodes)=>!!parent&&nodes.every(n=>n&&parent.contains(n));
           const fits=(parent,child)=>{if(!parent||!child)return false;const p=parent.getBoundingClientRect(),c=child.getBoundingClientRect();return c.left>=p.left-1&&c.right<=p.right+1&&c.top>=p.top-1&&c.bottom<=p.bottom+1;};
           const header=root.querySelector(':scope > header'),trail=root.querySelector('#nj-steps'),body=root.querySelector('#nj-body'),footer=root.querySelector('.nj-bottom');
-          const current=trail.querySelector('[aria-current="step"]'),step=Number(current.dataset.njStep),panel=body.querySelector(':scope > section'),paths=body.querySelector(':scope > [aria-label="Tipos de cadência"]');
+          const current=trail.querySelector('[aria-current="step"]'),step=Number(current.dataset.njStep),panel=body.querySelector(':scope > section'),paths=root.querySelector('[aria-label="Tipos de cadência"]');
           check(JSON.stringify([...trail.querySelectorAll('button')].map(n=>n.innerText.replace(/\s+/g,' ').trim()))===JSON.stringify(['01 Ficha','02 Fonte','03 Checagem','04 Sequência','05 Ativar manual']),'literal five-step trail order');
           check(contains(header,root.querySelector('#nj-title'),root.querySelector('#nj-back')),'header owns title and return');
           check(before(header,trail)&&before(trail,body)&&before(body,footer),'header, trail, screen, footer order');
-          check(body.children.length===2&&contains(body,paths)&&before(paths,panel)&&['Apollo:','Instantly:','Thunder:'].every(label=>paths?.textContent.includes(label)),'three distinct cadence paths precede the selected screen');
+          check(body.children.length===(step===3?1:2)&&contains(step===3?root.querySelector('#nj-operations'):body,paths)&&before(paths,panel)&&['Apollo:','Instantly:','Thunder:'].every(label=>paths?.textContent.includes(label)),'three cadence paths remain in the step 3 operational disclosure or before the other screens');
           check(panel.id==='nj-panel-'+step&&panel.firstElementChild.id==='nj-heading','one named region for the selected screen');
           check(fits(root,header)&&fits(root,trail)&&fits(root,body)&&fits(root,footer)&&fits(body,panel),'primary regions remain contained');
           check(!panel.contains(footer)&&contains(footer,root.querySelector('#nj-prev'),root.querySelector('#nj-next')),'navigation stays outside screen content');
@@ -234,7 +236,8 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
               check(contains(h,identity.querySelector('h4'),identity.querySelector('.msg'),verdict)&&!identity.contains(verdict)&&before(h,research)&&before(research,checks)&&before(checks,details),'identity, commercial context, current checks and diagnostic in binding order');
               check(fits(record,h)&&fits(h,identity)&&fits(h,verdict),'identity and verdict stay in their record header');
               check(JSON.stringify([...checks.querySelectorAll('[data-nj-check]')].map(n=>n.dataset.njCheck))===JSON.stringify(['icp','exclusions','client','open_deal','refusal','membership']),'six actionable checks preserve literal order');
-              check([...checks.querySelectorAll('[data-nj-check]')].every(n=>n.querySelector('h6')&&n.querySelector('[data-state]')&&n.querySelectorAll('p').length>=2),'each signal owns cause, status and next action');
+              check([...checks.querySelectorAll('[data-nj-check]')].every(n=>n.querySelector('[data-state]')&&n.classList.contains('nj-check-badge')),'six compact badges retain the server status; causes and actions live in the diagnostic');
+              check(record.querySelector('.nj-pending').querySelectorAll('button').length<=1,'one primary action per contact');
             }
           }
           if(step===4){
@@ -302,12 +305,13 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
       denySource=false;await click('#nj-reload');assert.equal(await page.locator('#nj-csv').inputValue(),csv.replaceAll('\r\n','\n'));
       await click('#nj-source-form button');await shot('02-fonte');
       await go(3);await click('[data-nj-action=check]');
-      assert.match(await page.locator('#nj-body').innerText(),/identidade desta pessoa ainda não foi vinculada/);
+      assert.match(await page.locator('#nj-body').innerText(),/6 checagem\(ns\) retida/);
       assert.equal(await page.locator('.nj-record details[open]').count(),0,'Proof details start collapsed, preserving one-row/person binding');
       const diagnostic=page.locator('.nj-record > details').first();
       await diagnostic.locator(':scope > summary').click();
       assert.equal(await diagnostic.locator(':scope > ul > li').count(),6,'All six checks remain available');
       await diagnostic.locator(':scope > ul > li > details > summary').first().click();
+      assert.match(await diagnostic.innerText(),/identidade desta pessoa ainda não foi vinculada/);
       await diagnostic.locator('.nj-technical > summary').first().click();
       assert.match(await page.locator('.nj-record details').first().innerText(),/Desconhecido · retido/);
       assert.match(await page.locator('.nj-record details').first().innerText(),/Exclusões/);
@@ -345,8 +349,8 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
       checker='pass';complete=true;await go(3);await click('[data-nj-action=check]');await shot('03-checagem-verificada');
       assert.equal(await page.locator('.nj-record').count(),2,'Two contacts remain visible for the same bound company');
       const commercial=page.locator('.nj-record').first();
-      assert.deepEqual(await commercial.locator('[data-nj-commercial-section]').evaluateAll(nodes=>nodes.map(n=>n.dataset.njCommercialSection)),['business','fit','moment','people','thesis','next_action'],'Six commercial regions in the approved order');
-      for(const key of ['business','fit','moment','people','thesis','next_action'])assert.match(await commercial.innerText(),new RegExp('COMMERCIAL_'+key));
+      assert.deepEqual(await commercial.locator('[data-nj-commercial-section]').evaluateAll(nodes=>nodes.map(n=>n.dataset.njCommercialSection)),['moment','fit','thesis'],'Three compact decision lines in the requested order');
+      for(const key of ['fit','moment','thesis'])assert.match(await commercial.innerText(),new RegExp('COMMERCIAL_'+key));
       assert.equal(await commercial.locator('.nj-history[open]').count(),0,'Originals and diagnostics start closed');
       assert.equal(await commercial.locator('a[href^="javascript:"]').count(),0,'Source links never execute input');
       assert.equal(await page.evaluate(()=>window.injected),undefined,'Research remains escaped text');
@@ -354,14 +358,33 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
       assert.match(await commercial.innerText(),/Contexto histórico/,'Old publication remains context');
       assert.match(await commercial.innerText(),/Hipótese/,'Hypothesis is not promoted to fact');
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'Commercial view has no horizontal overflow');
-      await commercial.locator('.nj-commercial > .nj-history').locator(':scope > summary').click();
-      await commercial.getByText('Documento original integral',{exact:true}).click();
-      assert.match(await commercial.innerText(),/ORIGINAL_RESEARCH_END/,'Full original remains accessible');
-      await commercial.locator('.nj-commercial > .nj-history').locator(':scope > summary').click();
+      assert.equal(await commercial.locator('.nj-commercial details').count(),0,'No duplicated full context in Checagem');
+      assert.equal(await commercial.locator('[data-nj-full-account]').count(),1,'Full dossier uses existing Conta');
+      assert.equal(await page.locator('form[data-nj-import]').count(),0,'Bound contact and company do not offer another import');
+      const versionBeforeView=draft.version,mutationsBeforeView=traffic.filter(t=>t.method!=='GET').length;
+      await page.locator('[data-nj-full-account]').first().click();
+      await page.waitForSelector('#journey-account-tabs');
+      await page.locator('[data-journey-tab=research]').click();
+      await page.locator('#journey-account-panel > details > summary').click();
+      assert.match(await page.locator('#journey-account-panel').innerText(),/ORIGINAL_RESEARCH_END/,'Full original remains available in Conta audit');
+      await page.locator('[data-journey-tab=before_approval]').click();
+      assert.match(await page.locator('#journey-account-panel').innerText(),/Antes do D0 · Ygor/);
+      assert.equal(draft.version,versionBeforeView,'Viewing Conta preserves draft version');
+      assert.equal(traffic.filter(t=>t.method!=='GET').length,mutationsBeforeView,'View issues no write');
+      await page.goto('https://new-journey.test/#jornada/nova/'+id+'/3');await settled();
 
       assert.equal(await page.locator('form[data-nj-qualification]').count(),1,'Exactly one review per company, not one per contact');
       await page.locator('.nj-qualification > summary').click();
       const form=page.locator('form[data-nj-qualification]');
+      assert.equal(await form.locator('[name=country]').inputValue(),'BR');
+      assert.equal(await form.locator('[name=sector]').inputValue(),'industria_b2b');
+      assert.equal(await form.locator('[name=is_b2b]').inputValue(),'true');
+      assert.equal(await form.locator('[name=annual_revenue_brl]').inputValue(),'3200000000');
+      assert.equal(await form.locator('[name=source_date]').inputValue(),'2023-03-14','Historical publication date is not replaced with 2026');
+      assert.equal(await form.locator('[name=decision]').inputValue(),'','Research cannot decide qualification');
+      assert.equal(await form.locator('[name=company_confirmation]').isChecked(),false);
+      assert.match(await page.locator('[data-nj-field-source=annual_revenue_brl]').innerText(),/referência 2022/);
+      assert.equal(await page.locator('[data-nj-field-source]').count(),4,'Each research field has its own source');
       await form.locator('[name=decision]').selectOption('qualified');await form.locator('[name=is_b2b]').selectOption('true');
       await form.locator('[name=country]').selectOption('BR');await form.locator('[name=sector]').selectOption('industria_b2b');
       await form.locator('[name=annual_revenue_brl]').fill('20000000');await form.locator('[name=source_url]').fill('https://example.invalid/report');
@@ -399,7 +422,9 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
       await click('[data-nj-action=company-confirm]');
       assert.equal(traffic.filter(t=>t.path.endsWith('/company-execute')).length,1);
       assert.match(await page.locator('#nj-status').innerText(),/Empresa conferida de volta.*Refazer as checagens/s);
-      await page.locator('.nj-qualification > summary').click();assert.match(await page.locator('#nj-body').innerText(),/Revisado por ygor/);
+      await page.locator('.nj-qualification > summary').click();
+      assert.doesNotMatch(await page.locator('#nj-body').innerText(),/Revisado por ygor/,'Historical review stays collapsed');
+      await page.locator('.nj-qualification > .nj-history > summary').click();assert.match(await page.locator('#nj-body').innerText(),/Revisado por ygor/);
       assert.equal(await form.locator('[name=source_url]').inputValue(),'https://example.invalid/report');
       assert.equal(await form.locator('[name=source_date]').inputValue(),'2031-03-01');
       assert.equal(await form.locator('[name=annual_revenue_brl]').inputValue(),'20000000');

@@ -150,9 +150,83 @@ def _item(text, original=None, classification=None):
     source_url = original.get('source_url')
     if source_url is None and isinstance(sources, list) and sources:
         source_url = sources[0]
-    return {'text': text, 'classification': classification or original.get('classification') or 'nao_classificado',
+    return {'text': text, 'classification': classification or original.get('classification') or ('fato' if original.get('label') == 'fato' else 'nao_classificado'),
             'source_url': source_url, 'published_on': published,
             'context_only': older or original.get('label') == 'contexto'}
+
+
+def _documentary_items(tabs):
+    """Resolve explicit citations inside this document only, without network or CRM inference."""
+    citations, labels = {}, {}
+    pattern = re.compile(r'(?:Fonte|Base):\s*([^,\n]+),\s*(\d{2}/\d{2}/\d{4})', re.I)
+    for entry in tabs.get('research', []):
+        text = entry.get('text', '')
+        for match in pattern.finditer(text):
+            urls = list(_URL.finditer(text[match.end():]))
+            if urls:
+                raw = match[2].split('/')
+                try:
+                    published = date.fromisoformat('-'.join(reversed(raw))).isoformat()
+                except ValueError:
+                    continue
+                key = (_fold(match[1]), published)
+                citations.setdefault(key, set()).add(urls[0].group().rstrip('.,;)'))
+                labels[key] = match[1].strip()
+
+    def item(text, original=None, classification=None):
+        original = dict(original or {})
+        matches = [(name, published, next(iter(urls))) for (name, published), urls in citations.items()
+                   if len(urls) == 1 and name in _fold(text)
+                   and '/'.join(reversed(published.split('-'))) in text]
+        if len(matches) == 1:
+            name, published, url = matches[0]
+            original['source_url'] = original.get('source_url') or url
+            original['published_on'] = original.get('published_on') or published
+        # Literal citations are documentary facts, never fresh qualification.
+        folded = _fold(text)
+        kind = classification or original.get('classification')
+        if not kind or kind == 'nao_classificado':
+            kind = ('hipotese' if 'hipotese' in folded else 'reserva' if 'reserva' in folded
+                    else 'fato' if original.get('label') == 'fato' or re.search(r'\bfato\b', folded)
+                    else 'nao_classificado')
+        result = _item(text, original, kind)
+        if len(matches) == 1:
+            result['source_label'] = labels[(matches[0][0], matches[0][1])]
+        return result
+    return item
+
+
+def _research_fields(sections):
+    """Presentation suggestions; no decision, customer, exclusion or confirmation values."""
+    fields, conflicts = {}, set()
+    for item in sections['business']:
+        text = item['text']
+        if (not item.get('source_url') or not item.get('published_on')
+                or item.get('classification') in ('hipotese', 'hypothesis', 'reserva')):
+            continue
+        folded = _fold(text)
+        values = {}
+        if re.search(r'\b(?:pais|sede)\s*:\s*brasil\b|\bsede no brasil\b|\b(?:empresa|industria|tecelagem) (?:b2b )?brasileira\b', folded) and not re.search(r'\bnao\b|\b(?:sede|pais) (?:incert|nao confirm)', folded):
+            values['country'] = 'BR'
+        elif re.search(r'\bpais\s*:\s*(?!brasil\b)\w+|\bsede (?:na|no|em) (?:argentina|equador|mexico|portugal)\b', folded):
+            values['country'] = 'OTHER'
+        if re.search(r'\bb2b\b', folded) and not re.search(r'\b(?:talvez|possivel\w*|confirmar|incert\w*|nao confirmad\w*)\b|\bb2b\s+nao\b', folded):
+            values['is_b2b'] = 'false' if re.search(r'\bnao(?:\s+\w+){0,4}\s+b2b\b|\bnao (?:vende |atende )?para empresas', folded) else 'true'
+        if re.search(r'\btecelagem\b|\bindustria b2b\b', folded) and not re.search(r'\bnao\b|\btalvez\b', folded):
+            values['sector'] = 'industria_b2b'
+        # Never annualize a semester, invent a year, or turn a bound/estimate into revenue.
+        revenue = re.search(r'(?:faturamento|receita)\s+anual\s+(?:de\s+)?r\$\s*([\d.,]+)\s*(bi(?:lhoes|lhao)?|mi(?:lhoes|lhao)?)?\s*(?:em|de)\s*(20\d{2})\b', folded)
+        if revenue and not re.search(r'estimad|acima|cerca|mais de|aproximad', folded):
+            amount = float(revenue[1].replace('.', '').replace(',', '.'))
+            amount *= 1_000_000_000 if (revenue[2] or '').startswith('bi') else 1_000_000 if revenue[2] else 1
+            values['annual_revenue_brl'] = int(amount) if amount.is_integer() else amount
+        for key, value in values.items():
+            if key in fields and fields[key]['value'] != value:
+                conflicts.add(key)
+            fields.setdefault(key, {'value': value, 'source_url': item['source_url'],
+                                   'source_date': item['published_on'], 'text': text,
+                                   'reference_year': revenue[3] if key == 'annual_revenue_brl' else None})
+    return {key: value for key, value in fields.items() if key not in conflicts}
 
 
 class CommercialAccountReadonly:
@@ -291,8 +365,9 @@ class CommercialAccountReadonly:
     @staticmethod
     def _project_document(doc, limitations):
         tabs = doc.get('tabs') or {}
+        documentary_item = _documentary_items(tabs)
         sections = {key: [] for key, _ in SECTIONS}
-        group, historical_block = None, False
+        group, historical_block, business_source = None, False, None
         for research in tabs.get('research', []):
             text = research.get('text')
             if not isinstance(text, str) or not text.strip():
@@ -335,7 +410,13 @@ class CommercialAccountReadonly:
                     elif re.match(r'^-?\s*(sinal|gatilho|fato|momento)', folded):
                         selected = 'moment'
                 if selected:
-                    sections[selected].append(_item(line, research))
+                    original = research
+                    if selected == 'business' and 'mesma fonte' in folded and business_source:
+                        original = {**research, **business_source}
+                    entry = documentary_item(line, original)
+                    if selected == 'business' and entry.get('source_url') and entry.get('published_on'):
+                        business_source = {k: entry[k] for k in ('source_url', 'published_on')}
+                    sections[selected].append(entry)
         for entry in tabs.get('dossier', []):
             text, key = entry.get('text'), entry.get('key')
             if not isinstance(text, str) or not text.strip():
@@ -346,7 +427,7 @@ class CommercialAccountReadonly:
             target = {'M1': 'moment', 'M2': 'thesis', 'M3': 'thesis', 'M4': 'thesis',
                       'M5': 'next_action', 'M6': 'thesis', 'M7': 'people'}.get(key)
             if target:
-                sections[target].append(_item(text, entry))
+                sections[target].append(documentary_item(text, entry))
         thesis = doc.get('thesis')
         if isinstance(thesis, str) and thesis.strip() and not _historical_state(thesis):
             sections['thesis'].insert(0, _item(thesis, classification='hipotese'))
@@ -358,12 +439,11 @@ class CommercialAccountReadonly:
                 if _historical_state(text):
                     limitations.append('historical_crm_and_email_claims_only_in_originals')
                 else:
-                    sections['next_action'].append(_item(text))
-        # A document's planned cadence dates do not date an operator's task.
-        sections['next_action'].extend([
-            _item('Responsável pela próxima ação manual: não informado.'),
-            _item('Data da próxima ação manual: não informada.')])
-        limitations.extend(('manual_next_action_owner_unknown', 'manual_next_action_date_unknown'))
+                    # File references and self-review stay in the original audit,
+                    # rather than masquerading as commercial tasks.
+                    if not re.search(r'(?:^|\s)(?:/|[\w/-]+\.(?:md|json|py)\b)|versao anterior|autocritica', _fold(text)):
+                        sections['next_action'].append({**documentary_item(text),
+                            'owner': 'Ygor', 'due_label': 'Antes do D0', 'display_only': True})
         sections['next_action'].extend(reserved_actions)
         for key, label in SECTIONS:
             retained = []
@@ -382,5 +462,6 @@ class CommercialAccountReadonly:
                 'binding_kind': 'verified_linkedin_and_hubspot_company',
                 'source': {key: source.get(key) for key in ('path', 'sha256', 'updated_at')},
                 'sections': [{'key': key, 'label': label, 'items': sections[key]} for key, label in SECTIONS],
+                'research_fields': _research_fields(sections),
                 'originals': {'account_id': doc['id'], 'source_text': doc['source_text'], 'tabs': deepcopy(tabs)},
                 'limitations': list(dict.fromkeys(limitations))}

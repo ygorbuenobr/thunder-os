@@ -243,8 +243,82 @@ class CommercialAccountTests(unittest.TestCase):
         self.assertEqual(sections['thesis'][0]['text'], 'Uma tese literal?')
         self.assertEqual(sections['next_action'][0]['text'], 'Confirmar responsável.')
         self.assertEqual(sections['next_action'][-1]['text'], 'Perguntas em reserva.')
-        self.assertIn('manual_next_action_owner_unknown', result['limitations'])
-        self.assertIn('manual_next_action_date_unknown', result['limitations'])
+        self.assertEqual(sections['next_action'][0]['owner'], 'Ygor')
+        self.assertEqual(sections['next_action'][0]['due_label'], 'Antes do D0')
+        self.assertTrue(sections['next_action'][0]['display_only'])
+        self.assertNotIn('manual_next_action_owner_unknown', result['limitations'])
+
+    def test_textual_citation_resolves_only_matching_name_and_date(self):
+        doc = self.accounts.docs[0]
+        doc['tabs']['research'] = [{'text': '**Empresa**'}, {'text':
+            '- Tecelagem brasileira. Fonte: Publicação Sintética, 24/08/2026, https://example.test/report'},
+            {'text': '- Modelo de venda: B2B para fabricantes. Fonte: Publicação Sintética, 24/08/2026.'},
+            {'text': '- Porte (mesma fonte): fábricas no Brasil.'}]
+        doc['tabs']['dossier'][0]['text'] = 'Expansão anunciada. Publicação Sintética, 24/08/2026.'
+        before = deepcopy(doc)
+        result = self.project()
+        moment = next(s['items'] for s in result['sections'] if s['key'] == 'moment')[0]
+        self.assertEqual(moment['source_url'], 'https://example.test/report')
+        self.assertEqual(moment['source_label'], 'Publicação Sintética')
+        self.assertEqual(moment['published_on'], '2026-08-24')
+        self.assertEqual(moment['classification'], 'nao_classificado', 'A citation alone is not a fact classification')
+        self.assertEqual(result['research_fields']['country']['value'], 'BR')
+        self.assertEqual(result['research_fields']['is_b2b']['value'], 'true')
+        self.assertEqual(result['research_fields']['sector']['value'], 'industria_b2b')
+        self.assertNotIn('annual_revenue_brl', result['research_fields'])
+        self.assertEqual(doc, before, 'Presentation does not mutate the original or stored draft')
+        doc['tabs']['dossier'][0]['text'] = 'Outra publicação, 24/08/2026.'
+        moment = next(s['items'] for s in self.project()['sections'] if s['key'] == 'moment')[0]
+        self.assertIsNone(moment['source_url'], 'A different citation cannot borrow provenance')
+
+    def test_revenue_prefill_is_literal_historical_year_never_annualized(self):
+        doc = self.accounts.docs[0]
+        entry = {'text': 'Receita anual de R$ 3,2 bi em 2022.',
+                 'source_url': 'https://example.test/history', 'published_on': '2023-03-14'}
+        doc['tabs']['research'] = [{'text': '**Empresa**'}, entry]
+        result = self.project()
+        revenue = result['research_fields']['annual_revenue_brl']
+        self.assertEqual(revenue['value'], 3200000000)
+        self.assertEqual(revenue['reference_year'], '2022')
+        self.assertEqual(revenue['source_date'], '2023-03-14')
+        self.assertEqual(revenue['source_url'], entry['source_url'])
+        self.assertFalse({'decision', 'company_confirmation', 'client', 'exclusions'} & result['research_fields'].keys())
+        for bad in ('Receita líquida no 1S26 de R$ 1,04 bi.',
+                    'Faturamento anual estimado acima de R$ 2 bi.',
+                    'Receita anual de R$ 3,2 bi.',
+                    'Receita anual de R$ 3,2 bi em 2022 (hipótese).'):
+            entry['text'] = bad
+            self.assertNotIn('annual_revenue_brl', self.project()['research_fields'], bad)
+        entry['text'] = 'Receita anual de R$ 3,2 bi em 2022.'
+        entry['published_on'] = None
+        self.assertNotIn('annual_revenue_brl', self.project()['research_fields'])
+
+    def test_research_prefills_reject_ambiguous_or_negated_facts(self):
+        doc = self.accounts.docs[0]
+        def entry(text):
+            return {'text': text, 'source_url': 'https://example.test/source', 'published_on': '2023-03-14'}
+        for text in ('Não é B2B.', 'Não é indústria B2B.', 'B2B não confirmado.', 'B2B incerto.', 'Talvez B2B.', 'País não confirmado: Brasil.',
+                     'Fábricas no Brasil, Argentina e Equador.'):
+            doc['tabs']['research'] = [{'text': '**Empresa**'}, entry(text)]
+            fields = self.project()['research_fields']
+            self.assertNotEqual(fields.get('is_b2b', {}).get('value'), 'true', text)
+            self.assertNotIn('country', fields, text)
+        doc['tabs']['research'] = [{'text': '**Empresa**'}, entry('País: Brasil. B2B.'),
+                                  entry('País: Argentina. Não é B2B.')]
+        fields = self.project()['research_fields']
+        self.assertNotIn('is_b2b', fields)
+        self.assertNotIn('country', fields)
+
+    def test_technical_references_are_audit_only_not_display_tasks(self):
+        doc = self.accounts.docs[0]
+        doc['tabs']['before_approval'] += [
+            {'text': '/root/skills/SKILL.md', 'blocking': True},
+            {'text': 'eu/aprendizados.md', 'blocking': True},
+            {'text': 'Existe versão anterior (10-source.md), não duplicar.', 'blocking': True}]
+        result = self.project()
+        tasks = next(s['items'] for s in result['sections'] if s['key'] == 'next_action')
+        self.assertFalse(any('SKILL.md' in i['text'] or '10-source.md' in i['text'] for i in tasks))
+        self.assertEqual(result['originals']['tabs'], doc['tabs'])
 
     def test_catalog_foreign_warnings_not_in_selected_document(self):
         warnings = ['source_directory_missing:contas', 'dossier_missing:M7',
