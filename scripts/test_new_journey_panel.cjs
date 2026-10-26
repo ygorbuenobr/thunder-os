@@ -207,6 +207,8 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
           const fits=(parent,child)=>{if(!parent||!child)return false;const p=parent.getBoundingClientRect(),c=child.getBoundingClientRect();return c.left>=p.left-1&&c.right<=p.right+1&&c.top>=p.top-1&&c.bottom<=p.bottom+1;};
           const header=root.querySelector(':scope > header'),trail=root.querySelector('#nj-steps'),body=root.querySelector('#nj-body'),footer=root.querySelector('.nj-bottom');
           const current=trail.querySelector('[aria-current="step"]'),step=Number(current.dataset.njStep),panel=body.querySelector(':scope > section'),paths=root.querySelector('[aria-label="Tipos de cadência"]');
+          const tabs=document.querySelector('.abas');
+          check(tabs.scrollWidth<=tabs.clientWidth,'section tabs fit without an internal horizontal scroll strip');
           check(JSON.stringify([...trail.querySelectorAll('button')].map(n=>n.innerText.replace(/\s+/g,' ').trim()))===JSON.stringify(['01 Ficha','02 Fonte','03 Checagem','04 Sequência','05 Ativar manual']),'literal five-step trail order');
           check(contains(header,root.querySelector('#nj-title'),root.querySelector('#nj-back')),'header owns title and return');
           check(before(header,trail)&&before(trail,body)&&before(body,footer),'header, trail, screen, footer order');

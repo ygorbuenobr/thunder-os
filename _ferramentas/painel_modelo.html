@@ -480,6 +480,11 @@ body:has(#new-journey:not([hidden])) #hoje-pedido{display:none}
 @media(max-width:700px){.nj-compact-check .nj-steps button{display:grid;gap:2px;min-height:52px}.nj-pending{align-items:start;flex-direction:column;gap:8px}.nj-decision-lines>div{grid-template-columns:65px minmax(0,1fr);gap:8px}.nj-decision-lines{font-size:13px}.nj-decision-lines dd{display:block}.nj-decision-lines dd>span{white-space:normal}.nj-decision-lines dd small{display:block}.nj-compact-check .nj-check-signals{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:700px){.nj-steps{grid-template-columns:repeat(3,minmax(0,1fr))!important}.nj-grid,.nj-sheet,.nj-sources{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:380px){.nj-steps{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
+@media(max-width:520px){
+  body:has(#new-journey:not([hidden])) .abas{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));overflow-x:visible}
+  body:has(#new-journey:not([hidden])) .abas button{min-width:0;padding:10px 0;font-size:clamp(12px,3.3vw,14px)}
+  body:has(#new-journey:not([hidden])) .abas .qt{margin-left:3px}
+}
 /* S29: source-backed management and full, read-only contact history. */
 .journey-scoreboard{margin-top:24px;border-block:1px solid var(--line);min-width:0}
 .journey-scoreboard>summary,.journey-scoreboard summary,.nj-contact-history summary{cursor:pointer;min-height:44px;padding-block:12px;overflow-wrap:anywhere}
