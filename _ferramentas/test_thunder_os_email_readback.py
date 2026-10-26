@@ -201,6 +201,16 @@ class EmailReadbackTests(unittest.TestCase):
         with self.assertRaises(EmailReadbackError):
             self.reader.read_sent_event(RECEIPT, expected)
 
+    def test_exact_plain_cannot_bypass_failed_html_proof_during_readback(self):
+        self.seed()
+        row = alternative_message(suffix='', html_suffix='')
+        html = b'<p>Different unapproved commercial message</p>'
+        row['message']['payload']['parts'][1]['body'] = {
+            'size': len(html), 'data': base64.urlsafe_b64encode(html).decode().rstrip('=')}
+        self.client.response = row
+        with self.assertRaises(EmailReadbackError):
+            self.reader.readback(RECEIPT)
+
     def test_alternative_signature_preserves_original_and_binds_approved_text(self):
         self.seed()
         self.client.response = alternative_message('Synthetic content  \r\nSecond line.\t')

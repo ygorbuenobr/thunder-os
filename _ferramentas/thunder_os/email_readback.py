@@ -502,9 +502,10 @@ class GmailReceiptReader:
             try:
                 _approved_body(message, step['content'])
             except EmailReadbackError:
-                # This reader protocol returns mismatches literally; the
-                # service compares them and retains the job, as before.
-                pass
+                # Preserve literal mismatches for the existing service guard;
+                # an exact plain copy must not bypass failed MIME proof.
+                if content == step['content']:
+                    raise
             else:
                 content = step['content']
             return {'target': message['to'], 'subject': message['subject'],
