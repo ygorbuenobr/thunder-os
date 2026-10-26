@@ -154,13 +154,15 @@ def _normalized_lines(text):
 
 def _paragraph_prefix(original, approved):
     """Ygor-authorized Gmail wrapping only; blank/structured boundaries stay exact."""
-    structural = re.compile(r'^[ \t]*(?:>|[-*] |\d+[.)] )')
+    structural = re.compile(r'^[ \t]*(?:>|[-*+•] |\d+[.)] )')
     lines = approved.split('\n')
     canonical = lines[0]
     for previous, line in zip(lines, lines[1:]):
         separator = ' ' if previous and line and not structural.match(previous) and not structural.match(line) else '\n'
         canonical += separator + line
-    pattern = re.escape(canonical).replace(r'\ ', r'(?: |(?<=\S)\n(?=\S)(?!(?:>|[-*] |\d+[.)] )))')
+    pattern = '\n'.join(re.escape(line) if structural.match(line) else
+        re.escape(line).replace(r'\ ', r'(?: |(?<=\S)\n(?=\S)(?!(?:>|[-*+•] |\d+[.)] )))')
+        for line in canonical.split('\n'))
     match = re.match(pattern, original)
     _require(match is not None, 'email_reviewed_content_mismatch')
     return match.end()
@@ -172,18 +174,23 @@ class _GmailSignature(HTMLParser):
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
-        self.stack, self.pieces = [], []
+        self.stack, self.pieces, self.prefix = [], [], []
         self.signature_depth, self.count, self.finished, self.nodes = None, 0, False, 0
 
     def handle_starttag(self, tag, attrs):
         self.nodes += 1
         _require(self.nodes <= 2048 and len(self.stack) < 64, 'email_signature_invalid')
+        _require(len({name for name, _ in attrs}) == len(attrs), 'email_signature_invalid')
         attrs = dict(attrs)
+        _require(tag not in ('script', 'style', 'iframe', 'object', 'input', 'button', 'select', 'textarea'), 'email_signature_invalid')
+        _require(not self.finished or tag not in ('img', 'video', 'audio', 'canvas', 'svg', 'embed'), 'email_signature_extra_text')
         is_signature = 'gmail_signature' in (attrs.get('class') or '').split()
         if is_signature:
             _require(tag == 'div' and self.count == 0, 'email_signature_invalid')
             self.count += 1;self.signature_depth = len(self.stack)
         active = self.signature_depth is not None
+        if not active and not self.finished and tag in ('div', 'p', 'br', 'li', 'blockquote'):
+            self.prefix.append(' ')
         if active:
             _require(tag not in ('script', 'style', 'iframe', 'object') and 'hidden' not in attrs
                      and not re.search(r'(?:display\s*:\s*none|visibility\s*:\s*hidden)', attrs.get('style') or '', re.I), 'email_signature_invalid')
@@ -212,6 +219,8 @@ class _GmailSignature(HTMLParser):
                 self.pieces.append(href[len('mailto:'):])
             elif re.sub(r'^https?://', '', href).rstrip('/') != display.rstrip('/'):
                 self.pieces.append(href)
+        if not root and self.signature_depth is None and not self.finished and tag in ('div', 'p', 'li', 'blockquote'):
+            self.prefix.append(' ')
         if root:
             self.signature_depth = None;self.finished = True
 
@@ -220,6 +229,8 @@ class _GmailSignature(HTMLParser):
             self.pieces.append(text)
         elif self.finished:
             _require(not text.strip(), 'email_signature_extra_text')
+        else:
+            self.prefix.append(text)
 
     def tokens(self, html):
         self.feed(_text(html, 65536));self.close()
@@ -238,7 +249,9 @@ def _approved_body(message, approved):
     _require((tail.startswith('\n') or original[:end].endswith('\n')) and message.get('mime_type') == 'multipart/alternative'
              and message.get('mime_complete') is True and type(message.get('attachment_count')) is int
              and message['attachment_count'] == 0, 'email_signature_required')
-    tokens = _GmailSignature().tokens(message.get('html_body'))
+    parser = _GmailSignature()
+    tokens = parser.tokens(message.get('html_body'))
+    _require(''.join(parser.prefix).split() == prefix.split(), 'email_html_content_mismatch')
     plain = re.sub(r'\[image:\s*([^\]\r\n]{1,512})\]', r'\1', tail)
     plain = re.sub(r'<([^<>\s]+)>', r'\1', plain)
     plain = re.sub(r'\*+', ' ', plain)
@@ -281,7 +294,7 @@ def _single_message_alternatives(message):
     headers = message.get('headers')
     _require(isinstance(headers, list) and len(headers) <= 500, 'email_reply_headers_incomplete')
     values = {}
-    critical = {'from', 'to', 'subject', 'cc', 'bcc', 'date', 'message-id', 'content-type', 'content-disposition'}
+    critical = {'from', 'to', 'subject', 'cc', 'bcc', 'date', 'message-id', 'content-type', 'content-disposition', 'content-transfer-encoding'}
     for header in headers:
         _require(isinstance(header, dict) and isinstance(header.get('name'), str)
                  and isinstance(header.get('value'), str)
@@ -291,6 +304,7 @@ def _single_message_alternatives(message):
             _require(name not in values, 'email_reply_headers_ambiguous')
             values[name] = header['value']
     _require(re.match(r'^multipart/alternative(?:\s*;|$)', values.get('content-type', ''), re.I)
+             and values.get('content-transfer-encoding', '7bit').lower() in {'7bit', '8bit', 'binary'}
              and 'content-disposition' not in values
              and not re.search(r'(?:^|;)\s*(?:name|filename)(?:\*\d*\*?)?\s*=', values['content-type'], re.I), 'email_mime_unsupported')
     for header, field in (('from', 'from'), ('to', 'to'), ('date', 'date'), ('message-id', 'message_id')):

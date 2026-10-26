@@ -267,7 +267,7 @@ class JourneyTests(unittest.TestCase):
         event = row['operator_receipt_event']
         approved = cadence['steps'][0]['content']
         original = approved.replace('Synthetic internal', 'Synthetic\ninternal') + '\n\nYgor\nThunder'
-        evidence = {'mime_type': 'multipart/alternative', 'html_body': '<div>Approved body</div><div class="gmail_signature">Ygor<br>Thunder</div>',
+        evidence = {'mime_type': 'multipart/alternative', 'html_body': '<div>Synthetic internal original<br>Exact last line.</div><div class="gmail_signature">Ygor<br>Thunder</div>',
                     'mime_complete': True, 'attachment_count': 0}
         event.update(text=original, approved_text=approved, signature_excluded=True, content_evidence=evidence)
         self.repo.put_state('codex_assisted', job, row)
@@ -278,7 +278,7 @@ class JourneyTests(unittest.TestCase):
         self.assertTrue(self.stage(snap, 'resposta')['items'])
         self.assertEqual(snap['timeline']['events'][-1]['label'], 'Parada interna')
         for key, value in [('text', original.replace('Synthetic', 'Changed', 1)),
-                           ('approved_text', approved + ' changed'), ('content_evidence', {}),
+                           ('approved_text', approved + ' changed'), ('signature_excluded', False), ('content_evidence', {}),
                            ('content_evidence', {**evidence, 'html_body': '<div class="gmail_signature">Different signature</div>'})]:
             mutated = deepcopy(row);mutated['operator_receipt_event'][key] = value
             self.repo.put_state('codex_assisted', job, mutated)

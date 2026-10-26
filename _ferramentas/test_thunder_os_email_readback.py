@@ -154,6 +154,34 @@ class EmailReadbackTests(unittest.TestCase):
             self.reader.readback(RECEIPT)
         self.assertEqual(self.client.calls, [('status',), ('read', IDENTIFIER)])
 
+    def test_no_visible_html_attributes_after_signature(self):
+        for extra in ('<img src="https://example.invalid/banner.png" alt="UNAPPROVED commercial paragraph">',
+                      '<input value="UNAPPROVED commercial paragraph">'):
+            row = bridge_alternative()
+            row['message']['mime_evidence']['alternatives'][1]['body'] += extra
+            self.client.response = row
+            with self.subTest(extra=extra), self.assertRaises(EmailReadbackError):
+                self.reader.read_sent_event(RECEIPT, {'mailbox': MAILBOX, 'to': self.step['recipient'], 'subject': self.step['subject'], 'content': self.step['content']})
+
+    def test_list_and_quote_markers_cannot_be_reflowed(self):
+        for approved, observed in (('- First item\n- Second item', '-\nFirst item\n- Second item'),
+                                   ('> First quote\n> Second quote', '>\nFirst quote\n> Second quote')):
+            row = bridge_alternative()
+            body = row['message']['body'].replace('Synthetic content\nSecond line.', observed, 1)
+            row['message']['body'] = body
+            row['message']['mime_evidence']['alternatives'][0]['body'] = body
+            self.client.response = row
+            with self.subTest(approved=approved), self.assertRaises(EmailReadbackError):
+                self.reader.read_sent_event(RECEIPT, {'mailbox': MAILBOX, 'to': self.step['recipient'], 'subject': self.step['subject'], 'content': approved})
+
+    def test_html_extra_outreach_before_signature_is_rejected(self):
+        row = bridge_alternative()
+        html = row['message']['mime_evidence']['alternatives'][1]
+        html['body'] = '<p>UNAPPROVED commercial paragraph</p>' + html['body']
+        self.client.response = row
+        with self.assertRaises(EmailReadbackError):
+            self.reader.read_sent_event(RECEIPT, {'mailbox': MAILBOX, 'to': self.step['recipient'], 'subject': self.step['subject'], 'content': self.step['content']})
+
     def test_alternative_signature_preserves_original_and_binds_approved_text(self):
         self.seed()
         self.client.response = alternative_message('Synthetic content  \r\nSecond line.\t')
