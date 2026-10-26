@@ -44,6 +44,24 @@ class RefusalObservationTests(unittest.TestCase):
         self.assertTrue(result['observation']['coverage']['complete'])
         self.assertFalse(result['observation']['coverage']['global_inbox_complete'])
 
+    def test_aggregate_source_binds_exact_registered_observation(self):
+        self.f.http.contacts['123']['properties']['opt_out'] = None
+        port = self.f.checker.refusals
+        baseline = port.lookup([support.EMAIL], [support.PROFILE])
+        self.assertEqual(baseline['status'], 'clear')
+        observations = []
+        for suffix in ('a', 'b', 'a'):
+            evidence = {**baseline, 'source_ref': 'toques:registered:' + suffix * 64}
+            with patch.object(port, 'lookup', return_value=evidence):
+                result = self.f.check()['refusal']
+            self.assertEqual(result['status'], 'unknown')
+            self.assertEqual(result['reason'], 'canonical_registered_crm_state_incomplete')
+            self.assertEqual(result['observation']['source_ref'], evidence['source_ref'])
+            self.assertFalse(result['observation']['coverage']['global_inbox_complete'])
+            observations.append(result['source'])
+        self.assertNotEqual(observations[0], observations[1])
+        self.assertEqual(observations[0], observations[2])
+
     def test_positive_crm_survives_unavailable_registered_read(self):
         self.f.http.contacts['123']['properties']['opt_out'] = 'true'
         self.write('DROP TABLE respostas')
