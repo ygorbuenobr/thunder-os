@@ -109,6 +109,45 @@ class CompanyQualificationTests(unittest.TestCase):
     def execute(self, preview=None, actor='ygor'):
         return self.qualifier.execute(self.body(preview or self.preview()), actor)
 
+    def test_company_clear_null_readback_verifies_without_second_write(self):
+        self.after_write = lambda: self.http.companies['500']['properties'].update(thunder_icp_exclusion_reason=None)
+        preview = self.preview()
+        saved_plan = deepcopy(preview['plan'])
+        result = self.execute(preview)
+        self.assertEqual(result['result']['status'], 'verified_state')
+        self.assertTrue(result['qualification_saved'])
+        self.assertEqual(len(self.writes), 1)
+        self.assertEqual(result['plan'], saved_plan)
+        self.assertIsNone(self.transport.read('companies', '500', saved_plan['properties'])['properties']['thunder_icp_exclusion_reason'])
+        body = {k: v for k, v in self.body(result).items() if k != 'confirm'}
+        again = self.qualifier.reconcile(body, 'ygor')
+        self.assertEqual(again['result']['status'], 'verified_state')
+        self.assertEqual(len(self.writes), 1)
+        self.assertEqual(again['plan'], saved_plan)
+
+    def test_company_clear_null_requires_exact_field_schema_and_identity(self):
+        port = CompanyQualificationHTTP(self.transport)
+        value = {'id': '500', 'properties': {'thunder_icp_exclusion_reason': None}}
+        valid_schema = {'properties': {'thunder_icp_exclusion_reason': {'type': 'enumeration', 'readOnlyValue': False}}}
+        cases = [({'id': '500', 'properties': {}}, valid_schema, {'thunder_icp_exclusion_reason': ''}, None),
+                 (value, {'properties': {}}, {'thunder_icp_exclusion_reason': ''}, None),
+                 (value, {'properties': {'thunder_icp_exclusion_reason': {'type': 'string', 'readOnlyValue': False}}}, {'thunder_icp_exclusion_reason': ''}, None),
+                 (value, {'properties': {'thunder_icp_exclusion_reason': {'type': 'enumeration', 'readOnlyValue': True}}}, {'thunder_icp_exclusion_reason': ''}, None),
+                 (value, valid_schema, {'thunder_icp_exclusion_reason': 'blocked'}, None),
+                 ({'id': '999', 'properties': value['properties']}, valid_schema, {'thunder_icp_exclusion_reason': ''}, None),
+                 (value, valid_schema, {'thunder_icp_exclusion_reason': ''}, 'domain'),
+                 ({'id': '500', 'properties': {'thunder_is_customer': None}}, valid_schema, {'thunder_is_customer': ''}, None)]
+        for row, schema, properties, id_property in cases:
+            with self.subTest(row=row, schema=schema, properties=properties, id_property=id_property), \
+                    patch.object(HubSpotHTTP, 'read', return_value=deepcopy(row)), \
+                    patch.object(port, 'metadata', return_value=schema):
+                self.assertEqual(port.read('companies', '500', properties, id_property=id_property), row)
+        with patch.object(HubSpotHTTP, 'read', return_value=value), patch.object(port, 'metadata', return_value=valid_schema):
+            observed = port.read('companies', '500', {'thunder_icp_exclusion_reason': ''})
+        self.assertEqual(observed['properties']['thunder_icp_exclusion_reason'], '')
+        self.assertIsNone(value['properties']['thunder_icp_exclusion_reason'])
+        self.assertEqual(self.writes, [])
+
     def test_company_review_one_patch_bound_identity(self):
         before_company = deepcopy(self.http.companies)
         before_contacts = deepcopy(self.http.contacts)

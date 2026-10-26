@@ -51,6 +51,21 @@ class CompanyQualificationHTTP(HubSpotHTTP):
     def _call(self, method, path, body=None):
         return self.original._call(method, path, body)
 
+    def read(self, kind, identifier, properties, *, id_property=None):
+        row = super().read(kind, identifier, properties, id_property=id_property)
+        key = 'thunder_icp_exclusion_reason'
+        if (kind == 'companies' and id_property is None and isinstance(properties, Mapping)
+                and properties.get(key) == '' and isinstance(row, Mapping)
+                and row.get('id') == identifier and isinstance(row.get('properties'), Mapping)
+                and key in row['properties'] and row['properties'][key] is None):
+            # A returned null represents this approved clear only. Missing fields,
+            # stale/invalid schemas and other properties keep the strict contract.
+            schema = self.metadata(kind).get('properties', {}).get(key, {})
+            if schema.get('type') == 'enumeration' and schema.get('readOnlyValue') is False:
+                row = deepcopy(row)
+                row['properties'][key] = ''
+        return row
+
     def prepare(self, kind, values, effect_id, record_id=None):
         contract_require(kind == 'companies' and isinstance(record_id, str)
             and _ID.fullmatch(record_id) is not None, 'company_existing_target_required')
