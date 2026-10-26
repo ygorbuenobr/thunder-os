@@ -271,6 +271,35 @@ class CommercialAccountTests(unittest.TestCase):
         moment = next(s['items'] for s in self.project()['sections'] if s['key'] == 'moment')[0]
         self.assertIsNone(moment['source_url'], 'A different citation cannot borrow provenance')
 
+    def test_citation_cannot_borrow_url_from_next_line_or_next_citation(self):
+        doc = self.accounts.docs[0]
+        for separator in ('\n', ' '):
+            doc['tabs']['research'] = [{'text': '**Empresa**'}, {'text':
+                'Tecelagem brasileira. Fonte: Fonte A, 24/08/2026.' + separator +
+                'Fonte: Fonte B, 25/08/2026, https://example.test/source-b'}]
+            doc['tabs']['dossier'][0]['text'] = 'Expansão. Fonte A, 24/08/2026.'
+            moment = next(s['items'] for s in self.project()['sections'] if s['key'] == 'moment')[0]
+            self.assertIsNone(moment['source_url'], separator)
+            self.assertIsNone(moment['published_on'], separator)
+        doc['tabs']['research'] = [{'text': '**Empresa**'}, {'text':
+            'Fonte: Fonte A, 24/08/2026, https://example.test/a https://example.test/conflict'}]
+        moment = next(s['items'] for s in self.project()['sections'] if s['key'] == 'moment')[0]
+        self.assertIsNone(moment['source_url'])
+        doc['tabs']['research'].append({'text': 'Fonte: Fonte A, 24/08/2026, https://example.test/a'})
+        moment = next(s['items'] for s in self.project()['sections'] if s['key'] == 'moment')[0]
+        self.assertIsNone(moment['source_url'], 'A previous single URL cannot erase a conflicting citation')
+
+    def test_country_unknown_markers_never_suggest_foreign_country(self):
+        doc = self.accounts.docs[0]
+        for value in ('não confirmado', 'desconhecido', 'pendente de pesquisa',
+                      'incerto', 'a confirmar', 'Argentina (não confirmado)'):
+            doc['tabs']['research'] = [{'text': '**Empresa**'}, {'text': 'País: ' + value + '.',
+                'source_url': 'https://example.test/source', 'published_on': '2026-08-24'}]
+            self.assertNotIn('country', self.project()['research_fields'], value)
+        for value in ('Argentina', 'México', 'Portugal'):
+            doc['tabs']['research'][1]['text'] = 'País: ' + value + '.'
+            self.assertEqual(self.project()['research_fields']['country']['value'], 'OTHER', value)
+
     def test_revenue_prefill_is_literal_historical_year_never_annualized(self):
         doc = self.accounts.docs[0]
         entry = {'text': 'Receita anual de R$ 3,2 bi em 2022.',

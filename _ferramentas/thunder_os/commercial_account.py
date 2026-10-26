@@ -161,8 +161,16 @@ def _documentary_items(tabs):
     pattern = re.compile(r'(?:Fonte|Base):\s*([^,\n]+),\s*(\d{2}/\d{2}/\d{4})', re.I)
     for entry in tabs.get('research', []):
         text = entry.get('text', '')
-        for match in pattern.finditer(text):
-            urls = list(_URL.finditer(text[match.end():]))
+        matches = list(pattern.finditer(text))
+        for index, match in enumerate(matches):
+            # A citation owns only its line, before any following citation.
+            # A missing or conflicting URL stays missing rather than borrowing
+            # provenance from another source in the same paragraph.
+            end = text.find('\n', match.end())
+            end = len(text) if end < 0 else end
+            if index + 1 < len(matches):
+                end = min(end, matches[index + 1].start())
+            urls = list(_URL.finditer(text[match.end():end]))
             if urls:
                 raw = match[2].split('/')
                 try:
@@ -170,7 +178,7 @@ def _documentary_items(tabs):
                 except ValueError:
                     continue
                 key = (_fold(match[1]), published)
-                citations.setdefault(key, set()).add(urls[0].group().rstrip('.,;)'))
+                citations.setdefault(key, set()).update(url.group().rstrip('.,;)') for url in urls)
                 labels[key] = match[1].strip()
 
     def item(text, original=None, classification=None):
@@ -206,9 +214,11 @@ def _research_fields(sections):
             continue
         folded = _fold(text)
         values = {}
+        foreign_country = re.search(r'\b(?:pais\s*:\s*|sede (?:na|no|em)\s+)(?:argentina|equador|mexico|portugal|estados unidos|canada|chile|colombia|peru|uruguai|espanha|franca|alemanha|reino unido)\b[^.;\n]*', folded)
         if re.search(r'\b(?:pais|sede)\s*:\s*brasil\b|\bsede no brasil\b|\b(?:empresa|industria|tecelagem) (?:b2b )?brasileira\b', folded) and not re.search(r'\bnao\b|\b(?:sede|pais) (?:incert|nao confirm)', folded):
             values['country'] = 'BR'
-        elif re.search(r'\bpais\s*:\s*(?!brasil\b)\w+|\bsede (?:na|no|em) (?:argentina|equador|mexico|portugal)\b', folded):
+        elif (foreign_country and not re.search(
+                r'\b(?:nao|desconhecid\w*|pendente\w*|incert\w*|confirmar|talvez)\b', foreign_country.group())):
             values['country'] = 'OTHER'
         if re.search(r'\bb2b\b', folded) and not re.search(r'\b(?:talvez|possivel\w*|confirmar|incert\w*|nao confirmad\w*)\b|\bb2b\s+nao\b', folded):
             values['is_b2b'] = 'false' if re.search(r'\bnao(?:\s+\w+){0,4}\s+b2b\b|\bnao (?:vende |atende )?para empresas', folded) else 'true'
