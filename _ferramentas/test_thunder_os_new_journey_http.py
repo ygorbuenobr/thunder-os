@@ -64,6 +64,20 @@ class NewJourneyHTTPTests(unittest.TestCase):
         self.wizard.export_preview.assert_called_once_with('draft-test','ygor',expected_version=1,review_hash='a'*64)
         self.wizard.export.assert_not_called()
 
+    def test_single_apollo_confirmation_requires_nonce_actor_exact_review_and_version(self):
+        self.wizard.confirm_export.return_value = {'apollo_export_confirmation': {'status': 'approved'}}
+        body = {'expected_version': 1, 'review_hash': 'a'*64}
+        path = 'draft-test/confirm-export'
+        self.assertEqual(self.request(path, method='POST', body=body)[0], 401)
+        self.assertEqual(self.request(path, method='POST', body=body, nonce=True, actor='codex')[0], 403)
+        for invalid in ({**body, 'step_id':'E1'}, {**body, 'review_hash':'bad'}, {'review_hash':'a'*64}):
+            self.assertEqual(self.request(path, method='POST', body=invalid, nonce=True)[0], 400)
+        self.wizard.confirm_export.assert_not_called()
+        self.assertEqual(self.request(path, method='POST', body=body, nonce=True)[0], 200)
+        self.wizard.confirm_export.assert_called_once_with('draft-test', 'ygor', expected_version=1, review_hash='a'*64)
+        self.wizard.approve_step.assert_not_called()
+        self.wizard.export.assert_not_called()
+
     def test_company_review_routes_nonce_actor_and_bound_journey(self):
         reviewer = Mock()
         reviewer.preview.return_value = {'preview_id':'preview-1','external_writes':0}

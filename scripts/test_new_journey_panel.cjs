@@ -16,7 +16,7 @@ const {chromium} = require('playwright');
 const root = path.resolve(__dirname, '..');
 const sourceHTML = fs.readFileSync(path.join(root, '_ferramentas/painel_modelo.html'), 'utf8');
 const html = sourceHTML.replaceAll("/*MODO*/'artifact'", "'servidor'").replaceAll('/*DADOS*/{}', '{}');
-const output = path.join(root, '.scratch/phase2-new-journey-ui');
+const output = path.join(root, '.scratch/S45-frontend');
 const base = '/api/os/v1/new-journey';
 const campaign = 'BR-APOLLO-01'; // Existing Registry reference, never a new campaign ID.
 const id = 'journey-synthetic-browser-fixture';
@@ -47,7 +47,7 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
       let draft=null,complete=false,checker='unknown',failCatalog=true,emptyCatalog=false,failGet=false,denySource=false,denySequences=false;
       let holdApprove=false,releaseApprove,selectedSequence='',observedEnrollment=false;
       let parityStatus='verified',readinessType='auto_email';
-      let companyPreview=null,promptHash='e'.repeat(64);
+      let companyPreview=null,promptHash='e'.repeat(64),holdConfirm=false,releaseConfirm,denyConfirm=false,confirmationInvalidated=false,confirmationMissing=false;
       const row = (n=1,email='fixture@example.invalid')=>({source_key:'source-'+n,name:'Pessoa sintética '+n,email,company:'Empresa sintética',linkedin_url:'https://www.linkedin.com/in/fixture-'+n,blockers:[],variables:{}});
       const checkRows=()=>draft.rows.map(r=>({source_key:r.source_key,qualification_context:checker==='pass'?{company_id:'123',contact_id:'42',company_name:'Empresa sintética',domain:'example.invalid',binding_hash:'f'.repeat(64)}:null,checks:keys.map(key=>({key,status:checker,
         reason:checker==='pass'?'Prova sintética verificada.':'identity_unlinked',source:'fixtures/checks.md · '+date,checked_at:date}))}));
@@ -59,9 +59,13 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
         if(!draft.steps.some(s=>s.channel==='email'))blockers.push('journey_email_steps_required');
         if(!draft.sequence)blockers.push('journey_sequence_required');
         if(draft.sequence&&parityStatus!=='verified')blockers.push('journey_apollo_text_unverified');
-        const steps=draft.steps.map(s=>({...s,approval_status:draft.approvals[s.id]?'approved':'pending',can_approve:!blockers.length,blockers:[...blockers]}));
-        if(steps.some(s=>s.approval_status!=='approved'))blockers.push('journey_step_approval_required');
+        const prompts=draft.approval_mode==='apollo_prompts_v1';
+        const confirmation={status:draft.approvals.apollo_export?'approved':confirmationInvalidated?'invalidated':'pending',can_confirm:!blockers.length,blockers:[...blockers],recipients:draft.rows.filter(r=>r.email&&draft.checks.find(c=>c.source_key===r.source_key)?.checks.every(c=>c.status==='pass')),sequence:structuredClone(draft.sequence),approval_validity_hours:24};
+        const steps=draft.steps.map(s=>({...s,approval_status:draft.approvals[s.id]?'approved':'pending',can_approve:!prompts&&!blockers.length,blockers:[...blockers]}));
+        if(prompts&&!draft.approvals.apollo_export)blockers.push('journey_export_confirmation_required');
+        if(!prompts&&steps.some(s=>s.approval_status!=='approved'))blockers.push('journey_step_approval_required');
         return {...structuredClone(draft),approval_mode:draft.approval_mode||'exact_copy_v1',sheet:sheet(complete),review_hash:String(draft.version).padStart(64,'0'),
+          ...(prompts&&!confirmationMissing?{apollo_export_confirmation:confirmation}:{}),
           commercial_accounts:checker==='pass'?Object.fromEntries(draft.rows.map(r=>[r.source_key,{status:'available',company:r.company,contact:r.name,
             source:{path:'fixtures/account.md',sha256:'8'.repeat(64),updated_at:date},
             sections:['business','fit','moment','people','thesis','next_action'].map(key=>({key,items:[
@@ -154,8 +158,8 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
           if(op==='sequences'){
             assert.deepEqual(Object.keys(body).sort(),['expected_version','query']);
             if(denySequences)return send({erro:'Apollo sem permissão para consultar sequências.'},403);
-            assert.equal(body.query,'Sequência confirmada pelo usuário');
-            return send({status:'ok',credit_cost:0,journey_id:id,version:draft.version,items:[{id:'apollo-sequence-fixture',name:'Sequência sintética retornada pela API',active:true,archived:false,user_id:'fixture-owner'}]});
+            assert(['Sequência confirmada pelo usuário','Outra sequência existente'].includes(body.query));
+            return send({status:'ok',credit_cost:0,journey_id:id,version:draft.version,items:[{id:body.query==='Outra sequência existente'?'apollo-sequence-other':'apollo-sequence-fixture',name:body.query==='Outra sequência existente'?'Outra sequência sintética existente':'Sequência sintética retornada pela API',active:true,archived:false,user_id:'fixture-owner'}]});
           }
           if(op==='sequence'){
             assert.deepEqual(Object.keys(body).sort(),['apollo_sequence_id','apollo_sequence_query','expected_version','steps']);
@@ -164,19 +168,29 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
             draft.steps=body.steps;draft.approvals={};draft.sequence={apollo_sequence_id:body.apollo_sequence_id,query:body.apollo_sequence_query};selectedSequence=body.apollo_sequence_id;return send(changed());
           }
           if(op==='apollo-prompts'){
-            assert.deepEqual(body,{expected_version:draft.version,apollo_sequence_id:'apollo-sequence-fixture',apollo_sequence_query:'Sequência confirmada pelo usuário'});
+            assert.deepEqual(body,{expected_version:draft.version,apollo_sequence_id:body.apollo_sequence_query==='Outra sequência existente'?'apollo-sequence-other':'apollo-sequence-fixture',apollo_sequence_query:body.apollo_sequence_query});
             draft.approval_mode='apollo_prompts_v1';draft.approvals={};
-            draft.steps=[{id:'prompt-step-1',channel:'email',subject:'Assunto gerado pelo Apollo',content:'Corpo gerado pelo Apollo',order:1,interval_hours:0}];
+            selectedSequence=body.apollo_sequence_id;
+            draft.sequence={apollo_sequence_id:body.apollo_sequence_id,query:body.apollo_sequence_query,item:{name:body.apollo_sequence_id==='apollo-sequence-other'?'Outra sequência sintética existente':'Sequência sintética retornada pela API'},activity_status:'active'};
+            draft.steps=[{id:'prompt-step-1',channel:'email',subject:'Assunto gerado pelo Apollo',content:'Corpo gerado pelo Apollo',order:1,interval_hours:0},{id:'prompt-step-2',channel:'email',subject:'Retomada',content:'Segundo corpo',order:2,interval_hours:72}];
             return send(changed());
           }
+          if(op==='confirm-export'){
+            assert.deepEqual(body,{expected_version:draft.version,review_hash:view().review_hash});
+            assert.equal(view().apollo_export_confirmation.can_confirm,true);
+            if(holdConfirm)await new Promise(resolve=>{releaseConfirm=resolve;});
+            if(denyConfirm)return send({erro:'A seleção mudou. Recarregue e confira os leads.'},409);
+            draft.approvals.apollo_export={kind:'apollo_prompts_v1',dispatch_authorized:false};return send(changed());
+          }
           if(op==='approve-step'){
+            assert.notEqual(draft.approval_mode,'apollo_prompts_v1','Apollo must never request per-prompt approval');
             assert.deepEqual(Object.keys(body).sort(),['expected_version','review_hash','step_id']);assert.equal(body.review_hash,view().review_hash);
             assert.equal(view().steps.find(s=>s.id===body.step_id).can_approve,true,'Fixture mirrors core can_approve');
             if(holdApprove)await new Promise(resolve=>{releaseApprove=resolve;});
             draft.approvals[body.step_id]={scope_hash:'fixture-only',kind:draft.approval_mode||'exact_copy_v1',...(draft.approval_mode==='apollo_prompts_v1'?{input_hash:promptHash}:{})};return send(changed());
           }
           if(op==='export'||op==='export-preview'){
-            assert.equal(view().can_export,true);assert.equal(body.review_hash,view().review_hash);assert.equal(selectedSequence,'apollo-sequence-fixture');
+            assert.equal(view().can_export,true);assert.equal(body.review_hash,view().review_hash);assert(['apollo-sequence-fixture','apollo-sequence-other'].includes(selectedSequence));
             assert.deepEqual(Object.keys(body).sort(),['expected_version','review_hash']);
             const prompts=draft.approval_mode==='apollo_prompts_v1';
             return send({filename:'fixture-approved.csv',csv_text:'\ufeffname,email'+(prompts?',approval_kind,approved_prompt_hash':'')+'\r\n"Pessoa, sintética",fixture@example.invalid'+(prompts?',apollo_prompts_v1,'+promptHash:'')+'\r\nPessoa sintética 2,second@example.invalid'+(prompts?',apollo_prompts_v1,'+promptHash:'')+'\r\n',rows:2,credits:0,review_hash:body.review_hash,external_writes:0,enrollment_enabled:false,approval_kind:draft.approval_mode||'exact_copy_v1',...(op==='export-preview'?{preview_only:true}:{})});
@@ -244,7 +258,14 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
           }
           if(step===4){
             const selection=panel.querySelector('#nj-sequence-id'),editors=[...panel.querySelectorAll('.nj-step-editor')];
-            check(contains(panel,selection,panel.querySelector('#nj-sequence-query'))&&editors.length>0&&before(selection,editors[0]),'Apollo executor selection precedes sequence steps');
+            const apollo=panel.querySelector('#nj-apollo-selection');
+            if(apollo){
+              const chooser=selection.closest('details'),confirm=apollo.querySelector('[data-nj-action="confirm-export"]'),audit=[...panel.querySelectorAll(':scope > details')].find(el=>el.querySelector('pre'));
+              check(editors.length===0&&!panel.querySelector('[data-nj-approve]'),'Apollo has no per-step editor or approval');
+              check(contains(apollo,apollo.querySelector('ol'),apollo.querySelector('ul'),confirm)&&before(apollo.querySelector('ol'),apollo.querySelector('ul'))&&before(apollo.querySelector('ul'),confirm),'Apollo sequence then eligible recipients then one confirmation');
+              check(before(apollo,chooser)&&before(chooser,audit)&&!chooser.open&&!audit.open,'sequence replacement and prompt audit follow the review as collapsed consultation');
+              check(fits(panel,apollo)&&(confirm.hidden||fits(panel,confirm)),'Apollo selection and visible confirmation remain contained');
+            }else check(contains(panel,selection,panel.querySelector('#nj-sequence-query'))&&editors.length>0&&before(selection,editors[0]),'Apollo executor selection precedes sequence steps');
             for(const editor of editors){
               const h=editor.querySelector(':scope > header'),fields=editor.querySelector(':scope > .nj-fields'),approval=editor.querySelector(':scope > .nj-actions');
               check(contains(editor,h,fields,approval)&&before(h,fields)&&before(fields,approval),'each step owns identification, full editing and review in order');
@@ -489,22 +510,54 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
       for(const tab of ['cadencias','contas','sistema','jornada']){await page.locator('#abas [data-aba='+tab+']').click();assert.equal(await page.locator('#abas [aria-selected=true]').getAttribute('data-aba'),tab);}
       await page.locator('#journey-new').click();await page.reload();await settled();
       assert.equal(await page.locator('[data-nj-resume]').count(),1);await click('[data-nj-resume]');assert.match(page.url(),new RegExp(id+'/1$'));
-      // Apollo prompt approval is a separate mode; preserve the exact-mode path above.
+      // S45: existing Apollo sequence + eligible people, one export confirmation.
       await go(4);assert.match(await page.locator('#nj-body').innerText(),/Apollo, Instantly e Cadência Thunder são caminhos distintos/);
       await click('[data-nj-action=select-prompts]');
       assert.equal(draft.approval_mode,'apollo_prompts_v1');
-      assert.equal(await page.locator('#nj-body input,#nj-body textarea,#nj-body select,[data-nj-remove]').count(),0,'Original Apollo prompts have no editor or mutation control');
-      assert.match(await page.locator('#nj-body').innerText(),/Modo Apollo · aprovação da versão dos prompts/);
-      assert.doesNotMatch(await page.locator('#nj-body').innerText(),/A aprovação libera somente o texto exato/);
-      assert.match(await page.locator('#nj-body').innerText(),/Não confirma um e-mail dinâmico ainda não gerado/);
+      assert.equal(await page.locator('#nj-body textarea,[data-nj-remove],[data-nj-approve],.nj-step-editor').count(),0,'Apollo has no editor or individual approval');
+      const confirmation=page.locator('[data-nj-action=confirm-export]');
+      assert.equal(await confirmation.count(),1);
+      assert.equal(await confirmation.innerText(),'Confirmar seleção para exportar');
+      assert.equal(await confirmation.isEnabled(),true);
+      const selection=page.locator('#nj-apollo-selection');
+      assert.match(await selection.innerText(),/Sequência sintética retornada pela API/);
+      assert.match(await selection.innerText(),/Ativa.*Passo 1.*Passo 2.*72 horas/s);
+      assert.match(await selection.innerText(),/Pessoa sintética 1.*fixture@example.invalid.*Empresa sintética/s);
+      assert.equal(await selection.locator('[data-nj-recipient]').count(),2);
+      assert.match(await page.locator('#nj-body').innerText(),/24 horas/);
+      assert.doesNotMatch(await page.locator('#nj-body').innerText(),/prompt_template|raw_variables|Instrução original Apollo|invalidada por edição local/);
+      await go(3);await go(4);
+      assert.equal(await confirmation.isEnabled(),true,'Untouched company review is not an Apollo edit');
+      assert.doesNotMatch(await page.locator('#nj-state').innerText(),/Alterações locais/);
+      await shot('04-apollo-selecao');
+      await page.getByText('Consultar prompts e variáveis originais · auditoria',{exact:true}).click();
       await page.getByText('Prompts e variáveis originais · passo 1',{exact:true}).click();
-      assert.deepEqual(JSON.parse(await page.locator('#nj-body pre').innerText()),promptVariants,'Full original prompts, instructions and variables survive escaping');
+      assert.deepEqual(JSON.parse(await page.locator('#nj-body pre').first().innerText()),promptVariants,'Original audit survives escaping');
       assert.equal(await page.locator('#new-journey img,#new-journey script').count(),0);
       assert.equal(await page.evaluate(()=>window.injected),undefined);
       await noOverflow();await page.screenshot({path:path.join(output,'04-prompts-originais-'+viewport.width+'.png'),fullPage:true});
-      await click('[data-nj-approve]');
-      assert.equal(draft.approvals['prompt-step-1'].kind,'apollo_prompts_v1','Prompt approval retains its separate server approval kind');
-      assert.match(await page.locator('[data-nj-approve]').innerText(),/prompts aprovada/);
+      // Fail closed when the new contract is absent; the existing can_export bit cannot approve a selection.
+      confirmationMissing=true;await click('#nj-reload');assert.equal(await confirmation.isDisabled(),true);
+      confirmationMissing=false;checker='unknown';draft.checks=checkRows();await click('#nj-reload');
+      assert.equal(await confirmation.isDisabled(),true);assert.equal(await selection.locator('[data-nj-recipient]').count(),0);
+      assert.match(await selection.innerText(),/Nenhum contato elegível/);
+      checker='pass';draft.checks=checkRows();await click('#nj-reload');
+      denyConfirm=true;await click('[data-nj-action=confirm-export]');
+      assert.match(await page.locator('#nj-status').innerText(),/A versão mudou/);
+      assert.equal(await confirmation.isDisabled(),true);
+      denyConfirm=false;await click('#nj-reload');
+      const confirmBefore=traffic.filter(t=>t.path.endsWith('/confirm-export')).length;
+      holdConfirm=true;await confirmation.focus();await page.keyboard.press('Enter');
+      await page.waitForFunction(()=>document.querySelector('[data-nj-action=confirm-export]').disabled);
+      assert.match(await confirmation.innerText(),/Confirmando/);
+      await page.keyboard.press('Enter');await page.waitForTimeout(20);
+      assert.equal(traffic.filter(t=>t.path.endsWith('/confirm-export')).length,confirmBefore+1,'No duplicate while confirming');
+      holdConfirm=false;releaseConfirm();await settled();
+      assert.equal(draft.approvals.apollo_export.dispatch_authorized,false);
+      assert.match(await page.locator('#nj-apollo-confirmation-state').innerText(),/Seleção confirmada/);
+      assert.equal(await confirmation.isHidden(),true,'Already approved selection has no second confirmation button');
+      assert.equal(await page.locator('#nj-apollo-confirmation-state').evaluate(el=>el===document.activeElement),true,'Successful confirmation moves focus to its status');
+      await shot('04-apollo-confirmada');
       await go(5);const promptPreviewDownloads=downloads.length,promptPreviewTraffic=traffic.length;
       const readiness=page.locator('#nj-operational-readiness');
       assert.match(await readiness.innerText(),/E1 automático observado/);
@@ -524,13 +577,33 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
       await page.reload();await settled();
       assert.match(await page.locator('#nj-manual').innerText(),/Inscrição manual no Apollo/);
       assert.equal(await page.locator('#nj-manual pre').count(),0,'Reload clears export preview and never reuses a stale generated CSV');
-      await go(4);assert.match(await page.locator('[data-nj-approval-state]').innerText(),/Aprovado no servidor/);
+      await go(4);assert.match(await page.locator('#nj-apollo-confirmation-state').innerText(),/Seleção confirmada/);
+      await go(5);const promptDownload=page.waitForEvent('download');await click('[data-nj-action=export]');
+      assert.equal((await promptDownload).suggestedFilename(),'fixture-approved.csv','Apollo CSV needs no further approval');
+      await go(4);
+      // A saved Apollo choice remains replaceable with another existing sequence.
+      await page.getByText('Escolher outra sequência',{exact:true}).click();
+      await page.locator('#nj-sequence-query').fill('Outra sequência existente');
+      assert.doesNotMatch(await page.locator('#nj-state').innerText(),/Aprovação invalidada/);
+      await click('[data-nj-action=sequences]');
+      await page.getByText('Escolher outra sequência',{exact:true}).click();
+      await page.locator('#nj-sequence-id').selectOption('apollo-sequence-other');
+      await page.getByText('Escolher outra sequência',{exact:true}).click();
+      await click('[data-nj-action=select-prompts]');
+      assert.equal(draft.sequence.apollo_sequence_id,'apollo-sequence-other');
+      assert.deepEqual(draft.approvals,{},'Selecting another existing sequence clears the old confirmation');
+      assert.match(await selection.innerText(),/Outra sequência sintética existente/);
+      assert.equal(await confirmation.isVisible(),true);assert.equal(await confirmation.isEnabled(),true);
+      await go(5);assert.equal(await page.locator('[data-nj-action=export]').isDisabled(),true);
+      await go(4);await click('[data-nj-action=confirm-export]');
+      await go(5);assert.equal(await page.locator('[data-nj-action=export]').isEnabled(),true);
+      await go(4);
       // Model a changed authoritative snapshot. This only exercises browser consumption;
       // backend hash invalidation is covered by the main agent's domain tests.
-      promptHash='f'.repeat(64);draft.approvals={};draft.version++;
-      await click('#nj-reload');assert.match(await page.locator('[data-nj-approval-state]').innerText(),/Aguardando aprovação/);
+      promptHash='f'.repeat(64);draft.approvals={};draft.version++;confirmationInvalidated=true;
+      await click('#nj-reload');assert.match(await page.locator('#nj-apollo-confirmation-state').innerText(),/Confirmação invalidada/);
       await go(5);assert.equal(await page.locator('[data-nj-action=export-preview]').isDisabled(),true,'Changed prompt inputs revoke export until renewed review');
-      assert.equal(traffic.filter(t=>t.path.endsWith('/apollo-prompts')).length,1,'Reading originals and approval never alters Apollo prompts');
+      assert.equal(traffic.filter(t=>t.path.endsWith('/apollo-prompts')).length,2,'Reading originals and approval never alters Apollo prompts');
       for(const type of ['manual_email',null,'<img src=x onerror=alert(1)>']){
         readinessType=type;await click('#nj-reload');await go(5);
         const text=await page.locator('#nj-operational-readiness').innerText();
@@ -543,10 +616,10 @@ const sheet = complete => ({status:complete?'complete':'incomplete', version:'fi
       assert.equal(await page.locator('#new-journey img,#new-journey script').count(),0);assert.equal(await page.evaluate(()=>window.injected),undefined);
       assert.deepEqual(errors,[]);await noOverflow();
       assert.equal(traffic.filter(t=>t.method!=='GET'&&!t.path.startsWith(base+'/')).length,0,'No effect calls');
-      console.log('EXERCISED '+viewport.width+': exact-mode regression; grouped company review/source+date/explicit company PATCH intent/readback+reload; original readonly Apollo prompts/separate approval_kind/hash refresh; export previews without download or writes; catalog/error+403/retry/CSV/escaping/keyboard/reflow/no external network; commercial six-region view, original provenance and safe links; pending final aggregated assertions');
+      console.log('EXERCISED '+viewport.width+': exact-mode regression; grouped company review/source+date/explicit company PATCH intent/readback+reload; Apollo single confirmation/CAS/nonce/no duplicates/no step approvals/hash refresh; export previews without download or writes; catalog/error+403/retry/CSV/escaping/keyboard/reflow/no external network; commercial six-region view, original provenance and safe links; pending final aggregated assertions');
       await page.close();
     }
     assert.deepEqual(deficiencies,[],'S27 browser deficiencies requiring main-owned HTML fixes');
-    console.log('PASS S28 browser fixture: all assertions at 1440, 390 and 320px; zero provider HTTP');
+    console.log('PASS S45 browser fixture: all assertions at 1440, 390 and 320px; zero provider HTTP');
   }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

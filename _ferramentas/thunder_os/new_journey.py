@@ -366,22 +366,37 @@ class NewJourney:
         parity = self._text_parity(row)
         if parity['status'] != 'verified':
             blockers.append('journey_apollo_text_unverified')
+        prompts = row.get('approval_mode') == 'apollo_prompts_v1'
+        confirmation = None
+        if prompts:
+            status = 'pending'
+            if 'apollo_export' in row['approvals']:
+                try:
+                    self._authorize_apollo_export(row, eligible)
+                    status = 'approved'
+                except (NewJourneyError, ApprovalError):
+                    status = 'invalidated'
+            confirmation = {'status': status, 'can_confirm': not blockers,
+                'blockers': sorted(set(blockers)), 'recipients': deepcopy(eligible),
+                'sequence': deepcopy(row.get('sequence')), 'approval_validity_hours': 24}
+            if status != 'approved':
+                blockers.append('journey_export_confirmation_required')
         steps = []
         for step in row['steps']:
-            status = 'pending'
-            if step['id'] in row['approvals']:
+            status = 'not_required' if prompts else 'pending'
+            if not prompts and step['id'] in row['approvals']:
                 try:
                     self._authorize(row, step, eligible)
                     status = 'approved'
                 except (NewJourneyError, ApprovalError):
                     status = 'invalidated'
-            if status != 'approved':
+            if not prompts and status != 'approved':
                 blockers.append('journey_step_approval_required')
             step_blockers = [b for b in blockers if b != 'journey_step_approval_required']
             if step['channel'] == 'linkedin' and any(not lead['linkedin_url'] for lead in eligible):
                 step_blockers.append('journey_recipient_required')
             steps.append({**step, 'approval_status': status,
-                'can_approve': not step_blockers, 'blockers': sorted(set(step_blockers))})
+                'can_approve': not prompts and not step_blockers, 'blockers': sorted(set(step_blockers))})
         checks_by_key = {item['source_key']: item['checks'] for item in row['checks']}
         rows = [{**item, 'checks': checks_by_key.get(item['source_key'], self._unknown()),
                  'eligible': item['source_key'] in {lead['source_key'] for lead in eligible}}
@@ -397,6 +412,7 @@ class NewJourney:
             'apollo_text_parity': parity, 'approval_validity_hours': 24,
             'operational_readiness': self._operational_readiness(row),
             'approval_mode': row.get('approval_mode', 'exact_copy_v1'),
+            'apollo_export_confirmation': confirmation,
             'commercial_accounts': self._commercial(row, sheet),
             'cadence_paths': [
                 {'id': 'apollo', 'label': 'Apollo', 'approval': 'prompt_hash_and_sent_audit'},
@@ -823,18 +839,8 @@ class NewJourney:
         row, context, sheet, presented_scope = self._preflight(ident, actor, expected_version, review_hash)
         step = next((s for s in row['steps'] if s['id'] == step_id), None)
         _require(step is not None, 'journey_step_missing', 404)
-        if row.get('approval_mode') == 'apollo_prompts_v1':
-            with self.repo.transaction():
-                self._revalidate(row, context, sheet)
-                now = self._now()
-                _require(self._scope(row) == presented_scope, 'journey_context_changed', 409)
-                row['approvals'][step_id] = {
-                    'kind': 'apollo_prompts_v1', 'scope_hash': presented_scope,
-                    'input_hash': self._text_parity(row)['input_hash'], 'approved_by': actor,
-                    'approved_at': now.isoformat(),
-                    'expires_at': (now + timedelta(hours=24)).isoformat(),
-                    'dispatch_authorized': False}
-                return self._view(self._save(row, expected_version))
+        _require(row.get('approval_mode') != 'apollo_prompts_v1',
+                 'journey_single_confirmation_required', 409)
         targets = [self._recipient_step(step, lead) for lead in self._eligible(row)]
         with self.repo.transaction():
             self._revalidate(row, context, sheet)
@@ -850,23 +856,45 @@ class NewJourney:
             row['approvals'][step_id] = {'scope_hash': presented_scope, 'pack': payload}
             return self._view(self._save(row, expected_version))
 
+    def confirm_export(self, ident, actor, expected_version, review_hash):
+        """Confirm the eligible recipients → existing sequence mapping, for CSV only."""
+        row, context, sheet, presented_scope = self._preflight(ident, actor, expected_version, review_hash)
+        _require(row.get('approval_mode') == 'apollo_prompts_v1',
+                 'journey_apollo_mode_required', 409)
+        with self.repo.transaction():
+            self._revalidate(row, context, sheet)
+            _require(self._scope(row) == presented_scope, 'journey_context_changed', 409)
+            now = self._now()
+            # Reuse the draft approval contract; never create execution approval.
+            row['approvals'] = {'apollo_export': {
+                'kind': 'apollo_prompts_v1', 'purpose': 'manual_export',
+                'scope_hash': presented_scope, 'input_hash': self._text_parity(row)['input_hash'],
+                'approved_by': actor, 'approved_at': now.isoformat(),
+                'expires_at': (now + timedelta(hours=24)).isoformat(),
+                'dispatch_authorized': False}}
+            row.update(export_snapshot=None, reconciliation=None)
+            return self._view(self._save(row, expected_version))
+
+    def _authorize_apollo_export(self, row, eligible):
+        record = row['approvals'].get('apollo_export')
+        _require(isinstance(record, Mapping), 'journey_export_confirmation_required', 409)
+        _require(record.get('scope_hash') == self._scope(row), 'journey_approval_scope_changed', 409)
+        try:
+            valid = (record.get('kind') == 'apollo_prompts_v1'
+                and record.get('purpose') == 'manual_export'
+                and record.get('approved_by') == 'ygor'
+                and record.get('dispatch_authorized') is False and bool(eligible)
+                and datetime.fromisoformat(record['approved_at']) <= self._now()
+                < datetime.fromisoformat(record['expires_at'])
+                and record.get('input_hash') == self._text_parity(row).get('input_hash'))
+        except (KeyError, TypeError, ValueError):
+            valid = False
+        _require(valid, 'journey_approval_invalid', 409)
+
     def _authorize(self, row, step, eligible):
         record = row['approvals'].get(step['id'])
         _require(isinstance(record, Mapping) and record.get('scope_hash') == self._scope(row),
                  'journey_approval_scope_changed', 409)
-        if row.get('approval_mode') == 'apollo_prompts_v1':
-            try:
-                valid = (record.get('kind') == 'apollo_prompts_v1'
-                    and record.get('approved_by') == 'ygor'
-                    and record.get('dispatch_authorized') is False
-                    and bool(eligible)
-                    and datetime.fromisoformat(record['approved_at']) <= self._now()
-                    < datetime.fromisoformat(record['expires_at'])
-                    and record.get('input_hash') == self._text_parity(row).get('input_hash'))
-            except (KeyError, TypeError, ValueError):
-                valid = False
-            _require(valid, 'journey_approval_invalid', 409)
-            return
         try:
             data = dict(record['pack'])
             data['approved_at'] = datetime.fromisoformat(data['approved_at'])
@@ -899,8 +927,11 @@ class NewJourney:
                          for entry in row['checks']}
             emails = [s for s in row['steps'] if s['channel'] == 'email']
             _require(bool(emails), 'journey_email_steps_required', 409)
-            for step in row['steps']:
-                self._authorize(row, step, eligible)
+            if row.get('approval_mode') == 'apollo_prompts_v1':
+                self._authorize_apollo_export(row, eligible)
+            else:
+                for step in row['steps']:
+                    self._authorize(row, step, eligible)
             columns = ['name', 'first_name', 'last_name', 'company', 'email', 'linkedin_url',
                 'apollo_person_id', 'apollo_contact_id', 'hubspot_id', 'source_key',
                 'campaign_id', 'journey_id', 'scope_hash', 'apollo_sequence_id']

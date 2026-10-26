@@ -1386,7 +1386,7 @@ class Handler(BaseHTTPRequestHandler):
                 if set(body) != {'campaign_id', 'name'}:
                     raise Erro('Dados de jornada inválidos.')
                 return self.responder(200, wizard.create(body, actor))
-            match = re.fullmatch(r'([A-Za-z0-9_-]{1,100})/(source|check|qualify|sequences|sequence|apollo-prompts|approve-step|export|export-preview|reconcile|company-preview|company-execute|company-reconcile|hubspot-preview|hubspot-execute|hubspot-reconcile)', target)
+            match = re.fullmatch(r'([A-Za-z0-9_-]{1,100})/(source|check|qualify|sequences|sequence|apollo-prompts|approve-step|confirm-export|export|export-preview|reconcile|company-preview|company-execute|company-reconcile|hubspot-preview|hubspot-execute|hubspot-reconcile)', target)
             if not match:
                 raise Erro('Operação de jornada não encontrada.', 404)
             ident, action = match.groups()
@@ -1463,14 +1463,15 @@ class Handler(BaseHTTPRequestHandler):
                     raise Erro('Sequência inválida.')
                 args = {key: body[key] for key in selection if key in body}
                 result = wizard.revise_sequence(ident, body['steps'], actor, expected_version=version, **args)
-            elif action in {'approve-step', 'export', 'export-preview'}:
+            elif action in {'approve-step', 'confirm-export', 'export', 'export-preview'}:
                 fields = required | {'review_hash'} | ({'step_id'} if action == 'approve-step' else set())
                 if (set(body) != fields or not isinstance(body.get('review_hash'), str)
                         or not re.fullmatch(r'[a-f0-9]{64}', body['review_hash'])):
                     raise Erro('Revisão de jornada inválida.')
                 args = {'expected_version': version, 'review_hash': body['review_hash']}
                 result = (wizard.approve_step(ident, body['step_id'], actor, **args)
-                          if action == 'approve-step' else wizard.export_preview(ident, actor, **args)
+                          if action == 'approve-step' else wizard.confirm_export(ident, actor, **args)
+                          if action == 'confirm-export' else wizard.export_preview(ident, actor, **args)
                           if action == 'export-preview' else wizard.export(ident, actor, **args))
             else:
                 if set(body) != required:
