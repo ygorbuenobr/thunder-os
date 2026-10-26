@@ -43,6 +43,42 @@ def raw_message():
             'body': {'size': len(body), 'data': base64.urlsafe_b64encode(body).decode().rstrip('=')}}}}
 
 
+def alternative_message(content='Synthetic content\nSecond line.', suffix=None, html_suffix=None):
+    row = raw_message()
+    suffix = ('\n\nSynthetic Sender\n' + MAILBOX + ' <' + MAILBOX + '>') if suffix is None else suffix
+    html_suffix = ('<div class="gmail_signature"><div>Synthetic Sender</div><a href="mailto:' +
+                   MAILBOX + '">' + MAILBOX + '</a></div>') if html_suffix is None else html_suffix
+    def leaf(kind, text):
+        body = text.encode()
+        return {'mimeType': kind, 'headers': [{'name': 'Content-Type', 'value': kind + '; charset=UTF-8'}],
+                'body': {'size': len(body), 'data': base64.urlsafe_b64encode(body).decode().rstrip('=')}}
+    payload = row['message']['payload']
+    payload['mimeType'] = 'multipart/alternative'
+    payload['headers'] = [h for h in payload['headers'] if h['name'] != 'Content-Type'] + [
+        {'name': 'Content-Type', 'value': 'multipart/alternative; boundary="synthetic"'},
+        {'name': 'Date', 'value': 'Mon, 26 Oct 2026 14:09:55 -0300'}]
+    payload['body'] = {'size': 0}
+    payload['parts'] = [leaf('text/plain', content + suffix),
+                        leaf('text/html', '<div>Synthetic content<br>Second line.</div>' + html_suffix)]
+    return row
+
+
+def bridge_alternative():
+    raw = alternative_message()
+    payload = raw['message']['payload']
+    headers = payload['headers'] + [{'name': 'Message-ID', 'value': '<synthetic@example.invalid>'}]
+    values = {h['name'].lower(): h['value'] for h in headers}
+    parts = [{'mime_type': p['mimeType'], 'body': base64.urlsafe_b64decode(p['body']['data'] + '===').decode(),
+              'part_id': str(n)} for n, p in enumerate(payload['parts'])]
+    return {'mailbox': MAILBOX, 'status': 'ok', 'message': {
+        'id': IDENTIFIER, 'thread_id': 'def456', 'labelIds': ['SENT'], 'sent': True,
+        'truncated': False, 'headers_complete': True, 'headers': headers,
+        'from': values['from'], 'to': values['to'], 'subject': values['subject'],
+        'date': values['date'], 'message_id': values['message-id'], 'cc': '', 'bcc': '',
+        'body': parts[0]['body'], 'context_only': True, 'receipt_eligible': False,
+        'mime_evidence': {'root_type': 'multipart/alternative', 'selected_type': 'text/plain', 'alternatives': parts}}}
+
+
 class ReadClient:
     def __init__(self, response=None):
         self.response = message() if response is None else response
@@ -117,6 +153,94 @@ class EmailReadbackTests(unittest.TestCase):
         with self.assertRaisesRegex(EmailReadbackError, 'binding_ambiguous'):
             self.reader.readback(RECEIPT)
         self.assertEqual(self.client.calls, [('status',), ('read', IDENTIFIER)])
+
+    def test_alternative_signature_preserves_original_and_binds_approved_text(self):
+        self.seed()
+        self.client.response = alternative_message('Synthetic content  \r\nSecond line.\t')
+        observed = self.reader.read_message(RECEIPT)
+        self.assertIn('Synthetic Sender', observed['content'])
+        self.assertEqual(self.reader.readback(RECEIPT), self.expected())
+        event = self.reader.read_sent_event(RECEIPT, {'mailbox': MAILBOX,
+            'to': self.step['recipient'], 'subject': self.step['subject'], 'content': self.step['content']})
+        self.assertEqual(event['text'], observed['content'], 'The original is never replaced by the approved excerpt')
+        self.assertEqual(event['approved_text'], self.step['content'])
+        self.assertTrue(event['signature_excluded'])
+
+    def test_alternative_changed_prefix_or_extra_non_signature_text_stays_blocked(self):
+        self.seed()
+        cases = [alternative_message('Changed content\nSecond line.'),
+                 alternative_message(' Synthetic content\nSecond line.'),
+                 alternative_message('Synthetic  content\nSecond line.'),
+                 alternative_message(suffix='\n\nExtra commercial paragraph\nSynthetic Sender\n' + MAILBOX + ' <' + MAILBOX + '>'),
+                 alternative_message(html_suffix='<div class="gmail_signature">Synthetic Sender</div><div>Extra paragraph</div>'),
+                 alternative_message(html_suffix='<div class="gmail_signature">Synthetic Sender</div><div class="gmail_signature">Other signature</div>'),
+                 alternative_message(html_suffix='<div>Not a signature</div>'),
+                 alternative_message(suffix='\n\nSynthetic Sender\nOther address')]
+        for row in cases:
+            with self.subTest(row=row['message']['payload']['parts'][0]['body']):
+                self.client.response = row
+                try:
+                    observed = self.reader.readback(RECEIPT)
+                except EmailReadbackError:
+                    continue
+                self.assertNotEqual(observed['content'], self.step['content'])
+
+    def test_gmail_wraps_only_inside_paragraphs_and_never_changes_words(self):
+        self.seed()
+        self.client.response = alternative_message('Synthetic\r\ncontent\r\nSecond line.')
+        self.assertEqual(self.reader.readback(RECEIPT), self.expected())
+        for content in ('Synthetic content\n\nSecond line.', 'Synthetic content\nSecond Line.',
+                        'Synthetic content.\nSecond line.', 'Synthetic content\n> Second line.'):
+            self.client.response = alternative_message(content)
+            self.assertNotEqual(self.reader.readback(RECEIPT)['content'], self.step['content'])
+
+    def test_missing_plain_duplicate_parts_and_attachments_rejected(self):
+        base = alternative_message()
+        variants = []
+        for parts in ([base['message']['payload']['parts'][1]],
+                      base['message']['payload']['parts'] + [base['message']['payload']['parts'][0]]):
+            row = deepcopy(base);row['message']['payload']['parts'] = parts;variants.append(row)
+        for field, value in (('filename', 'document.pdf'), ('body', {'attachmentId': 'file', 'size': 1})):
+            row = deepcopy(base);row['message']['payload']['parts'][1][field] = value;variants.append(row)
+        row = deepcopy(base);row['message']['payload']['parts'][1]['headers'].append(
+            {'name': 'Content-Disposition', 'value': 'attachment'});variants.append(row)
+        for row in variants:
+            self.client.response = row
+            with self.assertRaises(EmailReadbackError):
+                self.reader.read_message(RECEIPT)
+
+    def test_complete_fresh_id_frame_requires_new_content_proof_preserves_source_scope(self):
+        self.seed()
+        self.client.response = bridge_alternative()
+        before = deepcopy(self.client.response)
+        self.assertEqual(self.reader.readback(RECEIPT), self.expected())
+        event = self.reader.read_sent_event(RECEIPT, {'mailbox': MAILBOX, 'to': self.step['recipient'],
+            'subject': self.step['subject'], 'content': self.step['content']})
+        self.assertTrue(event['signature_excluded'])
+        self.assertTrue(event['source_context_only'])
+        self.assertEqual(event['content_validation'], 'approved_prefix_and_signature')
+        self.assertEqual(self.client.response, before, 'Never relabel the upstream source as receipt eligible')
+        wrong = {**self.step, 'content': 'Different approved text'}
+        with self.assertRaises(EmailReadbackError):
+            self.reader.read_sent_event(RECEIPT, {'mailbox': MAILBOX, 'to': wrong['recipient'],
+                'subject': wrong['subject'], 'content': wrong['content']})
+
+    def test_generic_context_partial_or_conflicting_mime_frames_never_become_receipts(self):
+        base = bridge_alternative()
+        variants = []
+        for key, value in (('headers_complete', False), ('truncated', True), ('sent', False),
+                           ('body', 'spliced plain text'), ('attachments', []), ('filename', 'file.pdf')):
+            row = deepcopy(base);row['message'][key] = value;variants.append(row)
+        row = deepcopy(base);row['context_only'] = True;row['receipt_eligible'] = False;variants.append(row)
+        for parts in (base['message']['mime_evidence']['alternatives'][:1],
+                      base['message']['mime_evidence']['alternatives'] * 2):
+            row = deepcopy(base);row['message']['mime_evidence']['alternatives'] = parts;variants.append(row)
+        row = deepcopy(base);row['message']['headers'].append({'name': 'To', 'value': 'other@example.invalid'});variants.append(row)
+        row = deepcopy(base);row['message']['headers'][-1]['value'] = '<different@example.invalid>';variants.append(row)
+        for row in variants:
+            self.client.response = row
+            with self.assertRaises(EmailReadbackError):
+                self.reader.read_message(RECEIPT)
 
     def test_invalid_receipt_rejects_before_get(self):
         for receipt in (None, '', 'feito', 'gmail:', 'gmail:ABC123', 'gmail:../send',
@@ -484,7 +608,7 @@ class OneShotEvidenceTests(unittest.TestCase):
         result=GmailReceiptReader(Mock(),ReadClient(row)).read_sent_event(RECEIPT,self.expected())
         self.assertEqual(result['occurred_at'],'2026-10-25T13:00:00.000Z')
         self.assertEqual(result['scope'],'sent_copy_not_delivery');self.assertEqual(result['external_writes'],0)
-    def test_plain_crlf_is_preserved_and_requires_exact_reviewed_line_endings(self):
+    def test_plain_crlf_original_is_preserved_and_review_accepts_lf_equivalence(self):
         response = raw_message()
         body = b'Synthetic content\r\nSecond line.'
         response['message']['payload']['body'] = {
@@ -493,8 +617,9 @@ class OneShotEvidenceTests(unittest.TestCase):
             'name': 'Date', 'value': 'Sun, 25 Oct 2026 13:00:00 +0000'})
         reader = GmailReceiptReader(Mock(), ReadClient(response))
         self.assertEqual(reader.read_message(RECEIPT)['content'], body.decode())
-        with self.assertRaisesRegex(EmailReadbackError, 'email_reviewed_content_mismatch'):
-            reader.read_sent_event(RECEIPT, self.expected())
+        normalized = reader.read_sent_event(RECEIPT, self.expected())
+        self.assertEqual(normalized['text'], body.decode())
+        self.assertEqual(normalized['approved_text'], self.expected()['content'])
         exact = dict(self.expected(), content=body.decode())
         event = reader.read_sent_event(RECEIPT, exact)
         self.assertEqual(event['text'], body.decode())

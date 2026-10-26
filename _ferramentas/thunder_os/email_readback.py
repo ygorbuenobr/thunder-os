@@ -10,8 +10,10 @@ from email import policy
 from email.parser import HeaderParser
 from email.utils import parsedate_to_datetime
 from datetime import timezone
+from html.parser import HTMLParser
 import os
 import re
+from urllib.parse import urlsplit
 
 from .campaign_registry import CampaignRegistry
 from .seqd_client import MAILBOX, SEQDClient, _request as _seqd_request
@@ -62,9 +64,10 @@ def _raw_message(message):
              and 'SENT' in labels and 'DRAFT' not in labels, 'email_sent_evidence_required')
     payload = message.get('payload')
     _require(isinstance(payload, dict))
-    # A plain alternative does not prove the complete MIME message's contents.
-    _require(payload.get('mimeType') == 'text/plain'
-             and payload.get('parts') in (None, []), 'email_mime_unsupported')
+    alternative = payload.get('mimeType') == 'multipart/alternative'
+    _require(alternative or (payload.get('mimeType') == 'text/plain'
+             and payload.get('parts') in (None, [])), 'email_mime_unsupported')
+    _require(not payload.get('filename') and not payload.get('body', {}).get('attachmentId'), 'email_mime_unsupported')
     headers = payload.get('headers')
     _require(isinstance(headers, list) and len(headers) <= 500)
     values = {}
@@ -93,15 +96,23 @@ def _raw_message(message):
         body = part.get('body', {})
         _require(isinstance(body, dict) and not part.get('filename') and not body.get('attachmentId'))
         mime = part.get('mimeType')
-        if mime == 'text/plain':
+        _require(mime in ('text/plain', 'text/html') and part.get('parts') in (None, []), 'email_mime_unsupported')
+        if mime in ('text/plain', 'text/html'):
             part_headers = part.get('headers', [])
             _require(isinstance(part_headers, list))
             ascii_charset = False
+            seen = set()
             for header in part_headers:
                 _require(isinstance(header, dict) and isinstance(header.get('name'), str)
                          and isinstance(header.get('value'), str))
-                if header['name'].lower() == 'content-type':
-                    _require(re.match(r'^text/plain(?:\s*;|$)', header['value'], re.I)
+                name = header['name'].lower()
+                if name in ('content-type', 'content-disposition', 'content-transfer-encoding'):
+                    _require(name not in seen, 'email_mime_unsupported');seen.add(name)
+                if name == 'content-disposition':
+                    _require(not re.match(r'attachment\b', header['value'], re.I)
+                             and not re.search(r'(?:^|;)\s*filename\*?\s*=', header['value'], re.I), 'email_mime_unsupported')
+                if name == 'content-type':
+                    _require(re.match(r'^' + re.escape(mime) + r'(?:\s*;|$)', header['value'], re.I)
                              and len(re.findall(r'(?:^|;)\s*charset\s*=', header['value'], re.I)) <= 1,
                              'email_mime_unsupported')
                     charset = re.search(r'charset\s*=\s*["\']?([^;\s"\']+)', header['value'], re.I)
@@ -115,12 +126,182 @@ def _raw_message(message):
             _require(type(body.get('size')) is int and body['size'] == len(raw))
             decoded += len(raw)
             _require(decoded <= 65536)
-            parts.append(raw.decode('utf-8', errors='strict'))
+            parts.append((mime, raw.decode('utf-8', errors='strict')))
 
-    visit(payload, 0)
-    _require(len(parts) == 1)
-    return {'from': values.get('from'), 'to': values.get('to'), 'subject': values.get('subject'),
-            'body': ''.join(parts), 'sent': True, 'cc': '', 'bcc': '', 'truncated': False, 'date': values.get('date'), 'message_id':values.get('message-id')}
+    if alternative:
+        _require(re.match(r'^multipart/alternative(?:\s*;|$)', values.get('content-type', ''), re.I), 'email_mime_unsupported')
+        children = payload.get('parts')
+        _require(isinstance(children, list) and len(children) == 2, 'email_mime_unsupported')
+        for child in children:
+            visit(child, 1)
+        _require(sorted(kind for kind, _ in parts) == ['text/html', 'text/plain'], 'email_mime_unsupported')
+    else:
+        visit(payload, 0)
+        _require(len(parts) == 1)
+    content = dict(parts)
+    result = {'from': values.get('from'), 'to': values.get('to'), 'subject': values.get('subject'),
+            'body': content['text/plain'], 'sent': True, 'cc': '', 'bcc': '', 'truncated': False, 'date': values.get('date'), 'message_id':values.get('message-id')}
+    if alternative:
+        result.update(mime_type='multipart/alternative', html_body=content['text/html'],
+                      mime_complete=True, attachment_count=0)
+    return result
+
+
+def _normalized_lines(text):
+    # Preserve interior spaces, words and punctuation.
+    return '\n'.join(line.rstrip(' \t') for line in text.replace('\r\n', '\n').split('\n'))
+
+
+def _paragraph_prefix(original, approved):
+    """Ygor-authorized Gmail wrapping only; blank/structured boundaries stay exact."""
+    structural = re.compile(r'^[ \t]*(?:>|[-*] |\d+[.)] )')
+    lines = approved.split('\n')
+    canonical = lines[0]
+    for previous, line in zip(lines, lines[1:]):
+        separator = ' ' if previous and line and not structural.match(previous) and not structural.match(line) else '\n'
+        canonical += separator + line
+    pattern = re.escape(canonical).replace(r'\ ', r'(?: |(?<=\S)\n(?=\S)(?!(?:>|[-*] |\d+[.)] )))')
+    match = re.match(pattern, original)
+    _require(match is not None, 'email_reviewed_content_mismatch')
+    return match.end()
+
+
+class _GmailSignature(HTMLParser):
+    """Read a single bounded signature subtree; never execute or render HTML."""
+    VOID = {'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr'}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.stack, self.pieces = [], []
+        self.signature_depth, self.count, self.finished, self.nodes = None, 0, False, 0
+
+    def handle_starttag(self, tag, attrs):
+        self.nodes += 1
+        _require(self.nodes <= 2048 and len(self.stack) < 64, 'email_signature_invalid')
+        attrs = dict(attrs)
+        is_signature = 'gmail_signature' in (attrs.get('class') or '').split()
+        if is_signature:
+            _require(tag == 'div' and self.count == 0, 'email_signature_invalid')
+            self.count += 1;self.signature_depth = len(self.stack)
+        active = self.signature_depth is not None
+        if active:
+            _require(tag not in ('script', 'style', 'iframe', 'object') and 'hidden' not in attrs
+                     and not re.search(r'(?:display\s*:\s*none|visibility\s*:\s*hidden)', attrs.get('style') or '', re.I), 'email_signature_invalid')
+            if tag == 'img' and attrs.get('alt'):
+                self.pieces.append(_text(attrs['alt'], 512))
+        link = None
+        if active and tag == 'a':
+            href = attrs.get('href') or ''
+            _require(len(href) <= 8192 and not any(ord(c) < 32 for c in href), 'email_signature_invalid')
+            parsed = urlsplit(href)
+            _require(parsed.scheme in ('http', 'https', 'mailto') and not parsed.username and not parsed.password, 'email_signature_invalid')
+            link = (len(self.pieces), href)
+        if tag not in self.VOID:
+            self.stack.append((tag, is_signature, link))
+
+    def handle_endtag(self, tag):
+        if tag in self.VOID:
+            return
+        _require(self.stack and self.stack[-1][0] == tag, 'email_signature_invalid')
+        _, root, link = self.stack.pop()
+        if link:
+            start, href = link
+            display = ' '.join(' '.join(self.pieces[start:]).split())
+            if href.startswith('mailto:'):
+                _require('?' not in href and '#' not in href, 'email_signature_invalid')
+                self.pieces.append(href[len('mailto:'):])
+            elif re.sub(r'^https?://', '', href).rstrip('/') != display.rstrip('/'):
+                self.pieces.append(href)
+        if root:
+            self.signature_depth = None;self.finished = True
+
+    def handle_data(self, text):
+        if self.signature_depth is not None:
+            self.pieces.append(text)
+        elif self.finished:
+            _require(not text.strip(), 'email_signature_extra_text')
+
+    def tokens(self, html):
+        self.feed(_text(html, 65536));self.close()
+        _require(self.count == 1 and self.finished and not self.stack, 'email_signature_invalid')
+        return ' '.join(self.pieces).split()
+
+
+def _approved_body(message, approved):
+    """Prove reviewed prefix and an HTML-correlated signature, preserving originals."""
+    original = _normalized_lines(_text(message.get('content'), 65536))
+    prefix = _normalized_lines(_text(approved, 65536))
+    end = _paragraph_prefix(original, prefix)
+    tail = original[end:]
+    if not tail.strip():
+        return False
+    _require((tail.startswith('\n') or original[:end].endswith('\n')) and message.get('mime_type') == 'multipart/alternative'
+             and message.get('mime_complete') is True and type(message.get('attachment_count')) is int
+             and message['attachment_count'] == 0, 'email_signature_required')
+    tokens = _GmailSignature().tokens(message.get('html_body'))
+    plain = re.sub(r'\[image:\s*([^\]\r\n]{1,512})\]', r'\1', tail)
+    plain = re.sub(r'<([^<>\s]+)>', r'\1', plain)
+    plain = re.sub(r'\*+', ' ', plain)
+    _require(tokens and plain.split() == tokens, 'email_signature_mismatch')
+    return True
+
+
+def _single_message_alternatives(message):
+    """Validate a fresh ID-read MIME frame, not a historical/thread projection.
+
+    The existing bridge labels this format contextual under its old plain-only
+    policy. Preserve that provenance; receipt acceptance is a separate proof of
+    the complete alternatives, exact envelope, approved prefix and signature.
+    """
+    _require(message.get('context_only') is True and message.get('receipt_eligible') is False
+             and message.get('headers_complete') is True and message.get('truncated') is False
+             and message.get('sent') is True, 'email_context_not_receipt')
+    _require(not any(key in message for key in ('payload', 'attachments', 'filename', 'mime_type',
+                'html_body', 'attachment_count', 'mime_complete')), 'email_mime_unsupported')
+    labels = message.get('labelIds')
+    _require(isinstance(labels, list) and all(isinstance(x, str) for x in labels)
+             and 'SENT' in labels and 'DRAFT' not in labels, 'email_sent_evidence_required')
+    evidence = message.get('mime_evidence')
+    _require(isinstance(evidence, dict) and set(evidence) == {'root_type', 'selected_type', 'alternatives'}
+             and evidence['root_type'] == 'multipart/alternative'
+             and evidence['selected_type'] == 'text/plain', 'email_mime_unsupported')
+    parts = evidence.get('alternatives')
+    _require(isinstance(parts, list) and len(parts) == 2, 'email_mime_unsupported')
+    bodies = {}
+    for part in parts:
+        _require(isinstance(part, dict) and not set(part) - {'mime_type', 'body', 'part_id'}
+                 and part.get('mime_type') in ('text/plain', 'text/html')
+                 and part['mime_type'] not in bodies, 'email_mime_unsupported')
+        _require(part.get('part_id') is None or isinstance(part['part_id'], str)
+                 and len(part['part_id']) <= 100 and not any(ord(c) < 32 for c in part['part_id']), 'email_mime_unsupported')
+        bodies[part['mime_type']] = _text(part.get('body'), 65536)
+    _require(set(bodies) == {'text/plain', 'text/html'}
+             and sum(len(body.encode()) for body in bodies.values()) <= 65536
+             and bodies['text/plain'] == message.get('body'), 'email_body_incomplete')
+    headers = message.get('headers')
+    _require(isinstance(headers, list) and len(headers) <= 500, 'email_reply_headers_incomplete')
+    values = {}
+    critical = {'from', 'to', 'subject', 'cc', 'bcc', 'date', 'message-id', 'content-type', 'content-disposition'}
+    for header in headers:
+        _require(isinstance(header, dict) and isinstance(header.get('name'), str)
+                 and isinstance(header.get('value'), str)
+                 and not any(ord(c) < 32 or ord(c) == 127 for c in header['value']), 'email_reply_headers_invalid')
+        name = header['name'].lower()
+        if name in critical:
+            _require(name not in values, 'email_reply_headers_ambiguous')
+            values[name] = header['value']
+    _require(re.match(r'^multipart/alternative(?:\s*;|$)', values.get('content-type', ''), re.I)
+             and 'content-disposition' not in values
+             and not re.search(r'(?:^|;)\s*(?:name|filename)(?:\*\d*\*?)?\s*=', values['content-type'], re.I), 'email_mime_unsupported')
+    for header, field in (('from', 'from'), ('to', 'to'), ('date', 'date'), ('message-id', 'message_id')):
+        _require(isinstance(values.get(header), str) and bool(values[header])
+                 and values[header] == message.get(field), 'email_raw_mismatch')
+    subject = HeaderParser(policy=policy.default).parsestr('Subject: ' + values.get('subject', '') + '\n\n')['Subject']
+    _require(subject is not None and not subject.defects and str(subject) == message.get('subject')
+             and message.get('cc') == values.get('cc', '') == ''
+             and message.get('bcc') == values.get('bcc', '') == '', 'email_raw_mismatch')
+    return {**message, 'mime_type': 'multipart/alternative', 'html_body': bodies['text/html'],
+            'mime_complete': True, 'attachment_count': 0}
 
 
 class GmailReceiptReader:
@@ -143,23 +324,41 @@ class GmailReceiptReader:
                      and response.get('status') == 'ok', 'email_account_mismatch')
             message = response.get('message')
             _require(isinstance(message, dict) and message.get('id') == identifier, 'email_message_id_mismatch')
-            for scope in (response, message):
-                _require(scope.get('context_only', False) is False
-                         and scope.get('receipt_eligible', True) is True, 'email_context_not_receipt')
+            _require(response.get('context_only', False) is False
+                     and response.get('receipt_eligible', True) is True, 'email_context_not_receipt')
+            single_alternative = message.get('context_only') is True
+            if single_alternative:
+                observed_alternative = _single_message_alternatives(message)
+            else:
+                _require(message.get('context_only', False) is False
+                         and message.get('receipt_eligible', True) is True, 'email_context_not_receipt')
             _require(not message.get('truncated'), 'email_body_incomplete')
             if 'payload' in message:
                 observed = _raw_message(message)
                 # If both schemas are supplied they must describe the same message.
-                for field in ('from', 'to', 'subject', 'body', 'sent', 'cc', 'bcc', 'truncated', 'date', 'message_id'):
+                for field in ('from', 'to', 'subject', 'body', 'sent', 'cc', 'bcc', 'truncated', 'date', 'message_id',
+                              'mime_type', 'html_body', 'mime_complete', 'attachment_count'):
                     _require(field not in message or message[field] == observed[field], 'email_raw_mismatch')
             else:
-                observed = message
+                observed = observed_alternative if single_alternative else message
                 _require(message.get('truncated') is False, 'email_body_incomplete')
                 _require(message.get('sent') is True, 'email_sent_evidence_required')
                 _require(message.get('cc') == '' and message.get('bcc') == '', 'email_recipient_evidence_required')
                 if 'labelIds' in message:
                     _require(isinstance(message['labelIds'], list) and 'SENT' in message['labelIds']
                              and 'DRAFT' not in message['labelIds'], 'email_sent_evidence_required')
+            mime = {}
+            _require(observed.get('mime_type') in (None, 'text/plain', 'multipart/alternative'), 'email_mime_unsupported')
+            if observed.get('mime_type') == 'multipart/alternative':
+                _require(observed.get('mime_complete') is True and type(observed.get('attachment_count')) is int
+                         and observed['attachment_count'] == 0, 'email_mime_unsupported')
+                html = _text(observed.get('html_body'), 65536)
+                _require(len(html.encode()) + len(observed.get('body', '').encode()) <= 65536, 'email_body_incomplete')
+                mime = {key: observed[key] for key in ('mime_type', 'html_body', 'mime_complete', 'attachment_count')}
+                if single_alternative:
+                    mime['source_context_only'] = True
+            else:
+                _require(not any(key in observed for key in ('html_body', 'mime_complete', 'attachment_count')), 'email_mime_unsupported')
             sender, target = _address(observed.get('from')), _address(observed.get('to'))
             _require(sender == MAILBOX, 'email_sender_mismatch')
             subject = _text(observed.get('subject'), 2048)
@@ -184,7 +383,7 @@ class GmailReceiptReader:
                 metadata={'source_thread_id':thread,'source_message_id':mid,
                           'source_in_reply_to':selected.get('in-reply-to',''),'source_references':selected.get('references','')}
             return {'id': identifier, 'mailbox': response['mailbox'], 'from': sender, 'to': target,
-                    'subject': subject, **metadata,
+                    'subject': subject, **metadata, **mime,
                     'content': _text(observed.get('body'), 65536), 'sent': True,
                     **({'source_message_id':observed['message_id']} if observed.get('message_id') is not None else {}),
                     **({'source_date':observed['date']} if observed.get('date') is not None else {})}
@@ -204,7 +403,8 @@ class GmailReceiptReader:
                  'email_expected_scope_invalid')
         _require(expected.get('mailbox') == MAILBOX, 'email_account_mismatch')
         observed = self.read_message(receipt_ref)
-        _require(all(observed.get(key) == expected[key] for key in expected), 'email_reviewed_content_mismatch')
+        _require(all(observed.get(key) == expected[key] for key in ('mailbox', 'to', 'subject')), 'email_reviewed_content_mismatch')
+        signature = _approved_body(observed, expected['content'])
         try:
             raw = observed.get('source_date')
             _require(isinstance(raw,str) and 0 < len(raw) <= 128
@@ -219,6 +419,9 @@ class GmailReceiptReader:
         return {'event_type':'email_sent','source':{'provider':'gmail','account_id':MAILBOX,
                 'provider_id':observed['id']}, 'lead_email':observed['to'],
                 'subject':observed['subject'], 'text':observed['content'], 'occurred_at':occurred,
+                'approved_text':expected['content'], 'signature_excluded':signature,
+                **({'source_context_only':True, 'content_validation':'approved_prefix_and_signature'}
+                   if observed.get('source_context_only') is True else {}),
                 'time_source':'provider_message_date_header', 'receipt_ref':receipt_ref,
                 'scope':'sent_copy_not_delivery', 'read_only':True, 'external_writes':0}
 
@@ -274,8 +477,17 @@ class GmailReceiptReader:
                 message['content']=event['approved_new_text']
             _require(self._binding(receipt_ref) == before, 'email_binding_changed')
             step = before[0]['payload']['step']
+            content = message['content']
+            try:
+                _approved_body(message, step['content'])
+            except EmailReadbackError:
+                # This reader protocol returns mismatches literally; the
+                # service compares them and retains the job, as before.
+                pass
+            else:
+                content = step['content']
             return {'target': message['to'], 'subject': message['subject'],
-                    'content': message['content'], 'effect_id': step['id']}
+                    'content': content, 'effect_id': step['id']}
         except EmailReadbackError:
             raise
         except Exception:
