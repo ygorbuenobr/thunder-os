@@ -921,6 +921,151 @@ class JourneyTests(unittest.TestCase):
         self.assertEqual(touches[1]['source'], 'canonical_cadence_state')
         self.assertFalse(touches[1]['approval_available'])
 
+    def account_document(self):
+        from thunder_os.account_cadence_readonly import AccountCadenceReadonly, VISITOR_DIRECTORY, VISITOR_INDEX
+        root = Path(self.tmp.name)
+        index = root / VISITOR_INDEX
+        index.parent.mkdir(parents=True, exist_ok=True)
+        index.write_text('# Cadências dos visitantes da página (Brasil)\n\n'
+            '| Pasta | Conta e pessoa | Método | Status |\n|---|---|---|---|\n'
+            '| fixture | Empresa, Pessoa | BAY | pronta para revisão |\n')
+        path = root / VISITOR_DIRECTORY / 'fixture/cadencia.md'
+        path.parent.mkdir()
+        path.write_text('# Empresa | Pessoa, Cargo | Método BAY\n\n'
+            '## Tese (1 linha)\nTese original.\n\n'
+            '## Contexto usado\nthunder/provas.md SHA256 ' + 'a' * 64 + '\n')
+        context = root / 'thunder/provas.md'
+        context.parent.mkdir()
+        context.write_text('Prova atual.')
+        reader = AccountCadenceReadonly(root, repo=ReadonlyRepository(self.repo.path))
+        adapter = JourneyReadonly(self.today, cadence_reader=self.cadence, accounts=reader)
+        ident = reader.list_accounts()['accounts'][0]['id']
+        return adapter, reader, ident, path, index, context
+
+    def test_account_documents_do_not_read_provider_catalogs_or_replace_journey_details(self):
+        adapter, _, ident, *_ = self.account_document()
+        adapter._details = {'sentinel': {'original': True}}
+        before = self.database()
+        with patch.object(self.today, 'snapshot', side_effect=RuntimeError('provider offline')) as today:
+            self.cadence.snapshot.side_effect = RuntimeError('provider partial/failure')
+            self.assertEqual([r['id'] for r in adapter.account_list()['accounts']], [ident])
+            detail = adapter.account_detail(ident)
+            self.assertIn('Tese original.', detail['source_text'])
+            self.assertFalse(detail['editable'])
+            self.assertFalse(detail['approval_available'])
+            today.assert_not_called()
+            self.cadence.snapshot.assert_not_called()
+        self.assertEqual(adapter._details, {'sentinel': {'original': True}})
+        self.assertEqual(before, self.database())
+
+    def test_account_documents_recheck_source_index_and_context_without_ttl(self):
+        adapter, _, ident, path, index, context = self.account_document()
+        before = adapter.account_detail(ident)
+        path.write_text(path.read_text().replace('Tese original.', 'Tese modificada.'))
+        context.write_text('Prova modificada.')
+        after = adapter.account_detail(ident)
+        self.assertNotEqual(before['source']['sha256'], after['source']['sha256'])
+        self.assertIn('Tese modificada.', after['source_text'])
+        old = next(r for r in before['tabs']['context'] if r['path'] == 'thunder/provas.md')
+        new = next(r for r in after['tabs']['context'] if r['path'] == 'thunder/provas.md')
+        self.assertNotEqual(old['sha256'], new['sha256'])
+        self.assertFalse(after['approval_available'])
+        index.write_text(index.read_text().replace('pronta para revisão', 'bloqueada: já está em MX27-EXAMPLE (México)'))
+        held = adapter.account_detail(ident)
+        self.assertNotEqual(before['source_index']['sha256'], held['source_index']['sha256'])
+        self.assertTrue(held['status_only'])
+        self.assertEqual(held['source_text'], '')
+        self.assertEqual(held['tabs']['cadence'], [])
+
+    def test_account_documents_source_race_fails_closed(self):
+        adapter, reader, ident, path, *_ = self.account_document()
+        original = reader.account
+        def changed(*args, **kwargs):
+            path.write_text(path.read_text() + '\nChanged between list and detail.\n')
+            return original(*args, **kwargs)
+        with patch.object(reader, 'account', side_effect=changed):
+            with self.assertRaises(TodayError) as raised:
+                adapter.account_detail(ident)
+        self.assertEqual((raised.exception.code, raised.exception.status), ('journey_account_stale', 409))
+
+    def test_account_documents_index_race_cannot_reuse_previous_reviewability(self):
+        adapter, reader, ident, _, index, *_ = self.account_document()
+        original = reader.account
+        def held(*args, **kwargs):
+            index.write_text(index.read_text().replace('pronta para revisão', 'descartada: não prospectável'))
+            return original(*args, **kwargs)
+        with patch.object(reader, 'account', side_effect=held):
+            with self.assertRaises(TodayError) as raised:
+                adapter.account_detail(ident)
+        self.assertEqual((raised.exception.code, raised.exception.status), ('journey_account_stale', 409))
+
+    def test_account_document_does_not_wait_for_unrelated_journey_snapshot_lock(self):
+        from concurrent.futures import ThreadPoolExecutor
+        adapter, _, ident, *_ = self.account_document()
+        pool = ThreadPoolExecutor(max_workers=1)
+        try:
+            with adapter._lock:
+                future = pool.submit(adapter.account_detail, ident)
+                value = future.result(timeout=2)
+                self.assertEqual(value['id'], ident)
+                self.assertFalse(value['approval_available'])
+        finally:
+            pool.shutdown(wait=True)
+
+    def test_account_catalog_rechecks_registry_and_partial_source_without_provider_reads(self):
+        accounts = Mock()
+        account = {'id': 'fixture-account', 'campaign_id': BR, 'source': {'path': None, 'sha256': None}}
+        accounts.list_accounts.return_value = {'accounts': [account], 'limitations': ['source_file_limit']}
+        adapter = JourneyReadonly(self.today, cadence_reader=self.cadence, accounts=accounts)
+        with patch.object(self.today, 'snapshot') as today:
+            value = adapter.account_list()
+            self.assertEqual([r['id'] for r in value['accounts']], ['fixture-account'])
+            self.assertIn('source_file_limit', value['limitations'])
+            self.service.campaign_registry.revoke(BR, 'ygor', 1)
+            self.assertEqual(adapter.account_list()['accounts'], [])
+            accounts.list_accounts.side_effect = RuntimeError('source offline')
+            value = adapter.account_list()
+            self.assertEqual(value['accounts'], [])
+            self.assertIsNone(value['omitted_count'])
+            self.assertIn('account_source_unavailable', value['limitations'])
+            today.assert_not_called()
+            self.cadence.snapshot.assert_not_called()
+
+    def test_canonical_account_detail_refreshes_current_state_and_keeps_provider_guards(self):
+        self.canonical()
+        accounts = Mock()
+        account = {'id': 'fixture-account', 'campaign_id': BR, 'source': {'path': None, 'sha256': None}}
+        accounts.list_accounts.return_value = {'accounts': [account], 'limitations': []}
+        accounts.account.side_effect = lambda *a, **k: {**account, 'tabs': {'cadence': []}}
+        adapter = JourneyReadonly(self.today, cadence_reader=self.cadence, accounts=accounts)
+        before = adapter.account_detail('fixture-account', campaign=BR)['tabs']['cadence'][0]
+        self.assertTrue(before['editable'])
+        self.canonical(steps=[{'id': 'E1', 'channel': 'email', 'order': 1, 'content': 'New exact text',
+                              'status': 'sent'}])
+        after = adapter.account_detail('fixture-account', campaign=BR)['tabs']['cadence'][0]
+        self.assertFalse(after['editable'])
+        self.assertFalse(after['approval_available'])
+        self.assertEqual(after['status'], 'sent')
+        self.assertEqual(after['text'], 'New exact text')
+        self.assertGreaterEqual(self.cadence.snapshot.call_count, 2)
+
+    def test_canonical_account_campaign_revoked_during_snapshot_is_not_served(self):
+        self.canonical()
+        accounts = Mock()
+        account = {'id': 'fixture-account', 'campaign_id': BR, 'source': {'path': None, 'sha256': None}}
+        accounts.list_accounts.return_value = {'accounts': [account], 'limitations': []}
+        adapter = JourneyReadonly(self.today, cadence_reader=self.cadence, accounts=accounts)
+        snapshot = adapter.snapshot
+        def revoke(*args, **kwargs):
+            value = snapshot(*args, **kwargs)
+            self.service.campaign_registry.revoke(BR, 'ygor', 1)
+            return value
+        with patch.object(adapter, 'snapshot', side_effect=revoke):
+            with self.assertRaises(TodayError) as raised:
+                adapter.account_detail('fixture-account', campaign=BR)
+        self.assertEqual(raised.exception.status, 404)
+        accounts.account.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

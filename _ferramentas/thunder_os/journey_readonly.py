@@ -190,7 +190,9 @@ class JourneyReadonly:
     def account_list(self, campaign=None):
         """Jornada's Brazil boundary; the generic account reader retains its scope."""
         self._validate_campaign(campaign)
-        snap = self.snapshot(campaign=campaign)
+        # Account visibility uses current local campaign authority, not a scan of
+        # every provider inbox. Do not cache eligibility or replace _details.
+        snap, _, _ = self._build(campaign, account_catalog_only=True)
         allowed = {row['id'] for row in snap['campaigns'] if not row.get('internal_test')}
         if self.accounts is None:
             return {'accounts': [], 'limitations': ['account_reader_unavailable'],
@@ -210,8 +212,7 @@ class JourneyReadonly:
                 'omitted_count': len(rows) - len(kept), 'read_only': True}
 
     def account_detail(self, id, campaign=None):
-        with self._lock:
-            return self._account_detail(id, campaign)
+        return self._account_detail(id, campaign)
 
     def _account_detail(self, id, campaign):
         self._validate_campaign(campaign)
@@ -223,9 +224,25 @@ class JourneyReadonly:
         if len(matches) != 1:
             raise TodayError('journey_account_ambiguous', 409)
         row = matches[0]
+        canonical_details = []
+        if not self._indexed_draft(row):
+            # Canonical steps still need the complete current history/effect
+            # projection. Documentary drafts have no such execution authority
+            # and must not wait for an unrelated provider scan holding this lock.
+            with self._lock:
+                self.snapshot(campaign=campaign)
+                current = [r for r in self.account_list(campaign)['accounts'] if r['id'] == id]
+                if not current:
+                    raise TodayError('journey_account_not_found', 404)
+                if len(current) != 1 or current[0] != row:
+                    raise TodayError('journey_account_stale', 409)
+                canonical_details = deepcopy(list(self._details.values()))
         value = self.accounts.account(id, campaign=row['campaign_id'])
         if (value.get('id') != id or value.get('campaign_id') != row['campaign_id']
                 or value.get('source') != row.get('source')):
+            raise TodayError('journey_account_stale', 409)
+        if self._indexed_draft(row) and any(value.get(key) != row.get(key) for key in (
+                'source_index', 'source_brief', 'source_group', 'readiness', 'reviewable', 'country')):
             raise TodayError('journey_account_stale', 409)
         value = deepcopy(value)
         if self._indexed_draft(row):
@@ -248,7 +265,7 @@ class JourneyReadonly:
                 touch.update(approval_available=False, editable=False)
         else:
             touches = value.setdefault('tabs', {}).setdefault('cadence', [])
-            for detail in self._details.values():
+            for detail in canonical_details:
                 if (detail.get('canonical_account_id') == id and detail.get('campaign_id') == row['campaign_id']
                         and detail.get('canonical_step_id')):
                     touches.append({'id': detail['id'], 'day': detail['canonical_step_id'],
@@ -461,7 +478,7 @@ class JourneyReadonly:
                 or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', campaign)):
             raise TodayError('invalid_campaign', 400)
 
-    def _build(self, campaign):
+    def _build(self, campaign, *, account_catalog_only=False):
         sources, details, contacts = {}, {}, {}
         stages = {key: {'id': key, 'label': label, 'count': None, 'status': 'unavailable',
                        'reason': 'Fonte indisponivel; total desconhecido.', 'items': []}
@@ -478,12 +495,16 @@ class JourneyReadonly:
                 return deepcopy(fallback)
 
         # Independent bounded readers must not add their cold-start latencies.
-        with ThreadPoolExecutor(max_workers=2, thread_name_prefix='thunder-journey-read') as pool:
-            today_future = pool.submit(self.today.snapshot)
-            cadence_future = (pool.submit(self.cadence_reader.snapshot)
-                              if self.cadence_reader is not None else None)
-            observed = read('today', today_future.result, {})
-            cadence = read('cadence', cadence_future.result, {}) if cadence_future is not None else {}
+        if account_catalog_only:
+            observed = read('today', lambda: {}, {})
+            cadence = {}
+        else:
+            with ThreadPoolExecutor(max_workers=2, thread_name_prefix='thunder-journey-read') as pool:
+                today_future = pool.submit(self.today.snapshot)
+                cadence_future = (pool.submit(self.cadence_reader.snapshot)
+                                  if self.cadence_reader is not None else None)
+                observed = read('today', today_future.result, {})
+                cadence = read('cadence', cadence_future.result, {}) if cadence_future is not None else {}
         collected = observed.get('collected_at')
         sources['today']['collected_at'] = collected
         for block in observed.get('blocks', {}).values():
@@ -560,6 +581,8 @@ class JourneyReadonly:
                 continue
             campaigns[cid], sheets[cid] = {'id': cid, 'label': cid}, view
         options = [campaigns[k] for k in sorted(campaigns)]
+        if account_catalog_only:
+            return {'campaigns': options}, {}, {}
         if internal:
             options.append({'id': INTERNAL_CANARY, 'label': 'Teste interno', 'internal_test': True})
             if campaign == INTERNAL_CANARY:
