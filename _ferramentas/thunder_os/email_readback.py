@@ -189,6 +189,7 @@ class _GmailSignature(HTMLParser):
             _require(tag == 'div' and self.count == 0, 'email_signature_invalid')
             self.count += 1;self.signature_depth = len(self.stack)
         active = self.signature_depth is not None
+        _require(active or tag not in ('img', 'video', 'audio', 'canvas', 'svg', 'embed'), 'email_html_content_mismatch')
         if not active and not self.finished and tag in ('div', 'p', 'br', 'li', 'blockquote'):
             self.prefix.append(' ')
         if active:
@@ -232,9 +233,9 @@ class _GmailSignature(HTMLParser):
         else:
             self.prefix.append(text)
 
-    def tokens(self, html):
+    def tokens(self, html, *, require_signature=True):
         self.feed(_text(html, 65536));self.close()
-        _require(self.count == 1 and self.finished and not self.stack, 'email_signature_invalid')
+        _require(not self.stack and (self.count == 1 and self.finished if require_signature else self.count == 0 and not self.finished), 'email_signature_invalid')
         return ' '.join(self.pieces).split()
 
 
@@ -245,6 +246,10 @@ def _approved_body(message, approved):
     end = _paragraph_prefix(original, prefix)
     tail = original[end:]
     if not tail.strip():
+        if message.get('mime_type') == 'multipart/alternative':
+            parser = _GmailSignature()
+            parser.tokens(message.get('html_body'), require_signature=False)
+            _require(''.join(parser.prefix).split() == prefix.split(), 'email_html_content_mismatch')
         return False
     _require((tail.startswith('\n') or original[:end].endswith('\n')) and message.get('mime_type') == 'multipart/alternative'
              and message.get('mime_complete') is True and type(message.get('attachment_count')) is int

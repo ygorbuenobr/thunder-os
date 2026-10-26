@@ -182,6 +182,25 @@ class EmailReadbackTests(unittest.TestCase):
         with self.assertRaises(EmailReadbackError):
             self.reader.read_sent_event(RECEIPT, {'mailbox': MAILBOX, 'to': self.step['recipient'], 'subject': self.step['subject'], 'content': self.step['content']})
 
+    def test_html_body_without_signature_and_visible_elements_before_it_are_verified(self):
+        expected = {'mailbox': MAILBOX, 'to': self.step['recipient'], 'subject': self.step['subject'], 'content': self.step['content']}
+        for extra in ('<img alt="Unapproved banner" src="https://example.invalid/image">',
+                      '<img src="https://example.invalid/image">'):
+            row = bridge_alternative()
+            row['message']['mime_evidence']['alternatives'][1]['body'] = extra + row['message']['mime_evidence']['alternatives'][1]['body']
+            self.client.response = row
+            with self.subTest(extra=extra), self.assertRaises(EmailReadbackError):
+                self.reader.read_sent_event(RECEIPT, expected)
+        row = alternative_message(suffix='', html_suffix='')
+        self.client.response = row
+        self.assertFalse(self.reader.read_sent_event(RECEIPT, expected)['signature_excluded'])
+        part = row['message']['payload']['parts'][1]
+        content = '<div>Different unapproved commercial message</div>'.encode()
+        part['body'] = {'size': len(content), 'data': base64.urlsafe_b64encode(content).decode().rstrip('=')}
+        self.client.response = row
+        with self.assertRaises(EmailReadbackError):
+            self.reader.read_sent_event(RECEIPT, expected)
+
     def test_alternative_signature_preserves_original_and_binds_approved_text(self):
         self.seed()
         self.client.response = alternative_message('Synthetic content  \r\nSecond line.\t')
