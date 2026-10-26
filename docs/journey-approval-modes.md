@@ -97,3 +97,25 @@ Reproduce the browser contract without external network using
 `scripts/test_gtm_commercial_panel.cjs` with Playwright from the configured Node
 runtime. Fixtures cover 320/390/1440px, originals, source escaping, partial data,
 request races, safe links and GET-only history/preparation/management reads.
+
+## Publication readback by resource
+
+Every panel publication records a before/after observation from the running
+process, not only THUNDER_EXTERNAL_EFFECTS_ENABLED. Run
+`scripts/read_panel_resource_gates.py --expected-sha <published commit>` locally
+on srv1433640 as root (the source may be supplied over SSH stdin). Keep the JSON
+with the existing release evidence. It is an observation, not permission to act
+or a new approval mechanism.
+
+Record separately: pinned ConnectSafely configuration `execution_enabled`, the
+four Gmail S34 switches (cadence, CRM, reconcile, reply ingest), assisted dispatch,
+its policy and temporary drop-in, the explicit ledger writer, and PGOPTIONS.
+An unset configuration value is distinct from explicit false. Where the product
+requires literal true, the readback can show effective disabled while retaining
+that missing-value distinction. Invalid/unreadable values remain unknown.
+
+A globally enabled flag or an enabled ledger writer does not prove any resource
+can dispatch. Conversely, an enabled ConnectSafely configuration must be reported
+as enabled, even while agent and Gmail/assisted execution are disabled. Do not
+flip unrelated resources to make the readback look uniform. Revalidate source,
+PID/cwd, pins and agent/briefing pauses independently after publication.

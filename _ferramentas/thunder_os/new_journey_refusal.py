@@ -6,6 +6,7 @@ outside this evidence scope and the send-time preflight is not replaced.
 """
 from contextlib import contextmanager
 from pathlib import Path
+import math
 import os
 import sqlite3
 import time
@@ -14,13 +15,33 @@ from .models import payload_hash
 from .touch_ledger import TouchLedger, toques
 
 
+class _ReadFailure(toques.ErroBanco):
+    """Preserve a fixed code through the shared database error boundary."""
+    def __init__(self, code):
+        super().__init__(code)
+        self.code = code
+
+
+def _failure_code(exc):
+    if isinstance(exc, _ReadFailure):
+        return exc.code
+    state = getattr(exc, 'pgcode', None) or getattr(exc, 'sqlstate', None)
+    if state == '42501':
+        return 'database_permission_denied'
+    if state == '25006':
+        return 'readonly_violation'
+    if isinstance(exc, (sqlite3.Error, toques.ErroBanco, OSError)):
+        return 'database_unavailable'
+    return 'unknown_failure'
+
+
 @contextmanager
 def _existing_database():
     configured = os.environ.get('TOQUES_SQLITE', '').strip()
     if configured:
         path = Path(configured)
         if configured == ':memory:' or not path.is_file() or path.is_symlink():
-            raise ValueError('registered_refusal_unavailable')
+            raise _ReadFailure('database_unavailable')
         connection = sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True, timeout=1)
         try:
             connection.execute('PRAGMA query_only=ON')
@@ -29,11 +50,15 @@ def _existing_database():
             connection.close()
     else:
         with toques._banco() as (connection, marker):
-            if marker != '%s':
-                raise ValueError('registered_refusal_unavailable')
-            connection.cursor().execute('SET TRANSACTION READ ONLY')
-            connection.cursor().execute('SET LOCAL statement_timeout = 2000')
-            yield connection, marker
+            try:
+                if marker != '%s':
+                    raise _ReadFailure('database_unavailable')
+                connection.cursor().execute('SET TRANSACTION READ ONLY')
+                connection.cursor().execute('SET LOCAL statement_timeout = 2000')
+                yield connection, marker
+            except Exception as exc:
+                # toques masks generic driver exceptions on context exit.
+                raise _ReadFailure(_failure_code(exc)) from None
 
 
 class RegisteredRefusalRead:
@@ -49,25 +74,25 @@ class RegisteredRefusalRead:
         try:
             if (not isinstance(emails, list) or not isinstance(profiles, list)
                     or not emails or not profiles or len(emails) + len(profiles) > 16):
-                raise ValueError('registered_identity_incomplete')
+                raise _ReadFailure('identity_incomplete')
             identities = []
             for channel, values in (('email', emails), ('linkedin', profiles)):
                 for value in values:
                     destination = TouchLedger.identity_destination(value)
                     if destination is None or destination[0] != channel:
-                        raise ValueError('registered_identity_incomplete')
+                        raise _ReadFailure('identity_incomplete')
                     identities.append(destination)
             identities = sorted(set(identities))
             end = self.clock() + 5
             if deadline is not None:
-                if type(deadline) not in (float, int):
-                    raise ValueError('registered_refusal_deadline_invalid')
+                if type(deadline) not in (float, int) or not math.isfinite(deadline):
+                    raise _ReadFailure('deadline_invalid')
                 end = min(end, deadline)
             with self.database() as (connection, marker):
                 if marker == '?':
                     connection.execute('PRAGMA query_only=ON')
                 elif marker != '%s':
-                    raise ValueError('registered_refusal_unavailable')
+                    raise _ReadFailure('database_unavailable')
 
                 @contextmanager
                 def borrowed():
@@ -76,23 +101,26 @@ class RegisteredRefusalRead:
                 ledger = TouchLedger(db_context=borrowed)
                 for channel, identity in identities:
                     if self.clock() >= end:
-                        raise ValueError('registered_refusal_deadline')
+                        raise _ReadFailure('deadline_exceeded')
                     proof = ledger.preflight('new-journey-refusal-read', {
                         'channel': channel, 'recipient': identity,
                         'subject': 'New journey refusal read'})
-                    if proof.get('channel') != channel or proof.get('identity') != identity:
-                        raise ValueError('registered_identity_incomplete')
+                    if (not isinstance(proof, dict) or proof.get('channel') != channel
+                            or proof.get('identity') != identity or 'blocked' not in proof
+                            or proof['blocked'] not in (None, 'suppressed', 'has_reply')):
+                        raise _ReadFailure('invalid_proof')
                     observations.append({'channel': channel, 'identity': identity,
                                          'blocked': proof.get('blocked')})
                     if (proof.get('blocked') in ('suppressed', 'has_reply')
                             and result.get('reason') != 'registered_suppressed'):
                         result.update(status='blocked', reason='registered_' + proof['blocked'])
                 if self.clock() >= end:
-                    raise ValueError('registered_refusal_deadline')
+                    raise _ReadFailure('deadline_exceeded')
             result['coverage']['complete'] = True
             if result['status'] != 'blocked':
                 result.update(status='clear', reason='registered_refusals_clear')
-        except Exception:
+        except Exception as exc:
+            result['coverage']['failure_code'] = _failure_code(exc)
             if not any(row['blocked'] in ('suppressed', 'has_reply') for row in observations):
                 result.update(status='unknown', reason='registered_refusal_coverage_unavailable')
         result['source_ref'] = 'toques:registered:' + payload_hash({

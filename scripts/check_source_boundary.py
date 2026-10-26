@@ -6,6 +6,8 @@ from pathlib import PurePosixPath
 
 
 ALLOWED_FILES = {
+    "scripts/read_panel_resource_gates.py",
+    "scripts/test_panel_resource_gates.py",
     "_ferramentas/test_thunder_os_assisted_postgres.py",
     "_ferramentas/thunder_os/internal_canary.py",
     "_ferramentas/test_thunder_os_internal_canary.py",

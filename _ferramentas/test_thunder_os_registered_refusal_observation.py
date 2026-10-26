@@ -39,6 +39,8 @@ class RefusalObservationTests(unittest.TestCase):
         self.assertEqual(result['observation']['status'], 'none_registered')
         self.assertIn('person_opt_out', result['observation']['crm_pending_fields'])
         self.assertEqual(result['reason'], 'canonical_registered_crm_state_incomplete')
+        self.assertTrue(result['source'].startswith('registered_refusal_observation:'))
+        self.assertNotIn('coverage_unavailable', result['source'])
         self.assertTrue(result['observation']['coverage']['complete'])
         self.assertFalse(result['observation']['coverage']['global_inbox_complete'])
 

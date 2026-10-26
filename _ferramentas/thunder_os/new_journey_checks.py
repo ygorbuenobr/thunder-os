@@ -322,6 +322,10 @@ class NewJourneyChecks:
                 'crm_pending_fields': pending_fields}
             if checks['refusal']['status'] == 'unknown' and pending_fields:
                 checks['refusal']['reason'] = 'canonical_registered_crm_state_incomplete'
+                if classification == 'none_registered':
+                    checks['refusal']['source'] = _ref('registered_refusal_observation', {
+                        'hubspot': source, 'ledger': observation['source_ref'],
+                        'crm_pending_fields': pending_fields})
             if observation.get('status') == 'blocked':
                 result('refusal', 'blocked', observation['reason'], observation['source_ref'])
         # Observing the registered ledger does not establish negative CRM flags.
