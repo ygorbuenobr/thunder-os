@@ -2142,8 +2142,10 @@ const journeyTabDefs=[['research','Pesquisa ABM'],['dossier','Dossiê'],['contex
 const journeyRows=value=>Array.isArray(value)?value:[];
 const journeyBR=id=>typeof id==='string'&&(/^BR(?:[-_]|$)/i.test(id)||id==='CHATTIE-01');
 const journeyVisitor=row=>row?.source_group==='visitantes-2026-10-22'&&row.campaign_id==null;
-const journeyVisibleRecord=row=>journeyBR(row?.campaign_id)||journeyVisitor(row);
-const journeyRecordLabel=row=>journeyVisitor(row)?'Visitantes · rascunhos':row?.campaign_id||'Sem vínculo';
+const journeyInternalOption=row=>row?.id==='internal-canary-20261025-ygor-01'&&row.internal_test===true&&row.label==='Teste interno';
+const journeyInternalSelected=()=>journeySnapshot?.internal_test===true&&journeyCampaign()==='internal-canary-20261025-ygor-01'&&journeyRows(journeySnapshot.campaigns).some(journeyInternalOption);
+const journeyVisibleRecord=row=>row?.internal_test===true?journeyInternalSelected()&&row.campaign_id===journeyCampaign():journeyBR(row?.campaign_id)||journeyVisitor(row);
+const journeyRecordLabel=row=>row?.internal_test===true?'Teste interno · excluído das métricas BR':journeyVisitor(row)?'Visitantes · rascunhos':row?.campaign_id||'Sem vínculo';
 const journeyText=value=>typeof value==='string'?value:typeof value==='number'?String(value):'';
 const journeyDescribe=value=>typeof value==='string'?value:value&&typeof value==='object'?JSON.stringify(value):journeyText(value);
 const journeyDate=value=>value?cadReadDate(value):'Data não informada';
@@ -2181,6 +2183,7 @@ function journeySetMode(mode){
 function journeyMetric(key,label){
   const metric=journeySnapshot?.metrics?.[key];
   const reasons={
+    internal_test_excluded:'Teste interno excluído das métricas comerciais BR.',
     person_identity_unverified:'Identidade das pessoas ainda não comprovada.',
     unique_people_first_observed_touch_provider_receipt:'Pessoas únicas com primeiro toque observado e recibo da plataforma.',
     provider_receipt_unavailable:'Recibo da plataforma indisponível nesta consulta.',
@@ -2269,11 +2272,11 @@ async function carregarJourney(force=false){
       journeySetMode('legacy');mostrarAba('hoje',{registrar:false});return;
     }
     if(data?.read_only!==true||!data.collected_at||!Array.isArray(data.stages)||!data.metrics||!Array.isArray(data.campaigns))throw new Error('Contrato indisponível');
-    const campaigns=data.campaigns.filter(row=>journeyBR(row.id));
+    const campaigns=data.campaigns.filter(row=>row.internal_test===true?journeyInternalOption(row):journeyBR(row.id));
     if(campaign&&!campaigns.some(row=>row.id===campaign))throw new Error('Campanha indisponível');
     $('journey-campaign').innerHTML='<option value="">Todas · BR</option>'+campaigns.map(row=>`<option value="${esc(row.id)}">${esc(row.label||row.id)}</option>`).join('');
     $('journey-campaign').value=campaign;journeySnapshot=data;journeyReadAt=Date.now();journeySetMode('ready');
-    $('sec-hoje').hidden=true;$('journey-status').textContent='Consultado em '+journeyDate(data.collected_at)+'.';renderJourney();
+    $('sec-hoje').hidden=true;$('journey-status').textContent=(journeyInternalSelected()?'Teste interno · excluído das métricas BR. ':'')+'Consultado em '+journeyDate(data.collected_at)+'.';renderJourney();
     if(document.body.dataset.aba==='contas'){$('journey-accounts').hidden=false;$('sec-quentes').hidden=true;carregarJourneyAccounts();}
   }catch(error){
     if(request!==journeyRequest)return;
@@ -2744,7 +2747,16 @@ function njCheckSignal(key,check){
     else if(check?.status==='pass')action='Ausência de registro não comprova ausência global nas caixas de entrada.';
     const pendingLabels={person_opt_out:'recusa da pessoa',email_opt_out:'recusa de e-mail',company_suppression:'supressão da empresa',outreach_risk:'risco de abordagem'};
     const pending=njRows(observation?.crm_pending_fields).filter(key=>pendingLabels[key]);
-    if(check?.status==='unknown'&&pending.length)action+=' Falta conferir no HubSpot: '+pending.map(key=>pendingLabels[key]).join(', ')+'. Campo vazio não confirma liberação.';
+    const noRecord=njRows(observation?.crm_no_record_fields),coverage=observation?.crm_coverage;
+    const crmComplete=Object.keys(pendingLabels).every(field=>{
+      const value=coverage?.[field];return value?.schema_valid===true&&value.property_present===true&&value.record_complete===true&&
+        (value.status==='none_registered'&&noRecord.includes(field)||value.status==='explicit_clear'&&!noRecord.includes(field));
+    });
+    if(check?.status==='pass'&&observation?.status==='none_registered'&&!pending.length&&crmComplete&&
+       noRecord.length>0&&noRecord.every(field=>pendingLabels[field])&&check?.coverage?.global_inbox_complete===false){
+      cause='Sem recusa registrada no CRM';action='Escopo: campos consultados no CRM e registros vinculados de toques e respostas. Ausência de registro não comprova ausência global nas caixas de entrada nem consentimento para envio.';
+    }
+    if(check?.status==='unknown'&&pending.length)action+=' Falta conferir no HubSpot: '+pending.map(key=>pendingLabels[key]).join(', ')+'. Metadados ou leitura ainda incompletos.';
 
   }
   return `<div class="nj-check-signal" data-nj-check="${key}"><div class="nj-signal-heading"><h6>${key==='refusal'?'Recusa e respostas':esc(njCheckLabels[key])}</h6><span class="nj-signal-state" data-state="${['pass','blocked'].includes(check?.status)?check.status:'unknown'}">${esc(status)}</span></div><p>${esc(cause)}</p><p class="msg">${esc(action)}</p></div>`;

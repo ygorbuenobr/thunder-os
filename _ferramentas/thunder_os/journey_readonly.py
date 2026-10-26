@@ -29,6 +29,7 @@ MISSING = 'Texto original indisponivel nesta fonte.'
 APPROVAL_REASON = 'Sem cadence e passo canonicos vinculados; a autorizacao exige identidade e toque exatos no backend.'
 SOURCE_GROUP = 'visitantes-2026-10-22'
 SOURCE_GROUP_LABEL = 'Visitantes 22/10/2026: rascunhos, campanha nao cadastrada'
+INTERNAL_CANARY = 'internal-canary-20261025-ygor-01'
 
 
 def _opaque(kind, key):
@@ -190,7 +191,7 @@ class JourneyReadonly:
         """Jornada's Brazil boundary; the generic account reader retains its scope."""
         self._validate_campaign(campaign)
         snap = self.snapshot(campaign=campaign)
-        allowed = {row['id'] for row in snap['campaigns']}
+        allowed = {row['id'] for row in snap['campaigns'] if not row.get('internal_test')}
         if self.accounts is None:
             return {'accounts': [], 'limitations': ['account_reader_unavailable'],
                     'omitted_count': None, 'read_only': True}
@@ -295,6 +296,137 @@ class JourneyReadonly:
                      ('verification','attempt_attribution','limitation')} if row['id'] in assisted else None}
                 for row in rows]
 
+    def _internal_canary(self, states, effects):
+        """Historical read only; no writer, live policy renewal or provider call."""
+        from .codex_assisted import MANUAL_JOB_ID, MANUAL_RECIPIENT
+        try:
+            internal = next(r for r in states['internal_canary'] if r['id'] == INTERNAL_CANARY)
+            cadence = next(r for r in states['cadence'] if r['id'] == INTERNAL_CANARY)
+            assisted = next(r for r in states['codex_assisted'] if r['id'] == MANUAL_JOB_ID)
+            job = next(e for e in effects or [] if e['id'] == MANUAL_JOB_ID)
+            scope, manual = internal['scope'], assisted['manual_reconciliation']
+            ticket, grant, step = assisted['ticket'], assisted['grant'], cadence['steps'][0]
+            context = self.service.campaign_registry.load(INTERNAL_CANARY)
+            config = next(r['config'] for r in states['campaign_config']
+                          if r['config']['campaign_id'] == INTERNAL_CANARY)
+            audit = self.repo.events(job['id'])
+            current = self.repo.effect(job['id'])
+            packet = {k: v for k, v in ticket.items() if k not in
+                      {'ticket_hash', 'review_hash', 'issued_at', 'expires_at', 'reservation_id'}}
+            packet['dispatch_authorized'] = False
+            valid = (internal.get('actor') == 'ygor' and scope.get('kind') == 'internal_canary'
+                and scope.get('from') == MAILBOX and scope.get('to') == MANUAL_RECIPIENT
+                and type(scope.get('max_attempts')) is int and scope['max_attempts'] == 1
+                and scope.get('no_followup') is True and internal['scope_hash'] == payload_hash(scope)
+                and cadence['account_id'] == INTERNAL_CANARY and cadence['person_key'] == scope['to']
+                and not cadence.get('hubspot_contact_id') and len(cadence['steps']) == 1
+                and step['id'] == ticket['step_id'] == 'e1' and step['channel'] == 'email'
+                and step['order'] == 1 and not step.get('predecessor_id')
+                and all(step[k] == scope[k] for k in ('subject', 'content')) and step['recipient'] == scope['to']
+                and job['payload']['cadence_id'] == ticket['cadence_id'] == INTERNAL_CANARY
+                and all(job['payload']['step'].get(k) == step.get(k) for k in
+                        ('id', 'channel', 'order', 'predecessor_id', 'subject', 'content', 'recipient'))
+                and cadence['execution_context'] == ticket['campaign'] == context
+                and config['providers'] == {'email': 'gmail'} and config['rules'] == internal['scope_hash']
+                and config['configuration']['provider_accounts'] == {'email': MAILBOX}
+                and manual['schema'] == 'internal_operator_receipt_v1'
+                and manual['job_payload_hash'] == payload_hash(job['payload'])
+                and manual['internal_scope_hash'] == internal['scope_hash']
+                and manual['envelope_hash'] == payload_hash(ticket['payload'])
+                and ticket['payload'] == {'from_address': MAILBOX, 'to': scope['to'], 'subject': scope['subject'],
+                    'payload': {'mime_type': 'text/plain', 'charset': 'UTF-8', 'body': {'content': scope['content']}},
+                    'response_fields': ['id', 'thread_id', 'label_ids']}
+                and manual['proof']['job_id'] == job['id']
+                and manual['proof']['packet_hash'] == ticket['review_hash'] == grant['packet_hash']
+                and ticket['review_hash'] == payload_hash(packet)
+                and manual['proof']['ticket_hash'] == ticket['ticket_hash'] == grant['ticket_hash']
+                and ticket['ticket_hash'] == payload_hash({k: v for k, v in ticket.items() if k != 'ticket_hash'})
+                and manual['proof']['grant_hash'] == payload_hash(grant)
+                and manual.get('dispatch_authorized') is False and manual.get('retry_write') is False
+                and current and not current.get('lease_owner') and not current.get('lease_until')
+                and any(e['type'] == 'assisted_proved_not_sent'
+                        and e['payload'].get('record_hash') == payload_hash(manual)
+                        and e['payload'].get('record') == manual for e in audit))
+            if not valid:
+                return None
+            failed = (job['state'] == 'failed' and not job.get('receipt_ref')
+                      and assisted['phase'] == 'proved_not_sent')
+            if failed:
+                # Error code is intentionally read here, not exposed in the general effects projection.
+                if current.get('error_code') != 'proved_not_sent':
+                    return None
+                return {'cadence': cadence, 'status': 'proved_not_sent', 'event': None}
+            event = assisted['operator_receipt_event']
+            if not (job['state'] == 'sent' and assisted['phase'] == 'confirmed'
+                    and assisted.get('verification') == 'provider_sent_copy'
+                    and assisted.get('attempt_attribution') == 'operator_reported'
+                    and re.fullmatch(r'gmail:[A-Za-z0-9_-]{1,200}', job.get('receipt_ref') or '')
+                    and assisted.get('receipt') == event.get('receipt_ref') == job['receipt_ref']
+                    and event['source'] == {'provider': 'gmail', 'account_id': MAILBOX,
+                                          'provider_id': job['receipt_ref'].split(':', 1)[1]}
+                    and event.get('event_type') == 'email_sent' and event.get('lead_email') == scope['to']
+                    and event.get('subject') == scope['subject'] and event.get('text') == scope['content']
+                    and event.get('scope') == 'sent_copy_not_delivery' and event.get('occurred_at')):
+                return None
+            if not any(e['type'] == 'assisted_operator_receipt_confirmed'
+                       and e['payload'].get('receipt') == job['receipt_ref']
+                       and e['payload'].get('manual_record_hash') == payload_hash(manual)
+                       and e['payload'].get('attempt_attribution') == 'operator_reported' for e in audit):
+                return None
+            return {'cadence': cadence, 'status': 'sent', 'event': event}
+        except (KeyError, TypeError, ValueError, IndexError, StopIteration):
+            return None
+
+    def _internal_view(self, verified, states, collected, campaigns, sources):
+        cadence, event = verified['cadence'], verified['event']
+        step = cadence['steps'][0]
+        ident = _opaque('detail', ['canonical_step', cadence['id'], step['id']])
+        blocks = [_block(event['text'], label='Copia enviada Gmail · teste interno',
+                         date=event['occurred_at'], direction='outgoing', complete=True)] if event else [
+            _block('Falha anterior ao envio comprovada; nenhuma copia enviada confirmada.', label='Teste interno · nao enviado')]
+        blocks.append(_block('Copia enviada nao comprova entrega. Vinculo a tentativa informado pelo operador.'
+                             if event else 'Somente observacao; sem autorizacao de envio ou nova tentativa.',
+                             label='Limite da evidencia'))
+        timeline = [{'id': ident, 'date': event['occurred_at'] if event else cadence.get('updated_at'),
+            'label': 'Enviado · teste interno' if event else 'Nao enviado · teste interno',
+            'summary': 'Copia enviada confirmada no Gmail; atribuicao pelo operador.' if event else 'proved_not_sent',
+            'detail_id': ident}]
+        reply = next((r for r in states['reply'] if r['id'] == cadence.get('reply_id')
+            and r.get('campaign_id') == cadence['id'] and r.get('cadence_id') == cadence['id']
+            and r.get('provider_receipt') == (event or {}).get('receipt_ref') and event
+            and r.get('person_key') == cadence['person_key'] and r.get('identity_confirmed') is True
+            and r.get('human_reply') is True and r.get('source', {}).get('provider') == 'gmail'
+            and r['source'].get('account_id') == MAILBOX and r.get('content')
+            and cadence['id'] in r.get('paused_cadence_ids', [])), None)
+        if reply:
+            blocks.append(_block(reply['content'], label='Resposta registrada · teste interno',
+                                 date=reply.get('received_at'), direction='incoming', complete=True))
+            timeline.append({'id': ident + '_reply', 'date': reply.get('received_at'),
+                             'label': 'Resposta · teste interno', 'summary': 'Resposta humana registrada.', 'detail_id': ident})
+            if cadence.get('status') == 'paused_reply':
+                blocks.append(_block('Cadencia pausada por resposta. Parada externa nao confirmada.', label='Parada interna'))
+                timeline.append({'id': ident + '_stop', 'date': cadence.get('updated_at'),
+                    'label': 'Parada interna', 'summary': 'paused_reply; parada externa nao confirmada.', 'detail_id': ident})
+        detail = {'id': ident, 'title': 'Teste interno', 'meta': 'Teste interno · excluido das metricas BR',
+            'internal_test': True, 'canonical_cadence_id': cadence['id'], 'canonical_step_id': step['id'],
+            'canonical_cadence_version': cadence['version'], 'campaign_id': cadence['id'], 'channel': step['channel'],
+            'step_status': verified['status'], 'blocks': blocks, 'source_links': [], 'draft': None,
+            'editable': False, 'approval_available': False}
+        item = {'id': ident, 'name': 'Teste interno', 'company': None, 'campaign_id': cadence['id'],
+            'internal_test': True, 'date': timeline[0]['date'], 'owner': 'ygor',
+            'summary': 'Passo canonico e1: ' + verified['status'] + ' · teste interno, sem follow-up',
+            'action': {'label': 'Abrir', 'type': 'detail', 'id': ident}}
+        stages = [{'id': key, 'label': label, 'count': None,
+            'status': 'partial' if key == 'abordagem' or key == 'resposta' and reply else 'unavailable',
+            'reason': 'Teste interno excluido das metricas comerciais; sem qualificacao ICP ou ficha inventada.',
+            'items': [deepcopy(item)] if key == 'abordagem' or key == 'resposta' and reply else []} for key, label in STAGES]
+        metrics = {key: {'value': None, 'source': ['local:internal_canary'], 'reason': 'internal_test_excluded',
+            'coverage': {'complete': False, 'scope': 'internal_test_not_commercial'}}
+            for key in ('reached', 'replied', 'hot', 'cost_per_hot')}
+        return {'read_only': True, 'collected_at': collected, 'internal_test': True, 'campaigns': campaigns,
+            'stages': stages, 'metrics': metrics, 'timeline': {'name': 'Teste interno', 'events': timeline},
+            'sources': list(sources.values()), 'log': []}, {ident: detail}, {}
+
     @staticmethod
     def _validate_campaign(campaign):
         if campaign is not None and (not isinstance(campaign, str)
@@ -337,7 +469,8 @@ class JourneyReadonly:
                 coverage=deepcopy(cadence.get('coverage', {})))
 
         # One read-only SQLite snapshot; provider ports are never called in a DB transaction.
-        kinds = ('campaign_config', 'reply', 'cadence', 'meeting', 'research', 'hubspot_attempt')
+        kinds = ('campaign_config', 'reply', 'cadence', 'meeting', 'research', 'hubspot_attempt',
+                 'internal_canary', 'codex_assisted')
         instant = None
         effects = None
         try:
@@ -345,11 +478,13 @@ class JourneyReadonly:
                 registry = read('campaign_registry', self.service.campaign_registry.list_campaigns, [])
                 states = {kind: read('local:' + kind, lambda kind=kind: self.repo.list_state(kind), []) for kind in kinds}
                 effects = read('local:effects', self._effects, None)
+                internal = read('local:internal_canary_projection', lambda: self._internal_canary(states, effects), None)
                 if self.today.instantly is not None:
                     instant = read('instantly_cache', lambda: InstantlyReader(self.repo,
                         enable_check=self.today.instantly.enable_check, clock=self.today.instantly.clock).snapshot(), None)
         except Exception:
             registry, states = [], {kind: [] for kind in kinds}
+            internal = None
             for name in ['campaign_registry', *('local:' + kind for kind in kinds)]:
                 sources[name] = {'id': name, 'status': 'offline', 'reason': 'source_unavailable', 'collected_at': None}
 
@@ -362,11 +497,16 @@ class JourneyReadonly:
                 mx.add(cfg['campaign_id'])
                 mx.update(code for batch in cfg.get('batches', []) for code in batch.get('source_codes', []))
 
+        internal_ids = {r['id'] for r in states['internal_canary']}
+        internal_ids.update(r['config'].get('campaign_id') for r in states['campaign_config']
+                            if r.get('config', {}).get('configuration', {}).get('flow_version') == 'internal-canary-v1')
+
         def excluded(row):
             codes = [row.get(key) for key in ('campaign_id', 'campaign', 'source_code')]
             title = row.get('title') or ''
             codes.append(title.lstrip('[').split(']')[0].split('|')[0].strip())
-            return (any(isinstance(code, str) and (MX_CODE.match(code) or code in mx) for code in codes)
+            return (any(isinstance(code, str) and (MX_CODE.match(code) or code in mx
+                        or code.startswith('internal-canary-') or code in internal_ids) for code in codes)
                 or bool(({row.get('contact_id')} | set(row.get('contact_ids') or [])) & mx_contacts)
                 or bool(set(row.get('person_keys') or []) & mx_people))
 
@@ -391,6 +531,11 @@ class JourneyReadonly:
                 sources.pop('sheet:' + cid, None)
                 continue
             campaigns[cid], sheets[cid] = {'id': cid, 'label': cid}, view
+        options = [campaigns[k] for k in sorted(campaigns)]
+        if internal:
+            options.append({'id': INTERNAL_CANARY, 'label': 'Teste interno', 'internal_test': True})
+            if campaign == INTERNAL_CANARY:
+                return self._internal_view(internal, states, collected, options, sources)
         omitted = {'campaigns': omitted_campaigns if sources['campaign_registry']['status'] == 'ok' else None,
                    'threads': 0, 'accounts': 0, 'activities': 0, 'items': 0}
         in_scope = selected
@@ -839,6 +984,6 @@ class JourneyReadonly:
             'collected_at': collected, 'omitted': omitted,
             'reason': 'Validated Brazil campaigns; explicit indexed visitor drafts are account documents only. Unknown regions omitted.',
             'draft_source_group': SOURCE_GROUP if any(self._indexed_draft(r) for r in account_rows) else None}
-        return {'read_only': True, 'collected_at': collected, 'campaigns': [campaigns[k] for k in sorted(campaigns)],
+        return {'read_only': True, 'collected_at': collected, 'campaigns': options,
                 'metrics': metrics, 'stages': list(stages.values()), 'timeline': timeline,
                 'log': log, 'sources': list(sources.values())}, details, contacts

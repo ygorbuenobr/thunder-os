@@ -15,7 +15,8 @@ from thunder_os.campaign_registry import CampaignRegistry
 from thunder_os.journey_readonly import JourneyReadonly, MISSING
 from thunder_os.seqd_client import MAILBOX
 from thunder_os.service import ThunderService
-from thunder_os.today_readonly import TodayError, TodayReadonly
+from thunder_os.today_readonly import TodayError, TodayReadonly, ReadonlyRepository
+from thunder_os.models import payload_hash
 
 
 NOW = datetime(2026, 10, 23, 15, tzinfo=timezone.utc)
@@ -142,6 +143,201 @@ class JourneyTests(unittest.TestCase):
         self.assertIsNone(self.stage(snap, 'crm')['count'])
         self.assertNotIn('secret error', json.dumps(snap))
         self.assertEqual(snap['timeline']['events'], [])
+
+    def test_default_brazil_excludes_internal_test_even_with_brazil_country(self):
+        internal = 'BR-INTERNAL-SYNTHETIC'
+        self.register(internal)
+        self.repo.put_state('internal_canary', internal, {'actor': 'ygor', 'scope': {}})
+        self.add_thread([message('internal-synthetic', 9, True, 'Synthetic internal original')], campaign=internal)
+        self.canonical(execution_context=CampaignRegistry(self.repo).load(internal))
+        before = self.database()
+        snap = self.adapter.snapshot()
+        self.assertFalse(any(c['id'] == internal for c in snap['campaigns']))
+        self.assertFalse(any(i['campaign_id'] == internal for s in snap['stages'] for i in s['items']))
+        self.assertEqual(snap['timeline']['events'], [])
+        self.assertIsNone(snap['metrics']['reached']['value'])
+        self.assertEqual(before, self.database())
+
+    def test_internal_prefix_alone_never_makes_an_option_or_projection(self):
+        internal = 'internal-canary-20261025-ygor-01'
+        self.register(internal)
+        self.canonical(execution_context=CampaignRegistry(self.repo).load(internal))
+        for selected in (None, internal):
+            snap = self.adapter.snapshot(campaign=selected)
+            self.assertNotIn(internal, [c['id'] for c in snap['campaigns']])
+            self.assertFalse(any(s['items'] for s in snap['stages']))
+            self.assertTrue(all(m['value'] is None for m in snap['metrics'].values()))
+
+    def internal_fixture(self, sent=False):
+        from thunder_os.codex_assisted import MANUAL_JOB_ID, MANUAL_RECIPIENT
+        cid = 'internal-canary-20261025-ygor-01'
+        scope = {'kind': 'internal_canary', 'from': MAILBOX, 'to': MANUAL_RECIPIENT,
+                 'subject': 'Synthetic internal subject', 'content': 'Synthetic internal original\nExact last line.',
+                 'max_attempts': 1, 'no_followup': True}
+        self.repo.put_state('internal_canary', cid, {'actor': 'ygor', 'scope': scope, 'scope_hash': payload_hash(scope)})
+        CampaignRegistry(self.repo).register({'campaign_id': cid, 'campaign_version': '1', 'rules_version': '1',
+            'run_id': cid, 'platform': 'thunder_os', 'providers': {'email': 'gmail'}, 'rules': payload_hash(scope),
+            'configuration': {'flow_version': 'internal-canary-v1', 'provider_accounts': {'email': MAILBOX}}}, 'ygor', 0)
+        context = CampaignRegistry(self.repo).load(cid)
+        step = {'id': 'e1', 'channel': 'email', 'order': 1, 'recipient': scope['to'],
+                'subject': scope['subject'], 'content': scope['content'], 'status': 'sent' if sent else 'approved'}
+        cadence = self.repo.put_state('cadence', cid, {'account_id': cid, 'person_key': scope['to'],
+            'execution_context': context, 'status': 'paused_reply' if sent else 'approved',
+            'reply_id': 'gmail:synthetic-reply' if sent else None, 'steps': [step]})
+        payload = {'cadence_id': cid, 'step': step}
+        job = self.repo.enqueue_effect('synthetic-internal-effect', payload)
+        with closing(sqlite3.connect(self.repo.path)) as con, con:
+            con.execute('UPDATE thunder_effect_jobs SET id=? WHERE id=?', (MANUAL_JOB_ID, job['id']))
+        envelope = {'from_address': MAILBOX, 'to': scope['to'], 'subject': scope['subject'],
+            'payload': {'mime_type': 'text/plain', 'charset': 'UTF-8', 'body': {'content': scope['content']}},
+            'response_fields': ['id', 'thread_id', 'label_ids']}
+        ticket = {'cadence_id': cid, 'step_id': 'e1', 'campaign': context, 'payload': envelope}
+        ticket['review_hash'] = payload_hash({**ticket, 'dispatch_authorized': False})
+        ticket['ticket_hash'] = payload_hash(ticket)
+        grant = {'ticket_hash': ticket['ticket_hash'], 'packet_hash': ticket['review_hash']}
+        manual = {'schema': 'internal_operator_receipt_v1', 'job_payload_hash': payload_hash(payload),
+            'envelope_hash': payload_hash(envelope), 'internal_scope_hash': payload_hash(scope),
+            'dispatch_authorized': False, 'retry_write': False,
+            'proof': {'job_id': MANUAL_JOB_ID, 'ticket_hash': ticket['ticket_hash'],
+                      'packet_hash': ticket['review_hash'], 'grant_hash': payload_hash(grant)}}
+        self.repo.append_event(MANUAL_JOB_ID, 'assisted_proved_not_sent', {'record_hash': payload_hash(manual), 'record': manual})
+        receipt_ref = 'gmail:synthetic-sent'
+        row = {'ticket': ticket, 'grant': grant, 'manual_reconciliation': manual,
+               'phase': 'confirmed' if sent else 'proved_not_sent'}
+        if sent:
+            self.repo.append_event(MANUAL_JOB_ID, 'assisted_operator_receipt_confirmed', {
+                'receipt': receipt_ref, 'manual_record_hash': payload_hash(manual),
+                'attempt_attribution': 'operator_reported'})
+            row.update(receipt=receipt_ref, verification='provider_sent_copy', attempt_attribution='operator_reported',
+                operator_receipt_event={'event_type': 'email_sent', 'source': {'provider': 'gmail',
+                    'account_id': MAILBOX, 'provider_id': 'synthetic-sent'}, 'lead_email': scope['to'],
+                    'subject': scope['subject'], 'text': scope['content'], 'occurred_at': NOW.isoformat(),
+                    'receipt_ref': receipt_ref, 'scope': 'sent_copy_not_delivery'})
+            self.repo.put_state('reply', 'gmail:synthetic-reply', {'campaign_id': cid,
+                'cadence_id': cid, 'provider_receipt': receipt_ref,
+                'person_key': scope['to'], 'content': 'Synthetic registered reply\nReply last line.',
+                'identity_confirmed': True, 'human_reply': True, 'paused_cadence_ids': [cid],
+                'received_at': NOW.isoformat(), 'source': {'provider': 'gmail', 'account_id': MAILBOX,
+                                                       'provider_message_id': 'synthetic-reply'}})
+        self.repo.finish_effect(MANUAL_JOB_ID, 'sent' if sent else 'failed', receipt_ref if sent else None,
+                                None if sent else 'proved_not_sent')
+        self.repo.put_state('codex_assisted', MANUAL_JOB_ID, row)
+        return cid, MANUAL_JOB_ID, cadence
+
+    def test_verified_internal_manual_failure_visible_only_when_selected(self):
+        cid, job, cadence = self.internal_fixture()
+        before = self.database()
+        default = self.adapter.snapshot()
+        option = next(c for c in default['campaigns'] if c['id'] == cid)
+        self.assertEqual(option['label'], 'Teste interno')
+        self.assertTrue(option['internal_test'])
+        self.assertFalse(any(s['items'] for s in default['stages']))
+        snap = self.adapter.snapshot(cid)
+        item, = self.stage(snap, 'abordagem')['items']
+        detail = self.adapter.detail(item['id'], cid)
+        self.assertEqual(detail['step_status'], 'proved_not_sent')
+        self.assertEqual(detail['canonical_cadence_id'], cid)
+        self.assertFalse(detail['editable'])
+        self.assertEqual(self.stage(snap, 'icp')['items'], [])
+        self.assertTrue(all(m['value'] is None and m['reason'] == 'internal_test_excluded' for m in snap['metrics'].values()))
+        self.assertEqual(before, self.database())
+
+    def test_verified_internal_sent_copy_registered_reply_and_internal_stop(self):
+        cid, job, cadence = self.internal_fixture(sent=True)
+        before = self.database()
+        snap = self.adapter.snapshot(cid)
+        item, = self.stage(snap, 'abordagem')['items']
+        detail = self.adapter.detail(item['id'], cid)
+        self.assertEqual(detail['step_status'], 'sent')
+        self.assertIn(cadence['steps'][0]['content'], [b['text'] for b in detail['blocks']])
+        self.assertIn('Synthetic registered reply\nReply last line.', [b['text'] for b in detail['blocks']])
+        self.assertEqual([e['label'] for e in snap['timeline']['events']], ['Enviado · teste interno', 'Resposta · teste interno', 'Parada interna'])
+        self.assertTrue(self.stage(snap, 'resposta')['items'])
+        self.assertTrue(all(m['value'] is None for m in snap['metrics'].values()))
+        self.assertEqual(before, self.database())
+
+    def test_internal_scope_manual_hash_and_provider_conflicts_fail_closed(self):
+        cid, job, _ = self.internal_fixture(sent=True)
+        for kind, ident, key, value in [('internal_canary', cid, 'scope_hash', '0'*64),
+                ('codex_assisted', job, 'phase', 'dispatch_issued'),
+                ('codex_assisted', job, 'receipt', 'gmail:wrong'),
+                ('codex_assisted', job, 'operator_receipt_event', {})]:
+            original = self.repo.get_state(kind, ident)
+            with self.subTest(key=key):
+                self.repo.put_state(kind, ident, {**original, key: value})
+                snap = self.adapter.snapshot(cid)
+                self.assertNotIn(cid, [c['id'] for c in snap['campaigns']])
+                self.assertFalse(any(s['items'] for s in snap['stages']))
+            self.repo.put_state(kind, ident, original)
+
+    def test_internal_security_scope_and_reply_conflicts_fail_closed(self):
+        cid, job, _ = self.internal_fixture(sent=True)
+        for kind, ident, path, value in [
+                ('internal_canary', cid, ['scope', 'from'], 'wrong@example.invalid'),
+                ('internal_canary', cid, ['scope', 'no_followup'], False),
+                ('internal_canary', cid, ['scope', 'max_attempts'], True),
+                ('codex_assisted', job, ['manual_reconciliation', 'job_payload_hash'], '0'*64),
+                ('codex_assisted', job, ['manual_reconciliation', 'envelope_hash'], '0'*64),
+                ('codex_assisted', job, ['operator_receipt_event', 'text'], 'Different synthetic copy'),
+                ('cadence', cid, ['steps'], []),
+                ('cadence', cid, ['execution_context', 'campaign_id'], BR)]:
+            original = self.repo.get_state(kind, ident)
+            mutated = deepcopy(original)
+            current = mutated
+            for part in path[:-1]:
+                current = current[part]
+            current[path[-1]] = value
+            with self.subTest(path=path):
+                self.repo.put_state(kind, ident, mutated)
+                snap = self.adapter.snapshot(cid)
+                self.assertNotIn(cid, [c['id'] for c in snap['campaigns']])
+                self.assertFalse(any(s['items'] for s in snap['stages']))
+            self.repo.put_state(kind, ident, original)
+        original = self.repo.get_state('reply', 'gmail:synthetic-reply')
+        self.repo.put_state('reply', original['id'], {**original, 'provider_receipt': 'gmail:wrong'})
+        snap = self.adapter.snapshot(cid)
+        self.assertFalse(self.stage(snap, 'resposta')['items'])
+        self.assertEqual(len(snap['timeline']['events']), 1)
+
+    def test_real_backend_manual_record_contract_with_fake_gmail(self):
+        from test_thunder_os_codex_assisted import ManualReconciliationTests
+        fixture = ManualReconciliationTests()
+        self.addCleanup(fixture.doCleanups)
+        fixture.setUp()
+        fixture.reconcile()
+        view = object.__new__(JourneyReadonly)
+        view.repo = ReadonlyRepository(fixture.repo.path)
+        view.service = ThunderService(view.repo)
+        def project():
+            states = {k: view.repo.list_state(k) for k in
+                      ('cadence', 'internal_canary', 'codex_assisted', 'campaign_config')}
+            with view.repo.transaction():
+                return view._internal_canary(states, view._effects())
+        with patch('thunder_os.journey_readonly.INTERNAL_CANARY', fixture.data['id']):
+            self.assertEqual(project()['status'], 'proved_not_sent')
+            fixture.now += 2
+            preview = fixture.assisted.receipt_preview(fixture.job['id'], fixture.receipt)
+            fixture.assisted.receipt_confirm(fixture.job['id'], fixture.receipt, preview['review_hash'])
+            result = project()
+            self.assertEqual(result['status'], 'sent')
+            self.assertEqual(result['event']['text'], fixture.data['scope']['content'])
+        self.assertEqual(fixture.mail.sends, [])
+
+    def test_internal_audit_read_failure_does_not_break_default_brazil(self):
+        from thunder_os.db import RepositoryConflict
+        cid, _, _ = self.internal_fixture(sent=True)
+        self.canonical()
+        for error in (sqlite3.OperationalError('synthetic offline'), RepositoryConflict('synthetic conflict')):
+            with self.subTest(error=type(error).__name__), patch.object(self.adapter.repo, 'events', side_effect=error):
+                snap = self.adapter.snapshot()
+                self.assertIn(BR, [c['id'] for c in snap['campaigns']])
+                self.assertNotIn(cid, [c['id'] for c in snap['campaigns']])
+                self.assertTrue(self.stage(snap, 'abordagem')['items'])
+                source = next(s for s in snap['sources'] if s['id'] == 'local:internal_canary_projection')
+                self.assertEqual(source['status'], 'offline')
+                selected = self.adapter.snapshot(cid)
+                self.assertFalse(any(s['items'] for s in selected['stages']))
+                self.assertTrue(all(m['value'] is None for m in selected['metrics'].values()))
 
     def test_crm_unknown_when_healthy_hubspot_has_deals_without_verified_campaign(self):
         self.today._deals.return_value = {'status': 'ok', 'do': [{

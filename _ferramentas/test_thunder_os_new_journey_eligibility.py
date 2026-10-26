@@ -206,9 +206,15 @@ class CanonicalEligibilityTests(unittest.TestCase):
         self.http.contacts['123']['properties']['opt_out'] = 'true'
         self.assertEqual(self.check()['refusal']['status'], 'blocked')
 
-    def test_missing_registered_optout_or_linked_profile_is_unknown(self):
+    def test_registered_empty_optout_is_scoped_absence_but_missing_profile_stays_unknown(self):
+        # S40 approved semantics supersede the previous null-is-unknown contract.
         props = self.http.contacts['123']['properties']
         props['opt_out'] = None
+        check = self.check()['refusal']
+        self.assertEqual(check['status'], 'pass')
+        self.assertIn('person_opt_out', check['observation']['crm_no_record_fields'])
+        self.assertFalse(check['observation']['coverage']['global_inbox_complete'])
+        del props['opt_out']
         self.assertEqual(self.check()['refusal']['status'], 'unknown')
         props['opt_out'] = 'false'
         props['hs_linkedin_url'] = props['linkedin_url'] = None

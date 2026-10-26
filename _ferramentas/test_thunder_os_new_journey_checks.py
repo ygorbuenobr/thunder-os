@@ -235,5 +235,181 @@ class NewJourneyCheckTests(unittest.TestCase):
             self.assertNotIn('private', str(exc.exception))
 
 
+class RegisteredCRMFieldTests(unittest.TestCase):
+    """S40 policy proofs through current schemas, record reads and readonly ledger."""
+    FIELDS = (('person_opt_out', 'contacts', 'opt_out'),
+              ('email_opt_out', 'contacts', 'hs_email_optout'),
+              ('company_suppression', 'companies', 'thunder_suppressed'),
+              ('outreach_risk', 'contacts', 'thunder_outreach_risk'))
+
+    def setUp(self):
+        import test_thunder_os_new_journey_eligibility as support
+        self.f = support.CanonicalEligibilityTests()
+        self.f.setUp()
+        self.addCleanup(self.f.doCleanups)
+        p = patch('socket.create_connection', side_effect=AssertionError('network forbidden'))
+        self.addCleanup(p.stop)
+        self.addCleanup(p.start().assert_not_called)
+
+    def properties(self, kind):
+        return getattr(self.f.http, kind)['123' if kind == 'contacts' else '500']['properties']
+
+    def empty_fields(self):
+        for _, kind, key in self.FIELDS:
+            self.properties(kind)[key] = None
+
+    def test_empty_and_null_are_registered_absence_with_explicit_coverage(self):
+        for label, kind, key in self.FIELDS:
+            values = self.properties(kind)
+            original = values[key]
+            for value in ('', None):
+                with self.subTest(field=label, value=value):
+                    values[key] = value
+                    result = self.f.check()['refusal']
+                    self.assertEqual(result['status'], 'pass')
+                    self.assertEqual(result['reason'], 'canonical_registered_refusals_clear')
+                    observation = result['observation']
+                    self.assertEqual(observation['crm_pending_fields'], [])
+                    self.assertEqual(observation['crm_no_record_fields'], [label])
+                    field = observation['crm_coverage'][label]
+                    self.assertEqual(field['status'], 'none_registered')
+                    self.assertTrue(field['schema_valid'])
+                    self.assertTrue(field['property_present'])
+                    self.assertTrue(field['record_complete'])
+                    self.assertFalse(field['property_coverage'])
+                    self.assertTrue(result['coverage']['complete'])
+                    self.assertFalse(result['coverage']['global_inbox_complete'])
+                    self.assertFalse(observation['coverage']['global_inbox_complete'])
+            values[key] = original
+        self.empty_fields()
+        result = self.f.check()['refusal']
+        self.assertEqual(result['status'], 'pass')
+        self.assertEqual(result['observation']['crm_no_record_fields'], [f[0] for f in self.FIELDS])
+
+    def test_explicit_false_and_risk_values_remain_distinct_from_empty(self):
+        for label, kind, key in self.FIELDS:
+            for value in (('low', 'medium') if key == 'thunder_outreach_risk' else (False, 'false')):
+                with self.subTest(field=label, value=value):
+                    self.properties(kind)[key] = value
+                    result = self.f.check()['refusal']
+                    self.assertEqual(result['status'], 'pass')
+                    field = result['observation']['crm_coverage'][label]
+                    self.assertEqual(field['status'], 'explicit_clear')
+                    self.assertTrue(field['property_coverage'])
+                    self.assertNotIn(label, result['observation']['crm_no_record_fields'])
+
+    def test_absent_requested_property_stays_unknown_even_with_valid_schema(self):
+        for label, kind, key in self.FIELDS:
+            values = self.properties(kind)
+            original = values.pop(key)
+            with self.subTest(field=label):
+                result = self.f.check()['refusal']
+                self.assertEqual(result['status'], 'unknown')
+                self.assertIn(label, result['observation']['crm_pending_fields'])
+                self.assertEqual(result['observation']['crm_coverage'][label]['status'], 'unknown')
+                self.assertFalse(result['observation']['crm_coverage'][label]['property_present'])
+                self.assertFalse(result['coverage']['complete'])
+            values[key] = original
+
+    def test_wrong_value_types_cannot_masquerade_as_false_or_empty(self):
+        for label, kind, key in self.FIELDS:
+            values = self.properties(kind)
+            original = values[key]
+            for value in (0, 1, [], {}, 'FALSE', ' ', 'true;false', False if key == 'thunder_outreach_risk' else 'low'):
+                with self.subTest(field=label, value=value):
+                    values[key] = value
+                    self.assertNotEqual(self.f.check()['refusal']['status'], 'pass')
+            values[key] = original
+
+    def test_empty_needs_current_complete_nonconflicting_schema(self):
+        self.empty_fields()
+        for label, kind, key in self.FIELDS:
+            original = deepcopy(self.f.http.schemas[kind])
+            for failure in ('missing', 'wrong_type', 'archived', 'conflict', 'partial', 'unavailable', 'options'):
+                if failure == 'options' and key != 'thunder_outreach_risk':
+                    continue
+                schema = deepcopy(original)
+                prop = next(p for p in schema['results'] if p['name'] == key)
+                if failure == 'missing':
+                    schema['results'].remove(prop)
+                elif failure == 'wrong_type':
+                    prop['type'] = 'string'
+                elif failure == 'archived':
+                    prop['archived'] = True
+                elif failure == 'conflict':
+                    schema['results'].append({**prop, 'type': 'number'})
+                elif failure == 'partial':
+                    schema['paging'] = {'next': {'after': 'more'}}
+                elif failure == 'options':
+                    prop['options'] = [{'value': 'low', 'hidden': False}]
+                self.f.http.schemas[kind] = schema
+                if failure == 'unavailable':
+                    self.f.http.fail['/crm/v3/properties/' + kind] = 503
+                with self.subTest(field=label, failure=failure):
+                    result = self.f.check()['refusal']
+                    self.assertEqual(result['status'], 'unknown')
+                    if kind == 'contacts' and failure in ('partial', 'unavailable'):
+                        self.assertNotIn('observation', result)  # Identity metadata was unreadable.
+                    else:
+                        self.assertIn(label, result['observation']['crm_pending_fields'])
+                    self.assertFalse(result['coverage']['complete'])
+                self.f.http.fail.clear()
+            self.f.http.schemas[kind] = original
+
+    def test_native_true_and_other_positive_fields_override_empty_fields(self):
+        self.empty_fields()
+        for label, kind, key in self.FIELDS:
+            for value in (('high', 'blocked') if key == 'thunder_outreach_risk' else (True, 'true')):
+                with self.subTest(field=label, value=value):
+                    self.properties(kind)[key] = value
+                    result = self.f.check()['refusal']
+                    self.assertEqual(result['status'], 'blocked')
+                    self.assertNotEqual(result['observation']['crm_coverage'][label]['status'], 'none_registered')
+                    self.assertEqual(result['observation']['status'], 'none_registered')
+            self.properties(kind)[key] = None
+
+    def test_empty_fields_do_not_bypass_incomplete_identity_company_or_local_reads(self):
+        self.empty_fields()
+        companies = self.f.http.contacts['123']['associations']['companies']
+        companies['paging'] = {'next': {'after': 'more'}}
+        self.assertEqual(self.f.check()['refusal']['status'], 'unknown')
+        companies.pop('paging')
+        self.f.http.companies['500']['properties']['domain'] = None
+        self.assertEqual(self.f.check()['refusal']['status'], 'unknown')
+        self.f.http.companies['500']['properties']['domain'] = 'registered.invalid'
+        self.f.http.contacts['123']['properties'].pop('hs_additional_emails')
+        self.assertEqual(self.f.check()['refusal']['status'], 'unknown')
+        self.f.http.contacts['123']['properties']['hs_additional_emails'] = ''
+        original = self.f.checker.repo.list_state
+        for unavailable in ('identity', 'reply', 'cadence'):
+            def read(kind):
+                if kind == unavailable:
+                    raise sqlite3.OperationalError('synthetic interrupted read')
+                return original(kind)
+            with self.subTest(unavailable=unavailable), patch.object(self.f.checker.repo, 'list_state', side_effect=read):
+                result = self.f.check()['refusal']
+                self.assertEqual(result['status'], 'unknown')
+                self.assertEqual(result['reason'], 'canonical_state_read_incomplete')
+                self.assertFalse(result['coverage']['complete'])
+
+    def test_current_schema_is_read_again_and_no_state_is_written(self):
+        self.empty_fields()
+        with self.f.repo._connect() as connection:
+            before = list(connection.iterdump())
+        first = self.f.check()['refusal']
+        self.assertEqual(first['status'], 'pass')
+        self.assertEqual(first['source'], self.f.check()['refusal']['source'])
+        schema = self.f.http.schemas['contacts']['results']
+        prop = next(p for p in schema if p['name'] == 'hs_email_optout')
+        prop['type'] = 'string'
+        changed = self.f.check()['refusal']
+        self.assertEqual(changed['status'], 'unknown')
+        self.assertNotEqual(first['source'], changed['source'])
+        with self.f.repo._connect() as connection:
+            self.assertEqual(before, list(connection.iterdump()))
+        self.assertTrue(all(method == 'GET' or path.endswith('/search')
+                            for method, path, _, _ in self.f.http.calls))
+
+
 if __name__ == '__main__':
     unittest.main()

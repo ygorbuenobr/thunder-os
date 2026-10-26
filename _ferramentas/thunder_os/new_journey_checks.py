@@ -1,7 +1,8 @@
-"""Bounded cold-journey checks. Positive blockers are evidence; absence is unknown.
+"""Bounded cold-journey checks. Missing evidence stays unknown.
 
 Current structured HubSpot qualification and bounded provider reads can prove
 individual checks. Freeform research and CSV fields cannot attest eligibility.
+Verified empty CRM fields attest registered absence only, never global consent.
 Stable source references exclude consultation timestamps for review comparison.
 """
 from collections import Counter
@@ -51,6 +52,35 @@ def _property(evidence, kind, key):
     section = 'identity' if kind == 'contacts' else 'company'
     flags = evidence.get('coverage', {}).get(section)
     return isinstance(flags, dict) and flags.get('properties', {}).get(key) is True
+
+
+def _registered_crm_field(evidence, kind, key, values):
+    """Interpret only a present value from a complete current property read.
+
+    Empty is a registered-state observation, not an explicit negative value or
+    consent. Preserve the reader's stricter schema/value coverage separately.
+    """
+    schema = evidence.get('schema', {}).get(kind, {}).get(key, {})
+    schema_valid = (evidence.get('schema_coverage', {}).get(kind) is True
+        and schema.get('name') == key
+        and (schema.get('type') == 'enumeration'
+             and ENUMS[key] <= set(schema.get('options', [])) if key == 'thunder_outreach_risk'
+             else schema.get('type') == 'bool'))
+    field = {'status': 'unknown', 'schema_valid': schema_valid,
+        'property_present': key in values,
+        'record_complete': _complete(evidence, 'identity' if kind == 'contacts' else 'company'),
+        'property_coverage': _property(evidence, kind, key)}
+    if schema_valid and field['record_complete'] and field['property_present']:
+        value = values[key]
+        if value is None or type(value) is str and value == '':
+            field['status'] = 'none_registered'
+        elif field['property_coverage']:
+            if key == 'thunder_outreach_risk':
+                if type(value) is str and value in ('low', 'medium'):
+                    field['status'] = 'explicit_clear'
+            elif value is False or type(value) is str and value == 'false':
+                field['status'] = 'explicit_clear'
+    return field
 
 
 def _fresh_company(evidence, now):
@@ -310,16 +340,19 @@ class NewJourneyChecks:
                       'registered_reply': 'registered_reply_requires_review',
                       'none_registered': 'registered_refusals_and_replies_absent',
                       'unavailable': 'registered_refusal_coverage_unavailable'}[classification]
-            required_negatives = (
-                ('person_opt_out', 'contacts', 'opt_out', cp, (False, 'false')),
-                ('email_opt_out', 'contacts', 'hs_email_optout', cp, (False, 'false')),
-                ('company_suppression', 'companies', 'thunder_suppressed', props, (False, 'false')),
-                ('outreach_risk', 'contacts', 'thunder_outreach_risk', cp, ('low', 'medium')))
-            pending_fields = [label for label, kind, key, values, accepted in required_negatives
-                              if not (_property(evidence, kind, key) and values.get(key) in accepted)]
+            crm_fields = {label: _registered_crm_field(evidence, kind, key, values)
+                for label, kind, key, values in (
+                    ('person_opt_out', 'contacts', 'opt_out', cp),
+                    ('email_opt_out', 'contacts', 'hs_email_optout', cp),
+                    ('company_suppression', 'companies', 'thunder_suppressed', props),
+                    ('outreach_risk', 'contacts', 'thunder_outreach_risk', cp))}
+            pending_fields = [label for label, field in crm_fields.items() if field['status'] == 'unknown']
             checks['refusal']['observation'] = {'status': classification, 'reason': reason,
                 'source_ref': observation.get('source_ref'), 'coverage': observation.get('coverage', {}),
-                'crm_pending_fields': pending_fields}
+                'crm_pending_fields': pending_fields,
+                'crm_no_record_fields': [label for label, field in crm_fields.items()
+                                         if field['status'] == 'none_registered'],
+                'crm_coverage': crm_fields}
             if checks['refusal']['status'] == 'unknown' and pending_fields:
                 checks['refusal']['reason'] = 'canonical_registered_crm_state_incomplete'
                 if classification == 'none_registered':
@@ -328,15 +361,9 @@ class NewJourneyChecks:
                         'crm_pending_fields': pending_fields})
             if observation.get('status') == 'blocked':
                 result('refusal', 'blocked', observation['reason'], observation['source_ref'])
-        # Observing the registered ledger does not establish negative CRM flags.
-        # Only the existing complete guard may turn unknown into pass.
-        if (observation is not None
-                and all(_property(evidence, 'contacts', key) and cp.get(key) in (False, 'false')
-                        for key in ('opt_out', 'hs_email_optout'))
-                and _property(evidence, 'companies', 'thunder_suppressed')
-                and props.get('thunder_suppressed') in (False, 'false')
-                and _property(evidence, 'contacts', 'thunder_outreach_risk')
-                and cp.get('thunder_outreach_risk') in ('low', 'medium')):
+        # Pass covers registered state only. Empty native hs_email_optout does
+        # not establish subscription consent or absence of cross-channel refusal.
+        if observation is not None and not pending_fields:
             if observation['status'] == 'blocked':
                 result('refusal', 'blocked', observation['reason'], observation['source_ref'])
             elif observation['status'] == 'clear' and observation['coverage']['complete']:
@@ -344,6 +371,7 @@ class NewJourneyChecks:
                     _ref('registered_refusal', {'hubspot': source, 'ledger': observation['source_ref'],
                                                'local_reply_state': source_keys}),
                     scope='registered_hubspot_toques_and_local_reply_state_not_global_inbox')
+                checks['refusal']['coverage']['global_inbox_complete'] = False
         if ('campanha_ativa' in cp and 'executor' in cp
                 and all(_property(evidence, 'contacts', key) for key in ('campanha_ativa', 'executor'))
                 and cp['campanha_ativa'] in ('', None) and cp['executor'] in ('', None)

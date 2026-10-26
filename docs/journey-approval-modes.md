@@ -45,6 +45,55 @@ never retain records, associations, deals or memberships. Source pagination
 must be complete to prove absence. A 429 or partial read does not clear checks.
 Other processes are outside this volatile budget; a remote 429 remains possible.
 
+## CRM registered-state semantics
+
+The refusal check interprets these four read-only fields under the approved
+registered-state policy:
+
+| Observation field | HubSpot object/property | Expected current schema | Explicit clear value |
+| --- | --- | --- | --- |
+| `person_opt_out` | contact `opt_out` | `bool` | `false` |
+| `email_opt_out` | contact `hs_email_optout` | `bool` | `false` |
+| `company_suppression` | company `thunder_suppressed` | `bool` | `false` |
+| `outreach_risk` | contact `thunder_outreach_risk` | enumeration including `low`, `medium`, `high`, `blocked` | `low` or `medium` |
+
+A present `null` or empty string means no value registered in that CRM field
+only when its freshly read schema is complete, valid and nonconflicting, the
+linked record read is complete, and the requested property key is present.
+It is not an explicit `false` or `low`. A missing schema, invalid type/options,
+partial read, or omitted value key stays unknown. The current reader also
+discards malformed values, so an omitted key cannot safely be interpreted as
+empty by the composer. There is no new HubSpot write or schema provisioning.
+
+`check.observation.crm_no_record_fields` lists the four observation-field names
+that met the empty-value rule. `crm_coverage` maps each name to `status`
+(`none_registered`, `explicit_clear`, or `unknown`), `schema_valid`,
+`property_present`, `record_complete`, and the original `property_coverage`.
+The reader's strict schema/value flag remains false for empty values;
+`crm_pending_fields` continues to expose unresolved fields. Positive opt-out,
+suppression, high/blocked risk and linked replies keep the aggregate blocked,
+even if another CRM field is empty or an additional read fails.
+
+The existing aggregate reason `canonical_registered_refusals_clear` can pass
+only after all four CRM fields are explicitly clear or have valid registered
+absence, the registered ledger covers every verified email/profile completely,
+and local identity/reply/cadence reads are complete with no linked blocker.
+The pass remains scoped to registered HubSpot/toques/local state;
+`coverage.global_inbox_complete` is false. It does not assert global absence of
+refusal, grant consent, clear unknown inbox history, or replace send preflight.
+
+HubSpot defines native `hs_email_optout` as the property for unsubscribing from
+all marketing email. True blocks this check. False or blank does not establish
+consent for each subscription type or brand, eligibility for an individual
+message, or absence of refusal in other channels. The custom-field empty-value
+interpretation above is the approved Thunder policy, not a HubSpot guarantee.
+
+Primary sources consulted for S40 (2026-10-26):
+
+- [HubSpot marketing email subscription status](https://knowledge.hubspot.com/marketing-email/learn-a-contact-s-marketing-email-subscription-status): native true/false/blank semantics and separate subscription/brand statuses.
+- [HubSpot Contacts API v3](https://developers.hubspot.com/docs/api-reference/legacy/crm/objects/contacts/guide): requested undefined properties are omitted; defined properties without a value return `null`.
+- [HubSpot custom properties](https://knowledge.hubspot.com/properties/create-and-edit-properties): custom properties initially contain null values unless a default was configured.
+
 ## Export and operation
 
 The preview is read-only in the draft and does not download or enroll. Export
@@ -119,3 +168,32 @@ can dispatch. Conversely, an enabled ConnectSafely configuration must be reporte
 as enabled, even while agent and Gmail/assisted execution are disabled. Do not
 flip unrelated resources to make the readback look uniform. Revalidate source,
 PID/cwd, pins and agent/briefing pauses independently after publication.
+
+
+## Internal canary: operator sent-copy observation (S40)
+
+The explicitly authorized internal canary has one administrative reconciliation
+path for its known `RPC_DISPATCH_EXPIRED` failure before the Gmail tool. The
+operator supplies a typed, fresh attestation bound to the original job, packet,
+ticket, grant and consumed host-marker hash, plus the exact-address/subject
+Gmail search. This trusted administrative method is not an HTTP endpoint; it
+cannot accept a prospect, generic timeout, missing marker or changed envelope.
+The consumed marker and historical journal remain intact.
+
+`reconcile_proven_not_sent` records terminal `failed/proved_not_sent` and an
+audit event in the existing repository. It never releases a reservation, queues
+a retry, renews the grant, or creates another identity. Its 24-hour observation
+window permits only readback of a later operator sent copy of the exact
+approved internal envelope; it is not dispatch permission. Confirmation reads
+Gmail again, records `provider_sent_copy` and `operator_reported`, and preserves
+the old failure audit. Ordinary uncertain-receipt contracts remain unchanged.
+
+For this confirmed receipt only, `manual_reply_preview/confirm` reuse the
+existing human-message review and ReplyControl for the same thread, person and
+cadence. They write only internal reply/stop state. Global S34 flags, automatic
+dispatch, CRM logging and external pauses stay off. The existing Jornada can
+show this explicitly selected **Teste interno** and its original texts; the
+canary is excluded from default Brazil lists and commercial metrics.
+
+No actual sent copy or reply is claimed before a provider read and internal
+persistence/readback. The user sends the manual email, then replies to it.

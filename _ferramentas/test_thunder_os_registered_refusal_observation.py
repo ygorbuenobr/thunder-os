@@ -33,7 +33,7 @@ class RefusalObservationTests(unittest.TestCase):
         self.assertEqual(result['observation']['reason'], 'registered_reply_requires_review')
 
     def test_none_registered_never_bypasses_crm_pass_guard(self):
-        self.f.http.contacts['123']['properties']['opt_out'] = None
+        self.f.http.contacts['123']['properties'].pop('opt_out')
         result = self.f.check()['refusal']
         self.assertEqual(result['status'], 'unknown')
         self.assertEqual(result['observation']['status'], 'none_registered')
@@ -45,7 +45,7 @@ class RefusalObservationTests(unittest.TestCase):
         self.assertFalse(result['observation']['coverage']['global_inbox_complete'])
 
     def test_aggregate_source_binds_exact_registered_observation(self):
-        self.f.http.contacts['123']['properties']['opt_out'] = None
+        self.f.http.contacts['123']['properties'].pop('opt_out')
         port = self.f.checker.refusals
         baseline = port.lookup([support.EMAIL], [support.PROFILE])
         self.assertEqual(baseline['status'], 'clear')
@@ -62,6 +62,50 @@ class RefusalObservationTests(unittest.TestCase):
         self.assertNotEqual(observations[0], observations[1])
         self.assertEqual(observations[0], observations[2])
 
+    def empty_crm_fields(self):
+        self.f.http.contacts['123']['properties'].update(
+            opt_out=None, hs_email_optout='', thunder_outreach_risk=None)
+        self.f.http.companies['500']['properties']['thunder_suppressed'] = ''
+
+    def test_empty_crm_still_blocks_linked_ledger_refusal_and_reply_on_both_channels(self):
+        self.empty_crm_fields()
+        self.assertEqual(self.f.check()['refusal']['status'], 'pass')
+        for channel, identity in (('email', support.EMAIL), ('linkedin', support.PROFILE)):
+            with self.subTest(channel=channel, kind='suppression'):
+                self.write('INSERT INTO thunder_suppressions VALUES (?,?,?)', (channel, identity, 'opt_out'))
+                result = self.f.check()['refusal']
+                self.assertEqual(result['status'], 'blocked')
+                self.assertEqual(result['observation']['status'], 'registered_refusal')
+                self.assertEqual(result['observation']['crm_pending_fields'], [])
+                self.write('DELETE FROM thunder_suppressions')
+            with self.subTest(channel=channel, kind='reply'):
+                self.write('INSERT INTO respostas VALUES (?,?,?)', (1, channel, identity))
+                result = self.f.check()['refusal']
+                self.assertEqual(result['status'], 'blocked')
+                self.assertEqual(result['observation']['status'], 'registered_reply')
+                self.write('DELETE FROM respostas')
+
+    def test_empty_crm_never_clears_unavailable_or_partial_registered_reads(self):
+        self.empty_crm_fields()
+        self.assertEqual(self.f.check()['refusal']['status'], 'pass')
+        self.write('DROP TABLE respostas')
+        result = self.f.check()['refusal']
+        self.assertEqual(result['status'], 'unknown')
+        self.assertEqual(result['observation']['status'], 'unavailable')
+        self.assertFalse(result['observation']['coverage']['complete'])
+        self.assertFalse(result['coverage']['complete'])
+
+    def test_empty_crm_cannot_override_linked_local_reply_or_paused_cadence(self):
+        self.empty_crm_fields()
+        self.assertEqual(self.f.check()['refusal']['status'], 'pass')
+        self.f.repo.put_state('cadence', 'synthetic-paused', {'person_key': support.EMAIL, 'status': 'paused_reply'})
+        self.assertEqual(self.f.check()['refusal']['reason'], 'canonical_cadence_paused_reply')
+        self.f.repo.put_state('reply', 'synthetic-reply', {'person_key': support.EMAIL,
+            'state': 'classified', 'classification': 'opt_out'})
+        result = self.f.check()['refusal']
+        self.assertEqual(result['status'], 'blocked')
+        self.assertEqual(result['reason'], 'canonical_refusal_all_channels')
+
     def test_positive_crm_survives_unavailable_registered_read(self):
         self.f.http.contacts['123']['properties']['opt_out'] = 'true'
         self.write('DROP TABLE respostas')
@@ -70,6 +114,7 @@ class RefusalObservationTests(unittest.TestCase):
         self.assertEqual(result['observation']['status'], 'unavailable')
 
     def test_positive_ledger_survives_later_partial_read(self):
+        self.empty_crm_fields()
         self.write('INSERT INTO thunder_suppressions VALUES (?,?,?)', ('email', support.EMAIL, 'opt_out'))
         original, calls = TouchLedger.preflight, []
         def fail_after_first(ledger, *args, **kwargs):

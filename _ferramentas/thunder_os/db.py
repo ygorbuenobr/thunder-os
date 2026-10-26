@@ -465,6 +465,89 @@ class Repository:
                 })
         return True
 
+    def append_event(self, entity_id: str, event_type: str, payload: dict[str, Any]) -> None:
+        """Append internal evidence using the existing event journal."""
+        with self.transaction() as con:
+            con.execute('INSERT INTO thunder_events VALUES (?,?,?,?,?)',
+                        (uuid4().hex, entity_id, event_type,
+                         json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                         datetime.now(timezone.utc).isoformat()))
+
+    def reconcile_proven_not_sent(self, snapshot, assisted_snapshot, record):
+        """CAS a service-validated pre-tool failure; never make it retryable."""
+        with self.transaction() as con:
+            current = self.effect(snapshot['id'])
+            row = self.get_state('codex_assisted', snapshot['id'])
+            if (current != snapshot or row != assisted_snapshot or not current
+                    or current['state'] != 'uncertain' or current.get('receipt_ref')
+                    or current.get('lease_owner') or current.get('lease_until')
+                    or current.get('error_code') != 'assisted_receipt_pending'
+                    or not row or row.get('phase') != 'dispatch_issued'
+                    or row.get('manual_reconciliation') or row.get('receipt')):
+                raise RepositoryConflict('proven not sent snapshot changed')
+            if (record.get('schema') != 'internal_operator_receipt_v1'
+                    or record.get('proof', {}).get('job_id') != current['id']
+                    or record.get('job_payload_hash') != payload_hash(current['payload'])
+                    or record.get('dispatch_authorized') is not False
+                    or record.get('retry_write') is not False):
+                raise RepositoryConflict('invalid operator reconciliation record')
+            changed = con.execute("UPDATE thunder_effect_jobs SET state='failed',error_code='proved_not_sent',updated_at=? "
+                                  "WHERE id=? AND state='uncertain' AND updated_at=? AND receipt_ref IS NULL "
+                                  "AND lease_owner IS NULL AND lease_until IS NULL",
+                                  (datetime.now(timezone.utc).isoformat(), current['id'], current['updated_at'])).rowcount
+            if changed != 1:
+                raise RepositoryConflict('proven not sent snapshot changed')
+            self.put_state('codex_assisted', current['id'],
+                           {**row, 'phase': 'proved_not_sent', 'manual_reconciliation': record})
+            self.append_event(current['id'], 'assisted_proved_not_sent',
+                              {'record_hash': payload_hash(record), 'record': record,
+                               'previous_effect': current})
+            return self.effect(current['id'])
+
+    def validate_operator_receipt(self, snapshot, receipt):
+        """Dedicated manual readback; ordinary failed jobs remain ineligible."""
+        if getattr(self._local, 'connection', None) is None:
+            raise RepositoryConflict('reconciliation transaction required')
+        current = self.effect(snapshot['id'])
+        row = self.get_state('codex_assisted', snapshot['id']) or {}
+        record = row.get('manual_reconciliation', {})
+        if (current != snapshot or not current or current.get('lease_owner') or current.get('lease_until')
+                or not ((current['state'] == 'failed' and current.get('error_code') == 'proved_not_sent'
+                         and not current.get('receipt_ref') and row.get('phase') == 'proved_not_sent')
+                        or (current['state'] == 'sent' and current.get('receipt_ref') == receipt
+                            and row.get('phase') == 'confirmed' and row.get('receipt') == receipt))):
+            raise RepositoryConflict('operator receipt snapshot changed')
+        if (record.get('schema') != 'internal_operator_receipt_v1'
+                or record.get('job_payload_hash') != payload_hash(current['payload'])
+                or record.get('proof', {}).get('job_id') != current['id']
+                or not any(event['type'] == 'assisted_proved_not_sent'
+                           and event['payload'].get('record_hash') == payload_hash(record)
+                           for event in self.events(current['id']))):
+            raise RepositoryConflict('operator reconciliation proof missing')
+        if not isinstance(receipt, str) or not re.fullmatch(r'gmail:[A-Za-z0-9_-]{1,200}', receipt):
+            raise RepositoryConflict('invalid operator receipt')
+        if self._local.connection.execute('SELECT id FROM thunder_effect_jobs WHERE receipt_ref IN (?,?) AND id<>?',
+                (receipt, 'email:'+receipt, current['id'])).fetchone():
+            raise RepositoryConflict('receipt already bound')
+        return current
+
+    def confirm_operator_receipt(self, snapshot, receipt):
+        """Observe the operator's sent copy, retaining the terminal failure audit."""
+        with self.transaction() as con:
+            current = self.validate_operator_receipt(snapshot, receipt)
+            if current['state'] == 'sent':
+                return current
+            changed = con.execute("UPDATE thunder_effect_jobs SET state='sent',receipt_ref=?,error_code=NULL,updated_at=? "
+                                  "WHERE id=? AND state='failed' AND error_code='proved_not_sent' AND updated_at=? "
+                                  "AND receipt_ref IS NULL AND lease_owner IS NULL AND lease_until IS NULL",
+                                  (receipt, datetime.now(timezone.utc).isoformat(), current['id'], current['updated_at'])).rowcount
+            if changed != 1:
+                raise RepositoryConflict('operator receipt snapshot changed')
+            self.append_event(current['id'], 'assisted_operator_receipt_confirmed',
+                              {'receipt': receipt, 'attempt_attribution': 'operator_reported',
+                               'manual_record_hash': payload_hash(self.get_state('codex_assisted', current['id'])['manual_reconciliation'])})
+            return self.effect(current['id'])
+
     def validate_uncertain_receipt(self, snapshot, receipt):
         """Preflight under the caller's write transaction before a ledger commit."""
         if getattr(self._local,'connection',None) is None:
