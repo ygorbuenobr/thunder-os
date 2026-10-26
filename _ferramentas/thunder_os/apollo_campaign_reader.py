@@ -8,8 +8,9 @@ response-size/deadline limits and no redirects of apollo_readonly._https_request
 """
 from collections import Counter
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import json
+import hashlib
 import http.client
 import os
 import ssl
@@ -21,7 +22,7 @@ from urllib.parse import urlencode, parse_qs, urlsplit
 
 from .apollo_readonly import _https_request, _integer
 from .apollo_sequence_readonly import (_canonical, _headers, _rpc_response,
-                                       _tool_payload, _ReadError)
+                                       _tool_payload, _ReadError, _json)
 from .contact_history import ContactHistoryReadonly
 from .external_email_import import (APOLLO_SEQUENCE, APOLLO_TEAM, ExternalEmailError,
                                     email, identifier, require, timestamp)
@@ -35,8 +36,19 @@ CAMPAIGN = 'BR-APOLLO-01'
 KIND = 'apollo_reader_snapshot'
 KEY_FILE = '/root/.config/thunder/credentials/apollo_api_key.txt'
 ENABLED_FILE = '/etc/thunder-os/apollo_reader_enabled'
-INTERVAL = 60
-COHORT_TTL = 3600
+INTERVAL = 900
+WAKE_INTERVAL = 60
+SNAPSHOT_TTL = 1800
+COHORT_TTL = 21600
+CONTENT_CACHE_TTL = 86400
+ENDPOINT_MINUTE_LIMIT = 180
+ENDPOINT_HOUR_LIMIT = 350
+ENDPOINT_DAY_LIMIT = 1800
+_ENDPOINTS = frozenset({'profile', 'sequence_search', 'contacts_search', 'messages_search', 'get_content'})
+# Only telemetry known not to affect the original is excluded. Unknown metadata
+# remains bound, so a new provider field cannot silently become cache authority.
+_VOLATILE_METADATA = frozenset({'open_count', 'click_count', 'num_opens', 'num_clicks',
+    'opened', 'clicked', 'last_opened_at', 'last_clicked_at', 'snapshot_at', 'snapshot_timestamp'})
 _AUTO = re.compile(r'^\s*(out of office|automatic reply|auto[ -]?reply|resposta autom[aá]tica|respuesta autom[aá]tica)\b', re.I)
 
 
@@ -119,6 +131,46 @@ def _mcp_https_request(method, path, body, headers, timeout):
         connection.close()
 
 
+def _scope_identity():
+    return {'account_id': APOLLO_TEAM, 'external_campaign_id': APOLLO_SEQUENCE, 'owner_id': OWNER}
+
+
+def _digest(value):
+    return hashlib.sha256(_canonical(value)).hexdigest()
+
+
+def _retry_seconds(headers):
+    pairs = headers.items() if isinstance(headers, dict) else headers
+    if not isinstance(pairs, (list, tuple)):
+        pairs = list(pairs) if isinstance(headers, dict) else []
+    values = [v for k, v in pairs if isinstance(k, str) and k.lower() == 'retry-after']
+    if len(values) == 1 and isinstance(values[0], str) and values[0].isascii() and values[0].isdigit():
+        value = int(values[0]) if len(values[0]) <= 6 else 0
+        return value if 0 < value <= 86400 else None
+    return None
+
+
+def _structured_rate_window(result):
+    """Recognize only the provider's typed error; never inspect legacy prose."""
+    structured, texts = result.get('structuredContent'), []
+    for block in result.get('content', []):
+        require(isinstance(block, dict) and block.get('type') == 'text'
+                and isinstance(block.get('text'), str), 'apollo_mcp_invalid_response')
+        texts.append(_json(block['text']))
+    require(len(texts) <= 1 and (structured is not None or len(texts) == 1), 'apollo_mcp_invalid_response')
+    require(not (structured is not None and texts) or structured == texts[0], 'apollo_mcp_invalid_response')
+    payload = structured if structured is not None else texts[0]
+    if not isinstance(payload, dict):
+        return None
+    details = payload.get('error_details')
+    if not isinstance(details, dict) or details.get('code') != 'USAGE.RATE_LIMIT.API_RATE_LIMIT_EXCEEDED':
+        return None
+    context = details.get('context', payload.get('context'))
+    window = context.get('window') if isinstance(context, dict) else None
+    value = window.get('value') if isinstance(window, dict) else None
+    return value if value in ('minute', 'hour', 'day') else 'unknown'
+
+
 def enabled():
     try:
         return private_text(ENABLED_FILE) == 'read-only-v1'
@@ -173,7 +225,7 @@ class ApolloCampaignReadOnly:
                  max_calls=500, max_pages=180, cohort_ttl=COHORT_TTL):
         require(all(type(v) in (int, float) and math.isfinite(v) for v in
                     (timeout, deadline, cohort_ttl)) and 0 < timeout <= 30
-                and 0 < deadline <= 360 and 3600 <= cohort_ttl <= 3600,
+                and 0 < deadline <= 360 and cohort_ttl == COHORT_TTL,
                 'invalid_reader_bounds')
         require(type(max_calls) is int and 1 <= max_calls <= 1000
                 and type(max_pages) is int and 1 <= max_pages <= 180, 'invalid_reader_bounds')
@@ -186,9 +238,51 @@ class ApolloCampaignReadOnly:
         self.max_calls, self.max_pages, self.cohort_ttl = max_calls, max_pages, cohort_ttl
         self.lock = threading.Lock()
 
+    def _mark_rate_limit(self, window='unknown', retry_seconds=None):
+        self.rate_limited, self.rate_limit_window = True, window
+        seconds = retry_seconds or {'minute': 60, 'hour': 3600, 'day': 86400}.get(window, 3600)
+        self.next_attempt_at = (self.clock() + timedelta(seconds=seconds)).isoformat()
+
+    def _reserve_endpoint(self, endpoint):
+        now = self.clock()
+        entries = self.request_budget['entries'].setdefault(endpoint, [])
+        entries[:] = [stamp for stamp in entries if (now - _date(stamp)).total_seconds() < 86400]
+        hourly = [stamp for stamp in entries if (now - _date(stamp)).total_seconds() < 3600]
+        minute = [stamp for stamp in hourly if (now - _date(stamp)).total_seconds() < 60]
+        if len(entries) >= ENDPOINT_DAY_LIMIT or len(hourly) >= ENDPOINT_HOUR_LIMIT or len(minute) >= ENDPOINT_MINUTE_LIMIT:
+            window = 'day' if len(entries) >= ENDPOINT_DAY_LIMIT else 'hour' if len(hourly) >= ENDPOINT_HOUR_LIMIT else 'minute'
+            anchor = {'day': entries, 'hour': hourly, 'minute': minute}[window][0]
+            self.next_attempt_at = (_date(anchor) + timedelta(seconds={'day': 86400, 'hour': 3600, 'minute': 60}[window])).isoformat()
+            self.endpoint_budget_exhausted = True
+            self.rate_limit_window = window
+            raise ExternalEmailError('apollo_endpoint_budget_exhausted')
+        entries.append(now.isoformat())
+
+    def _load_budget(self, previous):
+        cached = (previous or {}).get('request_budget')
+        if cached is None:
+            return
+        require(isinstance(cached, dict) and cached.get('scope') == _scope_identity()
+                and cached.get('version') == 1 and isinstance(cached.get('entries'), dict)
+                and set(cached['entries']) <= _ENDPOINTS, 'apollo_budget_cache_invalid')
+        now = self.clock()
+        for stamps in cached['entries'].values():
+            require(isinstance(stamps, list) and len(stamps) <= ENDPOINT_DAY_LIMIT,
+                    'apollo_budget_cache_invalid')
+            try:
+                ages = [(now - _date(stamp)).total_seconds() for stamp in stamps]
+                require(all(age >= 0 for age in ages) and ages == sorted(ages, reverse=True),
+                        'apollo_budget_cache_invalid')
+            except (ValueError, TypeError, AttributeError):
+                raise ExternalEmailError('apollo_budget_cache_invalid') from None
+        self.request_budget = deepcopy(cached)
+        for key, stamps in self.request_budget['entries'].items():
+            self.request_budget['entries'][key] = [stamp for stamp in stamps if (now - _date(stamp)).total_seconds() < 86400]
+
     def _budget(self):
         remaining = self.ends - self.monotonic()
         require(not self.rate_limited, 'apollo_rate_limited')
+        require(not self.endpoint_budget_exhausted, 'apollo_endpoint_budget_exhausted')
         require(remaining > 0 and self.calls < self.max_calls, 'apollo_read_budget_exhausted')
         self.calls += 1
         return min(self.timeout, remaining)
@@ -215,14 +309,21 @@ class ApolloCampaignReadOnly:
                      and all(identifier(v) for v in ids) and len(set(ids)) == len(ids))
         require(valid, 'apollo_endpoint_blocked')
         remaining = self._budget()
+        endpoint = ('messages_search' if '/emailer_messages/search?' in path else
+                    'get_content' if path.endswith('/get_content') else
+                    'contacts_search' if path.endswith('/contacts/search') else
+                    'profile' if path.endswith('/api_profile') else 'sequence_search')
+        self._reserve_endpoint(endpoint)
         try:
             token = self.loader()
             require(isinstance(token, str) and 0 < len(token) <= 4096
                     and not any(c.isspace() for c in token), 'credential_unavailable')
-            status, raw = self.request(method, path, body,
+            response = self.request(method, path, body,
                 {'x-api-key': token, 'Content-Type': 'application/json'}, remaining)
+            require(isinstance(response, tuple) and len(response) in (2, 3), 'invalid_response')
+            status, raw = response[:2]
             if status == 429:
-                self.rate_limited = True
+                self._mark_rate_limit(retry_seconds=_retry_seconds(response[2]) if len(response) == 3 else None)
             require(status != 429, 'apollo_rate_limited')
             require(type(status) is int and status == 200, 'apollo_http_error')
             require(isinstance(raw, bytes) and len(raw) <= 1_000_000, 'invalid_response')
@@ -243,6 +344,8 @@ class ApolloCampaignReadOnly:
     def _mcp_call(self, message, expected_id):
         _validate_mcp('POST', '/mcp', message)
         remaining = self._budget()
+        if message.get('method') == 'tools/call':
+            self._reserve_endpoint('messages_search')
         try:
             token = self.loader()
             require(isinstance(token, str) and 0 < len(token) <= 4096 and token.isascii()
@@ -256,7 +359,7 @@ class ApolloCampaignReadOnly:
             status, raw, response_headers = self.mcp_request('POST', '/mcp', message, headers, remaining)
             require(self.monotonic() < self.ends, 'apollo_read_budget_exhausted')
             if status == 429:
-                self.rate_limited = True
+                self._mark_rate_limit(retry_seconds=_retry_seconds(response_headers))
             require(status != 429, 'apollo_rate_limited')
             require(type(status) is int and status == (202 if expected_id is None else 200), 'apollo_mcp_http_error')
             response_headers = _headers(response_headers)
@@ -273,8 +376,8 @@ class ApolloCampaignReadOnly:
                 return None
             return _rpc_response(raw, response_headers.get('content-type', ''), expected_id)
         except ExternalEmailError as exc:
-            if exc.code == 'apollo_rate_limited':
-                self.rate_limited = True
+            if exc.code == 'apollo_rate_limited' and not self.rate_limited:
+                self._mark_rate_limit()
             raise
         except Exception:
             raise ExternalEmailError('apollo_mcp_invalid_response') from None
@@ -294,7 +397,12 @@ class ApolloCampaignReadOnly:
         if sent_only:
             message['params']['arguments']['emailer_message_stats'] = ['sent']
         try:
-            return _tool_payload(self._mcp_call(message, number))
+            result = self._mcp_call(message, number)
+            window = _structured_rate_window(result)
+            if window is not None:
+                self._mark_rate_limit(window)
+                raise ExternalEmailError('apollo_rate_limited')
+            return _tool_payload(result)
         except _ReadError:
             raise ExternalEmailError('apollo_mcp_invalid_response') from None
 
@@ -320,7 +428,9 @@ class ApolloCampaignReadOnly:
                 result['leads'] = members
                 result['cohort_cache'] = deepcopy(cached)
                 result['coverage'].update(contacts_complete=True, contacts_cached=True,
-                    contacts_observed_at=cached['observed_at'], contacts_source_total=cached['source_total'])
+                    contacts_observed_at=cached['observed_at'], contacts_source_total=cached['source_total'],
+                    contacts_age_seconds=(now - _date(cached['observed_at'])).total_seconds(),
+                    contacts_cache_ttl_seconds=self.cohort_ttl, contacts_freshness='cached')
                 return
             except (ExternalEmailError, ValueError, TypeError, KeyError):
                 pass
@@ -351,7 +461,8 @@ class ApolloCampaignReadOnly:
             result['leads'] = deepcopy(members)
             if len(seen) == total:
                 result['coverage'].update(contacts_complete=True, contacts_cached=False,
-                    contacts_observed_at=self.clock().isoformat(), contacts_source_total=total)
+                    contacts_observed_at=self.clock().isoformat(), contacts_source_total=total,
+                    contacts_age_seconds=0, contacts_cache_ttl_seconds=self.cohort_ttl, contacts_freshness='fresh_scan')
                 result['cohort_cache'] = {'account_id': APOLLO_TEAM, 'owner_id': OWNER,
                     'external_campaign_id': APOLLO_SEQUENCE, 'complete': True, 'source_total': total,
                     'observed_at': result['coverage']['contacts_observed_at'], 'members': deepcopy(members)}
@@ -385,6 +496,63 @@ class ApolloCampaignReadOnly:
             item['events'] = []
             members.append(item)
         return members
+
+    @staticmethod
+    def _message_fingerprint(metadata, lead):
+        identity = {key: lead.get(key) for key in ('id', 'email', 'contact_emails', 'membership')}
+        return _digest({'scope': _scope_identity(), 'identity': identity,
+                        'metadata': {k: v for k, v in metadata.items() if k not in _VOLATILE_METADATA}})
+
+    def _cached_message(self, metadata, lead):
+        entry = self.previous_message_cache.get(metadata['id'])
+        if not isinstance(entry, dict):
+            return None
+        try:
+            value = {k: v for k, v in entry.items() if k != 'integrity'}
+            require(entry.get('integrity') == _digest(value)
+                    and entry.get('scope') == _scope_identity()
+                    and entry.get('fingerprint') == self._message_fingerprint(metadata, lead)
+                    and 0 <= (self.clock() - _date(entry['observed_at'])).total_seconds() < CONTENT_CACHE_TTL,
+                    'invalid_message_cache')
+            native, content = entry['native'], entry['content']
+            self._scope(native, message=True)
+            require(native.get('id') == metadata['id'] and native.get('contact_id') == lead['id']
+                    and native.get('status') == metadata.get('status'), 'invalid_message_cache')
+            require(native.get('status') != 'completed' or
+                    isinstance(content, dict) and content.get('id') == native['id'], 'invalid_message_cache')
+            event = self._event(native, content, lead)
+            # Cached mutable status/due values never become fresh observations.
+            if event['event_type'] != 'email_sent':
+                event['occurred_at'] = metadata.get('due_at')
+            event.update(source_observed_at=entry['observed_at'], native_observed_at=entry['observed_at'],
+                         metadata_observed_at=self.clock().isoformat(), content_cached=True)
+            self.message_cache[metadata['id']] = deepcopy(entry)
+            return native, event
+        except (ExternalEmailError, KeyError, ValueError, TypeError, AttributeError):
+            return None
+
+    def _save_message(self, metadata, native, content, lead):
+        value = {'scope': _scope_identity(), 'fingerprint': self._message_fingerprint(metadata, lead),
+                 'native': deepcopy(native), 'content': deepcopy(content), 'observed_at': self.clock().isoformat()}
+        self.message_cache[native['id']] = {**value, 'integrity': _digest(value)}
+
+    def _append_message(self, result, row, event, lead, threads):
+        lead['events'].append(event)
+        self.hydrated_messages[row['id']] = event['event_type']
+        if row.get('status') == 'completed' and event['event_type'] != 'email_sent':
+            result['coverage']['reasons'].append('completed_content_unverified')
+        if row.get('replied') is True:
+            lead['events'].append({**deepcopy(event), 'provider_id': row['id'] + ':reply_signal',
+                'event_type': 'reply_signal', 'text': '', 'content_complete': False,
+                'human_reply': None, 'occurred_at': None, 'receipt': False,
+                'provider_reply_class': row.get('reply_class')})
+            thread = row.get('provider_thread_id')
+            if event['event_type'] == 'email_sent' and email(event['sender']) != MAILBOX:
+                result['coverage']['reasons'].append('gmail_reply_mailbox_unavailable')
+            elif event['event_type'] == 'email_sent' and isinstance(thread, str) and re.fullmatch(r'[a-f0-9]{1,64}', thread):
+                threads.setdefault((lead['id'], thread), []).append(event)
+            else:
+                result['coverage']['reasons'].append('reply_original_unavailable')
 
     def _messages(self, result):
         leads, threads = {row['id']: row for row in result['leads']}, {}
@@ -441,10 +609,23 @@ class ApolloCampaignReadOnly:
                 seen_query.update(page_ids)
                 self.observed_ids.update(page_ids)
                 self.message_contacts.update({row['id']: row['contact_id'] for row in items})
+                for row in items:
+                    self.current_metadata.setdefault(row['id'], row)
                 coverage.update({prefix + '_pages': page, metadata_key: len(seen_query)})
                 # Each native ID is attempted at most once per collection, even
                 # after a read failure; all-query overlap is not a second retry.
-                pending = [row for row in items if row['id'] not in self.native_attempted_ids]
+                pending = []
+                for row in items:
+                    if row['id'] in self.native_attempted_ids:
+                        continue
+                    cached = self._cached_message(row, leads[row['contact_id']])
+                    if cached is not None:
+                        native, event = cached
+                        self.native_attempted_ids.add(row['id'])
+                        self._append_message(result, native, event, leads[row['contact_id']], threads)
+                        coverage['cached_message_count'] = coverage.get('cached_message_count', 0) + 1
+                    else:
+                        pending.append(row)
                 for start in range(0, len(pending), 10):
                     batch = {row['id']: row for row in pending[start:start + 10]}
                     self.native_attempted_ids.update(batch)
@@ -493,23 +674,12 @@ class ApolloCampaignReadOnly:
             except ExternalEmailError as exc:
                 result['coverage']['reasons'].append(exc.code)
                 event = self._event(row, None, lead)
-            lead['events'].append(event)
-            self.hydrated_messages[row['id']] = event['event_type']
-            if row.get('status') == 'completed' and event['event_type'] != 'email_sent':
-                result['coverage']['reasons'].append('completed_content_unverified')
-            if row.get('replied') is True:
-                signal = {**deepcopy(event), 'provider_id': row['id'] + ':reply_signal',
-                    'event_type': 'reply_signal', 'text': '', 'content_complete': False,
-                    'human_reply': None, 'occurred_at': None, 'receipt': False,
-                    'provider_reply_class': row.get('reply_class')}
-                lead['events'].append(signal)
-                thread = row.get('provider_thread_id')
-                if event['event_type'] == 'email_sent' and email(event['sender']) != MAILBOX:
-                    result['coverage']['reasons'].append('gmail_reply_mailbox_unavailable')
-                elif event['event_type'] == 'email_sent' and isinstance(thread, str) and re.fullmatch(r'[a-f0-9]{1,64}', thread):
-                    threads.setdefault((lead['id'], thread), []).append(event)
-                else:
-                    result['coverage']['reasons'].append('reply_original_unavailable')
+            event.update(source_observed_at=self.clock().isoformat(), native_observed_at=self.clock().isoformat(),
+                         metadata_observed_at=self.clock().isoformat(), content_cached=False)
+            # Missing/invalid bodies are not immutable successful content proof.
+            if row.get('status') != 'completed' or event['event_type'] == 'email_sent':
+                self._save_message(self.current_metadata[row['id']], row, contents.get(row['id']), lead)
+            self._append_message(result, row, event, lead, threads)
 
     @staticmethod
     def _event(meta, content, lead):
@@ -598,6 +768,47 @@ class ApolloCampaignReadOnly:
             if (thread.get('complete') is not True or thread.get('truncated') is not False
                     or thread.get('coverage', {}).get('reasons') != []):
                 result['coverage']['reasons'].append('gmail_thread_partial')
+            original_ids = {original['provider_message_id'] for original in originals}
+            if anchors:
+                # A later SENT message can address a real thread participant
+                # rather than the enrolled contact. Resolve it only after the
+                # exact original anchor, and only via earlier inbound identities.
+                participants = {}
+                for raw, incoming in pairs:
+                    if incoming and incoming['direction'] == 'incoming' and incoming['date']:
+                        for _, address in getaddresses([_text(raw.get('from'))]):
+                            address = address.lower()
+                            when = _date(incoming['date'])
+                            participants[address] = min(participants.get(address, when), when)
+                expanded = []
+                for raw, event in pairs:
+                    if event is None and participants:
+                        candidate = ContactHistoryReadonly._gmail_event(raw, thread_id, set(participants))
+                        if candidate and candidate['direction'] == 'outgoing' and candidate['date']:
+                            recipients = {address.lower() for field in ('to', 'cc', 'bcc')
+                                          for _, address in getaddresses([_text(raw.get(field))])}
+                            if any(address in participants and participants[address] <= _date(candidate['date'])
+                                   for address in recipients):
+                                event = candidate
+                    expanded.append((raw, event))
+                pairs = expanded
+                for raw, event in pairs:
+                    if not event or event['direction'] != 'outgoing' or raw['id'] in original_ids:
+                        continue
+                    require(event['date'], 'gmail_context_date_unverified')
+                    lead['events'].append({'provider_id': raw['id'], 'provider': 'gmail',
+                        'gmail_message_id': raw['id'], 'provider_message_id': raw['id'],
+                        'provider_thread_id': thread_id, 'event_type': 'thread_message_observed',
+                        'direction': 'outgoing', 'sender': MAILBOX, 'subject': event['subject'],
+                        'text': event['text'], 'occurred_at': event['date'],
+                        'content_complete': event['body_complete'], 'context_only': True,
+                        'receipt_eligible': False, 'receipt': False, 'human_reply': None,
+                        'source_association': 'thread_context', 'lead_email': None, 'ref_sent': None,
+                        'source_url': event['source_url'], 'account_id': MAILBOX,
+                        'external_campaign_id': APOLLO_SEQUENCE,
+                        'source': {'provider': 'gmail', 'account_id': MAILBOX,
+                            'campaign_id': CAMPAIGN, 'external_campaign_id': APOLLO_SEQUENCE,
+                            'provider_id': raw['id']}})
             found = False
             for raw, event in pairs:
                 if not event or event['direction'] != 'incoming':
@@ -676,10 +887,31 @@ class ApolloCampaignReadOnly:
     def collect(self, previous=None):
         require(self.lock.acquire(blocking=False), 'apollo_reader_busy')
         try:
+            if isinstance(previous, dict):
+                reasons = previous.get('coverage', {}).get('reasons', [])
+                limited = (previous.get('error_code') in ('apollo_rate_limited', 'apollo_endpoint_budget_exhausted')
+                           or any(code in reasons for code in ('apollo_rate_limited', 'apollo_endpoint_budget_exhausted')))
+                try:
+                    remaining = (_date(previous['next_attempt_at']) - self.clock()).total_seconds()
+                    if limited and 0 < remaining <= 86400 and all(previous.get(k) == v for k, v in _scope_identity().items()):
+                        held = deepcopy(previous)
+                        held['coverage'].update(complete=False, provider_requests=0, cooldown_active=True)
+                        if isinstance(held.get('metrics'), dict):
+                            held['metrics']['complete'] = False
+                        return held
+                except (KeyError, ValueError, TypeError):
+                    pass
+
             self.calls, self.ends = 0, self.monotonic() + self.deadline
             self.rate_limited, self.mcp_session, self.observed_ids = False, None, set()
             self.native_attempted_ids, self.hydrated_messages, self.message_contacts = set(), {}, {}
             self.gmail_rate_limited = False
+            self.endpoint_budget_exhausted = False
+            self.next_attempt_at, self.rate_limit_window = None, None
+            self.request_budget = {'version': 1, 'scope': _scope_identity(), 'entries': {}}
+            old_cache = (previous or {}).get('message_cache', {})
+            self.previous_message_cache = old_cache if isinstance(old_cache, dict) else {}
+            self.message_cache, self.current_metadata = {}, {}
             self._gmail = self.gmail
             if isinstance(self.gmail, SEQDClient):
                 original = self.gmail
@@ -702,6 +934,7 @@ class ApolloCampaignReadOnly:
                     'scope': 'literal_sequence_members_and_scoped_messages', 'atomic_snapshot': False},
                 'leads': [], 'metrics': None}
             try:
+                self._load_budget(previous)
                 profile = self._call('GET', '/api/v1/users/api_profile')
                 require(profile.get('team_id') == APOLLO_TEAM, 'apollo_team_mismatch')
                 require(identifier(profile.get('id')), 'apollo_profile_id_invalid')
@@ -735,6 +968,13 @@ class ApolloCampaignReadOnly:
                 cov['contents_complete'] = False
             cov['complete'] = cov['contacts_complete'] and cov['messages_complete'] and not cov['reasons']
             cov['provider_requests'] = self.calls
+            cov['endpoint_budget'] = {'minute_limit': ENDPOINT_MINUTE_LIMIT, 'hour_limit': ENDPOINT_HOUR_LIMIT, 'day_limit': ENDPOINT_DAY_LIMIT,
+                'basis': 'local_reader_only_other_clients_unmeasured',
+                'used_day': {key: len(values) for key, values in self.request_budget['entries'].items()}}
+            result.update(message_cache=self.message_cache,
+                          request_budget=deepcopy((previous or {}).get('request_budget')) if 'apollo_budget_cache_invalid' in cov['reasons'] else self.request_budget,
+                          next_attempt_at=self.next_attempt_at or (self.clock() + timedelta(seconds=INTERVAL)).isoformat(),
+                          rate_limit_window=self.rate_limit_window)
             for lead in result['leads']:
                 lead['events'].sort(key=lambda e: (e.get('occurred_at') or '', e['provider_id']))
             counts = Counter(e['event_type'] for lead in result['leads'] for e in lead['events'])
@@ -746,6 +986,42 @@ class ApolloCampaignReadOnly:
             return result
         finally:
             self.lock.release()
+
+
+def _retain_observations(previous, data):
+    """Union by fixed lead identity and provider ID; no implied provider deletion."""
+    merged = deepcopy(data['leads'])
+    by_id = {lead['id']: lead for lead in merged}
+    for old in previous.get('leads', []):
+        current = by_id.get(old['id'])
+        if current is None:
+            merged.append(deepcopy(old))
+            continue
+        if current.get('email') != old.get('email'):
+            # Cross-identity merges cannot borrow originals. Keep prior identity
+            # visibly historical; the new mismatch stays in partial coverage.
+            current.clear()
+            current.update(deepcopy(old))
+            continue
+        events = {(e.get('provider'), e.get('provider_id')): e for e in current.get('events', [])}
+        for event in old.get('events', []):
+            key = (event.get('provider'), event.get('provider_id'))
+            new = events.get(key)
+            if new is None:
+                current.setdefault('events', []).append(deepcopy(event))
+            elif event.get('content_complete') and event.get('event_type') == 'email_sent':
+                # A partial provider-status projection cannot retract prior proof.
+                new.clear()
+                new.update(deepcopy(event))
+    for lead in merged:
+        lead['events'].sort(key=lambda e: (e.get('occurred_at') or '', e['provider_id']))
+    counts = Counter(e['event_type'] for lead in merged for e in lead.get('events', []))
+    metrics = {'observed_leads': len(merged), 'sent_messages': counts['email_sent'],
+        'human_replies': counts['reply_received'], 'automatic_replies': counts['auto_reply_received'],
+        'unclassified_replies': counts['unclassified_reply'], 'reply_signals': counts['reply_signal'],
+        'third_party_replies': counts['third_party_reply'], 'complete': False,
+        'membership_statuses': dict(Counter(lead.get('membership_status') or 'unknown' for lead in merged))}
+    return merged, metrics
 
 
 class ApolloCampaignReader:
@@ -763,6 +1039,12 @@ class ApolloCampaignReader:
         try:
             previous = self.repo.get_state(KIND, CAMPAIGN) or {}
             now = self.clock()
+            if previous.get('next_attempt_at'):
+                try:
+                    if 0 < (_date(previous['next_attempt_at']) - now).total_seconds() <= 86400:
+                        return
+                except (ValueError, TypeError):
+                    pass
             if previous.get('last_attempt_at') and 0 <= (now - _date(previous['last_attempt_at'])).total_seconds() < INTERVAL:
                 return
             try:
@@ -775,21 +1057,21 @@ class ApolloCampaignReader:
                     state['error_code'] = next(iter(data['coverage'].get('reasons', [])), 'incomplete_source')
                     # Failure never renews a successful observation or cached cohort.
                     state['last_success_at'] = previous.get('last_success_at')
+                    if previous.get('message_cache'):
+                        state['message_cache'] = {**deepcopy(previous['message_cache']), **state.get('message_cache', {})}
                     if 'cohort_cache' not in state and previous.get('cohort_cache'):
                         state['cohort_cache'] = deepcopy(previous['cohort_cache'])
-                    fresh_contacts = (data['coverage'].get('contacts_complete') is True
-                                      and data['coverage'].get('contacts_cached') is False)
-                    has_events = any(lead.get('events') for lead in data.get('leads', []))
-                    if previous.get('leads') and not fresh_contacts and not has_events:
-                        # collect() reports failures as partial data, not exceptions.
-                        # Cache-only members are not a new observation of events.
-                        for key in ('leads', 'metrics', 'observed_at', 'last_success_at'):
-                            state[key] = deepcopy(previous.get(key))
-                        state['status'] = 'error'
+                    if previous.get('leads'):
+                        state['leads'], state['metrics'] = _retain_observations(previous, data)
+                        source_fresh = (data['coverage'].get('contacts_complete') is True
+                                        and data['coverage'].get('messages_complete') is True)
+                        state['observed_at'] = data.get('observed_at') if source_fresh else previous.get('observed_at')
+                        state['status'] = 'partial' if any(lead.get('events') for lead in data.get('leads', [])) else 'error'
                         state['coverage']['retained_observation'] = True
                         state['coverage']['retained_observed_at'] = previous.get('observed_at')
-                        if isinstance(state.get('metrics'), dict):
-                            state['metrics']['complete'] = False
+                        state['partial_observation'] = {'observed_at': data.get('observed_at'),
+                            'leads_observed': len(data.get('leads', [])),
+                            'events_observed': sum(len(lead.get('events', [])) for lead in data.get('leads', []))}
 
             except Exception as exc:
                 state = deepcopy(previous)
@@ -808,6 +1090,7 @@ class ApolloCampaignReader:
             'last_success_at': None, 'observed_at': None, 'poll_interval_seconds': INTERVAL,
             'campaign_id': CAMPAIGN, 'account_id': APOLLO_TEAM, 'owner_id': OWNER,
             'external_campaign_id': APOLLO_SEQUENCE,
+            'next_attempt_at': None, 'rate_limit_window': None, 'partial_observation': None,
             'coverage': {'complete': False, 'contacts_complete': False, 'messages_complete': False,
                          'sent_messages_complete': False, 'sent_messages_total': None},
             'metrics': None, 'leads': [], 'error_code': None, 'stale': False,
@@ -818,7 +1101,7 @@ class ApolloCampaignReader:
                 result[key] = deepcopy(state[key])
             observed = result.get('observed_at')
             try:
-                result['stale'] = not observed or not 0 <= (self.clock() - _date(observed)).total_seconds() <= 180
+                result['stale'] = not observed or not 0 <= (self.clock() - _date(observed)).total_seconds() <= SNAPSHOT_TTL
             except (ValueError, TypeError):
                 result['stale'] = True
             if result['status'] in ('partial', 'error'):
@@ -841,7 +1124,7 @@ class ApolloCampaignReader:
                     self.refresh()
                 except Exception:
                     pass
-                self.stop_event.wait(INTERVAL)
+                self.stop_event.wait(WAKE_INTERVAL)
         self.thread = threading.Thread(target=run, name='apollo-read-only', daemon=True)
         self.thread.start()
 

@@ -124,6 +124,168 @@ class JourneyTests(unittest.TestCase):
             self.assertEqual(self.stage(result, 'abordagem')['items'], [])
             self.assertIsNone(result['metrics']['reached']['value'])
 
+    def apollo_context(self, *, include_last=True):
+        from thunder_os.external_email_import import APOLLO_TEAM, APOLLO_SEQUENCE
+        self.register('BR-APOLLO-01')
+        events = [{'provider_id': 'apollo-original', 'provider': 'apollo',
+            'provider_message_id': 'abc21', 'event_type': 'email_sent', 'direction': 'outgoing',
+            'sender': MAILBOX, 'occurred_at': '2026-10-21T12:00:00Z', 'text': 'Original 21\nLast line.',
+            'subject': 'Thread subject', 'content_complete': True,
+            'source_url': 'https://app.apollo.io/#/contacts/apollo-context'}]
+        for day, outgoing, text in ((22, False, 'Fernanda original 22'),
+                                    (23, True, 'Ygor original 23\nLiteral last line.'),
+                                    (26, False, 'Fernanda original 26')):
+            if day == 26 and not include_last:
+                continue
+            events.append({'provider_id': 'abc' + str(day), 'provider': 'gmail',
+                'gmail_message_id': 'abc' + str(day), 'provider_message_id': 'abc' + str(day),
+                'provider_thread_id': 'def123', 'event_type': 'thread_message_observed' if outgoing else 'third_party_reply',
+                'direction': 'outgoing' if outgoing else 'incoming',
+                'sender': MAILBOX if outgoing else 'fernanda@example.invalid',
+                'occurred_at': f'2026-10-{day}T12:00:00Z', 'text': text, 'subject': 'Thread subject',
+                'content_complete': True, 'context_only': True, 'receipt_eligible': False,
+                'human_reply': None, 'receipt': False, 'source_association': 'thread_context'})
+            events[-1]['source_url'] = 'https://mail.google.com/mail/u/' + MAILBOX + '/#all/def123'
+        data = {'enabled': True, 'status': 'ok', 'account_id': APOLLO_TEAM,
+            'campaign_id': 'BR-APOLLO-01', 'external_campaign_id': APOLLO_SEQUENCE,
+            'observed_at': '2026-10-26T13:00:00Z', 'last_success_at': '2026-10-26T13:00:00Z',
+            'coverage': {'complete': True}, 'leads': [{'id': 'apollo-context', 'name': 'Context buyer',
+                'email': PEER, 'company': 'Fixture', 'membership_status': 'active', 'events': events}]}
+        self.adapter.apollo = SimpleNamespace(snapshot=lambda: deepcopy(data))
+        return data, events
+
+    def test_apollo_context_four_messages_keep_original_sender_and_latest_incoming(self):
+        _, events = self.apollo_context()
+        before = self.database()
+        value = self.adapter.snapshot('BR-APOLLO-01')
+        self.assertEqual(len(value['timeline']['events']), 4)
+        self.assertEqual([e['date'][:10] for e in value['timeline']['events']],
+                         ['2026-10-21', '2026-10-22', '2026-10-23', '2026-10-26'])
+        item, = self.stage(value, 'resposta')['items']
+        self.assertEqual(item['date'][:10], '2026-10-26')
+        detail = self.adapter.detail(item['id'], 'BR-APOLLO-01')
+        self.assertEqual([b['text'] for b in detail['blocks']], ['Original 21\nLast line.',
+            'Fernanda original 22', 'Ygor original 23\nLiteral last line.', 'Fernanda original 26'])
+        self.assertEqual([b['sender'] for b in detail['blocks']],
+                         [MAILBOX, 'fernanda@example.invalid', MAILBOX, 'fernanda@example.invalid'])
+        self.assertIn('contexto', detail['blocks'][2]['label'])
+        self.assertEqual(value['metrics']['reached']['value'], 1)
+        self.assertIsNone(value['metrics']['replied']['value'])
+        self.assertFalse(detail['approval_available'])
+        for timeline, original in zip(value['timeline']['events'], events):
+            source = self.adapter.detail(timeline['detail_id'], 'BR-APOLLO-01')['source_links']
+            self.assertEqual([link['url'] for link in source], [original['source_url']])
+        self.assertEqual(self.database(), before)
+
+    def test_apollo_context_last_outgoing_removes_earlier_inbound_pending(self):
+        self.apollo_context(include_last=False)
+        value = self.adapter.snapshot('BR-APOLLO-01')
+        self.assertEqual(self.stage(value, 'resposta')['items'], [])
+        item, = self.stage(value, 'abordagem')['items']
+        self.assertEqual(item['date'][:10], '2026-10-23')
+        self.assertEqual(value['timeline']['events'][-1]['label'], 'Voce')
+        self.assertNotIn('original não confirmado', item['summary'])
+
+    def test_apollo_context_dedup_aliases_and_context_never_create_receipts_or_humans(self):
+        data, events = self.apollo_context()
+        first = self.adapter.snapshot('BR-APOLLO-01')
+        original_context = {**deepcopy(events[2]), 'provider_id': 'abc21', 'gmail_message_id': 'abc21',
+            'provider_message_id': 'abc21', 'occurred_at': events[0]['occurred_at'], 'text': events[0]['text']}
+        data['leads'][0]['events'] = [original_context, *events, *deepcopy(events)]
+        repeated = self.adapter.snapshot('BR-APOLLO-01')
+        self.assertEqual(repeated['timeline'], first['timeline'])
+        self.assertEqual(repeated['metrics'], first['metrics'])
+        item, = self.stage(repeated, 'resposta')['items']
+        self.assertEqual(len(self.adapter.detail(item['id'], 'BR-APOLLO-01')['blocks']), 4)
+        data['leads'][0]['events'] = [deepcopy(events[2])]
+        data['leads'][0]['events'][0].update(receipt=True, human_reply=True)
+        context = self.adapter.snapshot('BR-APOLLO-01')
+        self.assertIsNone(context['metrics']['reached']['value'])
+        self.assertEqual(context['metrics']['reached']['coverage']['observed_count'], 0)
+        self.assertIsNone(context['metrics']['replied']['value'])
+        last = context['timeline']['events'][-1]
+        self.assertNotIn('sent_email_audits', self.adapter.detail(last['detail_id'], 'BR-APOLLO-01'))
+
+    def test_apollo_retained_error_and_expired_cache_keep_dates_and_unhealthy_source(self):
+        data, _ = self.apollo_context()
+        data.update(status='error', observed_at='2026-10-26T12:00:00Z',
+                    last_success_at='2026-10-26T12:00:00Z', last_attempt_at='2026-10-26T12:01:00Z',
+                    error_code='apollo_rate_limited', cooldown_until='2026-10-26T13:00:00Z',
+                    next_attempt_at='2026-10-26T13:00:00Z', rate_limit_window='hour')
+        data['coverage'].update(retained_observation=True, complete=True)
+        before = self.database()
+        for status in ('error', 'stale'):
+            data['status'] = status
+            value = self.adapter.snapshot('BR-APOLLO-01')
+            self.assertEqual(len(value['timeline']['events']), 4)
+            source = next(s for s in value['sources'] if s['id'] == 'apollo_cache')
+            self.assertEqual(source['status'], status)
+            self.assertEqual(source['observed_at'], '2026-10-26T12:00:00Z')
+            self.assertEqual(source['last_success_at'], '2026-10-26T12:00:00Z')
+            self.assertEqual(source['collected_at'], '2026-10-26T12:00:00Z')
+            self.assertEqual(source['last_attempt_at'], '2026-10-26T12:01:00Z')
+            self.assertEqual(source['error_code'], 'apollo_rate_limited')
+            self.assertEqual(source['cooldown_until'], '2026-10-26T13:00:00Z')
+            self.assertEqual(source['next_attempt_at'], '2026-10-26T13:00:00Z')
+            self.assertEqual(source['rate_limit_window'], 'hour')
+            self.assertFalse(source['coverage']['complete'])
+            self.assertNotEqual(self.stage(value, 'resposta')['status'], 'ok')
+            self.assertTrue(any('Apollo' in row['message'] for row in value['log']))
+        self.assertEqual(self.database(), before)
+        data['status'] = 'error'
+        for field, value in (('coverage', {'complete': False}), ('observed_at', None),
+                             ('observed_at', 'invalid date')):
+            wrong = deepcopy(data);wrong[field] = value
+            self.adapter.apollo = SimpleNamespace(snapshot=lambda wrong=wrong: deepcopy(wrong))
+            hidden = self.adapter.snapshot('BR-APOLLO-01')
+            self.assertEqual(self.stage(hidden, 'resposta')['items'], [])
+            self.assertIsNone(hidden['metrics']['reached']['value'])
+
+    def test_apollo_context_invalid_scope_and_partial_messages_never_gain_authority(self):
+        data, events = self.apollo_context()
+        contextual = events[2]
+        for field, invalid in (('context_only', False), ('receipt_eligible', True),
+                               ('provider', 'apollo'), ('direction', 'incoming')):
+            old = contextual[field]
+            contextual[field] = invalid
+            value = self.adapter.snapshot('BR-APOLLO-01')
+            self.assertEqual(len(value['timeline']['events']), 3, field)
+            self.assertEqual(value['metrics']['reached']['value'], 1, field)
+            contextual[field] = old
+        data['coverage'].update(complete=False, reasons=['gmail_thread_partial'])
+        contextual['content_complete'] = False
+        partial = self.adapter.snapshot('BR-APOLLO-01')
+        item, = self.stage(partial, 'resposta')['items']
+        self.assertEqual(len(partial['timeline']['events']), 4)
+        detail = self.adapter.detail(item['id'], 'BR-APOLLO-01')
+        self.assertEqual(detail['blocks'][2]['text'], 'Ygor original 23\nLiteral last line.')
+        self.assertFalse(detail['blocks'][2]['body_complete'])
+        self.assertFalse(detail['approval_available'])
+        self.assertNotEqual(self.stage(partial, 'resposta')['status'], 'ok')
+        self.assertIsNone(partial['metrics']['replied']['value'])
+        data.update(status='error')
+        data['coverage']['retained_observation'] = True
+        for field in ('account_id', 'external_campaign_id', 'campaign_id'):
+            old = data[field]
+            data[field] = 'wrong-scope'
+            hidden = self.adapter.snapshot('BR-APOLLO-01')
+            self.assertEqual(hidden['timeline']['events'], [], field)
+            data[field] = old
+
+    def test_apollo_context_source_links_cannot_target_another_contact_or_write_route(self):
+        _, events = self.apollo_context()
+        invalid_urls = ('https://app.apollo.io/#/contacts/another-contact',
+                        '/api/os/v1/cadences/dispatch', 'javascript:alert(1)',
+                        'https://mail.google.com.evil.invalid/mail/u/fixture/#all/def123')
+        for invalid in invalid_urls:
+            for event in events:
+                event['source_url'] = invalid
+            value = self.adapter.snapshot('BR-APOLLO-01')
+            for event in value['timeline']['events']:
+                urls = [link['url'] for link in self.adapter.detail(event['detail_id'], 'BR-APOLLO-01')['source_links']]
+                self.assertNotIn(invalid, urls)
+                self.assertTrue(all(url.startswith('https://app.apollo.io/#/sequences/') for url in urls))
+
     def mail_threads(self):
         result = {'status': 'ok', 'respond': [], 'do': []}
         for row in self.rows:

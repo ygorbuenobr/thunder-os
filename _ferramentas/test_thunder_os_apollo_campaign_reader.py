@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlsplit
 
 from thunder_os.apollo_campaign_reader import (ApolloCampaignReadOnly, ApolloCampaignReader,
-    APOLLO_SEQUENCE, APOLLO_TEAM, OWNER, CAMPAIGN, KIND, KEY_FILE, SEQUENCE_PATH, enabled, _validate_mcp, _mcp_https_request, _MCP_INITIALIZE)
+    APOLLO_SEQUENCE, APOLLO_TEAM, OWNER, CAMPAIGN, KIND, KEY_FILE, SEQUENCE_PATH, enabled, _validate_mcp, _mcp_https_request, _MCP_INITIALIZE, INTERVAL, SNAPSHOT_TTL, COHORT_TTL, _scope_identity, ENDPOINT_MINUTE_LIMIT, ENDPOINT_HOUR_LIMIT, ENDPOINT_DAY_LIMIT)
 from thunder_os.external_email_import import ExternalEmailError
 from thunder_os.seqd_client import MAILBOX, SEQDClient
 
@@ -119,7 +119,8 @@ class FakeMCPTransport:
             result = {'structuredContent': {'pagination': {'page': str(page), 'per_page': '100',
                 'total_entries': len(source), 'total_pages': (len(source)+99)//100},
                 'emailer_messages': [{k: v for k, v in row.items() if k in {
-                    'id', 'contact_id', 'emailer_campaign_id', 'status', 'replied'}} for row in rows]}}
+                    'id', 'contact_id', 'emailer_campaign_id', 'status', 'replied', 'completed_at', 'delivered', 'bounced', 'variant',
+                    'open_count', 'click_count', 'snapshot_timestamp', 'opened', 'clicked'}} for row in rows]}}
         raw = json.dumps({'jsonrpc': '2.0', 'id': body['id'], 'result': result}).encode()
         if self.sse:
             raw = b': heartbeat\n\nevent: message\ndata: '+raw+b'\n\n'
@@ -280,16 +281,16 @@ class ReaderTests(unittest.TestCase):
         self.assertFalse(any(p.endswith('contacts/search') for _, p, _, _ in self.wire.calls))
         self.assertIsNone(self.make().collect()['leads'][0]['title'])
 
-    def test_cohort_cache_one_hour_then_rescan_and_scope_check(self):
+    def test_cohort_cache_six_hours_then_rescan_and_scope_check(self):
         reader = self.make()
         previous = reader.collect()
-        previous['cohort_cache']['observed_at'] = (NOW-timedelta(minutes=59)).isoformat()
+        previous['cohort_cache']['observed_at'] = (NOW-timedelta(hours=5, minutes=59)).isoformat()
         self.wire.calls.clear()
         data = reader.collect(previous)
         self.assertTrue(data['coverage']['contacts_cached'])
         self.assertFalse(any(p.endswith('contacts/search') for _, p, _, _ in self.wire.calls))
         self.assertEqual(data['coverage']['contacts_observed_at'], previous['cohort_cache']['observed_at'])
-        for change in ({'observed_at': (NOW-timedelta(hours=1)).isoformat()}, {'account_id': 'other'}, {'complete': False}):
+        for change in ({'observed_at': (NOW-timedelta(hours=6)).isoformat()}, {'account_id': 'other'}, {'complete': False}):
             old = deepcopy(previous)
             old['cohort_cache'].update(change)
             self.wire.calls.clear()
@@ -1003,7 +1004,7 @@ class CacheTests(unittest.TestCase):
     def test_stale_snapshot_explicit_and_cannot_preserve_complete(self):
         self.reader.refresh()
         self.repo.get_state.return_value = self.repo.put_state.call_args.args[2]
-        self.now += timedelta(seconds=181)
+        self.now += timedelta(seconds=1801)
         data = self.reader.snapshot()
         self.assertEqual(data['status'], 'stale')
         self.assertTrue(data['stale'])
@@ -1016,7 +1017,7 @@ class CacheTests(unittest.TestCase):
         self.reader.refresh()
         self.assertEqual(self.provider.collect.call_count, 1)
         self.reader.lock.acquire()
-        self.now += timedelta(seconds=61)
+        self.now += timedelta(seconds=901)
         self.reader.refresh()
         self.assertEqual(self.provider.collect.call_count, 1)
         self.reader.lock.release()
@@ -1025,7 +1026,7 @@ class CacheTests(unittest.TestCase):
         self.reader.refresh()
         old = self.repo.put_state.call_args.args[2]
         self.repo.get_state.return_value = old
-        self.now += timedelta(seconds=61)
+        self.now += timedelta(seconds=901)
         self.provider.collect.side_effect = RuntimeError('PRIVATE')
         self.reader.refresh()
         new = self.repo.put_state.call_args.args[2]
@@ -1051,7 +1052,7 @@ class CacheTests(unittest.TestCase):
                 repo.get_state.return_value = old
                 wire.calls.clear()
                 mcp.calls.clear()
-                self.now += timedelta(seconds=61)
+                self.now += timedelta(seconds=901)
                 if stage == 'profile':
                     wire.override = lambda *args: (429, b'{}')
                 else:
@@ -1072,7 +1073,7 @@ class CacheTests(unittest.TestCase):
                 self.assertEqual(len(wire.calls), 1 if stage == 'profile' else 2)
                 self.assertEqual(len(mcp.calls), 0 if stage == 'profile' else 3)
                 repo.get_state.return_value = failed
-                self.now += timedelta(seconds=181)
+                self.now += timedelta(seconds=1801)
                 snapshot = reader.snapshot()
                 self.assertTrue(snapshot['stale'])
                 self.assertEqual(snapshot['status'], 'stale')
@@ -1088,6 +1089,273 @@ class CacheTests(unittest.TestCase):
         self.provider.collect.side_effect = collect
         self.reader.refresh()
         self.repo.put_state.assert_not_called()
+
+
+class S47Tests(unittest.TestCase):
+    def setUp(self):
+        self.now = NOW
+        self.wire = Wire()
+        self.mcp = FakeMCPTransport(self.wire)
+        self.provider = ApolloCampaignReadOnly(lambda: 'fake', request=self.wire,
+            mcp_request=self.mcp, clock=lambda: self.now)
+        network = patch('socket.socket', side_effect=AssertionError('network forbidden'))
+        network.start()
+        self.addCleanup(network.stop)
+
+    def reset_calls(self):
+        self.wire.calls.clear()
+        self.mcp.calls.clear()
+
+    def test_structured_text_error_recognizes_minute_hour_day_and_persists_restart_cooldown(self):
+        for window, seconds in (('minute', 60), ('hour', 3600), ('day', 86400)):
+            with self.subTest(window=window):
+                self.mcp.calls.clear()
+                def limited(method, path, body, headers, timeout):
+                    if body['method'] != 'tools/call': return None
+                    payload = {'error_details': {'code': 'USAGE.RATE_LIMIT.API_RATE_LIMIT_EXCEEDED',
+                                                'context': {'window': {'value': window}}}}
+                    result = {'isError': False, 'content': [{'type': 'text', 'text': json.dumps(payload)}]}
+                    return 200, json.dumps({'jsonrpc': '2.0', 'id': body['id'], 'result': result}).encode(), {'Content-Type': 'application/json'}
+                self.mcp.override = limited
+                data = self.provider.collect()
+                self.assertEqual(data['coverage']['reasons'], ['apollo_rate_limited'])
+                self.assertEqual(data['rate_limit_window'], window)
+                self.assertEqual(data['next_attempt_at'], (self.now+timedelta(seconds=seconds)).isoformat())
+                self.assertEqual(len([c for c in self.mcp.calls if c[2]['method'] == 'tools/call']), 1)
+                repo, transport = Mock(), Mock(side_effect=AssertionError('must not call provider'))
+                data.update(last_attempt_at=self.now.isoformat(), error_code='apollo_rate_limited')
+                repo.get_state.return_value = data
+                restarted = ApolloCampaignReader(repo, transport, enable_check=lambda: True, clock=lambda: self.now)
+                restarted.refresh()
+                transport.collect.assert_not_called()
+                snapshot = restarted.snapshot()
+                self.assertEqual(snapshot['next_attempt_at'], data['next_attempt_at'])
+                self.assertEqual(snapshot['poll_interval_seconds'], 900)
+                # Direct provider users also respect the persisted typed cooldown.
+                self.reset_calls()
+                self.provider.collect(previous=data)
+                self.assertEqual(self.wire.calls, [])
+                self.assertEqual(self.mcp.calls, [])
+
+    def test_legacy_error_text_does_not_guess_hour_and_native_retry_after_uses_verified_deadline(self):
+        self.wire.override = lambda *args: (200, b'not-json USAGE.RATE_LIMIT.API_RATE_LIMIT_EXCEEDED hour')
+        invalid = self.provider.collect()
+        self.assertIsNone(invalid['rate_limit_window'])
+        self.assertEqual(invalid['next_attempt_at'], (self.now+timedelta(seconds=900)).isoformat())
+        self.assertNotIn('apollo_rate_limited', invalid['coverage']['reasons'])
+        self.now = datetime(2026, 10, 26, 21, 53, 51, tzinfo=timezone.utc)
+        self.wire.override = lambda *args: (429, b'{}', {'Retry-After': '1606'})
+        limited = self.provider.collect()
+        self.assertEqual(limited['next_attempt_at'], '2026-10-26T22:20:37+00:00')
+        repo, fake = Mock(), Mock()
+        limited['last_attempt_at'] = self.now.isoformat()
+        repo.get_state.return_value = limited
+        reader = ApolloCampaignReader(repo, fake, enable_check=lambda: True, clock=lambda: self.now)
+        self.now = datetime(2026, 10, 26, 22, 20, 36, tzinfo=timezone.utc)
+        reader.refresh()
+        fake.collect.assert_not_called()
+        self.now += timedelta(seconds=1)
+        fake.collect.return_value = invalid
+        reader.refresh()
+        fake.collect.assert_called_once()
+
+    def test_repeated_461_metadata_unchanged_calls_eleven_and_retains_proof_date(self):
+        self.wire.messages = ([metadata('m'+str(i)) for i in range(193)]
+                              + [metadata('q'+str(i), status='scheduled') for i in range(268)])
+        self.wire.contents = [content('m'+str(i)) for i in range(193)]
+        first = self.provider.collect()
+        self.assertTrue(first['coverage']['complete'])
+        first_proof = first['leads'][0]['events'][0]['source_observed_at']
+        self.now += timedelta(seconds=900)
+        self.reset_calls()
+        second = self.provider.collect(previous=first)
+        self.assertTrue(second['coverage']['complete'])
+        self.assertEqual(len(self.wire.calls)+len(self.mcp.calls), 11)
+        self.assertEqual(second['coverage']['cached_message_count'], 461)
+        self.assertTrue(second['coverage']['contacts_cached'])
+        self.assertEqual(second['coverage']['contacts_age_seconds'], 900)
+        self.assertEqual(second['coverage']['contacts_cache_ttl_seconds'], 21600)
+        event = second['leads'][0]['events'][0]
+        self.assertEqual(event['source_observed_at'], first_proof)
+        self.assertEqual(event['metadata_observed_at'], self.now.isoformat())
+        self.assertTrue(event['content_cached'])
+        self.assertFalse(any('/emailer_messages/search?' in p or p.endswith('get_content') for _, p, _, _ in self.wire.calls))
+
+    def test_volatile_opens_reuse_but_reply_or_variant_change_forces_new_native_proof(self):
+        first = self.provider.collect()
+        self.now += timedelta(seconds=900)
+        self.wire.messages[0].update(open_count=99, click_count=3, opened=True, snapshot_timestamp=self.now.isoformat())
+        self.reset_calls()
+        reused = self.provider.collect(previous=first)
+        self.assertEqual(len(self.wire.calls), 2)
+        self.assertEqual(reused['leads'][0]['events'][0]['source_observed_at'], NOW.isoformat())
+        self.now += timedelta(seconds=900)
+        self.wire.messages[0]['variant'] = 'changed-body-variant'
+        self.reset_calls()
+        changed = self.provider.collect(previous=reused)
+        self.assertEqual(len([p for _, p, _, _ in self.wire.calls if '/emailer_messages/search?' in p]), 1)
+        self.assertEqual(changed['leads'][0]['events'][0]['source_observed_at'], self.now.isoformat())
+        self.now += timedelta(seconds=900)
+        self.wire.messages[0]['replied'] = True
+        self.reset_calls()
+        replied = self.provider.collect(previous=changed)
+        self.assertEqual(len([p for _, p, _, _ in self.wire.calls if '/emailer_messages/search?' in p]), 1)
+        self.assertEqual(replied['metrics']['reply_signals'], 1)
+
+    def test_invalid_cache_integrity_identity_and_expiry_require_readback(self):
+        first = self.provider.collect()
+        for damage in ('body', 'scope', 'digest', 'expiry'):
+            with self.subTest(damage=damage):
+                old = deepcopy(first)
+                entry = old['message_cache']['message-1']
+                if damage == 'body': entry['content']['body'] = 'corrupted'
+                elif damage == 'scope': entry['scope']['account_id'] = 'wrong'
+                elif damage == 'digest': entry['integrity'] = 'invalid'
+                else: self.now = NOW+timedelta(days=1)
+                self.reset_calls()
+                result = self.provider.collect(previous=old)
+                self.assertEqual(result['metrics']['sent_messages'], 1)
+                self.assertEqual(len([p for _, p, _, _ in self.wire.calls if '/emailer_messages/search?' in p]), 1)
+                self.assertEqual(next(e['text'] for e in result['leads'][0]['events'] if e['event_type'] == 'email_sent'), content()['body'])
+                self.now = NOW
+
+    def test_per_endpoint_minute_hour_day_budget_blocks_before_tool_and_survives_cache(self):
+        base = self.provider.collect()
+        for window, limit, age in (('minute', ENDPOINT_MINUTE_LIMIT, 0),
+                                   ('hour', ENDPOINT_HOUR_LIMIT, 61), ('day', ENDPOINT_DAY_LIMIT, 3601)):
+            old = deepcopy(base)
+            old['request_budget']['entries']['messages_search'] = [(self.now-timedelta(seconds=age)).isoformat()]*limit
+            self.reset_calls()
+            result = self.provider.collect(previous=old)
+            self.assertIn('apollo_endpoint_budget_exhausted', result['coverage']['reasons'])
+            self.assertEqual(result['rate_limit_window'], window)
+            self.assertFalse(any(c[2]['method'] == 'tools/call' for c in self.mcp.calls))
+            self.assertFalse(any('/emailer_messages/search?' in p for _, p, _, _ in self.wire.calls))
+            self.assertEqual(len(result['request_budget']['entries']['messages_search']), limit)
+        bad = deepcopy(base)
+        bad['request_budget']['scope']['account_id'] = 'other'
+        self.reset_calls()
+        invalid = self.provider.collect(previous=bad)
+        self.assertEqual(invalid['coverage']['reasons'], ['apollo_budget_cache_invalid'])
+        self.assertEqual(invalid['request_budget'], bad['request_budget'])
+        self.assertEqual(self.wire.calls, [])
+
+    def test_four_real_shaped_thread_messages_include_outgoing_to_fernanda_context_only(self):
+        native = '2026-10-22T17:25:51.542+00:00'
+        reported = '2026-10-22T17:25:51+00:00'
+        original = gmail_message(internal_date='1792689950000')
+        fernanda1 = gmail_message('abc2', outgoing=False, sender='fernanda@example.invalid',
+                                 internal_date='1792690000000')
+        followup = gmail_message('abc3', to='fernanda@example.invalid',
+            internal_date='1792771200000', bodies={'text': 'Actual Ygor 23/10 followup'})
+        fernanda2 = gmail_message('abc4', outgoing=False, sender='fernanda@example.invalid',
+            bodies={'text': 'Actual Fernanda 26/10 incoming'})
+        gmail = Mock(spec=['conversation'])
+        gmail.conversation.return_value = thread([original, fernanda1, followup, fernanda2])
+        self.provider.gmail = gmail
+        self.wire.messages = [metadata(completed_at=native, replied=True)]
+        self.wire.contents = [content(sent_at=reported)]
+        data = self.provider.collect()
+        events = data['leads'][0]['events']
+        actual = [e for e in events if e['event_type'] != 'reply_signal']
+        self.assertEqual(len(actual), 4)
+        out = next(e for e in events if e['provider_id'] == 'abc3')
+        self.assertEqual(out['event_type'], 'thread_message_observed')
+        self.assertEqual(out['text'], followup['bodies']['text'])
+        self.assertEqual(out['direction'], 'outgoing')
+        self.assertTrue(out['context_only'])
+        self.assertFalse(out['receipt_eligible'])
+        self.assertFalse(out['receipt'])
+        self.assertIsNone(out['human_reply'])
+        self.assertIsNone(out['lead_email'])
+        self.assertIsNone(out['ref_sent'])
+        self.assertEqual(out['source_association'], 'thread_context')
+        self.assertEqual(data['metrics']['sent_messages'], 1)
+        self.assertEqual(data['metrics']['human_replies'], 0)
+        self.assertEqual(data['metrics']['third_party_replies'], 2)
+        self.assertEqual(len({(e['provider'], e['provider_id']) for e in events}), len(events))
+        self.now += timedelta(seconds=900)
+        gmail.conversation.return_value = thread([original, fernanda1, followup, fernanda2], complete=False, truncated=True)
+        repeated = self.provider.collect(previous=data)
+        self.assertIn('gmail_thread_partial', repeated['coverage']['reasons'])
+        self.assertEqual(len([e for e in repeated['leads'][0]['events'] if e['provider_id'] == 'abc3']), 1)
+        self.assertEqual(repeated['metrics']['sent_messages'], 1)
+
+    def test_partial_one_of_two_then_error_keeps_both_originals_and_old_observation_date(self):
+        self.wire.messages = [metadata('m1'), metadata('m2')]
+        self.wire.contents = [content('m1'), content('m2')]
+        repo = Mock()
+        repo.get_state.return_value = None
+        reader = ApolloCampaignReader(repo, self.provider, enable_check=lambda: True, clock=lambda: self.now)
+        reader.refresh()
+        old = deepcopy(repo.put_state.call_args.args[2])
+        self.assertEqual(old['metrics']['sent_messages'], 2)
+        self.now += timedelta(seconds=900)
+        partial = deepcopy(old)
+        partial['leads'][0]['events'] = partial['leads'][0]['events'][:1]
+        partial['metrics']['sent_messages'] = 1
+        partial['observed_at'] = self.now.isoformat()
+        partial['coverage'].update(complete=False, messages_complete=False, reasons=['apollo_rate_limited'])
+        partial['next_attempt_at'] = (self.now+timedelta(seconds=900)).isoformat()
+        fake = Mock()
+        fake.collect.return_value = partial
+        reader.provider = fake
+        repo.get_state.return_value = old
+        reader.refresh()
+        retained = deepcopy(repo.put_state.call_args.args[2])
+        self.assertEqual(retained['metrics']['sent_messages'], 2)
+        self.assertEqual(len(retained['leads'][0]['events']), 2)
+        self.assertEqual(retained['observed_at'], old['observed_at'])
+        self.assertFalse(retained['coverage']['complete'])
+        self.assertEqual(retained['partial_observation']['observed_at'], self.now.isoformat())
+        self.now += timedelta(seconds=900)
+        repo.get_state.return_value = retained
+        fake.collect.side_effect = RuntimeError('unavailable')
+        reader.refresh()
+        failed = repo.put_state.call_args.args[2]
+        self.assertEqual(failed['metrics']['sent_messages'], 2)
+        self.assertEqual(failed['observed_at'], old['observed_at'])
+        self.assertEqual(failed['leads'], old['leads'])
+
+    def test_fresh_source_partial_reply_advances_metadata_date_but_not_body_proof(self):
+        repo = Mock()
+        repo.get_state.return_value = None
+        reader = ApolloCampaignReader(repo, self.provider, enable_check=lambda: True, clock=lambda: self.now)
+        reader.refresh()
+        old = deepcopy(repo.put_state.call_args.args[2])
+        self.now += timedelta(seconds=1800)
+        self.wire.messages[0]['replied'] = True
+        gmail = Mock(spec=['conversation'])
+        gmail.conversation.return_value = thread([gmail_message(bodies={'text': 'different literal'}),
+                                                  gmail_message('abc2', outgoing=False)])
+        self.provider.gmail = gmail
+        repo.get_state.return_value = old
+        reader.refresh()
+        fresh = repo.put_state.call_args.args[2]
+        self.assertTrue(fresh['coverage']['contacts_complete'])
+        self.assertTrue(fresh['coverage']['messages_complete'])
+        self.assertFalse(fresh['coverage']['complete'])
+        self.assertEqual(fresh['observed_at'], self.now.isoformat())
+        original = next(e for e in fresh['leads'][0]['events'] if e['event_type'] == 'email_sent')
+        self.assertEqual(original['source_observed_at'], old['leads'][0]['events'][0]['source_observed_at'])
+        repo.get_state.return_value = fresh
+        self.assertFalse(reader.snapshot()['stale'])
+
+    def test_daemon_wakes_sixty_seconds_without_using_ui_poll_as_source_cadence(self):
+        repo = Mock()
+        provider = Mock()
+        reader = ApolloCampaignReader(repo, provider, enable_check=lambda: True, clock=lambda: self.now)
+        reader.refresh = Mock()
+        reader.stop_event = Mock()
+        reader.stop_event.is_set.side_effect = [False, True]
+        with patch('thunder_os.apollo_campaign_reader.threading.Thread') as factory:
+            reader.start()
+            factory.call_args.kwargs['target']()
+        reader.refresh.assert_called_once()
+        reader.stop_event.wait.assert_called_once_with(60)
+        self.assertEqual(INTERVAL, 900)
+        self.assertEqual(SNAPSHOT_TTL, 1800)
+        self.assertEqual(COHORT_TTL, 21600)
 
 
 if __name__ == '__main__':

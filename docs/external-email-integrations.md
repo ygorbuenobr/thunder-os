@@ -473,3 +473,29 @@ legacy SEQD web/Redis, fabricate a NOTE, or swap credentials to bypass this.
 Once EMAIL permission is genuinely available, run one existing-contact canary,
 read back its EMAIL and association, then repeat the exact run and verify zero
 new activities before any broader reconciliation.
+
+## S47 — Bounded Apollo observation and thread context
+
+The authenticated panel refreshes its local cache every 60 seconds. The source
+reader polls Apollo every 15 minutes and reuses unchanged, identity-bound message
+originals. A full contact-cohort scan is cached for six hours; its actual source
+observation time remains visible, and newer enrollments may not yet be included.
+This is not fresh execution eligibility or permission to reconcile the entire CRM.
+The observed plan has per-endpoint limits of 400/hour and 2,000/day. Structured
+rate errors stop collection and persist a cooldown; they are never accepted as
+message data or hidden as an empty successful result. Limits are team-wide, so
+other consumers can still exhaust the shared allowance. See the official
+[rate-limit contract](https://docs.apollo.io/reference/rate-limits).
+
+Gmail messages sent by the operator later in the same verified thread are
+contextual observations only. They retain their own original text, sender,
+direction and date. They do not create an Apollo receipt, prove delivery,
+classify a reply as human, or authorize a HubSpot write. The chronology includes
+both incoming and outgoing context, preventing an older reply from looking
+unanswered after the operator has replied. Partial/stale coverage remains explicit.
+
+Later on 26 October, EMAIL.write became AVAILABLE after reconnection. The
+single-contact canary created EMAIL 119622191791 for existing contact
+245796657779; canonical readback and a second identical reconciliation confirmed
+one activity and zero additional writes. This historical canary does not enable
+the periodic writer or authorize a second contact. S47 performs no CRM writes.
