@@ -181,6 +181,8 @@ body[data-aba="agentes"] [data-painel]:not([data-painel~="agentes"]),
 body[data-aba="sistema"] [data-painel]:not([data-painel~="sistema"]){display:none}
 body[data-aba="agentes"] .detalhes-sistema{display:none}
 body[data-aba="cadencias"] .detalhes-sistema{display:none}
+/* Coverage limitations may contain long identifiers; wrap them without truncating the text. */
+#cad-read-coverage,#cad-read-detail{overflow-wrap:anywhere}
 .cad-read-head{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap}
 .cad-read-table-wrap{overflow-x:auto;max-width:100%;margin:16px 0 28px}
 .cad-read-table{border-collapse:collapse;width:100%;font-size:14px}

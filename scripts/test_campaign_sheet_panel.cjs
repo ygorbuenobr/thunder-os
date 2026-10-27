@@ -1,4 +1,9 @@
-// Offline source/DOM harness. No network, browser, backend or provider execution.
+// Default: offline source/DOM checks; no browser dependency.
+//   node scripts/test_campaign_sheet_panel.cjs
+// Add --browser for the 390px layout regression (requires Playwright + installed Chromium).
+// Use the project's available Playwright installation; on this Mac the bundled runtime is:
+//   NODE_PATH=/Users/ygorbueno/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules node scripts/test_campaign_sheet_panel.cjs --browser
+// Browser fixtures are synthetic and all requests are intercepted; no server or credentials needed.
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
@@ -67,6 +72,70 @@ vm.runInContext(sourceBetween('function mostrarAba(aba,', 'function iniciarAbas(
 vm.runInContext(sourceBetween('function estadoEfeitoHumano(status)', 'function variantesHTML(it)'), ctx);
 const render = id => ctx.cadCampaignSheetHTML(id);
 const noWrites = markup => assert.doesNotMatch(markup, /<(?:button|input|textarea|form|select|a)\b|data-os-approve=/i);
+
+// Use the real panel/renderers: a DOM stub cannot detect text escaping its layout box.
+async function checkCadenceMobileOverflow() {
+  const {chromium} = require('playwright');
+  const limitation = 'search_is_eventually_consistent_and_excludes_archived_records';
+  const message = 'Mensagem sintética completa.\n\nSegundo parágrafo preservado.';
+  const snapshot = {read_only: true, collected_at: '2026-10-27T12:00:00Z',
+    coverage: {complete: false, limitations: [limitation]}, today: {},
+    campaigns: [{id: 'SYNTHETIC', metrics: {contacts: 1, pending: 1}, tasks: [{
+      title: 'Toque sintético', contact_ids: ['123'], campaign: 'SYNTHETIC',
+      channel: 'linkedin', outcome: 'blocked', reason: 'OPERATIONAL_HOLD'
+    }]}]};
+  const timeline = {contact_name: 'Contato sintético', coverage: snapshot.coverage,
+    events: [{subject: 'Toque sintético', outcome: 'blocked', text: message}]};
+  const browser = await chromium.launch({headless: true});
+  try {
+    const page = await browser.newPage({viewport: {width: 390, height: 844}});
+    const errors = [];
+    page.on('pageerror', error => errors.push(error.message));
+    await page.clock.install();
+    await page.route('**/*', route => {
+      const request = route.request(), url = new URL(request.url());
+      assert.equal(url.origin, 'http://campaign-sheet.test', 'no external requests');
+      assert.equal(request.method(), 'GET', 'read-only fixture must not write');
+      if (url.pathname === '/') return route.fulfill({contentType: 'text/html',
+        body: html.replaceAll("/*MODO*/'artifact'", "'servidor'").replaceAll('/*DADOS*/{}', '{}')});
+      const responses = {
+        '/api/os/v1/panel-capabilities': {legacy_mutations: false},
+        '/api/os/v1/campaign-sheets': envelope([record]),
+        '/api/os/v1/cadencias': snapshot,
+        '/api/os/v1/cadencias/contacts/123': timeline
+      };
+      return route.fulfill({contentType: 'application/json', body: JSON.stringify(responses[url.pathname] || {})});
+    });
+    await page.goto('http://campaign-sheet.test/#cadencias');
+    await page.locator('button[data-aba="cadencias"]').click();
+    await page.waitForFunction(() => document.querySelector('#cad-read-coverage') &&
+      !document.querySelector('#cad-read-refresh').disabled);
+    await page.locator('[data-cad-sheet="SYNTHETIC"] + details > summary').click();
+    await page.locator('#cad-read-campaigns [data-cad-contact="123"]').click();
+    await page.waitForFunction(() => document.querySelector('#cad-read-events pre'));
+    assert.equal(await page.locator('#cad-read-detail-status').textContent(), 'Histórico parcial. ' + limitation);
+    assert.equal(await page.locator('#cad-read-events pre').textContent(), message);
+    const coverage = page.locator('#cad-read-coverage');
+    for (const open of [false, true]) {
+      if (open) await coverage.locator('summary').click();
+      assert.equal(await coverage.locator('li').textContent(), limitation, 'full limitation preserved');
+      assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+        `Cadências 390px: no document overflow with coverage ${open ? 'open' : 'closed'}`);
+    }
+    const table = await page.locator('#cad-read-campaigns .cad-read-table-wrap').first().evaluate(element => {
+      element.scrollLeft = element.scrollWidth;
+      return {client: element.clientWidth, scroll: element.scrollWidth, left: element.scrollLeft,
+        overflow: getComputedStyle(element).overflowX};
+    });
+    assert.equal(table.overflow, 'auto');
+    assert(table.client <= 390 && table.scroll > table.client && table.left > 0,
+      'wide table stays contained and can scroll internally');
+    assert.deepEqual(errors, []);
+    console.log('PASS Cadências 390px: long coverage/timeline limitations wrap; full text and internal table scroll preserved');
+  } finally {
+    await browser.close();
+  }
+}
 
 (async () => {
   assert.match(render('SYNTHETIC'), /Carregando ficha/);
@@ -212,4 +281,5 @@ const noWrites = markup => assert.doesNotMatch(markup, /<(?:button|input|textare
   }
   for (const script of html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)) new vm.Script(script[1]);
   console.log('PASS approval: incomplete/stale hide confirmation, backend labels escaped, steps/receipts retained; inline scripts parse');
+  if (process.argv.includes('--browser')) await checkCadenceMobileOverflow();
 })().catch(error => { console.error(error); process.exitCode = 1; });
