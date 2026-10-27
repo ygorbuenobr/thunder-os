@@ -1,6 +1,7 @@
 """Synthetic provider tests. No real credential, network, database or CRM write."""
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -26,6 +27,26 @@ def task(identifier="1", title="LinkedIn: convite", contact="100", **changes):
              "hs_task_sequence_step_enrollment_contact_id": contact}
     props.update(changes)
     return {"id": identifier, "properties": props}
+
+
+def operational_task(identifier='71', *, footer='', **changes):
+    """Synthetic operational contract; no account-specific prospect data."""
+    meta = {'campaign': 'Mexico2027-networking', 'version': 'mexico-piloto-apollo-v1',
+            'contact_id': '456', 'deal_id': '789', 'step': 'L2', 'channel': 'linkedin',
+            'sender': 'Loa Tujholke', 'account_id': '6ad640ba6e465bee3a2d9350',
+            'recipient': 'https://www.linkedin.com/in/synthetic-person',
+            'text': 'Texto sintético completo.\n\nContexto público.\n\nAproximação.',
+            'outreach_authorized': False, 'COPY_APPROVAL_PENDING': True,
+            'OPERATIONAL_HOLD': True}
+    meta.update(changes)
+    meta.setdefault('body_sha256', hashlib.sha256(meta['text'].encode()).hexdigest())
+    payload = ((meta.get('subject', '') + '\n') if meta['channel'] == 'email' else '') + meta['text']
+    meta.setdefault('payload_sha256', hashlib.sha256(payload.encode()).hexdigest())
+    return task(identifier, title='[PILOTO · NÃO ENVIAR] Mexico2027-networking · Conta sintética · L2 · Loa',
+                hs_task_body=json.dumps(meta, ensure_ascii=False) + footer,
+                hs_task_status='WAITING', hs_task_sequence_id=None,
+                hs_task_sequence_step_enrollment_id=None,
+                hs_task_sequence_step_enrollment_contact_id=None)
 
 
 class Provider:
@@ -74,6 +95,147 @@ class Provider:
 
 
 class ProjectionTests(unittest.TestCase):
+    def test_operational_json_task_projects_without_legacy_title(self):
+        for footer in ('', '\n\nRodapé sem autoridade.'):
+            for version in ('mexico-piloto-apollo-v1', 'mexico-luna-20261026-v1'):
+                row = project_task(operational_task(footer=footer, version=version),
+                                   associated_contact_ids=['456'], association_complete=True)
+                self.assertEqual((row['campaign'], row['touch'], row['channel']),
+                                 ('Mexico2027-networking', 'L2', 'linkedin'))
+                self.assertEqual(row['source_kind'], 'operational_json')
+                self.assertEqual(row['contact_ids'], ['456'])
+                self.assertEqual(row['link_status'], 'linked')
+                self.assertEqual(row['operational_contract']['sender'], 'Loa Tujholke')
+        invitation = operational_task(step='L1', text='')
+        self.assertTrue(project_task(invitation, associated_contact_ids=['456'],
+                                     association_complete=True)['operational_contract']['valid'])
+
+    def test_operational_json_identity_mismatch_is_not_linked(self):
+        for ids, complete, expected in [([], True, 'sem_vinculo'),
+                                       (['999'], True, 'unverified'),
+                                       (['456', '999'], True, 'unverified'),
+                                       (['456'], False, 'unverified')]:
+            row = project_task(operational_task(), associated_contact_ids=ids,
+                               association_complete=complete)
+            self.assertEqual(row['contact_ids'], ids)
+            self.assertEqual(row['link_status'], expected)
+            self.assertIsNone(row['receipt'])
+            self.assertFalse(row['execution_authorized'])
+
+    def test_operational_json_flags_never_authorize_execution(self):
+        for flags, code in [({'COPY_APPROVAL_PENDING': True, 'OPERATIONAL_HOLD': False}, 'COPY_APPROVAL_PENDING'),
+                            ({'COPY_APPROVAL_PENDING': False, 'OPERATIONAL_HOLD': True}, 'OPERATIONAL_HOLD'),
+                            ({'COPY_APPROVAL_PENDING': False, 'OPERATIONAL_HOLD': False,
+                              'STOP_HUMAN_REPLY': True}, 'STOP_HUMAN_REPLY'),
+                            ({'COPY_APPROVAL_PENDING': False, 'OPERATIONAL_HOLD': False,
+                              'outreach_authorized': True}, None)]:
+            row = project_task(operational_task(**flags), associated_contact_ids=['456'], association_complete=True)
+            self.assertTrue(row['read_only'])
+            self.assertFalse(row['execution_authorized'])
+            self.assertEqual(row['approval_status'], 'unknown')
+            self.assertFalse(row['retry_allowed'])
+            self.assertIsNone(row['receipt'])
+            if code:
+                self.assertIn(code, row['retention_reasons'])
+                self.assertEqual(row['outcome'], 'blocked')
+
+    def test_operational_json_invalid_hash_or_sender_is_unverified(self):
+        valid_routes = [dict(channel='email', step='E1', sender='Ygor Bueno',
+                             account_id='ygor.bueno@thundermustard.com',
+                             recipient='person@synthetic.invalid', subject='Pauta sintética'),
+                        dict(channel='email', step='E3', sender='Ygor Bueno',
+                             account_id='ygor.bueno@thundermustard.com',
+                             recipient='person@synthetic.invalid', subject='Pauta sintética'),
+                        dict(sender='Ygor Bueno', account_id='6abe5fc087213e2040fb9b1b'), {}]
+        for route in valid_routes:
+            row = project_task(operational_task(**route), associated_contact_ids=['456'], association_complete=True)
+            self.assertTrue(row['operational_contract']['valid'])
+        for patch in [dict(body_sha256='0' * 64), dict(payload_sha256='1' * 64),
+                      dict(account_id='wrong-account'), dict(sender='Ygor Bueno'),
+                      dict(channel='whatsapp'), dict(version='arbitrary-v1'),
+                      dict(step='E1'), dict(step='E4'), dict(contact_id='not-a-contact'),
+                      dict(OPERATIONAL_HOLD='false')]:
+            row = project_task(operational_task(**patch), associated_contact_ids=['456'], association_complete=True)
+            self.assertEqual(row['link_status'], 'unverified')
+            self.assertEqual(row['outcome'], 'unverified')
+            self.assertIsNone(row['receipt'])
+            self.assertFalse(row['execution_authorized'])
+        # A valid object in a footer must not repair a malformed first object.
+        record = operational_task()
+        original = record['properties']['hs_task_body']
+        record['properties']['hs_task_body'] = '{"campaign":"Mexico2027-networking", invalid}\n' + original
+        row = project_task(record, associated_contact_ids=['456'], association_complete=True)
+        self.assertEqual(row['outcome'], 'unverified')
+        self.assertFalse(row['operational_contract']['valid'])
+        record['properties']['hs_task_body'] = original[:-1] + ',"campaign":"Mexico2027-networking"}'
+        self.assertEqual(project_task(record, associated_contact_ids=['456'], association_complete=True)['outcome'],
+                         'unverified')
+        record['properties']['hs_task_body'] = original.replace('Texto sintético completo.', r'\ud800')
+        invalid = project_task(record, associated_contact_ids=['456'], association_complete=True)
+        self.assertEqual(invalid['outcome'], 'unverified')
+        json.dumps(invalid, ensure_ascii=False).encode('utf-8')
+        record['properties']['hs_task_body'] = original.replace('Texto sintético completo.', chr(0xd800))
+        invalid = project_task(record, associated_contact_ids=['456'], association_complete=True)
+        self.assertEqual(invalid['outcome'], 'unverified')
+        json.dumps(invalid, ensure_ascii=False).encode('utf-8')
+        for field, value in [('channel', []), ('account_id', {}), ('step', []),
+                             ('recipient', {}), ('sender', []), ('version', [])]:
+            meta = json.loads(original)
+            meta[field] = value
+            record['properties']['hs_task_body'] = json.dumps(meta)
+            invalid = project_task(record, associated_contact_ids=['456'], association_complete=True)
+            self.assertEqual(invalid['outcome'], 'unverified')
+            json.dumps(invalid, ensure_ascii=False).encode('utf-8')
+        # Neither a declared receipt nor a second object in the footer is proof.
+        record['properties']['hs_task_body'] = original + '\n{"state":"sent","receipt":"fake"}'
+        self.assertIsNone(project_task(record, associated_contact_ids=['456'], association_complete=True)['receipt'])
+        # Arbitrary JSON or an embedded/HTML object is not a new campaign authority.
+        for body in ('{"campaign":"ARBITRARY","text":"x"}', '<pre>' + original + '</pre>'):
+            record['properties']['hs_task_subject'] = 'Unrecognized task'
+            record['properties']['hs_task_body'] = body
+            self.assertIsNone(project_task(record))
+
+    def test_operational_json_linkedin_unicode_preserves_identity_and_rejects_url_extras(self):
+        for recipient in ('https://www.linkedin.com/in/sintético-martínez',
+                          'https://www.linkedin.com/in/sinte\u0301tico-marti\u0301nez/',
+                          'https://www.linkedin.com/in/sint%C3%A9tico-mart%C3%ADnez',
+                          'http://linkedin.com/in/sint%C3%A9tico-123/'):
+            record = operational_task(recipient=recipient)
+            raw = record['properties']['hs_task_body']
+            row = project_task(record, associated_contact_ids=['456'], association_complete=True)
+            self.assertTrue(row['operational_contract']['valid'], recipient)
+            self.assertEqual(row['operational_contract']['recipient'], recipient)
+            self.assertEqual(record['properties']['hs_task_body'], raw)
+        for recipient in ('https://www.linkedin.com/in/a b',
+                          'https://www.linkedin.com/in/a\nb',
+                          'https://www.linkedin.com/in/a\u200bb',
+                          'https://www.linkedin.com/in/a/b',
+                          'https://www.linkedin.com/in/a%2Fb',
+                          'https://www.linkedin.com/in/a%5Cb',
+                          'https://www.linkedin.com/in/a%20b',
+                          'https://www.linkedin.com/in/a%00b',
+                          'https://www.linkedin.com/in/a%ZZ',
+                          'https://www.linkedin.com/in/a%FF',
+                          'https://www.linkedin.com/in/\ud800',
+                          'https://www.linkedin.com/in/a%ED%A0%80',
+                          'https://www.linkedin.com/in/a?q=1',
+                          'https://www.linkedin.com/in/a?',
+                          'https://www.linkedin.com/in/a#fragment',
+                          'https://www.linkedin.com/in/a#',
+                          'https://user@www.linkedin.com/in/a',
+                          'https://www.linkedin.com:443/in/a',
+                          'https://www.linkedin.com:/in/a',
+                          'https://www.linkedin.com.evil.invalid/in/a',
+                          'https://www.linkedin.com/company/a',
+                          'https://www.linkedin.com/in/a//'):
+            record = operational_task(recipient=recipient)
+            row = project_task(record, associated_contact_ids=['456'], association_complete=True)
+            self.assertFalse(row['operational_contract']['valid'], repr(recipient))
+            self.assertEqual(row['outcome'], 'unverified')
+            self.assertIn('OPERATIONAL_RECIPIENT_INVALID', row['retention_reasons'])
+            self.assertFalse(row['execution_authorized'])
+            json.dumps(row, ensure_ascii=False).encode('utf-8')
+
     def test_actor_bracket_preserves_exact_touch_without_establishing_identity(self):
         for actor in ('YGOR','LOA'):
             record=task(title=f'[MX27-MTY][{actor}][E2] Empresa | EMAIL',
@@ -167,6 +329,61 @@ class ProjectionTests(unittest.TestCase):
 
 
 class AdapterTests(unittest.TestCase):
+    def test_operational_json_timeline_exposes_copy_without_raw_metadata(self):
+        provider = Provider()
+        text = 'Hola, persona sintética.\n\nEl literal <b> conserva palabras y puntuación.\n\nSin CTA.'
+        controlled = '  Literal <script>data</script>\x00\nBearer synthetic-token\npassword=synthetic-password\n'
+        provider.tasks = [operational_task(text=text), operational_task('72', step='L1', text=''),
+                          operational_task('73', text='No verificar esta copy.', body_sha256='0' * 64),
+                          operational_task('74', text=controlled)]
+        provider.task_links = {ident: ['456'] for ident in ('71', '72', '73', '74')}
+        timeline = self.make_console(provider).timeline('456', 'Mexico2027-networking')
+        events = {row['id']: row for row in timeline['events'] if row['type'] == 'task'}
+        self.assertEqual(events['tasks:71']['text'], text)
+        self.assertEqual(events['tasks:72']['text'], 'Convite sem nota')
+        self.assertEqual(events['tasks:73']['text'], '')
+        self.assertEqual(events['tasks:73']['outcome'], 'unverified')
+        self.assertIn('OPERATIONAL_HASH_INVALID', events['tasks:73']['reason'])
+        self.assertEqual(events['tasks:74']['text'],
+                         '  Literal <script>data</script>\nBearer [REDACTED]\npassword=[REDACTED]\n')
+        for event in events.values():
+            self.assertEqual(event['source_kind'], 'operational_json')
+            self.assertEqual(event['sender'], 'Loa Tujholke')
+            self.assertEqual(event['account_id'], '6ad640ba6e465bee3a2d9350')
+            self.assertIn(event['step'], ('L1', 'L2'))
+            self.assertIn('"campaign": "Mexico2027-networking"', event['audit_body'])
+            self.assertNotIn('"contact_id"', event['text'])
+            self.assertFalse(event['execution_authorized'])
+        self.assertTrue(events['tasks:71']['copy_payload_verified'])
+        self.assertTrue(events['tasks:72']['copy_payload_verified'])
+        self.assertFalse(events['tasks:73']['copy_payload_verified'])
+
+    def test_operational_json_snapshot_resolves_and_deduplicates(self):
+        provider = Provider()
+        waiting = operational_task()
+        completed = operational_task('72')
+        completed['properties']['hs_task_status'] = 'COMPLETED'
+        provider.tasks = [waiting, deepcopy(waiting), completed]
+        provider.task_links = {'71': ['456'], '72': ['456']}
+        console = self.make_console(provider)
+        first, second = console.snapshot(), console.snapshot()
+        self.assertEqual(first, second)
+        group = first['campaigns'][0]
+        self.assertEqual(group['id'], 'Mexico2027-networking')
+        self.assertEqual([r['id'] for r in group['tasks']], ['71', '72'])
+        self.assertTrue(all(r['link_status'] == 'linked' for r in group['tasks']))
+        self.assertEqual(group['tasks'][1]['outcome'], 'completed_without_receipt')
+        self.assertIsNone(group['tasks'][1]['receipt'])
+        self.assertEqual(group['metrics']['observed_completed_with_receipt'], 0)
+        association_calls = [b for _, path, b in provider.calls if path == '/crm/v4/associations/tasks/contacts/batch/read']
+        self.assertEqual(len(association_calls), 1)
+        self.assertEqual({v['id'] for v in association_calls[0]['inputs']}, {'71', '72'})
+        timeline = console.timeline('456', 'Mexico2027-networking')
+        self.assertEqual(len([r for r in timeline['events'] if r['type'] == 'task']), 2)
+        self.assertTrue(all(not r['execution_authorized'] for r in timeline['events'] if r['type'] == 'task'))
+        self.assertTrue(all(method == 'GET' or path.endswith(('/search', '/batch/read'))
+                            for method, path, _ in provider.calls))
+
     def make_console(self, provider=None, **kwargs):
         tick = [0.0]
         def advance(seconds):

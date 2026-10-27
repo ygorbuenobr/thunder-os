@@ -17,6 +17,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 import http.client
+import hashlib
 import json
 import os
 import re
@@ -24,7 +25,8 @@ import sqlite3
 import ssl
 import threading
 import time
-from urllib.parse import urlencode
+import unicodedata
+from urllib.parse import urlencode, unquote, urlsplit
 from zoneinfo import ZoneInfo
 
 from .approvals import ApprovalError
@@ -134,6 +136,146 @@ def _date(value):
         return None
 
 
+OPERATIONAL_CAMPAIGN = 'Mexico2027-networking'
+_OPERATIONAL_VERSION = re.compile(r'mexico-(?:piloto-apollo-v[1-9][0-9]*|luna-[A-Za-z0-9][A-Za-z0-9._-]{0,90})')
+_OPERATIONAL_ACCOUNT = {
+    ('email', 'ygor.bueno@thundermustard.com'): 'Ygor Bueno',
+    ('linkedin', '6abe5fc087213e2040fb9b1b'): 'Ygor Bueno',
+    ('linkedin', '6ad640ba6e465bee3a2d9350'): 'Loa Tujholke',
+}
+
+
+def _operational_profile(value):
+    """Validate a LinkedIn URL without normalizing its identity or hash input."""
+    if (not isinstance(value, str) or not value or '?' in value or '#' in value
+            or any(c.isspace() or unicodedata.category(c).startswith('C') for c in value)):
+        return False
+    try:
+        parsed = urlsplit(value)
+        if (parsed.scheme not in ('http', 'https')
+                or parsed.netloc.lower() not in ('linkedin.com', 'www.linkedin.com')
+                or parsed.query or parsed.fragment or not parsed.path.startswith('/in/')):
+            return False
+        slug = parsed.path[4:]
+        if slug.endswith('/'):
+            slug = slug[:-1]
+        if not slug or re.search(r'%(?![0-9A-Fa-f]{2})', slug):
+            return False
+        decoded = unquote(slug, encoding='utf-8', errors='strict')
+        return bool(decoded) and all(c in '-_' or unicodedata.category(c)[0] in 'LNM'
+                                     for c in decoded)
+    except (ValueError, UnicodeError):
+        return False
+
+
+def _operational_copy(value):
+    """Literal copy for textContent/escaping, never interpreted as HTML."""
+    if not isinstance(value, str):
+        return ''
+    value = value.encode('utf-8', errors='replace').decode('utf-8')
+    value = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', value)
+    value = re.sub(r'(?i)\bBearer\s+\S+', 'Bearer [REDACTED]', value)
+    value = re.sub(r'\bpat-[A-Za-z0-9_-]+', '[REDACTED]', value)
+    return re.sub(r'(?i)((?:access_token|api_key|token|password)\s*[=:]\s*)[^\s&]+',
+                  r'\1[REDACTED]', value)
+
+
+def _operational_contract(raw, title):
+    """Read one leading JSON object; neither footer nor flags grant authority.
+
+    Only the explicitly supported campaign is recognized. Invalid recognizable
+    input stays visible, while legacy titles/sequence membership retain their
+    existing precedence. Raw bytes, not HTML-rendered text, settle copy hashes.
+    """
+    title_bound = bool(re.search(r'(?<![A-Za-z0-9_-])Mexico2027-networking(?![A-Za-z0-9_-])', title))
+    raw = raw if isinstance(raw, str) else ''
+    candidate = raw.lstrip()
+    body_bound = candidate.startswith('{') and bool(re.search(
+        r'"campaign"\s*:\s*"Mexico2027-networking"', candidate[:8192]))
+    meta, errors = {}, []
+    def unique_pairs(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError('duplicate key')
+            value[key] = item
+        return value
+    if candidate.startswith('{') and len(raw) <= 524288:
+        try:
+            parsed, _end = json.JSONDecoder(object_pairs_hook=unique_pairs).raw_decode(candidate)
+            if not isinstance(parsed, dict):
+                raise ValueError('object required')
+            # A valid foreign object is never reattributed from title or footer.
+            if parsed.get('campaign') != OPERATIONAL_CAMPAIGN:
+                return None
+            meta = parsed
+        except (ValueError, TypeError, RecursionError):
+            errors.append('OPERATIONAL_JSON_INVALID')
+    elif title_bound:
+        errors.append('OPERATIONAL_JSON_INVALID')
+    if not meta and not (title_bound or body_bound):
+        return None
+    if not meta and not errors:
+        errors.append('OPERATIONAL_JSON_INVALID')
+    version = meta.get('version')
+    if not isinstance(version, str) or not _OPERATIONAL_VERSION.fullmatch(version):
+        errors.append('OPERATIONAL_VERSION_INVALID')
+    if not _id(meta.get('contact_id')) or not _id(meta.get('deal_id')):
+        errors.append('OPERATIONAL_IDENTITY_INVALID')
+    step, channel = meta.get('step'), meta.get('channel')
+    if not isinstance(step, str) or not re.fullmatch(r'(?:E[1-3]|L[1-4])', step):
+        errors.append('OPERATIONAL_STEP_INVALID')
+    elif channel != ('email' if step.startswith('E') else 'linkedin'):
+        errors.append('OPERATIONAL_CHANNEL_INVALID')
+    account = meta.get('account_id')
+    expected_sender = (_OPERATIONAL_ACCOUNT.get((channel, account))
+                       if isinstance(channel, str) and isinstance(account, str) else None)
+    if expected_sender is None or meta.get('sender') != expected_sender:
+        errors.append('OPERATIONAL_SENDER_INVALID')
+    recipient = meta.get('recipient')
+    recipient_valid = (isinstance(recipient, str)
+                       and bool(re.fullmatch(r'[^\s@;<>,]+@[^\s@;<>,]+\.[^\s@;<>,]+', recipient))
+                       if channel == 'email' else _operational_profile(recipient))
+    if not recipient_valid:
+        errors.append('OPERATIONAL_RECIPIENT_INVALID')
+    text, subject = meta.get('text'), meta.get('subject')
+    if not isinstance(text, str) or (not text and step != 'L1'):
+        errors.append('OPERATIONAL_COPY_INVALID')
+    elif channel == 'email' and (not isinstance(subject, str) or not subject):
+        errors.append('OPERATIONAL_COPY_INVALID')
+    else:
+        payload = (subject + '\n' if channel == 'email' else '') + text
+        try:
+            hashes_match = (meta.get('body_sha256') == hashlib.sha256(text.encode()).hexdigest()
+                            and meta.get('payload_sha256') == hashlib.sha256(payload.encode()).hexdigest())
+        except UnicodeError:
+            hashes_match = False
+        if not hashes_match:
+            errors.append('OPERATIONAL_HASH_INVALID')
+    for flag in ('outreach_authorized', 'COPY_APPROVAL_PENDING'):
+        if type(meta.get(flag)) is not bool:
+            errors.append('OPERATIONAL_FLAGS_INVALID')
+    for flag in ('OPERATIONAL_HOLD', 'STOP_HUMAN_REPLY'):
+        if flag in meta and type(meta[flag]) is not bool:
+            errors.append('OPERATIONAL_FLAGS_INVALID')
+    retained = [flag for flag in ('COPY_APPROVAL_PENDING', 'OPERATIONAL_HOLD', 'STOP_HUMAN_REPLY')
+                if meta.get(flag) is True]
+    def display(value):
+        # Escaped lone surrogates are legal to decode in Python's JSON parser,
+        # but cannot be emitted as UTF-8; invalid metadata must not break a page.
+        return plain_text(value.encode('utf-8', errors='replace').decode('utf-8')) if isinstance(value, str) else ''
+    return {'valid': not errors, 'errors': list(dict.fromkeys(errors)),
+            'version': display(version) if isinstance(version, str) else None,
+            'contact_id': _id(meta.get('contact_id')), 'deal_id': _id(meta.get('deal_id')),
+            'step': display(step) if isinstance(step, str) else None,
+            'channel': channel if channel in ('email', 'linkedin') else None,
+            'sender': display(meta.get('sender')), 'account_id': display(account),
+            'recipient': display(recipient), 'text': _operational_copy(text),
+            'subject': _operational_copy(subject), 'retention_reasons': retained,
+            'declared_outreach_authorized': meta.get('outreach_authorized') is True,
+            'company': display(meta.get('company')) or None}
+
+
 def project_task(record, *, associated_contact_ids=None, association_complete=None,
                  enrollment_contact_available=True):
     """Pure projection; title labels never establish enrollment/contact identity."""
@@ -151,12 +293,16 @@ def project_task(record, *, associated_contact_ids=None, association_complete=No
     sequence = _id(props.get("hs_task_sequence_id"))
     enrollment = _id(props.get("hs_task_sequence_step_enrollment_id"))
     proven_sequence = sequence == SEQUENCE_ID and enrollment is not None
+    operational = (_operational_contract(props.get('hs_task_body'), title)
+                   if not proven_sequence and not pattern and not pipe else None)
     if proven_sequence:
         campaign = CAMPAIGN_ID
     elif pattern:
         campaign = pattern[1]
     elif pipe:
         campaign = pipe['campaign']
+    elif operational is not None:
+        campaign = OPERATIONAL_CAMPAIGN
     else:
         return None
     touch, channel = TOUCHES.get(title.casefold(), (None, None))
@@ -167,17 +313,22 @@ def project_task(record, *, associated_contact_ids=None, association_complete=No
         touch, company = pattern[2], pattern[3] or None
         channel = {"linkedin": "linkedin", "whatsapp": "whatsapp", "email": "email",
                    "e-mail": "email"}.get(pattern[4].strip().casefold())
+    if operational is not None:
+        touch, channel, company = operational['step'], operational['channel'], operational['company']
     contact = _id(props.get("hs_task_sequence_step_enrollment_contact_id")) if enrollment else None
     contacts = [contact] if contact else []
     link_status = "linked" if contacts else "sem_vinculo"
     if proven_sequence and not enrollment_contact_available:
         contacts, link_status = [], "unverified"
     # Sequence tasks must use the enrollment contact; no generic fallback there.
-    if not proven_sequence and (pattern or pipe):
+    if not proven_sequence and (pattern or pipe or operational is not None):
         contacts = sorted({_id(value) for value in (associated_contact_ids or []) if _id(value)})
         if association_complete is None:
             association_complete = associated_contact_ids is not None
         link_status = ("linked" if contacts else "sem_vinculo") if association_complete else "unverified"
+        if operational is not None and (not operational['valid']
+                or contacts and contacts != [operational['contact_id']]):
+            link_status = 'unverified'
     status = plain_text(props.get("hs_task_status")) or "UNKNOWN"
     result = {"id": task_id, "title": title, "campaign": campaign,
             "contact_ids": contacts, "contact_name": None,
@@ -186,9 +337,29 @@ def project_task(record, *, associated_contact_ids=None, association_complete=No
             "due_at": _date(props.get("hs_timestamp")), "receipt": None,
             "approval_status": "unknown", "body": plain_text(props.get("hs_task_body")),
             "sequence_id": sequence, "enrollment_id": enrollment,
-            "source": "hubspot_task", "source_kind": "sequence" if proven_sequence else "title",
+            "source": "hubspot_task", "source_kind": ('sequence' if proven_sequence else
+                'operational_json' if operational is not None else 'title'),
             "completed": status == "COMPLETED"}
     result.update(task_evidence(props.get('hs_task_body'), result, pipe if not proven_sequence else None))
+    if operational is not None:
+        reasons = list(operational['retention_reasons'])
+        if link_status != 'linked':
+            reasons.append('CONTACT_ASSOCIATION_UNVERIFIED' if link_status == 'unverified'
+                           else 'CONTACT_ASSOCIATION_MISSING')
+        reasons.extend(operational['errors'])
+        result.update(read_only=True, execution_authorized=False, approval_status='unknown',
+                      operational_contract=operational, retention_reasons=reasons, receipt=None,
+                      retry_allowed=False)
+        # Keep malformed provider strings displayable without blessing their
+        # repaired bytes: hash validation above still used the original input.
+        for field in ('title', 'body'):
+            result[field] = result[field].encode('utf-8', errors='replace').decode('utf-8')
+        if not operational['valid'] or link_status == 'unverified':
+            result.update(outcome='unverified', reason_code='OPERATIONAL_CONTRACT_UNVERIFIED')
+        elif reasons and not result['completed']:
+            result.update(outcome='blocked', reason_code=reasons[0])
+        if reasons:
+            result['reason'] = '; '.join(reasons)
     if result['reason']:
         result['reason'] = plain_text(result['reason'])
     return result
@@ -712,8 +883,9 @@ class CadenceReadonlyConsole:
             _partial(coverage, 'tasks:' + exc.code)
         if self.campaign_registry is None and not records and coverage["sources"].get("tasks", {}).get("error"):
             raise CadenceReadonlyError("task_collection_unavailable")
-        bracket_ids = [task["id"] for record in records if
-                       (task := project_task(record)) and task["source_kind"] == "title"]
+        bracket_ids = sorted({task["id"] for record in records if
+                              (task := project_task(record)) and task["source_kind"] in
+                              {"title", "operational_json"}})
         associations, resolved = session.task_contacts(bracket_ids, coverage)
         result = project_snapshot(records, collected_at=self._now(), coverage=coverage,
                                   associations=associations, associations_complete=resolved,
@@ -905,11 +1077,24 @@ class CadenceReadonlyConsole:
             raise LookupError("contact_not_in_observed_cadence")
         result["contact_name"] = next((contact["name"] for task in tasks for contact in task.get("contacts", [])
                                        if contact["id"] == contact_id and contact["name"]), None)
-        events.extend({"id": "tasks:" + task["id"], "type": "task", "occurred_at": task["due_at"],
+        for task in tasks:
+            event = {"id": "tasks:" + task["id"], "type": "task", "occurred_at": task["due_at"],
                 "timestamp_semantics": "due_at", "text": task["body"], "subject": task["title"],
                 "receipt": task['receipt'], "outcome": task['outcome'], "reason": task['reason'],
                 "status": task["status"], "source": "hubspot_task",
-                "campaign": task["campaign"], "approval_status": "unknown"} for task in tasks)
+                "campaign": task["campaign"], "approval_status": "unknown"}
+            if task['source_kind'] == 'operational_json':
+                contract = task['operational_contract']
+                verified = contract['valid'] and task['link_status'] == 'linked'
+                copy = contract['text'] if verified else ''
+                if verified and contract['step'] == 'L1' and not copy:
+                    copy = 'Convite sem nota'
+                event.update(text=copy, source_kind='operational_json', read_only=True,
+                    execution_authorized=False, retention_reasons=task['retention_reasons'],
+                    sender=contract['sender'], account_id=contract['account_id'],
+                    step=contract['step'], channel=contract['channel'],
+                    copy_payload_verified=verified, audit_body=task['body'])
+            events.append(event)
         session = self.adapter.session()
         session.identity()
         context = self._cached(("activities", contact_id), lambda: self._activities(session, contact_id))
