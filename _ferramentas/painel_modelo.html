@@ -3565,7 +3565,7 @@ async function abrirCadenciaContato(id,focus=true){
     const events=data.events||[];
     $('cad-read-detail-title').textContent='Linha do tempo · '+(data.contact_name||'contato '+id);
     $('cad-read-detail-status').textContent=(events.length?'':'Nenhuma atividade encontrada. ')+(data.coverage?.complete?'':'Histórico parcial. ')+(data.coverage?.limitations||[]).join(' ');
-    $('cad-read-events').innerHTML=events.map(e=>`<li><b>${esc(e.subject||e.type||'Atividade')}</b><br><small>${esc(cadReadDate(e.occurred_at))} · ${esc(cadReadOutcome[e.outcome]||e.status||'')} · ${esc(e.source||'HubSpot')}</small>${e.reason?`<p>${esc(e.reason)}</p>`:''}${e.text?`<pre>${esc(e.text)}</pre>`:''}${e.receipt?`<details><summary>Recibo</summary><pre>${esc(typeof e.receipt==='string'?e.receipt:JSON.stringify(e.receipt,null,2))}</pre></details>`:''}</li>`).join('');
+    $('cad-read-events').innerHTML=events.map(e=>`<li><b>${esc(e.subject||e.type||'Atividade')}</b><br><small>${esc(cadReadDate(e.occurred_at))} · ${esc(cadReadOutcome[e.outcome]||e.status||'')} · ${esc(e.source||'HubSpot')}${e.direction?' · '+esc(({incoming:'Entrada',outgoing:'Saída',forwarded:'Encaminhado',draft:'Rascunho',unknown:'Direção não informada'})[e.direction]||'Direção não informada'):''}</small>${e.reason?`<p>${esc(e.reason)}</p>`:''}${e.text?`<pre>${esc(e.text)}</pre>`:''}${e.receipt?`<details><summary>Recibo</summary><pre>${esc(typeof e.receipt==='string'?e.receipt:JSON.stringify(e.receipt,null,2))}</pre></details>`:''}</li>`).join('');
   }catch(e){if(request===cadReadTimelineRequest)$('cad-read-detail-status').textContent='Não foi possível consultar o histórico deste contato.';}
 }
 $('cad-read-refresh').addEventListener('click',atualizarCadencias);

@@ -933,7 +933,9 @@ class CadenceReadonlyConsole:
                 raise CadenceReadonlyError('activity_classification_schema_unavailable')
             rows = session.pages('POST', '/crm/v3/objects/emails/search', {
                 'filterGroups': [], 'limit': 100,
-                'properties': sorted(set(ACTIVITY_PROPERTIES['emails']) & available)}, coverage, source)
+                # Global classification needs metadata; originals are read per contact below.
+                'properties': sorted((set(ACTIVITY_PROPERTIES['emails']) -
+                    {'hs_email_text', 'hs_email_html'}) & available)}, coverage, source)
             links, resolved = session.object_contacts('emails', [str(row['id']) for row in rows], coverage)
             task_contacts = {cid for group in snapshot['campaigns'] for task in group['tasks']
                              for cid in task['contact_ids']}
@@ -977,6 +979,7 @@ class CadenceReadonlyConsole:
                 event = project_activity('emails', row)
                 ids = links.get(ident, [])
                 event.update(contact_ids=ids, provider=None, origin_provider=None,
+                    text_scope='metadata_only', text_complete=False,
                     origin_identifiers={key: plain_text(props.get(key)) or None
                         for key in ('hs_campaign_guid', 'hs_engagement_source_id')},
                     sent_evidence=False, response_evidence=False, crm_recorded_sent=False,
@@ -1099,11 +1102,19 @@ class CadenceReadonlyConsole:
         session.identity()
         context = self._cached(("activities", contact_id), lambda: self._activities(session, contact_id))
         events.extend(context["events"])
+        original_ids = {event['id'] for event in context['events']}
         observed_ids = {event['id'] for event in events}
         events.extend(deepcopy(event) for ident, event in linked_activities.items() if ident not in observed_ids)
         for event in events:
             if event['id'] in linked_activities:
-                event.update(deepcopy(linked_activities[event['id']]))
+                metadata = deepcopy(linked_activities[event['id']])
+                if event['id'] in original_ids:
+                    # Keep the original from the contact batch; retain global attribution
+                    # and conservative evidence classification without replacing its
+                    # text or direction from the on-demand read.
+                    for key in ('text', 'text_scope', 'text_complete', 'direction', 'source_direction'):
+                        metadata.pop(key, None)
+                event.update(metadata)
         for source, info in context["coverage"]["sources"].items():
             coverage["sources"]["activities:" + source] = info
         for reason in context["coverage"]["limitations"]:
@@ -1168,9 +1179,17 @@ def project_activity(kind, record):
              "communications": ("communication", "", "hs_communication_body", "")}
     event_type, title, body, status = names[kind]
     text = props.get(body) or (props.get("hs_email_html") if kind == "emails" else "")
-    return {"id": kind + ":" + str(record["id"]), "type": event_type,
+    event = {"id": kind + ":" + str(record["id"]), "type": event_type,
             "occurred_at": _date(props.get("hs_timestamp")), "text": plain_text(text),
             "subject": plain_text(props.get(title)), "receipt": None,
             "status": plain_text(props.get(status)) or "UNKNOWN", "source": "hubspot_" + event_type,
             "campaign": None, "attribution": "contact_context",
             "response_evidence": kind == "emails" and props.get("hs_email_direction") == "INCOMING_EMAIL"}
+    if kind == 'emails':
+        directions = {'EMAIL': 'outgoing', 'INCOMING_EMAIL': 'incoming',
+                      'FORWARDED_EMAIL': 'forwarded', 'DRAFT_EMAIL': 'draft'}
+        source_direction = props.get('hs_email_direction')
+        known = isinstance(source_direction, str) and source_direction in directions
+        event.update(direction=directions[source_direction] if known else 'unknown',
+                     source_direction=source_direction if known else None)
+    return event

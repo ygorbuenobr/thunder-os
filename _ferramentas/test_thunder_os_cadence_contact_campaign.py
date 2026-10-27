@@ -2,9 +2,12 @@
 from copy import deepcopy
 import json
 import unittest
+from unittest.mock import patch
 
 from test_thunder_os_cadence_readonly import Provider, task
-from thunder_os.cadence_readonly import ACTIVITY_PROPERTIES, CadenceReadonlyConsole
+from thunder_os.cadence_readonly import (
+    ACTIVITY_PROPERTIES, CadenceReadonlyConsole, CadenceReadonlyError, project_activity,
+)
 from thunder_os.hubspot_read_budget import HubSpotReadBudget
 
 
@@ -65,7 +68,52 @@ class ContactProvider(Provider):
         return 200, json.dumps(result).encode()
 
 
+class PropertySelectingProvider(ContactProvider):
+    """Synthetic 100-email page; model property selection and the HTTP read cap."""
+    literal = ('Synthetic original line.\n\nSecond paragraph.\n' * 600).strip()
+
+    def __init__(self):
+        super().__init__()
+        self.emails = [email(str(900 + index), hs_email_text=self.literal,
+            hs_email_html='<p>' + self.literal + '</p>',
+            hs_campaign_guid='synthetic-campaign', hs_engagement_source_id='synthetic-source')
+            for index in range(100)]
+        self.email_links = {row['id']: ['100'] for row in self.emails}
+        self.search_response_bytes = None
+
+    def selected(self, row, properties):
+        return {**deepcopy(row), 'properties': {key: value for key, value in row['properties'].items()
+                                               if key in properties}}
+
+    def search_bytes(self, properties):
+        return json.dumps({'results': [self.selected(row, properties) for row in self.emails],
+                           'total': len(self.emails)}).encode()
+
+    def __call__(self, method, path, body, headers, timeout):
+        if path == '/crm/v3/objects/emails/search':
+            raw = self.search_bytes(body['properties'])
+            self.search_response_bytes = len(raw)
+            self.calls.append((method, path, deepcopy(body)))
+            return 200, raw[:2_000_001]
+        if path.startswith('/crm/v4/objects/contacts/100/associations/emails'):
+            result = {'results': [{'toObjectId': 900}, {'toObjectId': 900}]}
+        elif path == '/crm/v3/objects/emails/batch/read':
+            result = {'status': 'COMPLETE', 'results': [self.selected(row, body['properties'])
+                for row in self.emails if row['id'] in {item['id'] for item in body['inputs']}]}
+        else:
+            return super().__call__(method, path, body, headers, timeout)
+        self.calls.append((method, path, deepcopy(body)))
+        return 200, json.dumps(result).encode()
+
+
 class ContactCampaignTests(unittest.TestCase):
+    def setUp(self):
+        for target in ('socket.create_connection', 'socket.socket.connect', 'socket.getaddrinfo'):
+            blocked = patch(target, side_effect=AssertionError('network forbidden'))
+            mocked = blocked.start()
+            self.addCleanup(blocked.stop)
+            self.addCleanup(mocked.assert_not_called)
+
     def console(self, provider=None, **kwargs):
         kwargs.setdefault('campaign_registry', Registry())
         tick = [0.0]
@@ -77,6 +125,152 @@ class ContactCampaignTests(unittest.TestCase):
 
     def group(self, result, ident=CAMPAIGN):
         return next(group for group in result['campaigns'] if group['id'] == ident)
+
+    def test_full_body_search_still_rejects_truncated_response(self):
+        provider = PropertySelectingProvider()
+        query = {'filterGroups': [], 'limit': 100, 'properties': list(ACTIVITY_PROPERTIES['emails'])}
+        status, raw = provider('POST', '/crm/v3/objects/emails/search', query, {}, 8)
+        self.assertEqual((status, len(raw)), (200, 2_000_001))
+        with self.assertRaises(CadenceReadonlyError) as raised:
+            self.console(provider).adapter.session().call('POST', '/crm/v3/objects/emails/search', query)
+        self.assertEqual(raised.exception.code, 'provider_invalid_response')
+
+    def test_global_email_metadata_avoids_oversized_body_response(self):
+        provider = PropertySelectingProvider()
+        self.assertGreater(len(provider.search_bytes(ACTIVITY_PROPERTIES['emails'])), 2_000_000)
+        result = self.console(provider).snapshot()
+        group = self.group(result)
+        self.assertEqual(group['external_activity_state'], 'complete')
+        self.assertEqual(group['metrics']['external_sent'], 100)
+        queries = [body for _, path, body in provider.calls if path.endswith('/emails/search')]
+        self.assertEqual(len(queries), 1)
+        self.assertEqual(queries[0]['limit'], 100)
+        self.assertEqual(set(queries[0]['properties']), set(ACTIVITY_PROPERTIES['emails']) -
+                         {'hs_email_text', 'hs_email_html'})
+        self.assertLess(provider.search_response_bytes, 2_000_000)
+        self.assertEqual(len(group['activities']), 100)
+        event = group['activities'][0]
+        self.assertEqual(event['text'], '')
+        self.assertEqual(event['text_scope'], 'metadata_only')
+        self.assertFalse(event['text_complete'])
+        self.assertEqual(event['subject'], 'Synthetic email')
+        self.assertEqual(event['occurred_at'], '2025-01-01T13:00:00Z')
+        self.assertEqual(event['status'], 'SENT')
+        self.assertEqual(event['direction'], 'outgoing')
+        self.assertEqual(event['source_direction'], 'EMAIL')
+        self.assertEqual(event['attribution'], 'contact_current_campaign')
+        self.assertEqual(event['origin_identifiers'], {
+            'hs_campaign_guid': 'synthetic-campaign', 'hs_engagement_source_id': 'synthetic-source'})
+        self.assertIsNone(event['origin_provider'])
+        self.assertIsNone(event['receipt'])
+        self.assertFalse(event['response_evidence'])
+        self.assertFalse(event['delivery_verified'])
+
+    def test_contact_original_survives_metadata_merge_and_html_fallback(self):
+        cases = [(html_only, source_direction, direction) for html_only in (False, True)
+                 for source_direction, direction in [('EMAIL', 'outgoing'),
+                     ('INCOMING_EMAIL', 'incoming'), ('UNRECOGNIZED', 'unknown')]]
+        for html_only, source_direction, direction in cases:
+            with self.subTest(html_only=html_only, source_direction=source_direction):
+                provider = PropertySelectingProvider()
+                provider.emails[0]['properties']['hs_email_direction'] = source_direction
+                if html_only:
+                    provider.emails[0]['properties']['hs_email_text'] = ''
+                result = self.console(provider).timeline('100', CAMPAIGN)
+                originals = [event for event in result['events'] if event['id'] == 'emails:900']
+                self.assertEqual(len(originals), 1)
+                event = originals[0]
+                self.assertEqual(event['text'], provider.literal)
+                self.assertNotEqual(event.get('text_scope'), 'metadata_only')
+                self.assertEqual(event['occurred_at'], '2025-01-01T13:00:00Z')
+                self.assertEqual(event['subject'], 'Synthetic email')
+                self.assertEqual(event['status'], 'SENT')
+                self.assertEqual(event['direction'], direction)
+                self.assertEqual(event['source_direction'],
+                                 source_direction if direction != 'unknown' else None)
+                self.assertEqual(event['attribution'], 'contact_current_campaign')
+                self.assertFalse(event['response_evidence'])
+                self.assertFalse(event['delivery_verified'])
+                self.assertIsNone(event['receipt'])
+                self.assertIsNone(event['origin_provider'])
+                self.assertNotIn('human_response', event)
+                batches = [body for _, path, body in provider.calls if path.endswith('/emails/batch/read')]
+                self.assertEqual(len(batches), 1)
+                self.assertEqual(set(batches[0]['properties']), set(ACTIVITY_PROPERTIES['emails']))
+                self.assertEqual(batches[0]['inputs'], [{'id': '900'}])
+
+    def test_contact_direction_overrides_older_global_metadata(self):
+        for source_direction, direction in [('INCOMING_EMAIL', 'incoming'),
+                                            ('UNRECOGNIZED', 'unknown'), (None, 'unknown')]:
+            with self.subTest(source_direction=source_direction):
+                class UpdatedOriginal(PropertySelectingProvider):
+                    def __call__(self, method, path, body, headers, timeout):
+                        status, raw = super().__call__(method, path, body, headers, timeout)
+                        if path == '/crm/v3/objects/emails/batch/read':
+                            result = json.loads(raw)
+                            for row in result['results']:
+                                row['properties']['hs_email_direction'] = source_direction
+                            raw = json.dumps(result).encode()
+                        return status, raw
+
+                console = self.console(UpdatedOriginal())
+                snapshot = console.snapshot()
+                global_event = next(event for event in self.group(snapshot)['activities']
+                                    if event['id'] == 'emails:900')
+                self.assertEqual(global_event['direction'], 'outgoing')
+                self.assertEqual(global_event['source_direction'], 'EMAIL')
+                result = console.timeline('100', CAMPAIGN)
+                originals = [event for event in result['events'] if event['id'] == 'emails:900']
+                self.assertEqual(len(originals), 1)
+                event = originals[0]
+                self.assertEqual(event['direction'], direction)
+                self.assertEqual(event['source_direction'],
+                                 source_direction if direction == 'incoming' else None)
+                self.assertEqual(event['text'], PropertySelectingProvider.literal)
+                self.assertEqual(event['attribution'], 'contact_current_campaign')
+                self.assertFalse(event['response_evidence'])
+                self.assertFalse(event['delivery_verified'])
+                self.assertIsNone(event['origin_provider'])
+                self.assertIsNone(event['receipt'])
+                self.assertNotIn('human_response', event)
+
+    def test_email_direction_uses_only_known_source_enum(self):
+        cases = [('EMAIL', 'outgoing'), ('INCOMING_EMAIL', 'incoming'),
+                 ('FORWARDED_EMAIL', 'forwarded'), ('DRAFT_EMAIL', 'draft'),
+                 ('UNRECOGNIZED', 'unknown'), ('incoming_email', 'unknown'),
+                 ('', 'unknown'), (None, 'unknown'), ([], 'unknown'), ({}, 'unknown')]
+        for source_direction, direction in cases:
+            with self.subTest(source_direction=source_direction):
+                event = project_activity('emails', email(hs_email_direction=source_direction,
+                    hs_email_text='Original literal.\n\nSegundo parágrafo.'))
+                self.assertEqual(event['direction'], direction)
+                self.assertEqual(event['source_direction'],
+                                 source_direction if direction != 'unknown' else None)
+                self.assertEqual(event['text'], 'Original literal.\n\nSegundo parágrafo.')
+                self.assertIsNone(event.get('origin_provider'))
+                self.assertIsNone(event['receipt'])
+                self.assertNotIn('human_response', event)
+                # Existing contact-context evidence remains distinct from human verification.
+                self.assertEqual(event['response_evidence'], source_direction == 'INCOMING_EMAIL')
+
+    def test_missing_contact_original_keeps_metadata_explicit_and_partial(self):
+        class MissingOriginal(PropertySelectingProvider):
+            def __call__(self, method, path, body, headers, timeout):
+                if path == '/crm/v3/objects/emails/batch/read':
+                    self.calls.append((method, path, deepcopy(body)))
+                    return 200, json.dumps({'status': 'COMPLETE', 'results': []}).encode()
+                return super().__call__(method, path, body, headers, timeout)
+
+        result = self.console(MissingOriginal()).timeline('100', CAMPAIGN)
+        event = next(event for event in result['events'] if event['id'] == 'emails:900')
+        self.assertEqual(event['text'], '')
+        self.assertEqual(event['text_scope'], 'metadata_only')
+        self.assertFalse(event['text_complete'])
+        self.assertFalse(result['coverage']['complete'])
+        self.assertIn('emails:batch_records_missing', result['coverage']['limitations'])
+        self.assertIsNone(result['metrics']['replies'])
+        self.assertFalse(event['response_evidence'])
+        self.assertIsNone(event['receipt'])
 
     def test_current_campaign_exact_registry_not_event_fields(self):
         for ident, executor in [(CAMPAIGN, 'apollo'), (OTHER, 'instantly')]:

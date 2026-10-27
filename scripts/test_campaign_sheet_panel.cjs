@@ -85,7 +85,7 @@ async function checkCadenceMobileOverflow() {
       channel: 'linkedin', outcome: 'blocked', reason: 'OPERATIONAL_HOLD'
     }]}]};
   const timeline = {contact_name: 'Contato sintético', coverage: snapshot.coverage,
-    events: [{subject: 'Toque sintético', outcome: 'blocked', text: message}]};
+    events: [{subject: 'Toque sintético', outcome: 'blocked', text: message, direction: 'incoming'}]};
   const browser = await chromium.launch({headless: true});
   try {
     const page = await browser.newPage({viewport: {width: 390, height: 844}});
@@ -115,6 +115,13 @@ async function checkCadenceMobileOverflow() {
     await page.waitForFunction(() => document.querySelector('#cad-read-events pre'));
     assert.equal(await page.locator('#cad-read-detail-status').textContent(), 'Histórico parcial. ' + limitation);
     assert.equal(await page.locator('#cad-read-events pre').textContent(), message);
+    assert.match(await page.locator('#cad-read-events small').textContent(), /Entrada/);
+    for (const [direction, label] of [['outgoing', 'Saída'], ['forwarded', 'Encaminhado'], ['draft', 'Rascunho'], ['unknown', 'Direção não informada']]) {
+      timeline.events[0].direction = direction;
+      await page.locator('#cad-read-campaigns [data-cad-contact="123"]').click();
+      await page.waitForFunction(label => document.querySelector('#cad-read-events small')?.textContent.includes(label), label);
+      assert.equal(await page.locator('#cad-read-events pre').textContent(), message);
+    }
     const coverage = page.locator('#cad-read-coverage');
     for (const open of [false, true]) {
       if (open) await coverage.locator('summary').click();
