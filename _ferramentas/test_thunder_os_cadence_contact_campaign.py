@@ -41,7 +41,10 @@ class ContactProvider(Provider):
         self.contacts = {'100': contact()}
         self.email_links = {'900': ['100']}
         self.association_pages = {}
+        self.contact_email_pages = {}
+        self.cohort_pages = {}
         self.batch_status = 'COMPLETE'
+        self.metadata_response_bytes = None
 
     def __call__(self, method, path, body, headers, timeout):
         result = None
@@ -52,6 +55,41 @@ class ContactProvider(Provider):
         elif path == '/crm/v3/objects/emails/search':
             result = (self.email_pages[str(body.get('after', ''))] if self.email_pages is not None
                       else {'results': deepcopy(self.emails), 'total': len(self.emails)})
+        elif path == '/crm/v3/objects/contacts/search':
+            self.assert_cohort_query(body)
+            campaign = body['filterGroups'][0]['filters'][0]['value']
+            if campaign in self.cohort_pages:
+                result = deepcopy(self.cohort_pages[campaign][str(body.get('after', ''))])
+            else:
+                rows = [deepcopy(row) for row in self.contacts.values()
+                        if row['properties'].get('campanha_ativa') == campaign]
+                offset = int(body.get('after', 0))
+                result = {'results': rows[offset:offset + 100], 'total': len(rows)}
+                if offset + 100 < len(rows):
+                    result['paging'] = {'next': {'after': str(offset + 100)}}
+        elif path == '/crm/v4/associations/contacts/emails/batch/read':
+            rows = []
+            for item in body['inputs']:
+                page = self.contact_email_pages.get((item['id'], str(item.get('after', ''))))
+                # Keep legacy pagination fixtures meaningful for unchanged reader/evidence
+                # callers: their email pages now describe per-contact discovery pages.
+                if page is None and self.email_pages is not None:
+                    legacy = self.email_pages[str(item.get('after', ''))]
+                    page = {'from': {'id': item['id']}, 'to': [{'toObjectId': row['id']}
+                        for row in legacy['results'] if item['id'] in self.email_links.get(row['id'], [])]}
+                    if 'paging' in legacy:
+                        page['paging'] = deepcopy(legacy['paging'])
+                rows.append(deepcopy(page) if page else {'from': {'id': item['id']},
+                    'to': [{'toObjectId': row['id']} for row in self.emails
+                           if item['id'] in self.email_links.get(row['id'], [])]})
+            result = {'status': 'COMPLETE', 'results': rows}
+        elif path == '/crm/v3/objects/emails/batch/read' and not {
+                'hs_email_text', 'hs_email_html'} & set(body['properties']):
+            result = {'status': 'COMPLETE', 'results': [
+                {**deepcopy(row), 'properties': {key: value for key, value in row['properties'].items()
+                                                if key in body['properties']}}
+                for row in self.emails if row['id'] in {item['id'] for item in body['inputs']}]}
+            self.metadata_response_bytes = len(json.dumps(result).encode())
         elif path == '/crm/v4/associations/emails/contacts/batch/read':
             rows = []
             for item in body['inputs']:
@@ -66,6 +104,15 @@ class ContactProvider(Provider):
             return super().__call__(method, path, body, headers, timeout)
         self.calls.append((method, path, deepcopy(body)))
         return 200, json.dumps(result).encode()
+
+    def assert_cohort_query(self, body):
+        assert body['limit'] == 100
+        assert len(body['filterGroups']) == 1
+        filters = body['filterGroups'][0]['filters']
+        assert len(filters) == 1
+        assert filters[0]['propertyName'] == 'campanha_ativa'
+        assert filters[0]['operator'] == 'EQ'
+        assert isinstance(filters[0]['value'], str)
 
 
 class PropertySelectingProvider(ContactProvider):
@@ -100,6 +147,8 @@ class PropertySelectingProvider(ContactProvider):
         elif path == '/crm/v3/objects/emails/batch/read':
             result = {'status': 'COMPLETE', 'results': [self.selected(row, body['properties'])
                 for row in self.emails if row['id'] in {item['id'] for item in body['inputs']}]}
+            if not {'hs_email_text', 'hs_email_html'} & set(body['properties']):
+                self.metadata_response_bytes = len(json.dumps(result).encode())
         else:
             return super().__call__(method, path, body, headers, timeout)
         self.calls.append((method, path, deepcopy(body)))
@@ -126,6 +175,178 @@ class ContactCampaignTests(unittest.TestCase):
     def group(self, result, ident=CAMPAIGN):
         return next(group for group in result['campaigns'] if group['id'] == ident)
 
+    def test_campaign_cohort_avoids_portal_email_scan(self):
+        provider = ContactProvider()
+        provider.contacts['101'] = contact('101')  # Valid CRM member, no email.
+        provider.contacts['101']['properties']['hubspot_owner_id'] = '999'
+        for index in range(10000):
+            ident = str(10000 + index)
+            provider.contacts[ident] = contact(ident, None, None)
+            provider.emails.append(email(str(20000 + index)))
+            provider.email_links[str(20000 + index)] = [ident]
+        console = self.console(provider)
+        result = console.snapshot()
+        self.assertEqual(self.group(result)['metrics']['contacts'], 2)
+        self.assertEqual(self.group(result)['metrics']['external_sent'], 1)
+        self.assertEqual(result['coverage']['scope'], 'contacts_current_campaign')
+        self.assertIsNone(self.group(result)['metrics']['replies'])
+        self.assertFalse(any(path.endswith('/emails/search') for _, path, _ in provider.calls))
+        queries = [body for _, path, body in provider.calls if path == '/crm/v3/objects/contacts/search']
+        self.assertEqual({body['filterGroups'][0]['filters'][0]['value'] for body in queries}, {CAMPAIGN, OTHER})
+        forward = [body for _, path, body in provider.calls
+                   if path == '/crm/v4/associations/contacts/emails/batch/read']
+        self.assertEqual(forward, [{'inputs': [{'id': '100'}, {'id': '101'}]}])
+        metadata = [body for _, path, body in provider.calls if path == '/crm/v3/objects/emails/batch/read']
+        self.assertEqual(len(metadata), 1)
+        self.assertEqual(metadata[0]['inputs'], [{'id': '900'}])
+        self.assertFalse({'hs_email_text', 'hs_email_html'} & set(metadata[0]['properties']))
+        self.assertLess(len(provider.calls), 20)
+        self.assertEqual((console.adapter.max_requests, console.adapter.budget_seconds, console.adapter.max_pages),
+                         (150, 45, 100))
+
+    def test_empty_and_failed_cohort_have_different_coverage(self):
+        provider = ContactProvider()
+        provider.contacts['100']['properties'].pop('campanha_ativa')
+        result = self.console(provider).snapshot()
+        group = self.group(result)
+        self.assertEqual(group['metrics']['contacts'], 0)
+        self.assertEqual(group['metrics']['external_sent'], 0)
+        self.assertIsNone(group['metrics']['replies'])
+        self.assertTrue(result['coverage']['complete'])
+        self.assertEqual(result['coverage']['scope'], 'contacts_current_campaign')
+        self.assertIn('provider_lead_lists_and_unassigned_contacts_outside_scope', result['coverage']['limitations'])
+        self.assertFalse(any(path.endswith('/emails/batch/read') for _, path, _ in provider.calls))
+        def failed(method, path, body, headers, timeout):
+            if path == '/crm/v3/objects/contacts/search':
+                return 403, b'{}'
+            return provider(method, path, body, headers, timeout)
+        result = self.console(failed).snapshot()
+        self.assertTrue(result['coverage']['partial'])
+        self.assertIsNone(self.group(result)['metrics']['external_sent'])
+        self.assertIsNone(self.group(result)['metrics']['contacts'])
+        self.assertIsNone(self.group(result)['metrics']['replies'])
+        with self.assertRaises(CadenceReadonlyError) as raised:
+            self.console(failed).timeline('100', CAMPAIGN)
+        self.assertEqual(raised.exception.code, 'contact_membership_unverified')
+
+    def test_cohort_pages_and_overlapping_or_invalid_records_remain_partial(self):
+        for fault in ('limit', 'overlap', 'wrong_filter_result', 'invalid_properties', 'archived'):
+            with self.subTest(fault=fault):
+                provider = ContactProvider()
+                if fault == 'limit':
+                    provider.cohort_pages[CAMPAIGN] = {'': {'results': [contact()], 'total': 2,
+                        'paging': {'next': {'after': '100'}}}}
+                elif fault == 'overlap':
+                    provider.cohort_pages[OTHER] = {'': {'results': [contact(campaign=OTHER)], 'total': 1}}
+                else:
+                    row = contact(campaign=OTHER) if fault == 'wrong_filter_result' else contact()
+                    if fault == 'invalid_properties':
+                        row['properties'] = []
+                    if fault == 'archived':
+                        row['archived'] = True
+                    provider.cohort_pages[CAMPAIGN] = {'': {'results': [row], 'total': 1}}
+                result = self.console(provider, max_pages=1).snapshot()
+                self.assertTrue(result['coverage']['partial'])
+                self.assertIsNone(self.group(result)['metrics']['external_sent'])
+                self.assertIsNone(self.group(result)['metrics']['contacts'])
+                self.assertIsNone(self.group(result)['metrics']['replies'])
+                if fault != 'limit':
+                    self.assertEqual(self.group(result)['activities'], [])
+
+    def test_metadata_batches_missing_pending_invalid_or_budget_are_not_zero(self):
+        for fault in ('missing', 'pending', 'duplicate', 'unexpected', 'archived', 'invalid', 'budget'):
+            with self.subTest(fault=fault):
+                provider = ContactProvider()
+                def request(method, path, body, headers, timeout):
+                    status, raw = provider(method, path, body, headers, timeout)
+                    if path == '/crm/v3/objects/emails/batch/read':
+                        result = json.loads(raw)
+                        if fault == 'missing':
+                            result['results'] = []
+                        elif fault == 'pending':
+                            result['status'] = 'PENDING'
+                        elif fault == 'duplicate':
+                            result['results'].append(deepcopy(result['results'][0]))
+                        elif fault == 'unexpected':
+                            result['results'][0]['id'] = '99999'
+                        elif fault == 'archived':
+                            result['results'][0]['archived'] = True
+                        elif fault == 'invalid':
+                            result['results'][0]['properties'] = []
+                        raw = json.dumps(result).encode()
+                    return status, raw
+                result = self.console(request, **({'max_requests': 9} if fault == 'budget' else {})).snapshot()
+                self.assertTrue(result['coverage']['partial'])
+                self.assertIsNone(self.group(result)['metrics']['external_sent'])
+                self.assertIsNone(self.group(result)['metrics']['replies'])
+                self.assertEqual(self.group(result)['activities'], [])
+
+    def test_new_readonly_paths_do_not_allow_writes(self):
+        provider = ContactProvider()
+        session = self.console(provider).adapter.session()
+        for path in ('/crm/v3/objects/contacts', '/crm/v3/objects/contacts/batch/create',
+                     '/crm/v4/associations/contacts/emails/batch/create',
+                     '/crm/v4/associations/contacts/emails/batch/archive'):
+            with self.subTest(path=path), self.assertRaises(CadenceReadonlyError) as raised:
+                session.call('POST', path, {})
+            self.assertEqual(raised.exception.code, 'readonly_endpoint_blocked')
+        self.assertEqual(provider.calls, [])
+
+    def test_shared_email_conflict_is_not_attributed(self):
+        for campaign in (OTHER, 'NOT-IN-REGISTRY', None, CAMPAIGN + ';' + OTHER):
+            with self.subTest(campaign=campaign):
+                provider = ContactProvider()
+                provider.contacts['999'] = contact('999', campaign, None)
+                provider.email_links['900'].append('999')
+                result = self.console(provider).snapshot()
+                self.assertTrue(all(not group['activities'] for group in result['campaigns']))
+                self.assertTrue(result['coverage']['partial'])
+                self.assertIsNone(self.group(result)['metrics']['external_sent'])
+                batch = [body for _, path, body in provider.calls
+                         if path == '/crm/v3/objects/contacts/batch/read' and 'campanha_ativa' in body['properties']]
+                self.assertTrue(any({'id': '999'} in body['inputs'] for body in batch))
+
+    def test_reverse_association_pages_and_incomplete_remain_unknown(self):
+        provider = ContactProvider()
+        provider.emails.append(email('901'))
+        provider.email_links['901'] = ['100']
+        provider.contact_email_pages = {('100', ''): {'from': {'id': '100'},
+            'to': [{'toObjectId': '900'}], 'paging': {'next': {'after': 'next', 'link': 'https://evil.invalid/'}}},
+            ('100', 'next'): {'from': {'id': '100'}, 'to': [{'toObjectId': '900'}, {'toObjectId': '901'}]}}
+        result = self.console(provider).snapshot()
+        self.assertEqual(self.group(result)['metrics']['external_sent'], 2)
+        self.assertEqual(result['coverage']['sources']['contact_emails']['pages'], 2)
+        self.assertFalse(any('evil.invalid' in path for _, path, _ in provider.calls))
+        for fault in ('limit', 'missing', 'pending', 'cycle'):
+            with self.subTest(fault=fault):
+                def request(method, path, body, headers, timeout):
+                    status, raw = provider(method, path, body, headers, timeout)
+                    result = json.loads(raw)
+                    if path == '/crm/v4/associations/contacts/emails/batch/read':
+                        if fault == 'missing':
+                            result['results'] = []
+                        elif fault == 'pending' and 'after' not in body['inputs'][0]:
+                            result['status'] = 'PENDING'
+                        elif fault == 'cycle':
+                            result['results'][0]['paging'] = {'next': {'after': 'next'}}
+                    return status, json.dumps(result).encode()
+                result = self.console(request, **({'max_pages': 1} if fault == 'limit' else {})).snapshot()
+                self.assertTrue(result['coverage']['partial'])
+                self.assertIsNone(self.group(result)['metrics']['external_sent'])
+                self.assertIsNone(self.group(result)['metrics']['replies'])
+
+    def test_individual_original_survives_cohort_projection(self):
+        provider = PropertySelectingProvider()
+        console = self.console(provider)
+        snapshot = console.snapshot()
+        self.assertEqual(snapshot['coverage']['scope'], 'contacts_current_campaign')
+        result = console.timeline('100', CAMPAIGN)
+        event = next(event for event in result['events'] if event['id'] == 'emails:900')
+        self.assertEqual(event['text'], provider.literal)
+        self.assertEqual(event['direction'], 'outgoing')
+        self.assertFalse(event['response_evidence'])
+        self.assertFalse(any(path.endswith('/emails/search') for _, path, _ in provider.calls))
+
     def test_full_body_search_still_rejects_truncated_response(self):
         provider = PropertySelectingProvider()
         query = {'filterGroups': [], 'limit': 100, 'properties': list(ACTIVITY_PROPERTIES['emails'])}
@@ -142,12 +363,13 @@ class ContactCampaignTests(unittest.TestCase):
         group = self.group(result)
         self.assertEqual(group['external_activity_state'], 'complete')
         self.assertEqual(group['metrics']['external_sent'], 100)
-        queries = [body for _, path, body in provider.calls if path.endswith('/emails/search')]
+        self.assertFalse(any(path.endswith('/emails/search') for _, path, _ in provider.calls))
+        queries = [body for _, path, body in provider.calls if path == '/crm/v3/objects/emails/batch/read']
         self.assertEqual(len(queries), 1)
-        self.assertEqual(queries[0]['limit'], 100)
+        self.assertEqual(len(queries[0]['inputs']), 100)
         self.assertEqual(set(queries[0]['properties']), set(ACTIVITY_PROPERTIES['emails']) -
                          {'hs_email_text', 'hs_email_html'})
-        self.assertLess(provider.search_response_bytes, 2_000_000)
+        self.assertLess(provider.metadata_response_bytes, 2_000_000)
         self.assertEqual(len(group['activities']), 100)
         event = group['activities'][0]
         self.assertEqual(event['text'], '')
@@ -194,7 +416,8 @@ class ContactCampaignTests(unittest.TestCase):
                 self.assertIsNone(event['receipt'])
                 self.assertIsNone(event['origin_provider'])
                 self.assertNotIn('human_response', event)
-                batches = [body for _, path, body in provider.calls if path.endswith('/emails/batch/read')]
+                batches = [body for _, path, body in provider.calls if path == '/crm/v3/objects/emails/batch/read'
+                           and 'hs_email_text' in body['properties']]
                 self.assertEqual(len(batches), 1)
                 self.assertEqual(set(batches[0]['properties']), set(ACTIVITY_PROPERTIES['emails']))
                 self.assertEqual(batches[0]['inputs'], [{'id': '900'}])
@@ -206,7 +429,7 @@ class ContactCampaignTests(unittest.TestCase):
                 class UpdatedOriginal(PropertySelectingProvider):
                     def __call__(self, method, path, body, headers, timeout):
                         status, raw = super().__call__(method, path, body, headers, timeout)
-                        if path == '/crm/v3/objects/emails/batch/read':
+                        if path == '/crm/v3/objects/emails/batch/read' and 'hs_email_text' in body['properties']:
                             result = json.loads(raw)
                             for row in result['results']:
                                 row['properties']['hs_email_direction'] = source_direction
@@ -256,7 +479,7 @@ class ContactCampaignTests(unittest.TestCase):
     def test_missing_contact_original_keeps_metadata_explicit_and_partial(self):
         class MissingOriginal(PropertySelectingProvider):
             def __call__(self, method, path, body, headers, timeout):
-                if path == '/crm/v3/objects/emails/batch/read':
+                if path == '/crm/v3/objects/emails/batch/read' and 'hs_email_text' in body['properties']:
                     self.calls.append((method, path, deepcopy(body)))
                     return 200, json.dumps({'status': 'COMPLETE', 'results': []}).encode()
                 return super().__call__(method, path, body, headers, timeout)
@@ -289,8 +512,9 @@ class ContactCampaignTests(unittest.TestCase):
             self.assertFalse(event['historical_membership_verified'])
             self.assertIsNone(event['origin_provider'])
             self.assertEqual(event['origin_identifiers']['hs_engagement_source_id'], 'unmapped-source')
-            queries = [body for _, path, body in provider.calls if path.endswith('/emails/search')]
-            self.assertEqual(queries[0]['filterGroups'], [])
+            queries = [body for _, path, body in provider.calls if path.endswith('/contacts/search')]
+            self.assertEqual({query['filterGroups'][0]['filters'][0]['value'] for query in queries}, {CAMPAIGN, OTHER})
+            self.assertFalse(any(path.endswith('/emails/search') for _, path, _ in provider.calls))
             self.assertEqual(self.group(result, OTHER if ident == CAMPAIGN else CAMPAIGN)['activities'], [])
 
     def test_missing_unknown_multiple_and_conflicting_contacts(self):
@@ -299,6 +523,8 @@ class ContactCampaignTests(unittest.TestCase):
             with self.subTest(value=value):
                 provider = ContactProvider()
                 provider.contacts['100']['properties']['campanha_ativa'] = value
+                provider.contacts['101'] = contact('101')
+                provider.email_links['900'].append('101')
                 result = self.console(provider).snapshot()
                 self.assertEqual(self.group(result)['activities'], [])
                 self.assertIsNone(self.group(result)['metrics']['external_sent'])
@@ -323,7 +549,9 @@ class ContactCampaignTests(unittest.TestCase):
                     provider.contacts['100'] = contact(campaign=campaign, executor=executor)
                     if case != 'control':
                         provider.emails.append(email('901'))
-                        provider.email_links['901'] = ['101']
+                        # A shared email still requires validation of the contact outside
+                        # the discovery scope, including missing/empty/mismatched campaign.
+                        provider.email_links['901'] = ['100', '101']
                         provider.contacts['101'] = contact('101', campaign=None, executor=None)
                         if case == 'explicit_empty':
                             provider.contacts['101']['properties']['campanha_ativa'] = ''
@@ -334,16 +562,16 @@ class ContactCampaignTests(unittest.TestCase):
                     result = self.console(provider, campaign_registry=WithOtherPlatform()).snapshot()
                     group = self.group(result, campaign)
                     self.assertEqual(group['metrics']['observed_external_sent'], 1)
-                    self.assertEqual(group['metrics']['external_sent'], None if case == 'omitted' else 1)
+                    self.assertEqual(group['metrics']['external_sent'], 1 if case == 'control' else None)
                     other_campaign = OTHER if campaign == CAMPAIGN else CAMPAIGN
                     self.assertEqual(self.group(result, other_campaign)['metrics']['external_sent'],
-                                     None if case == 'omitted' else 0)
-                    self.assertEqual(result['coverage']['partial'], case == 'omitted')
-                    self.assertEqual(group['external_activity_state'], 'partial' if case == 'omitted' else 'complete')
+                                     0 if case == 'control' else None)
+                    self.assertEqual(result['coverage']['partial'], case != 'control')
+                    self.assertEqual(group['external_activity_state'], 'complete' if case == 'control' else 'partial')
                     self.assertEqual([event['id'] for event in group['activities']], ['emails:900'])
                     if case != 'control':
                         expected = ('contact_campaign_unavailable' if case == 'omitted' else
-                            'contact_campaign_out_of_scope' if case == 'other_platform' else 'contact_without_campaign')
+                            'contact_campaign_conflict')
                         self.assertEqual(result['unattributed_activities'][0]['attribution_reason'], expected)
                         member = next(row for row in result['contact_memberships'] if row['id'] == '101')
                         self.assertEqual(member['status'], 'campaign_missing_or_unknown' if case == 'omitted' else
@@ -398,6 +626,7 @@ class ContactCampaignTests(unittest.TestCase):
 
     def test_pagination_and_partial_coverage(self):
         provider = ContactProvider()
+        provider.emails.append(email('901'))
         provider.email_pages = {'': {'results': [email()], 'total': 2,
             'paging': {'next': {'after': '200', 'link': 'https://evil.invalid/'}}},
             '200': {'results': [email(), email('901')], 'total': 2}}
@@ -418,10 +647,16 @@ class ContactCampaignTests(unittest.TestCase):
                 if fault == 'schema':
                     provider.contact_schema.clear()
                 elif fault == 'missing_record':
-                    provider.contacts.clear()
-                elif fault == 'pending_batch':
+                    # Discovery succeeds; the subsequent identity batch omits its record.
+                    provider.batch_status = 'COMPLETE'
+                def request(method, path, body, headers, timeout):
+                    status, raw = provider(method, path, body, headers, timeout)
+                    if fault == 'missing_record' and path == '/crm/v3/objects/contacts/batch/read':
+                        return status, json.dumps({'status': 'COMPLETE', 'results': []}).encode()
+                    return status, raw
+                if fault == 'pending_batch':
                     provider.batch_status = 'PENDING'
-                result = self.console(provider, **({'max_requests': 7} if fault == 'budget' else {})).snapshot()
+                result = self.console(request, **({'max_requests': 7} if fault == 'budget' else {})).snapshot()
                 self.assertIsNone(self.group(result)['metrics']['external_sent'])
                 self.assertEqual(self.group(result)['activities'], [])
                 self.assertTrue(result['coverage']['partial'])
@@ -443,8 +678,10 @@ class ContactCampaignTests(unittest.TestCase):
         self.assertIsNone(self.group(result)['metrics']['external_sent'])
         provider = ContactProvider()
         provider.email_links.clear()
+        provider.contact_email_pages[('100', '')] = {'from': {'id': '100'}, 'to': [{'toObjectId': '900'}]}
         result = self.console(provider).snapshot()
-        self.assertEqual(result['unattributed_activities'][0]['attribution_reason'], 'contact_id_unavailable')
+        self.assertEqual(result['unattributed_activities'][0]['attribution_reason'], 'contact_association_incomplete')
+        self.assertIn('email_contacts:forward_inverse_mismatch', result['coverage']['limitations'])
 
     def test_email_only_timeline_and_contact_isolation(self):
         provider = ContactProvider()
@@ -480,7 +717,7 @@ class ContactCampaignTests(unittest.TestCase):
                 self.assertEqual(group['metrics']['external_sent'], 3)
                 self.assertEqual(group['metrics']['contacts'], 3)
                 self.assertEqual(group['metrics']['observed_contacts'], 3)
-                self.assertEqual(group['metric_availability']['contacts'], 'observed_task_and_email_contacts')
+                self.assertEqual(group['metric_availability']['contacts'], 'current_campaign_crm_contacts')
 
     def test_contacts_union_preserves_unknown_coverage(self):
         for campaign, executor in [(CAMPAIGN, 'apollo'), (OTHER, 'instantly')]:

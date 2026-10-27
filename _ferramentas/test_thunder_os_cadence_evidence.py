@@ -259,6 +259,9 @@ class ExternalActivityTests(unittest.TestCase):
     def test_email_apollo_conta_como_enviado_not_delivery_receipt(self):
         from test_thunder_os_cadence_contact_campaign import ContactProvider, Registry, CAMPAIGN
         provider = ContactProvider()
+        provider.contacts['101'] = {'id': '101', 'properties': {
+            'campanha_ativa': CAMPAIGN, 'executor': 'apollo'}}
+        provider.email_links['900'].append('101')
         console = CadenceReadonlyConsole(lambda: 'synthetic-token', request=provider, sleep=lambda _: None,
                                          campaign_registry=Registry())
         group = next(row for row in console.snapshot()['campaigns'] if row['id'] == CAMPAIGN)
