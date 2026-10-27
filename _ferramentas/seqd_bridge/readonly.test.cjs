@@ -39,7 +39,7 @@ const call=(bridge,method,url,body)=>bridge.handle({method,url,body,authorizatio
 if(!fixtureMode){
 test('read-only GET status checks pinned profile without Journal or quota',async()=>{
  const f=fixture(),result=await call(f.bridge,'GET','/v1/status');
- assert.deepEqual(result,{mailbox:EXPECTED.email,status:'ready',send_enabled:false});
+ assert.deepEqual(result,{mailbox:EXPECTED.email,status:'ready',send_enabled:false,capabilities:{exact_reply_parent:false}});
  assert.equal(f.bridge.journal,null);assert.deepEqual(f.calls.map(row=>row[0]),['session','profile']);
  assert.equal(f.wires.length,1);assert.equal(f.wires[0].timeout,3000);
 });

@@ -10,6 +10,7 @@ import re
 import unicodedata
 from typing import Any, Mapping
 from uuid import uuid4
+from copy import deepcopy
 
 from .db import Repository, RepositoryConflict
 from .models import ContractError, WorkItem, WorkStatus, as_payload, payload_hash, transition
@@ -21,6 +22,9 @@ from .research import validate_artifact, research_is_current
 from .knowledge import KnowledgeStore, KnowledgeError, validate_catalog
 from .cadence import effective_due
 from .touch_ledger import TouchLedger, TouchBlocked
+from .native_contract import (validate_native_context, validate_native_step,
+                              native_step_hash, evaluate_native_schedule)
+from .native_cadence import validate_readers, read_inputs, build_steps, DEFAULT_CALENDAR
 
 
 class AuthorizationError(ContractError):
@@ -35,7 +39,9 @@ class ThunderService:
 
     def __init__(self, repository: Repository, ledger: TouchLedger | None = None, hubspot: Any = None, *,
                  knowledge_store: KnowledgeStore | None = None, approved_catalog: Mapping[str, Any] | None = None, campaign_context_loader=None,
-                 effect_readers: Mapping[str, Any] | None = None):
+                 effect_readers: Mapping[str, Any] | None = None,
+                 native_readers: Mapping[str, Any] | None = None,
+                 native_calendar: Mapping[str, Any] | None = None, native_clock=None):
         self.repository = repository
         # Trusted composition reader, never a request/provider/model field.
         if campaign_context_loader is not None:
@@ -47,6 +53,11 @@ class ThunderService:
         self._approved_catalog = dict(approved_catalog) if approved_catalog is not None else None
         # Trusted composition only: result payloads never provide a reader or credentials.
         self._effect_readers = dict(effect_readers or {})
+        self._native_readers = validate_readers(native_readers)
+        self._native_calendar = deepcopy(DEFAULT_CALENDAR if native_calendar is None else native_calendar)
+        if native_clock is not None and not callable(native_clock):
+            raise ContractError('native_clock_invalid')
+        self._native_clock = native_clock or (lambda: datetime.now(timezone.utc))
 
     @staticmethod
     def _identity_key(value):
@@ -124,6 +135,7 @@ class ThunderService:
             "account_id": cadence["account_id"], "person_key": cadence["person_key"],
             "objective": cadence["objective"], "research_hash": cadence.get("research_hash"),
             "execution_context": cadence.get("execution_context"),
+            **({'native_context': cadence['native_context']} if 'native_context' in cadence else {}),
             **({"context_sources": cadence["context_sources"]} if "context_sources" in cadence else {}),
             **({"discarded_step_ids": [s["id"] for s in cadence["steps"] if s.get("discarded")]}
                if any(s.get("discarded") for s in cadence["steps"]) else {}),
@@ -131,6 +143,11 @@ class ThunderService:
         })
 
     def _validate_context_sources(self, cadence, *, required=False):
+        if 'native_context' in cadence:
+            error = self.native_execution_error(cadence)
+            if error:
+                raise ApprovalError(error)
+            return payload_hash(cadence['native_context'])
         sources = cadence.get("context_sources", [])
         if required and not sources:
             raise ApprovalError("context_sources_required")
@@ -274,6 +291,12 @@ class ThunderService:
         question = (f"Confirma executar no Thunder OS a campanha {context['campaign_id']} "
                     f"(versão {context['campaign_version']}, regras {context['rules_version']}), "
                     f"somente o lote {cadence['id']} e os destinatários/textos exibidos?")
+        if 'native_context' in cadence:
+            root = cadence['native_context']
+            question += (f" Rota {root['route']}; calendário {root['calendar']}; "
+                         f"CRM {root['crm_binding']}; vínculo nativo {payload_hash(root)}; ações "
+                         + '; '.join(f"{s['native']['action']} por {s['native']['sender_account']} "
+                                     f"na tarefa {s['native']['source_task_id']}" for s in cadence['steps']) + '.')
         return {**sheet_meta, "execution_confirmation": request, "execution_question": question}
 
     def validate_campaign_execution(self, cadence, approval, *, channel=None, provider=None):
@@ -552,6 +575,133 @@ class ThunderService:
             raise ContractError("work item not found")
         return item
 
+    def _native_inputs(self, source_ref, selection, route):
+        return read_inputs(self._native_readers, source_ref, selection, route,
+                           self._native_calendar, self.canonical_catalog())
+
+    def native_execution_error(self, cadence: Mapping[str, Any]) -> str | None:
+        """Read-only gate shared with Worker; callbacks come only from composition."""
+        try:
+            root = validate_native_context(cadence['native_context'])
+            selection = [step['id'] for step in cadence['steps']]
+            inputs = self._native_inputs(root['source_ref'], selection, root['route'])
+            if inputs['root'] != root:
+                return 'native_context_changed'
+            self._campaign_context(cadence)
+            if self.campaign_registry.configuration(cadence['execution_context']['campaign_id'])['flow_version'] != 'mexico_native_v1':
+                return 'native_registry_flow_mismatch'
+            binding = self.campaign_registry.binding(cadence['execution_context']['campaign_id'])
+            expected_steps = build_steps(inputs, binding, self._native_clock())
+            if ([self._approval_step(s) for s in cadence['steps']] != expected_steps
+                    or inputs['domain'] != cadence['account_id']):
+                return 'native_step_scope_changed'
+            research = self.current_research(inputs['domain'])
+            if payload_hash({key: research.get(key) for key in inputs['artifact']}) != payload_hash(inputs['artifact']):
+                return 'native_research_changed'
+            if cadence.get('research_hash') != payload_hash({'version': research['version'], 'facts': research['facts']}):
+                return 'research_scope_changed'
+            return self.identity_execution_error(cadence)
+        except (ContractError, KeyError, TypeError, ValueError) as exc:
+            return str(exc) if isinstance(exc, ContractError) else 'native_binding_invalid'
+        except Exception:
+            return 'native_binding_unavailable'
+
+    def prepare_native_cadence(self, source_ref, selection, *, route, target_context,
+                               expected_version, actor):
+        """Persist canonical research/identity/cadence; never import an approval."""
+        if actor != 'ygor':
+            raise AuthorizationError('native_preparation_human_required')
+        if type(expected_version) is not int or expected_version < 0:
+            raise RepositoryConflict('native_version_conflict')
+        context = execution_context(target_context)
+        if context['platform'] != 'thunder_os':
+            raise ApprovalError('native_target_platform_invalid')
+        inputs = self._native_inputs(source_ref, selection, route)
+        now = self._native_clock()
+        root = inputs['root']
+        cadence_id = 'native-' + payload_hash({'campaign': context['campaign_id'], 'route': route,
+            'source_person': inputs['actions'][0]['person_id']})[:32]
+        # BEGIN IMMEDIATE serializes read/check/write, including research history.
+        # Existing Repository writers borrow this transaction and roll back together.
+        with self.repository.transaction():
+            self._campaign_context({'execution_context': context})
+            if self.campaign_registry.configuration(context['campaign_id'])['flow_version'] != 'mexico_native_v1':
+                raise ContractError('native_registry_flow_mismatch')
+            binding = self.campaign_registry.binding(context['campaign_id'])
+            steps = build_steps(inputs, binding, now)
+            for row in self.repository.list_state('cadence'):
+                prior = row.get('native_context', {})
+                prior_crm = prior.get('crm_binding', {})
+                if (row['id'] != cadence_id and prior.get('route') == route
+                        and row.get('execution_context', {}).get('campaign_id') == context['campaign_id']
+                        and ((prior_crm.get('portal_id'), prior_crm.get('contact_id')) ==
+                             (root['crm_binding']['portal_id'], root['crm_binding']['contact_id'])
+                             or set(selection).intersection(s.get('id') for s in row.get('steps', [])))):
+                    raise RepositoryConflict('native_identity_or_selection_conflict')
+            existing = self.repository.get_state('cadence', cadence_id)
+            if existing:
+                if (existing.get('native_context') != root or existing.get('execution_context') != context
+                        or [self._approval_step(s) for s in existing['steps']] != steps
+                        or existing.get('native_dossier_hash') != payload_hash(inputs['artifact'])
+                        or existing['version'] != 1 or expected_version not in (0, 1)):
+                    raise RepositoryConflict('native_scope_or_version_conflict')
+                error = self.native_execution_error(existing)
+                if error:
+                    raise RepositoryConflict(error)
+                return self._native_prepare_result(existing, replayed=True)
+            if expected_version != 0:
+                raise RepositoryConflict('native_version_conflict')
+            research = self.repository.get_state('research', inputs['domain'])
+            marker = {'context': context, 'native_context': root, 'dossier_hash': payload_hash(inputs['artifact'])}
+            previous_marker = (research or {}).get('native_preparations', {}).get(cadence_id)
+            if previous_marker is not None and previous_marker != marker:
+                raise RepositoryConflict('native_scope_or_version_conflict')
+            reused = (research is not None and research.get('catalog_hash') == self.canonical_catalog()['content_hash']
+                      and payload_hash({key: research.get(key) for key in inputs['artifact']}) == payload_hash(inputs['artifact']))
+            if not reused:
+                research = self.submit_research({'dossier': inputs['dossier']}, actor)
+            if research['status'] != 'validated':
+                if previous_marker is None:
+                    research = self.repository.put_states_atomic([('research', inputs['domain'], {
+                        **{key: value for key, value in research.items() if key not in {'id', 'version', 'updated_at'}},
+                        'native_preparations': {**research.get('native_preparations', {}), cadence_id: marker},
+                    }, research['version'])])[0]
+                return {'status': 'held', 'cadence_id': None, 'cadence_version': None,
+                    'research_id': research['id'], 'research_version': research['version'],
+                    'identity_id': None, 'identity_version': None, 'context_hash': None,
+                    'replayed': reused, 'blockers': ['native_research_insufficient']}
+            identity_rows = []
+            for person, records in inputs['identities'].items():
+                if not self._identity_records_match(records):
+                    raise ContractError('native_identity_mismatch')
+                ident = 'native-' + payload_hash({'domain': inputs['domain'], 'person': person})[:32]
+                previous = self.repository.get_state('identity', ident)
+                if previous:
+                    if (previous.get('records') != records or previous.get('status') != 'canonical'
+                            or previous.get('actor') != actor):
+                        raise RepositoryConflict('native_identity_changed')
+                    identity_rows.append(previous)
+                else:
+                    identity_rows.append(self.resolve_identity({'id': ident, 'records': records}, actor))
+            cadence = self.create_cadence({'id': cadence_id, 'account_id': inputs['domain'],
+                'person_key': steps[0]['recipient'], 'objective': 'Revisar cadência nativa México',
+                'steps': steps, 'execution_context': context, 'native_context': root,
+                'native_dossier_hash': payload_hash(inputs['artifact']),
+                'native_identity_ids': [row['id'] for row in identity_rows]}, actor)
+            error = self.native_execution_error(cadence)
+            if error:
+                raise ContractError(error)
+            return self._native_prepare_result(cadence, replayed=False)
+
+    def _native_prepare_result(self, cadence, *, replayed):
+        research = self.repository.get_state('research', cadence['account_id'])
+        identity = self.repository.get_state('identity', cadence['native_identity_ids'][0])
+        return {'status': 'ready_for_review', 'cadence_id': cadence['id'],
+            'cadence_version': cadence['version'], 'research_id': research['id'],
+            'research_version': research['version'], 'identity_id': identity['id'],
+            'identity_version': identity['version'], 'context_hash': payload_hash(cadence['native_context']),
+            'replayed': replayed, 'blockers': []}
+
     def submit_research(self, data: Mapping[str, Any], actor: str) -> dict[str, Any]:
         dossier = data.get("dossier")
         if set(data) != {"dossier"} or not isinstance(dossier, Mapping):
@@ -579,24 +729,31 @@ class ThunderService:
 
     def create_cadence(self, data: Mapping[str, Any], actor: str) -> dict[str, Any]:
         required = {"id", "account_id", "person_key", "objective", "steps"}
-        if set(data) - (required | {"execution_context", "context_sources"}) or not required <= set(data) or not isinstance(data.get("steps"), list) or not data["steps"]:
+        native_fields = {'native_context', 'native_dossier_hash', 'native_identity_ids'} if 'native_context' in data else set()
+        if set(data) - (required | {"execution_context", "context_sources"} | native_fields) or not required <= set(data) or not isinstance(data.get("steps"), list) or not data["steps"]:
             raise ContractError("invalid cadence")
-        self._validate_context_sources(data)
+        if 'native_context' in data:
+            validate_native_context(data['native_context'])
+        else:
+            self._validate_context_sources(data)
         if "execution_context" in data:
             execution_context(data["execution_context"])
         research = self.current_research(str(data["account_id"]))
         expected_order = 1
         normalized = []
-        base_due = datetime.now(timezone.utc)
+        base_due = self._native_clock() if 'native_context' in data else datetime.now(timezone.utc)
         for raw in data["steps"]:
             if not isinstance(raw, Mapping):
                 raise ContractError("invalid cadence step")
             required_step = {"id", "recipient", "channel", "content", "order", "interval_hours"}
-            allowed = required_step | {"subject"}
+            allowed = required_step | {"subject"} | ({'native'} if 'native_context' in data else set())
             if set(raw) - allowed or not required_step <= set(raw) or raw["order"] != expected_order:
                 raise ContractError("invalid cadence step")
             if raw["channel"] == "email" and not isinstance(raw.get("subject"), str):
                 raise ContractError("email subject required")
+            if 'native_context' in data:
+                validate_native_step(raw.get('native'), data['native_context'])
+                native_step_hash(raw)
             if self.ledger:
                 try:
                     self.ledger.validate_identity(raw)
@@ -633,7 +790,7 @@ class ThunderService:
 
     @staticmethod
     def _approval_step(step: Mapping[str, Any]) -> dict[str, Any]:
-        fields = {"id", "recipient", "channel", "content", "order", "interval_hours", "subject"}
+        fields = {"id", "recipient", "channel", "content", "order", "interval_hours", "subject", "native"}
         return {key: value for key, value in step.items() if key in fields}
 
     def review_step(self, cadence_id: str, step_id: str, actor: str) -> dict[str, Any]:
@@ -674,6 +831,9 @@ class ThunderService:
                 "expected_version": cadence["version"], "review_hash": self.cadence_review_hash(cadence),
                 "execution_confirmation": confirmation, "content": step["content"],
                 "subject": step.get("subject"), "context_hash": payload_hash(cadence.get("context_sources", [])),
+                **({'native': deepcopy(step['native']), 'native_context': deepcopy(cadence['native_context']),
+                    'execution_question': self.campaign_review_view(cadence)['execution_question']}
+                   if 'native_context' in cadence else {}),
                 "can_approve": not blockers, "blockers": blockers}
 
     def _approval_preflight(self, steps, *, require_ledger=False):
@@ -804,10 +964,15 @@ class ThunderService:
         research = self.current_research(str(cadence["account_id"]))
         if cadence.get("research_hash") != payload_hash({"version": research["version"], "facts": research["facts"]}):
             raise ContractError("research changed; review cadence before dispatch")
-        due_at = effective_due(step, self.repository.effects(), cadence_id)
-        if due_at is None or datetime.now(timezone.utc) < due_at:
-            raise ContractError("step is not due or predecessor confirmation time is missing")
-        if step.get("predecessor_id"):
+        if 'native_context' in cadence:
+            decision = evaluate_native_schedule(cadence, step, self.repository.effects(), self._native_clock())
+            if decision['state'] != 'due':
+                raise ContractError(decision['reason'] or 'native_step_not_due')
+        else:
+            due_at = effective_due(step, self.repository.effects(), cadence_id)
+            if due_at is None or datetime.now(timezone.utc) < due_at:
+                raise ContractError("step is not due or predecessor confirmation time is missing")
+        if step.get("predecessor_id") and 'native_context' not in cadence:
             predecessor = next((effect for effect in self.repository.effects()
                                 if effect["payload"].get("cadence_id") == cadence_id
                                 and effect["payload"].get("step", {}).get("id") == step["predecessor_id"]), None)
@@ -821,6 +986,9 @@ class ThunderService:
         job = self._enqueue_authorized_effect(
             effect_key, {"cadence_id": cadence_id, "step": step, "approval_hash": effect_key,
                          "actor": audit_actor, "execution_confirmation_hash": payload_hash(approval["execution_confirmation"]),
+                         **({'native_context': deepcopy(cadence['native_context']),
+                             'campaign_id': cadence['execution_context']['campaign_id']}
+                            if 'native_context' in cadence else {}),
                          **({"delegated_action": "followup"} if actor == "hermes" else {})},
             actor, "followup", f"{cadence_id}:{step_id}",
         )

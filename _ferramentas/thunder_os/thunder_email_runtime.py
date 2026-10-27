@@ -49,9 +49,10 @@ class GmailCadenceAdapter:
     provider_name = 'gmail'
     account_id = MAILBOX
 
-    def __init__(self, repo, *, client=None, enabled=False, policy_loader=None, clock=time.time):
+    def __init__(self, repo, *, client=None, enabled=False, policy_loader=None, clock=time.time, native_parent=None):
         self.repo,self.client,self.enabled=repo,client or SEQDClient(),enabled
         self.policy_loader,self.clock=policy_loader,clock
+        self.native_parent=deepcopy(native_parent)
         self.capability='configured' if enabled is True else 'disabled'
 
     def _policy(self):
@@ -99,6 +100,14 @@ class GmailCadenceAdapter:
             expires=min(p['expires_at'],self.clock()+300,datetime.fromisoformat(approval['expires_at'].replace('Z','+00:00')).timestamp())
             require(expires>self.clock(),'gmail_approval_expired')
             plan={'to':step['recipient'],'subject':step['subject'],'body':step['content'],'thread_id':None}
+            if self.native_parent is not None:
+                parent=self.native_parent
+                require(self.client.status().get('capabilities',{}).get('exact_reply_parent') is True,'exact_parent_unsupported')
+                require(parent.get('from')==MAILBOX and parent.get('to')==step['recipient']
+                    and parent.get('subject')==step['subject'] and re.fullmatch(r'[a-f0-9]{1,64}',parent.get('id',''))
+                    and re.fullmatch(r'[a-f0-9]{1,64}',parent.get('source_thread_id',''))
+                    and re.fullmatch(r'<[^<>\s]{1,500}>',parent.get('source_message_id','')),'gmail_parent_mismatch')
+                plan.update(thread_id=parent['source_thread_id'],reply_message_id=parent['id'])
             preview='cadence-'+payload_hash({'job':job['id'],'policy':p})[:48]
             envelope={'preview_id':preview,'version':1,'content_hash':_hash({'mailbox':MAILBOX_ID,'workspace':WORKSPACE_ID,
                 'preview_id':preview,'version':1,**plan}), 'approved_actor':'YGOR',
@@ -107,7 +116,7 @@ class GmailCadenceAdapter:
             self.repo.append_state('gmail_cadence_attempt',key,{'job_id':job['id'],'policy':deepcopy(p),
                 'envelope':envelope,'phase':'reserved','retry_write':False})
 
-    def send(self,effect):
+    def send(self,effect,*,before_dispatch=None):
         p=self._policy();key=self._key(p);row=self.repo.get_state('gmail_cadence_attempt',key)
         require(row and row['phase']=='reserved' and row['policy']==p,'gmail_attempt_not_dispatchable')
         job=self.repo.effect(row['job_id'])
@@ -118,6 +127,10 @@ class GmailCadenceAdapter:
         require(effect=={'target':step['recipient'],'subject':step['subject'],'content':step['content'],'effect_id':step['id']},'gmail_effect_mismatch')
         self.repo.put_state('gmail_cadence_attempt',key,{**row,'phase':'dispatch_started'})
         try:
+            if self.native_parent is not None:
+                require(self.client.status().get('capabilities',{}).get('exact_reply_parent') is True,'exact_parent_unsupported')
+            if before_dispatch is not None:
+                require(before_dispatch() is True,'native_dispatch_guard_denied')
             result=self.client.send(deepcopy(row['envelope']))
             confirmed=(result.get('mailbox')==MAILBOX and result.get('status')=='sent'
                 and isinstance(result.get('provider_id'),str) and re.fullmatch(r'[a-f0-9]{1,64}',result['provider_id']))

@@ -228,9 +228,45 @@ function normalizedThread(thread){
   coverage:{scope:'thread',messages_total:thread.messages.length,messages_returned:messages.length,parts_returned:totalParts,attachment_bodies_fetched:false,reasons:[...reasons],limits:CONTEXT_LIMITS}};
  contextSize(result);return result;
 }
-function mime(mail,reference){
+function replyHeaders(payload){
+ const wanted=new Set(['from','to','subject','message-id','references','in-reply-to']),values={};
+ check(Array.isArray(payload?.headers)&&payload.headers.length<=500,'reply_headers_invalid');
+ for(const row of payload.headers){
+  check(typeof row?.name==='string'&&typeof row.value==='string'&&row.value.length<=8192&&!/[\x00-\x1f\x7f]/.test(row.value),'reply_headers_invalid');
+  const name=row.name.toLowerCase();
+  if(wanted.has(name)){check(!Object.hasOwn(values,name),'reply_headers_duplicate');values[name]=row.value;}
+ }
+ return values;
+}
+const rfcId=value=>typeof value==='string'&&/^<[^<>\x00-\x20\x7f@]{1,250}@[^<>\x00-\x20\x7f@]{1,250}>$/.test(value);
+function replyReferences(value,limit=50){
+ if(value===undefined||value==='')return [];
+ const refs=value.trim().split(/ +/);check(refs.length<=limit&&refs.every(rfcId),'invalid_thread_references');return refs;
+}
+function exactParent(thread,mail){
+ check(hexId(mail.reply_message_id)&&hexId(mail.thread_id),'invalid_reply_message_id');
+ check(thread?.id===mail.thread_id&&Array.isArray(thread.messages),'thread_not_found');
+ const matches=thread.messages.filter(row=>row.id===mail.reply_message_id);
+ check(matches.length===1,'reply_parent_not_found');const parent=matches[0];
+ check(parent.threadId===mail.thread_id,'reply_parent_thread_mismatch');
+ check(Array.isArray(parent.labelIds)&&parent.labelIds.includes('SENT'),'reply_parent_not_sent');
+ const h=replyHeaders(parent.payload);
+ const mailbox=value=>{
+  if(typeof value!=='string')return '';
+  const match=value.match(/^(?:[^<>@,;]*<([^<>\s,;]+)>|([^<>\s,;]+))$/);
+  return (match?.[1]??match?.[2]??'').toLowerCase();
+ };
+ check(mailbox(h.from)===EXPECTED.email&&mailbox(h.to)===mail.to,'reply_parent_participant_mismatch');
+ const base=value=>value.replace(/^(?:re:\s*)+/i,'').trim();
+ check(typeof h.subject==='string'&&base(decodeSubject(h.subject))===base(mail.subject),'thread_subject_mismatch');
+ check(rfcId(h['message-id']),'invalid_thread_reference');
+ const references=replyReferences(h.references);
+ if(references.at(-1)!==h['message-id'])references.push(h['message-id']);
+ return {reference:h['message-id'],references};
+}
+function mime(mail,reference,references){
  const headers=[`From: ${EXPECTED.email}`,`To: ${mail.to}`,`Subject: =?UTF-8?B?${Buffer.from(mail.subject).toString('base64')}?=`,`Message-ID: ${mail.message_id}`,'MIME-Version: 1.0','Content-Type: text/plain; charset=UTF-8','Content-Transfer-Encoding: base64'];
- if(reference){check(/^<[^<>\s\r\n]{1,500}>$/.test(reference),'invalid_thread_reference');headers.push('In-Reply-To: '+reference,'References: '+reference);}
+ if(reference){check(/^<[^<>\s\r\n]{1,500}>$/.test(reference),'invalid_thread_reference');if(references!==undefined)check(Array.isArray(references)&&references.length>0&&references.length<=51&&references.every(rfcId)&&Buffer.byteLength('References: '+references.join(' '))<=998,'invalid_thread_references');headers.push('In-Reply-To: '+reference,'References: '+(references===undefined?reference:references.join(' ')));}
  return Buffer.from(headers.join('\r\n')+'\r\n\r\n'+Buffer.from(mail.body).toString('base64').match(/.{1,76}/g).join('\r\n')).toString('base64url');
 }
 function guardSendWire(gmail,authorize=null){
@@ -322,13 +358,28 @@ function nativeSession(gmail,quota,{readOnly=false}={}){
   }
  };
  return {
+  supportsExactReplyParent:true,
   async quotaStatus(){check(quota,'quota_unavailable',503);return quota.status();},
   async reserveQuota(info){check(quota,'quota_unavailable',503);await quota.reserve(info);quotaProof={...info};},
   async finishQuota(info){check(quota,'quota_unavailable',503);return quota.finish(info);},
   verifyProfile,
   async list({limit,cursor}){const result=await gmail.users.messages.list({userId:'me',maxResults:limit,...(cursor?{pageToken:cursor}:{}),fields:'messages(id,threadId),nextPageToken'},options());return {messages:(result.data.messages??[]).map(row=>({id:row.id,thread_id:row.threadId})),next_cursor:result.data.nextPageToken??null};},
   get,
-  async findSent(messageId){check(/^<thunderos\.[a-f0-9]{64}@thundermustard\.com>$/.test(messageId),'invalid_message_id');const found=await search('in:sent rfc822msgid:'+messageId,2);if(found.nextPageToken)return [{},{}];return Promise.all((found.messages??[]).map(row=>get(row.id)));},
+  async findSent(messageId,anchor){
+   check(/^<thunderos\.[a-f0-9]{64}@thundermustard\.com>$/.test(messageId),'invalid_message_id');
+   const found=await search('in:sent rfc822msgid:'+messageId,2);if(found.nextPageToken)return [{},{}];
+   if(!anchor)return Promise.all((found.messages??[]).map(row=>get(row.id)));
+   return Promise.all((found.messages??[]).map(async row=>{
+    const result=await gmail.users.messages.get({userId:'me',id:row.id,format:'full',fields:'id,threadId,labelIds,payload'},options());
+    const candidate=normalized(result.data),h=replyHeaders(result.data?.payload);
+    const thread=await gmail.users.threads.get({userId:'me',id:anchor.thread_id,format:'metadata',metadataHeaders:['Message-ID','From','To','Subject','References'],fields:'id,messages(id,threadId,labelIds,payload(headers(name,value)))'},options());
+    const parent=exactParent(thread.data,{...candidate,...anchor});
+    check(candidate.thread_id===anchor.thread_id&&h['in-reply-to']===parent.reference&&
+     JSON.stringify(replyReferences(h.references,51))===JSON.stringify(parent.references)&&
+     typeof h.from==='string'&&h.from.toLowerCase()===EXPECTED.email,'reply_receipt_parent_mismatch',503);
+    return {...candidate,reply_message_id:anchor.reply_message_id};
+   }));
+  },
   async findDuplicates(mail){
    // Recipient-only search is deliberately conservative: no escaping/user search grammar.
    const found=await search('in:sent to:'+mail.to+' subject:'+JSON.stringify(mail.subject),10);
@@ -340,8 +391,12 @@ function nativeSession(gmail,quota,{readOnly=false}={}){
    return {complete:true,messages:rows.filter(row=>row.sent&&addresses(row.to).includes(mail.to)&&row.subject.normalize('NFC')===mail.subject.normalize('NFC')&&normalizedBody(row.body)===normalizedBody(mail.body))};
   },
   async send(mail,{authorize=null}={}){
-   let reference;
-   if(mail.thread_id){
+   let reference,references;
+   if(Object.hasOwn(mail,'reply_message_id')){
+    check(hexId(mail.reply_message_id)&&hexId(mail.thread_id),'invalid_reply_message_id');
+    const result=await gmail.users.threads.get({userId:'me',id:mail.thread_id,format:'metadata',metadataHeaders:['Message-ID','From','To','Subject','References'],fields:'id,messages(id,threadId,labelIds,payload(headers(name,value)))'},options());
+    ({reference,references}=exactParent(result.data,mail));
+   }else if(mail.thread_id){
     const result=await gmail.users.threads.get({userId:'me',id:mail.thread_id,format:'metadata',metadataHeaders:['Message-ID','From','To','Subject'],fields:'id,messages(id,payload(headers(name,value)))'},options());
     check(result.data.id===mail.thread_id&&result.data.messages?.length,'thread_not_found');
     const messages=result.data.messages;
@@ -356,7 +411,7 @@ function nativeSession(gmail,quota,{readOnly=false}={}){
    await quota.assertCurrent(quotaProof);quotaProof=null;
    if(authorize!==null)authorize();
    const restore=guardSendWire(gmail,authorize);
-   try{const result=await gmail.users.messages.send({userId:'me',requestBody:{raw:mime(mail,reference),...(mail.thread_id?{threadId:mail.thread_id}:{})}},options());return {id:result?.data?.id,thread_id:result?.data?.threadId};}finally{restore();}
+   try{const result=await gmail.users.messages.send({userId:'me',requestBody:{raw:mime(mail,reference,references),...(mail.thread_id?{threadId:mail.thread_id}:{})}},options());if(Object.hasOwn(mail,'reply_message_id'))check(result?.data?.threadId===mail.thread_id,'reply_receipt_thread_mismatch',503);return {id:result?.data?.id,thread_id:result?.data?.threadId};}finally{restore();}
   }
  };
 }
@@ -373,7 +428,7 @@ async function createNativeProvider({readOnly=false}={}){
  registerBuiltins(runtime,source);
  await Promise.all([4741,1813,7881,9994,7582].map(id=>runtime.e(id)));const native=await runtime(61069);check(typeof native.qf==='function','native_helper_unavailable',503);
  const appRequire=require('node:module').createRequire('/app/package.json');
- return {async session(){
+ return {...(!readOnly?{supportsExactReplyParent:true}:{}),async session(){
   const sql=appRequire('postgres')(process.env.POSTGRES_URL||process.env.DATABASE_URL,{max:1,prepare:false,connect_timeout:5,idle_timeout:5});
   try{const rows=await sql.begin('READ ONLY',tx=>tx`SELECT id,workspace_id,email,is_active,refresh_token FROM mailboxes WHERE id=${EXPECTED.mailbox} AND workspace_id=${EXPECTED.workspace} AND email=${EXPECTED.email} AND is_active=true`);
    check(rows.length===1,'mailbox_selection_failed',503);const row=rows[0];

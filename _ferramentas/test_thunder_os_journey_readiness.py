@@ -16,7 +16,7 @@ class PilotReadinessTests(PromptModeTests):
         self.assertFalse(readiness['pilot']['e1_manual_observed'])
         self.assertEqual(readiness['pilot']['max_initial_leads'], 10)
         self.assertEqual(self.row['approvals'], before)
-        self.approve(self.row['steps'][0]['id'])
+        self.confirm()
         exported = self.export()
         self.assertEqual(exported['rows'], 1)
         self.assertFalse(exported['operational_readiness']['execution_ready'])

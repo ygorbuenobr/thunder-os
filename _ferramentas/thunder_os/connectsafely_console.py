@@ -2,6 +2,7 @@ from .operation_campaign import OperationCampaign
 from .approvals import ApprovalError
 """Offline copilot console; explicit client and canonical ledger, no activation."""
 import json
+from contextlib import nullcontext
 import math
 import re
 import time
@@ -147,15 +148,36 @@ class ConnectSafelyConsole:
         return self.campaign_gate().review(body['preview_id'], body['campaign_id'])
 
     def execute(self,body,actor=None,*,dispatch_guard=None):
+        return self._execute(body, actor, dispatch_guard=dispatch_guard)
+
+    def execute_native(self, body, job, *, before_dispatch):
+        """Trusted application entry; consume the canonical Service authority once.
+
+        The caller owns the outer job/fence. The CS ledger is a separate durable
+        transaction, so even rollback of this workflow cannot permit redelivery.
+        """
+        current = self.repo.effect(job['id'])
+        if (not callable(before_dispatch) or not current or current['payload'] != job['payload']
+                or current['lease_owner'] != job['lease_owner']
+                or getattr(self.repo._local, 'dispatch_fence', None) != (job['id'], job['lease_owner'])):
+            raise ConnectSafelyError('native_dispatch_fence_required')
+        return self._execute(body, 'ygor', dispatch_guard=before_dispatch, native_job=job)
+
+    def _execute(self,body,actor=None,*,dispatch_guard=None,native_job=None):
         self._actor(actor)
-        if not isinstance(body, dict) or 'execution_confirmation' not in body:
-            raise ConnectSafelyError('campaign_confirmation_required')
-        gate = self.campaign_gate()
-        try:
-            campaign_record = gate.approve(body, actor)
-        except ApprovalError as exc:
-            raise ConnectSafelyError(str(exc)) from None
-        body = {k:v for k,v in body.items() if k != 'execution_confirmation'}
+        gate = None
+        campaign_record = None
+        if native_job is None:
+            if not isinstance(body, dict) or 'execution_confirmation' not in body:
+                raise ConnectSafelyError('campaign_confirmation_required')
+            gate = self.campaign_gate()
+            try:
+                campaign_record = gate.approve(body, actor)
+            except ApprovalError as exc:
+                raise ConnectSafelyError(str(exc)) from None
+            body = {k:v for k,v in body.items() if k != 'execution_confirmation'}
+        elif dispatch_guard() is not True:
+            raise ConnectSafelyError('dispatch_guard_denied')
         if self.writes_enabled is not True or self.ledger is None:raise ConnectSafelyError('writes_disabled_or_ledger_missing')
         if not isinstance(body,dict) or set(body)!={'preview_id','expected_version','review_hash'} or type(body.get('expected_version')) is not int:raise ConnectSafelyError('exact_review_required')
         self._identity()
@@ -166,18 +188,21 @@ class ConnectSafelyConsole:
             plan=self._plan(preview['plan'])
             if preview['review_hash']!=payload_hash({'plan':plan,'version':preview['version']}):raise RepositoryConflict('preview_changed')
             step=self._step(plan,preview['id'],preview['version']);now=datetime.fromtimestamp(self.clock(),timezone.utc)
-            pack=self.approvals.approve_pack(preview['id'],preview['version'],[step],actor,datetime.fromtimestamp(preview['expires_at'],timezone.utc),now)
-            authorization=self.approvals.authorize_step(step,pack,now)
+            if native_job is None:
+                pack=self.approvals.approve_pack(preview['id'],preview['version'],[step],actor,datetime.fromtimestamp(preview['expires_at'],timezone.utc),now)
+                approval_hash=self.approvals.authorize_step(step,pack,now).effect_hash
+            else:
+                approval_hash=native_job['effect_key']
             effect=payload_hash(plan)
             old=self.repo.get_state('connectsafely_attempt',effect)
-            reusable=bool(old and old.get('phase')=='recoverable_not_dispatched' and old.get('canonical_owned') and not old.get('receipt_ref'))
+            reusable=bool(native_job is None and old and old.get('phase')=='recoverable_not_dispatched' and old.get('canonical_owned') and not old.get('receipt_ref'))
             if old and not reusable:
                 self.repo.put_state('connectsafely_preview',preview['id'],{**preview,'state':'attempted','effect_key':effect,'attempt_token':old.get('attempt_token')})
                 return {**old,'retry_write':False,'replayed':True}
             token=uuid4().hex
             claimed=self.repo.put_state('connectsafely_preview',preview['id'],{**preview,'state':'attempted','effect_key':effect,'attempt_token':token})
             attempt={'status':'uncertain','phase':'preflight','attempt_token':token,'preview_id':preview['id'],
-                'attempted_at':self.clock(),'approval_hash':authorization.effect_hash,'plan':plan,
+                'attempted_at':self.clock(),'approval_hash':approval_hash,'plan':plan,
                 'canonical_owned':False,'retry_write':False}
             if old:self.repo.put_state('connectsafely_attempt',effect,attempt)
             else:self.repo.append_state('connectsafely_attempt',effect,attempt)
@@ -211,10 +236,11 @@ class ConnectSafelyConsole:
                             or current.get('effect_key')!=effect or current['review_hash']!=preview['review_hash']
                             or current['plan']!=plan or not attempt or attempt['status']!='uncertain'
                             or attempt.get('attempt_token')!=token or attempt.get('phase')!='dispatch_started'
-                            or attempt.get('approval_hash')!=authorization.effect_hash or not attempt.get('canonical_owned')):
+                            or attempt.get('approval_hash')!=approval_hash or not attempt.get('canonical_owned')):
                             raise ConnectSafelyError('current_approval_changed')
                         self._plan(current['plan'])
-                        self.approvals.authorize_step(step,pack,datetime.fromtimestamp(self.clock(),timezone.utc))
+                        if native_job is None:
+                            self.approvals.authorize_step(step,pack,datetime.fromtimestamp(self.clock(),timezone.utc))
                         reply=self.repo.get_state('connectsafely_sender',payload_hash({'account':self.account_id,'sender_urn':plan['recipient_profile_urn']}))
                         if reply and reply.get('has_reply') is True:raise ConnectSafelyError('has_reply')
                         self.ledger.validate(effect,canonical_step)
@@ -232,7 +258,7 @@ class ConnectSafelyConsole:
                     if current.get('attempt_token') != token: raise RepositoryConflict('attempt_changed')
                     self.repo.put_state('connectsafely_attempt',effect,{**current,'phase':'dispatch_started'})
                 dispatch_error = None
-                with gate.execution_guard(campaign_record, 'connectsafely_attempt', effect):
+                with (gate.execution_guard(campaign_record, 'connectsafely_attempt', effect) if gate is not None else nullcontext()):
                     try:
                         result=self._result(self._send(plan,before_dispatch,execution_context))
                     except Exception as exc:

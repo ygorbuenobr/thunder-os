@@ -22,15 +22,27 @@ function createReadOnlyBridge(provider,credential){
 function createScopedBridge({readProvider,writeProvider,credential,journalDir,policyLoader,now=()=>Date.now()}){
  const authority=(body,tick)=>{
   const p=policyLoader();
-  check(p&&Object.keys(p).sort().join(',')===['approval_ref','mailbox','to','subject','body_hash','idempotency_key','issued_at','expires_at','max_attempts'].sort().join(','),'scoped_policy_invalid');
+  const fields=['approval_ref','mailbox','to','subject','body_hash','idempotency_key','issued_at','expires_at','max_attempts'];
+  const anchored=p&&(Object.hasOwn(p,'thread_id')||Object.hasOwn(p,'reply_message_id'));
+  check(p&&typeof p==='object'&&!Array.isArray(p)&&Object.keys(p).sort().join(',')===[...fields,...(anchored?['thread_id','reply_message_id']:[])].sort().join(','),'scoped_policy_invalid');
+  const threadMatches=anchored?
+   typeof p.thread_id==='string'&&/^[a-f0-9]{1,64}$/.test(p.thread_id)&&
+   typeof p.reply_message_id==='string'&&/^[a-f0-9]{1,64}$/.test(p.reply_message_id)&&
+   p.thread_id===body.thread_id&&p.reply_message_id===body.reply_message_id:
+   body.thread_id==null&&!Object.hasOwn(body,'reply_message_id');
   check(typeof p.approval_ref==='string'&&p.approval_ref.length>0&&p.mailbox===EXPECTED.email&&p.max_attempts===1&&
    Number.isSafeInteger(p.issued_at)&&Number.isSafeInteger(p.expires_at)&&p.issued_at<=tick&&tick<p.expires_at&&p.expires_at-p.issued_at<=900000&&
-   p.to===body.to&&p.subject===body.subject&&p.body_hash===hash(body.body)&&p.idempotency_key===body.idempotency_key&&body.thread_id==null,'scoped_policy_mismatch');
+   p.to===body.to&&p.subject===body.subject&&p.body_hash===hash(body.body)&&p.idempotency_key===body.idempotency_key&&threadMatches,'scoped_policy_mismatch');
   return true;
  };
  const read=createReadOnlyBridge(readProvider,credential);
  const write=createBridge({provider:writeProvider,credential,journalDir,sendEnabled:true,sendAuthority:authority,now});
- return {journal:write.journal,handle:request=>request.method==='GET'?read.handle(request):write.handle(request)};
+ return {journal:write.journal,async handle(request){
+  if(request.method!=='GET')return write.handle(request);
+  const result=await read.handle(request);
+  // Configured write API capability only; never opens a write session or quota.
+  return request.url==='/v1/status'?{...result,capabilities:{...result.capabilities,exact_reply_parent:writeProvider.supportsExactReplyParent===true}}:result;
+ }};
 }
 function pinnedSendPolicy(){
  const path=process.env.THUNDER_BRIDGE_SEND_POLICY_FILE;

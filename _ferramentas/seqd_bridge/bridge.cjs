@@ -24,7 +24,7 @@ function createBridge({provider,credential,journalDir,sendEnabled=false,readOnly
    (route==='/v1/messages'||route==='/v1/contact-search'||!parsed.search),'read_only_route',404);
   if(method==='GET'&&route==='/v1/status'){
    check(!parsed.search,'invalid_query');await profile();if(sendEnabled){check(typeof active.quotaStatus==='function','quota_unavailable',503);const status=await active.quotaStatus();check(status?.ready===true,'quota_unavailable',503);}
-   return scoped({status:'ready',send_enabled:sendEnabled});
+   return scoped({status:'ready',send_enabled:sendEnabled,capabilities:{exact_reply_parent:active.supportsExactReplyParent===true}});
   }
   if(readOnly&&method==='GET'&&route==='/v1/contact-search'){
    const {contactQuery}=require('./native.cjs'),crypto=require('node:crypto');
@@ -102,6 +102,19 @@ function createBridge({provider,credential,journalDir,sendEnabled=false,readOnly
    authorize();
    const info=validate(body,credential,now());
    await profile();validate(body,credential,now());authorize();
+   const exact=Object.hasOwn(body,'reply_message_id');
+   if(exact){
+    check(active.supportsExactReplyParent===true,'exact_parent_unsupported',503);
+    // Existing journal CAS primitives, separate namespaces; no new journal schema.
+    // Pin content/thread across approval keys and parent changes, even after timeout.
+    const legacy={...business(body)};delete legacy.reply_message_id;
+    const touchKey=hash('exact-reply-touch-v1:'+hash(legacy))+'.key.json';
+    await journal.append(touchKey,{businessHash:info.businessHash});
+    check((await journal.read(touchKey))?.businessHash===info.businessHash,'reply_anchor_conflict',409);
+    const anchorKey=hash('exact-reply-anchor-v1:'+info.businessHash)+'.key.json';
+    await journal.append(anchorKey,{reply_message_id:body.reply_message_id});
+    check((await journal.read(anchorKey))?.reply_message_id===body.reply_message_id,'reply_anchor_conflict',409);
+   }
    const reserved=await journal.reserve(body.idempotency_key,{...info,requestedThreadId:body.thread_id??null});
    if(!reserved.execute)return scoped({...await journal.state(info.businessHash),deduplicated:true});
    // Expiry rechecked after fsync. Reservation remains uncertain on any failure.
@@ -113,9 +126,9 @@ function createBridge({provider,credential,journalDir,sendEnabled=false,readOnly
     }
     validate(body,credential,now());authorize();
     check(typeof active.reserveQuota==='function'&&typeof active.finishQuota==='function','quota_unavailable',503);
-    await active.reserveQuota({effect:info.businessHash,to:body.to,messageId:info.messageId});
+    await active.reserveQuota({effect:info.businessHash,to:body.to,messageId:info.messageId,...(exact?{reply_message_id:body.reply_message_id}:{})});
     validate(body,credential,now());authorize();
-    const result=await active.send({to:body.to,subject:body.subject,body:body.body,thread_id:body.thread_id??null,message_id:info.messageId},{authorize:()=>{validate(body,credential,now());authorize();}});
+    const result=await active.send({to:body.to,subject:body.subject,body:body.body,thread_id:body.thread_id??null,message_id:info.messageId,...(exact?{reply_message_id:body.reply_message_id}:{})},{authorize:()=>{validate(body,credential,now());authorize();}});
     return scoped(await receipt(info,result,active));
    }catch(error){return scoped(await journal.uncertain(info.businessHash,'send_outcome_uncertain'));}
   }
@@ -125,13 +138,18 @@ function createBridge({provider,credential,journalDir,sendEnabled=false,readOnly
    if(state.status==='sent')return scoped(state);
    const reservation=await journal.read(businessHash+'.reservation.json');
    if(!reservation)return scoped(state);
-   await profile();const found=await active.findSent(reservation.messageId);
+   const anchor=await journal.read(hash('exact-reply-anchor-v1:'+businessHash)+'.key.json');
+   if(anchor)check(typeof anchor.reply_message_id==='string'&&/^[a-f0-9]{1,64}$/.test(anchor.reply_message_id),'journal_corrupt',503);
+   await profile();
+   if(anchor)check(active.supportsExactReplyParent===true,'exact_parent_unsupported',503);
+   const found=await active.findSent(reservation.messageId,...(anchor?[{reply_message_id:anchor.reply_message_id,thread_id:reservation.requestedThreadId}]:[]));
    check(Array.isArray(found)&&found.length<=2,'invalid_provider_response',503);
    if(found.length!==1)return scoped({...state,error_code:found.length?'ambiguous_receipt':'receipt_not_found'});
    const candidate=found[0];
    const matches=candidate.sent===true&&!candidate.truncated&&candidate.message_id===reservation.messageId&&identifier(candidate.id)
        &&(reservation.requestedThreadId===null||candidate.thread_id===reservation.requestedThreadId)
-       &&hash(business({...candidate,thread_id:reservation.requestedThreadId}))===businessHash;
+       &&(anchor?candidate.reply_message_id===anchor.reply_message_id:!Object.hasOwn(candidate,'reply_message_id'))
+       &&hash(business({...candidate,thread_id:reservation.requestedThreadId,...(anchor?{reply_message_id:anchor.reply_message_id}:{})}))===businessHash;
    if(!matches)return scoped({...state,error_code:'receipt_snapshot_mismatch'});
    return scoped(await receipt({businessHash,messageId:reservation.messageId},candidate,active));
   }

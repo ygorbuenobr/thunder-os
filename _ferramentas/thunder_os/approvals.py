@@ -42,6 +42,12 @@ class Authorization:
 
 
 def _step_hash(step: Mapping[str, Any]) -> str:
+    if 'native' in step:
+        from .native_contract import native_step_hash
+        try:
+            return native_step_hash(step)
+        except ContractError as exc:
+            raise ApprovalError(str(exc)) from exc
     required = {"id", "recipient", "channel", "content", "order", "interval_hours"}
     allowed = required | ({"subject"} if step.get("channel") == "email" else set())
     if set(step) != allowed:

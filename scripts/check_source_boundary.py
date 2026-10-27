@@ -98,6 +98,8 @@ ALLOWED_FILES = {
     "_ferramentas/painel_modelo.html",
 }
 ALLOWED_TESTS = {
+    "test_thunder_os_native_cadence.py",
+    "test_thunder_os_native_execution.py",
     "test_thunder_os_cadence_preparation.py",
     "test_thunder_os_instantly_sequence_readonly.py",
     "test_thunder_os_contact_history.py",
@@ -224,7 +226,7 @@ def allowed(path: str) -> bool:
         return PurePosixPath(path).name in {
             'bridge.cjs','native.cjs','server.cjs','contract.cjs','journal.cjs','quota.cjs',
             'bridge.test.cjs','readonly.test.cjs','context.test.cjs','process-fixture.cjs',
-            'contract-vector.json',
+            'contract-vector.json','threading.test.cjs',
         } and len(parts)==3
     if path.startswith("_ferramentas/thunder_os/"):
         return "__pycache__" not in parts and path.endswith((".py", ".sql"))

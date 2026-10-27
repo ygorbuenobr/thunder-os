@@ -26,6 +26,9 @@ def calculate_due(dependency_completed_at: datetime, interval_hours: int) -> dat
 
 
 def _scope_hash(step: Mapping[str, Any]) -> str:
+    if 'native' in step:
+        from .native_contract import native_step_hash, STEP_FIELDS
+        return native_step_hash({k: v for k, v in step.items() if k in STEP_FIELDS | {'subject'}})
     return effect_payload_hash(
         target=step["recipient"], channel=step["channel"], content=step["content"],
         order=step["order"], interval_hours=step["interval_hours"], subject=step.get("subject"),

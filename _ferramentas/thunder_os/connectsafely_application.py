@@ -208,6 +208,67 @@ class ConnectSafelyApplication:
                     'state':'queued', 'simulation':self.simulation, 'execution_scope':self.execution_scope, 'created_at':self.clock()})
             return {'job_id':key, 'preview_id':preview['id'], 'state':existing['state'], 'simulation':self.simulation}
 
+    def prepare_native(self, job, plan):
+        """Internal canonical-job bridge; no enqueue/queue approval is manufactured."""
+        self._enabled(plan.get('action'))
+        console = self._console(plan.get('action'))
+        plan = console._plan(plan)
+        console._identity()
+        native = job['payload']['step'].get('native', {})
+        if (native.get('action') != plan['action'] or native.get('sender_account') != plan['account_id']
+                or job['payload']['step']['content'] != plan['content']):
+            raise ConnectSafelyError('native_plan_mismatch')
+        key = payload_hash({'native_job':job['id'], 'effect_key':job['effect_key']})
+        existing = self.repo.get_state('connectsafely_job', key)
+        if existing:
+            preview = self._preview(existing['preview_id'])
+            if (existing.get('native_job_id') != job['id'] or preview['plan'] != plan
+                    or existing.get('native_payload_hash') != payload_hash(job['payload'])):
+                raise ConnectSafelyError('native_plan_mismatch')
+            return existing
+        preview = console.prepare(plan, actor='ygor')
+        review = {'preview_id':preview['id'], 'expected_version':preview['version'], 'review_hash':preview['review_hash']}
+        return self.repo.append_state('connectsafely_job', key, {
+            'native_job_id':job['id'], 'native_effect_key':job['effect_key'],
+            'native_payload_hash':payload_hash(job['payload']), 'preview_id':preview['id'],
+            'review':review, 'state':'queued', 'simulation':self.simulation, 'created_at':self.clock()})
+
+    def execute_native(self, job, *, before_dispatch):
+        key = payload_hash({'native_job':job['id'], 'effect_key':job['effect_key']})
+        row = self.repo.get_state('connectsafely_job', key)
+        if (not row or row.get('native_payload_hash') != payload_hash(job['payload'])
+                or not callable(before_dispatch)):
+            raise ConnectSafelyError('native_job_mismatch')
+        preview = self._preview(row['preview_id'])
+        self._enabled(preview['plan']['action'])
+        if row['state'] != 'queued':
+            return row.get('result') or {'status':'uncertain','error_code':'requires_reconciliation','retry_write':False}
+        def guard():
+            self._enabled(preview['plan']['action'])
+            return before_dispatch()
+        result = self._console(preview['plan']['action']).execute_native(row['review'], job, before_dispatch=guard)
+        state = {'sent':'done','blocked':'blocked'}.get(result.get('status'), 'needs_reconciliation')
+        self.repo.put_state('connectsafely_job', key, {**row, 'state':state, 'result':result})
+        return result
+
+    def reconcile_native(self, job):
+        key = payload_hash({'native_job':job['id'], 'effect_key':job['effect_key']})
+        row = self.repo.get_state('connectsafely_job', key)
+        if not row or row.get('native_payload_hash') != payload_hash(job['payload']):
+            return {'status':'uncertain','error_code':'requires_reconciliation','retry_write':False}
+        preview = self._preview(row['preview_id'])
+        # A previously confirmed receipt still needs fresh provider readback when
+        # the outer workflow lost its local result. Never trust a UI/job label.
+        console = self._console(preview['plan']['action'])
+        attempt = self.repo.get_state('connectsafely_attempt',payload_hash(preview['plan']))
+        if attempt and attempt.get('status') == 'sent':
+            observed = console._result(console._reconcile(preview['plan'],attempt['attempted_at']))
+            if observed.get('status') == 'sent' and observed.get('receipt_ref') == attempt.get('receipt_ref'):
+                return observed
+            return {'status':'uncertain','error_code':'receipt_unverified','retry_write':False}
+        # Read-only reconciliation reuses the owned CS attempt, never execute/enqueue.
+        return console.reconcile({'preview_id':preview['id']}, actor='ygor')
+
     def _job_authorized(self,job):
         self._check_mode(self._preview(job['preview_id']))
         approval = self.repo.get_state('connectsafely_queue_approval', job['id'])
@@ -232,6 +293,8 @@ class ConnectSafelyApplication:
             jobs=([self.repo.get_state('connectsafely_job',self._id(job_id))] if job_id is not None
                   else self.repo.list_state('connectsafely_job'))
             for job in jobs:
+                if job is not None and 'native_job_id' in job:
+                    continue
                 if job is None or (self.execution_scope is not None and job.get('execution_scope') != self.execution_scope):
                     continue
                 if job['state'] == 'queued':
