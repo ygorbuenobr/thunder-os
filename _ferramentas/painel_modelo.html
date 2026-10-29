@@ -1849,13 +1849,39 @@ setInterval(()=>{if(!document.hidden&&document.body.dataset.aba==='sistema'&&!$(
           if(typeof fact?.statement!=='string')continue;
           detail.appendChild(node('p',fact.statement));
           const sourceDetail=node('p','Observado em: '+(typeof fact.observed_at==='string'?fact.observed_at:'data não informada'));
+          sourceDetail.appendChild(node('span',' · Publicado em: '+(typeof fact.published_at==='string'&&fact.published_at.trim()?fact.published_at:'data não informada')));
+          const freshness=fact.freshness==='fresh'?'atual na pesquisa':fact.freshness==='stale'?'desatualizado':fact.freshness==='undated'?'sem data':'não informada';
+          sourceDetail.appendChild(node('span',' · Atualidade registrada: '+freshness));
           const link=sourceLink(fact.source);if(link){sourceDetail.appendChild(node('span',' · '));sourceDetail.appendChild(link);}else sourceDetail.appendChild(node('span',' · Fonte com URL válida não informada.'));
           detail.appendChild(sourceDetail);section('Relevância',fact.relevance);
         }
         section('Inferências (não são fatos)',artifact.inferences);
         section('Hipótese de oportunidade',artifact.opportunity_hypothesis);
         section('Hipótese alternativa',artifact.alternative_hypothesis);
+        const counter=artifact.counter_signal_assessment;
+        if(counter&&typeof counter==='object'&&!Array.isArray(counter)){
+          const status=counter.status==='signals_found'?'contrassinais encontrados':counter.status==='no_signals_found'?'nenhum contrassinal encontrado na pesquisa':counter.status==='not_assessed'?'não avaliado':'estado não informado';
+          const severity=counter.severity==='low'?'baixa':counter.severity==='medium'?'média':counter.severity==='high'?'alta':counter.severity==='none'?'nenhuma':counter.severity==='unknown'?'desconhecida':'não informada';
+          const disposition=counter.disposition==='proceed'?'prosseguir':counter.disposition==='qualify'?'qualificar':counter.disposition==='defer'?'adiar':counter.disposition==='disqualify'?'desqualificar':'não informada';
+          detail.appendChild(node('h5','Avaliação de contrassinais'));
+          detail.appendChild(node('p',status+' · Severidade: '+severity+' · Encaminhamento: '+disposition));
+          section('Detalhes dos contrassinais',counter.details);
+          section('Fatos relacionados',counter.fact_ids);
+          section('Pergunta para qualificar',counter.qualification_question);
+        }else section('Avaliação de contrassinais','Não informada nesta pesquisa.');
+        section('Limitações',artifact.limitations);
         section('Lacunas',artifact.missing);
+        const gaps=Array.isArray(artifact.research_gaps)?artifact.research_gaps:[];
+        if(gaps.length){
+          detail.appendChild(node('h5','Lacunas estruturadas'));
+          for(const gap of gaps){
+            if(!gap||typeof gap!=='object'||Array.isArray(gap))continue;
+            const description=typeof gap.description==='string'&&gap.description.trim()?gap.description:'Descrição não informada';
+            const severity=gap.severity==='low'?'baixa':gap.severity==='medium'?'média':gap.severity==='high'?'alta':'não informada';
+            const blocking=gap.blocks_hypothesis===true?'bloqueia a hipótese':gap.blocks_hypothesis===false?'não bloqueia a hipótese':'bloqueio não informado';
+            detail.appendChild(node('p',description+' · Severidade: '+severity+' · '+blocking));
+          }
+        }
         section('Lacunas do comitê',artifact.committee_gaps);
         section('Riscos',artifact.risks);
         section('Próximo passo',artifact.next_action||w.next_action);
@@ -2358,20 +2384,23 @@ function journeySyncEditor(container){
   container.querySelector('[data-journey-operation]').textContent=edit.message;
   for(const button of container.querySelectorAll('[data-journey-reset],[data-journey-discard]'))button.disabled=edit.busy;
   const approve=container.querySelector('[data-journey-approve]');
-  if(approve){approve.disabled=edit.busy||!same||review?.can_approve!==true||!container.querySelector('[data-journey-confirm]').checked;approve.textContent=edited||edit.savedEdited?'Aprovar versão editada e autorizar este toque':'Aprovar como está e autorizar este toque';}
+  if(approve){approve.disabled=edit.busy||!same||!journeyReviewFieldsValid(review)||review?.can_approve!==true||!container.querySelector('[data-journey-confirm]').checked;approve.textContent=edited||edit.savedEdited?'Aprovar versão editada e autorizar este toque':'Aprovar como está e autorizar este toque';}
   const discard=container.querySelector('[data-journey-discard-step]');
   if(discard){const reason=container.querySelector('[data-journey-discard-reason]').value.trim();discard.disabled=edit.busy||!review||!reason||reason.length>1000;}
+}
+function journeyReviewFieldsValid(review){
+  return typeof review?.recipient==='string'&&review.recipient.trim().length>0&&typeof review.channel==='string'&&review.channel.trim().length>0&&Number.isSafeInteger(review.order)&&review.order>=1&&Number.isSafeInteger(review.interval_hours)&&review.interval_hours>=0&&review.interval_hours<=87600;
 }
 function journeyRenderReview(container){
   const edit=journeyEdits.get(container.dataset.journeyEditor),review=edit?.review,target=container.querySelector('[data-journey-review-body]');if(!target)return;
   if(!review){target.replaceChildren();journeySyncEditor(container);return;}
   const confirmation=review.execution_confirmation,context=confirmation?.context;
-  target.innerHTML=`<section><h3>Revisão para executar somente ${esc(review.step_id)}</h3><p class="msg">Cadência: ${esc(review.cadence_id)} · Versão: ${esc(review.expected_version)}</p>${context?`<p>Plataforma: ${esc(context.platform)} · Campanha: ${esc(context.campaign_id)} · Versão da campanha: ${esc(context.campaign_version)} · Regras: ${esc(context.rules_version)}</p>`:''}<p class="msg">Contexto SHA256: <code>${esc(review.context_hash)}</code></p><p class="msg">Revisão SHA256: <code>${esc(review.review_hash)}</code></p><p>${esc(review.subject||'Sem assunto')}</p><pre class="journey-original">${esc(review.content)}</pre>${review.can_approve===true?`<details><summary>Escopo exato da execução</summary><pre class="journey-original">${esc(JSON.stringify(confirmation,null,2))}</pre></details><label><input type="checkbox" data-journey-confirm> Confirmo autorizar a execução somente deste toque, na campanha, versão e regras acima.</label><div class="acoes"><button type="button" class="btn pri" data-journey-approve disabled>Aprovar como está e autorizar este toque</button></div>`:`<p class="msg">Aprovação bloqueada: ${esc(journeyRows(review.blockers).map(journeyDescribe).join(' · ')||'Escopo não validado.')}</p>`}<details><summary>Descartar toque canônico</summary><label>Motivo do descarte<textarea rows="2" maxlength="1000" data-journey-discard-reason aria-label="Motivo do descarte do toque"></textarea></label><button type="button" class="btn alerta" data-journey-discard-step disabled>Descartar este toque</button></details></section>`;
+  target.innerHTML=`<section><h3>Revisão para executar somente ${esc(review.step_id)}</h3><p class="msg">Cadência: ${esc(review.cadence_id)} · Versão: ${esc(review.expected_version)}</p>${journeyReviewFieldsValid(review)?`<p>Destinatário: ${esc(review.recipient)} · Canal: ${esc(review.channel)} · Ordem: ${esc(review.order)} · Intervalo: ${esc(review.interval_hours)} horas</p>`:'<p class="msg">Dados do toque incompletos ou inválidos. Aprovação bloqueada.</p>'}${context?`<p>Plataforma: ${esc(context.platform)} · Campanha: ${esc(context.campaign_id)} · Versão da campanha: ${esc(context.campaign_version)} · Regras: ${esc(context.rules_version)}</p>`:''}<p class="msg">Contexto SHA256: <code>${esc(review.context_hash)}</code></p><p class="msg">Revisão SHA256: <code>${esc(review.review_hash)}</code></p><p>${esc(review.subject||'Sem assunto')}</p><pre class="journey-original">${esc(review.content)}</pre>${review.can_approve===true&&journeyReviewFieldsValid(review)?`<details><summary>Escopo exato da execução</summary><pre class="journey-original">${esc(JSON.stringify(confirmation,null,2))}</pre></details><label><input type="checkbox" data-journey-confirm> Confirmo autorizar a execução somente deste toque, na campanha, versão e regras acima.</label><div class="acoes"><button type="button" class="btn pri" data-journey-approve disabled>Aprovar como está e autorizar este toque</button></div>`:`<p class="msg">Aprovação bloqueada: ${esc(journeyRows(review.blockers).map(journeyDescribe).join(' · ')||'Escopo não validado.')}</p>`}<details><summary>Descartar toque canônico</summary><label>Motivo do descarte<textarea rows="2" maxlength="1000" data-journey-discard-reason aria-label="Motivo do descarte do toque"></textarea></label><button type="button" class="btn alerta" data-journey-discard-step disabled>Descartar este toque</button></details></section>`;
   journeySyncEditor(container);
 }
 function journeyValidateReview(data,edit){
   const binding=edit.binding,confirmation=data?.execution_confirmation,context=confirmation?.context;
-  if(data?.cadence_id!==binding.cadence_id||data?.step_id!==binding.step_id||!Number.isInteger(data.expected_version)||data.expected_version<1||! /^[a-f0-9]{64}$/.test(data.review_hash||'')||! /^[a-f0-9]{64}$/.test(data.context_hash||'')||typeof data.content!=='string'||!(data.subject===null||typeof data.subject==='string')||typeof data.can_approve!=='boolean'||!Array.isArray(data.blockers))throw new Error('Revisão inválida. Consulte novamente antes de decidir.');
+  if(data?.cadence_id!==binding.cadence_id||data?.step_id!==binding.step_id||!journeyReviewFieldsValid(data)||!Number.isInteger(data.expected_version)||data.expected_version<1||! /^[a-f0-9]{64}$/.test(data.review_hash||'')||! /^[a-f0-9]{64}$/.test(data.context_hash||'')||typeof data.content!=='string'||!(data.subject===null||typeof data.subject==='string')||typeof data.can_approve!=='boolean'||!Array.isArray(data.blockers))throw new Error('Revisão inválida. Consulte novamente antes de decidir.');
   if(data.can_approve===true&&(!confirmation||confirmation.confirmed!==true||confirmation.batch_id!==binding.cadence_id||confirmation.batch_version!==data.expected_version||context?.platform!=='thunder_os'||!journeyBR(context?.campaign_id)||binding.campaign_id&&context.campaign_id!==binding.campaign_id))throw new Error('Escopo da execução não corresponde ao toque. Atualize a consulta.');
   return data;
 }
@@ -2396,7 +2425,7 @@ async function journeyStepOperation(container,operation){
   const edit=journeyEdits.get(container.dataset.journeyEditor);if(!edit?.binding||edit.busy)return;
   const binding=edit.binding,review=edit.review;
   if(operation!=='review'&&!review)return;
-  if(operation==='approve'&&(review.can_approve!==true||edit.text!==review.content||edit.subject!==review.subject||!container.querySelector('[data-journey-confirm]')?.checked))return;
+  if(operation==='approve'&&(!journeyReviewFieldsValid(review)||review.can_approve!==true||edit.text!==review.content||edit.subject!==review.subject||!container.querySelector('[data-journey-confirm]')?.checked))return;
   if(operation==='revise'&&(!edit.text.trim()||edit.text.length>30000||edit.subject!==null&&edit.subject.length>1000)){edit.message='Texto obrigatório, até 30.000 caracteres; assunto até 1.000.';journeySyncEditor(container);return;}
   const reason=container.querySelector('[data-journey-discard-reason]')?.value.trim();
   if(operation==='discard'&&(!reason||reason.length>1000))return;

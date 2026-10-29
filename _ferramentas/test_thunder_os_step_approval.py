@@ -61,9 +61,11 @@ class StepApprovalTests(unittest.TestCase):
             outbox_before = connection.execute('SELECT COUNT(*) FROM thunder_outbox').fetchone()[0]
         review = self.review()
         self.assertEqual(set(review), {'cadence_id', 'step_id', 'expected_version', 'review_hash',
-            'execution_confirmation', 'content', 'subject', 'context_hash', 'can_approve', 'blockers'})
+            'execution_confirmation', 'recipient', 'channel', 'order', 'interval_hours',
+            'content', 'subject', 'context_hash', 'can_approve', 'blockers'})
         self.assertTrue(review['can_approve'])
-        self.assertEqual(review['content'], self.cadence['steps'][0]['content'])
+        for field in ('recipient', 'channel', 'order', 'interval_hours', 'content', 'subject'):
+            self.assertEqual(review[field], self.cadence['steps'][0].get(field))
         expected = {'E1': _step_hash(self.service._approval_step(self.cadence['steps'][0]))}
         self.assertEqual(review['execution_confirmation']['scope_hash'], payload_hash(expected))
         self.assertEqual(self.repo.list_state('cadence'), before)
@@ -78,6 +80,30 @@ class StepApprovalTests(unittest.TestCase):
         self.fixture.assert_no_effect()
         with self.repo.transaction() as connection:
             self.assertEqual(connection.execute('SELECT COUNT(*) FROM thunder_outbox').fetchone()[0], outbox_before)
+
+    def test_review_scope_change_invalidates_old_review(self):
+        review = self.review()
+        with self.repo.transaction() as connection:
+            outbox_before = connection.execute('SELECT COUNT(*) FROM thunder_outbox').fetchone()[0]
+        for field, value in (('recipient', 'other@example.invalid'), ('channel', 'linkedin'),
+                             ('order', 2), ('interval_hours', 24)):
+            with self.subTest(field=field):
+                changed = deepcopy(self.current())
+                original_hash = self.service.cadence_review_hash(changed)
+                changed['steps'][0][field] = value
+                self.assertNotEqual(self.service.cadence_review_hash(changed), original_hash)
+                stored = self.repo.put_state('cadence', 'two-steps', changed)
+                with self.assertRaisesRegex(RepositoryConflict, 'stale cadence review'):
+                    self.approve(review=review)
+                # Even with the new version supplied, the old review hash must
+                # not authorize a changed canonical step.
+                with self.assertRaisesRegex(RepositoryConflict, 'stale cadence review'):
+                    self.approve(review=review, expected_version=stored['version'])
+                self.assertIsNone(self.repo.get_state('approval', 'two-steps'))
+                with self.repo.transaction() as connection:
+                    self.assertEqual(connection.execute('SELECT COUNT(*) FROM thunder_outbox').fetchone()[0], outbox_before)
+                self.repo.put_state('cadence', 'two-steps', self.cadence)
+        self.fixture.assert_no_effect()
 
     def test_concurrent_clicks_commit_exactly_one_authority(self):
         reviews = [self.review('E1'), self.review('E2')]

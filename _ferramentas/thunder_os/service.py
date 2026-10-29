@@ -829,7 +829,9 @@ class ThunderService:
             blockers.append(blocker)
         return {"cadence_id": cadence_id, "step_id": step_id,
                 "expected_version": cadence["version"], "review_hash": self.cadence_review_hash(cadence),
-                "execution_confirmation": confirmation, "content": step["content"],
+                "execution_confirmation": confirmation, "recipient": step["recipient"],
+                "channel": step["channel"], "order": step["order"],
+                "interval_hours": step["interval_hours"], "content": step["content"],
                 "subject": step.get("subject"), "context_hash": payload_hash(cadence.get("context_sources", [])),
                 **({'native': deepcopy(step['native']), 'native_context': deepcopy(cadence['native_context']),
                     'execution_question': self.campaign_review_view(cadence)['execution_question']}
