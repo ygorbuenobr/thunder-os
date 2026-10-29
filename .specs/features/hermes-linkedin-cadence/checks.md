@@ -27,6 +27,7 @@ Status: complete
 
 **C3** - Exact due subject/marker/contact/status/cadence maps to frozen copy while early, completed, malformed, wrong-contact, replied and wrong-cadence tasks remain open (HLC-02, AC 4-5)
 Proof: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=_ferramentas:/root/.hermes/profiles/ygor-personal/brain/_ferramentas:/root/.hermes/profiles/ygor-personal/brain python3 -m unittest -v -k test_task_contract_selects_only_exact_due_step _ferramentas.test_thunder_os_hermes_linkedin_cadence`
+Additional positive-copy proof: `PYTHONPATH=_ferramentas python3 -m unittest -v test_thunder_os_hermes_linkedin_cadence.HermesLinkedInCadenceTests.test_each_valid_due_step_previews_the_exact_frozen_approved_copy`.
 Status: complete
 
 **C4** - Invite requires `NOT_CONNECTED`; messages require `CONNECTED`; every other relationship state causes zero dispatch (HLC-02, AC 6)
@@ -99,6 +100,7 @@ Proof: `PYTHONPATH=_ferramentas python3 -m unittest -k uncertain test_thunder_os
 
 **C29** - A crash after queueing or dispatch recovers the exact existing task/job and receipt or uncertainty without another provider send.
 Proof: `PYTHONPATH=_ferramentas python3 -m unittest -k crash test_thunder_os_hermes_linkedin_cadence`.
+Includes the explicit revocation/expiry-after-crash test; both cases assert zero dispatch.
 
 **C30** - A `provider_confirmed` task is resumed even if it has disappeared from HubSpot's NOT_STARTED query after PATCH/readback failure.
 Proof: `PYTHONPATH=_ferramentas python3 -m unittest -k pending test_thunder_os_hermes_linkedin_runtime`.

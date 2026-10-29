@@ -68,13 +68,23 @@ class PanelDelegateTests(unittest.TestCase):
 
     def test_authenticated_confirmation_resumes_exact_task_in_memory(self):
         self.assertEqual('human_confirmation_required', self.preview['status'])
+        self.assertEqual([], self.tasks.completions)
+        self.assertEqual(0, self.console.executes)
         status, confirmation = self.call_route()
         self.assertEqual(201, status)
         self.assertEqual(confirmation['campaign_approval_id'], self.repo.get_state(
             'linkedin_cadence_human_confirmation', '12345')['campaign_approval_id'])
+        self.assertEqual([], self.tasks.completions)
+        self.assertEqual(0, self.console.executes)
         result = self.runner.run_task('12345', preview_id=confirmation['preview_id'],
                                       campaign_approval_id=confirmation['campaign_approval_id'])
         self.assertEqual('completed', result['status'], result)
+        self.assertEqual('12345', result['task_id'])
+        self.assertEqual('connectsafely:receipt-1', result['receipt_ref'])
+        self.assertEqual([('12345', 'connectsafely:receipt-1')], self.tasks.completions)
+        persisted = self.repo.get_state('linkedin_cadence_task', '12345')
+        self.assertEqual('12345', persisted['task_id'])
+        self.assertEqual('connectsafely:receipt-1', persisted['receipt_ref'])
         self.assertEqual(1, self.console.executes)
 
     def test_invalid_auth_and_wrong_task_never_approve(self):

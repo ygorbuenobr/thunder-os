@@ -184,9 +184,21 @@ class PanelWiringTests(unittest.TestCase):
         handler.server=SimpleNamespace(thunder_service=SimpleNamespace(repository=self.repo),thunder_connectsafely_app=app)
         handler.command='POST';handler.thunder_actor=lambda:'ygor';handler.corpo=lambda:body
         handler.responder=lambda status,result:(status,result)
-        status,result=handler.thunder_api(urlsplit('/api/os/v1/linkedin-cadence-approvals'))
+        with patch.object(app.direct, 'execute', side_effect=AssertionError('provider execution forbidden')) as execute, \
+             patch.object(app, 'process_one', side_effect=AssertionError('job execution forbidden')) as process:
+            status,result=handler.thunder_api(urlsplit('/api/os/v1/linkedin-cadence-approvals'))
+        execute.assert_not_called();process.assert_not_called()
         self.assertEqual(201,status);self.assertEqual('ygor',result['approved_by'])
+        persisted=self.repo.get_state('linkedin_cadence_approval',body['id'])
+        self.assertEqual(result,persisted)
+        self.assertEqual(body['id'],persisted['id'])
+        for key in ('hubspot_contact_id','cadence_id','expires_at'):
+            self.assertEqual(body[key],persisted[key])
+        self.assertEqual(steps,[{key:step[key] for key in ('marker','subject','plan')}
+                                for step in persisted['steps']])
+        self.assertEqual('active',persisted['status'])
         self.assertEqual([],self.repo.list_state('connectsafely_job'))
+        self.assertEqual([],self.repo.effects())
         handler.thunder_actor=lambda:'hermes'
         from thunder_os.hermes_linkedin_cadence import CadenceBlocked
         with self.assertRaisesRegex(CadenceBlocked,'human_authority_required'):

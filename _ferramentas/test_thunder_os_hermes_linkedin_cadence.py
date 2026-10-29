@@ -347,6 +347,8 @@ class HermesLinkedInCadenceTests(unittest.TestCase):
                     if case == 'cap': self.execute_with_human_confirmation(runner, app, console, temp.name)
                     else: runner.run_task("task-1")
                 self.assertEqual(0, console.executes); self.assertEqual([], tasks.completions)
+                self.assertEqual([], tasks.uncertain)
+                self.assertEqual('em_cadencia', tasks.task['contact_status'])
                 temp.cleanup()
 
     def test_task_contract_selects_only_exact_due_step(self):
@@ -369,6 +371,29 @@ class HermesLinkedInCadenceTests(unittest.TestCase):
                 with self.assertRaises(CadenceBlocked): runner.run_task("task-1")
                 self.assertEqual(0, console.executes); self.assertEqual([], tasks.completions)
                 temp.cleanup()
+
+    def test_each_valid_due_step_previews_the_exact_frozen_approved_copy(self):
+        for marker in STEP_CONTRACT:
+            with self.subTest(marker=marker), tempfile.TemporaryDirectory() as root:
+                repo = Repository(Path(root) / 'state.sqlite')
+                repo.put_state('agent_control', 'global', {'enabled': True, 'paused': False})
+                repo.put_state('delegation', 'hermes', {'enabled': True, 'scopes': ['linkedin_cadence'],
+                    'daily_limit': 30, 'actor': 'ygor', 'audit_actor': 'hermes (delegado)'})
+                tasks = Tasks(task(marker)); provider = Provider()
+                provider.relationship_status = 'NOT_CONNECTED' if marker == 'cad_li_0' else 'CONNECTED'
+                console = Console(repo, provider, lambda: NOW)
+                app = ConnectSafelyApplication(repo, direct_console=console, provider=provider,
+                    execution_enabled=True, readiness=lambda: {'ready': True},
+                    action_readiness=lambda _a: {'ready': True}, execution_scope='hermes-test', clock=lambda: NOW)
+                runner = HermesLinkedInCadence(repo, tasks, app, clock=lambda: NOW)
+                self.bind_task(runner, runner.approve(approval(), 'ygor'))
+                result = runner.run_task('task-1')
+                self.assertEqual('human_confirmation_required', result['status'])
+                preview = repo.get_state('connectsafely_preview', result['preview_id'])
+                self.assertEqual(plan(marker), preview['plan'])
+                self.assertEqual(0, console.executes)
+                self.assertEqual([], tasks.completions)
+                self.assertEqual([], tasks.uncertain)
 
     def test_match_rejects_two_active_approvals_without_task_binding_before_provider_or_job(self):
         first = self.runner.approve(approval('first-active'), 'ygor')
@@ -398,7 +423,7 @@ class HermesLinkedInCadenceTests(unittest.TestCase):
 
     def test_relationship_gate_matches_step_kind(self):
         for marker, allowed in (("cad_li_0", "NOT_CONNECTED"), ("cad_li_1", "CONNECTED")):
-            for observed in ("NOT_CONNECTED", "CONNECTED", "INVITATION_SENT", "INVITATION_RECEIVED"):
+            for observed in ("NOT_CONNECTED", "CONNECTED", "INVITATION_SENT", "INVITATION_RECEIVED", "", None, "UNKNOWN"):
                 with self.subTest(marker=marker, observed=observed):
                     temp = tempfile.TemporaryDirectory(); repo = Repository(Path(temp.name) / "s.sqlite")
                     repo.put_state("agent_control", "global", {"enabled": True, "paused": False})
@@ -498,6 +523,46 @@ class HermesLinkedInCadenceTests(unittest.TestCase):
                 self.assertEqual('nao_comprovado', repo.get_state('linkedin_cadence_task','task-1')['task_contract']['sent_at'])
                 self.assertTrue(runner.run_task('task-1')['replayed'])
                 self.assertEqual(1, console.executes)
+
+    def test_crash_then_confirmation_revoked_or_expired_never_dispatches(self):
+        from thunder_os.campaign_registry import CampaignRegistry
+        from thunder_os.hubspot_tasks import HubSpotTaskError
+        for scenario in ('revoked', 'expired'):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as root:
+                now = [NOW]
+                clock = lambda: now[0]
+                repo = Repository(Path(root) / 'state.sqlite')
+                repo.put_state('agent_control', 'global', {'enabled': True, 'paused': False})
+                repo.put_state('delegation', 'hermes', {'enabled': True, 'scopes': ['linkedin_cadence'],
+                    'daily_limit': 30, 'actor': 'ygor', 'audit_actor': 'hermes (delegado)'})
+                tasks = Tasks(task()); provider = Provider(); console = Console(repo, provider, clock)
+                app = ConnectSafelyApplication(repo, direct_console=console, provider=provider,
+                    execution_enabled=True, readiness=lambda: {'ready': True},
+                    action_readiness=lambda _a: {'ready': True}, execution_scope='hermes-test', clock=clock)
+                runner = HermesLinkedInCadence(repo, tasks, app, clock=clock)
+                self.bind_task(runner, runner.approve(approval(), 'ygor'))
+                with patch.object(app, 'process_one', side_effect=RuntimeError('fixture crash')):
+                    with self.assertRaisesRegex(RuntimeError, 'fixture crash'):
+                        self.execute_with_human_confirmation(runner, app, console, root)
+                stored = repo.get_state('linkedin_cadence_task', 'task-1')
+                self.assertEqual('queued', repo.get_state('connectsafely_job', stored['job_id'])['state'])
+                if scenario == 'revoked':
+                    config = repo.get_state('campaign_config', 'fixture-cadence')
+                    CampaignRegistry(repo).revoke('fixture-cadence', 'ygor', config['version'])
+                else:
+                    now[0] += 301
+                # The real adapter refuses this write without atomic CAS.
+                with patch.object(tasks, 'mark_uncertain', side_effect=HubSpotTaskError(
+                        'hubspot_uncertain_atomic_update_unavailable')) as uncertain:
+                    result = runner.run_task('task-1')
+                uncertain.assert_called_once_with('101', 'em_cadencia')
+                self.assertEqual('uncertain', result['status'])
+                self.assertEqual(0, console.executes)
+                self.assertEqual([], tasks.completions)
+                self.assertEqual([], tasks.uncertain)
+                self.assertEqual('NOT_STARTED', tasks.task['status'])
+                self.assertEqual('em_cadencia', tasks.task['contact_status'])
+                self.assertNotEqual('sent', repo.get_state('connectsafely_job', stored['job_id'])['state'])
 
     def test_crash_while_persisting_task_rolls_back_queue(self):
         self.approve()
