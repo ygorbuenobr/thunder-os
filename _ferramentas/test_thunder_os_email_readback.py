@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -562,6 +564,109 @@ class EmailReadbackTests(unittest.TestCase):
                     self.assertEqual(stored.status.value, 'succeeded')
                     self.assertEqual(stored.result['verification']['scope'], 'message_in_sender_account_not_delivery')
                 self.assertEqual(self.repo.effects(), [job])
+
+    def test_blocked_readback_allows_writer_and_rejects_changed_cadence(self):
+        job = self.seed()
+        service = ThunderService(self.repo, effect_readers={'email': self.reader})
+        item = service.request_work({'objective': 'Verify synthetic result',
+            'context': {'effect_id': job['id'], 'cadence_id': self.cadence['id'], 'channel': 'email'}},
+            'ygor', 'concurrent-report')
+        item = service.claim(item.id, item.version, 'ygor')
+        before_events = self.repo.events(item.id)
+        report = {'effect_id': job['id'], 'cadence_id': self.cadence['id'], 'channel': 'email',
+            'status': 'sent', 'receipt_ref': RECEIPT, 'readback': self.expected(),
+            'evidence': [{'source': 'synthetic'}]}
+        entered, release = threading.Event(), threading.Event()
+        def blocked(_receipt):
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError('synthetic timeout')
+            return self.expected()
+        with patch.object(self.reader, 'readback', side_effect=blocked), ThreadPoolExecutor(max_workers=2) as pool:
+            pending = pool.submit(service.record_job_result, item.id, item.version, report, 'ygor')
+            try:
+                self.assertTrue(entered.wait(3))
+                changed = {**self.cadence, 'account_id': 'changed.example.invalid'}
+                writer = pool.submit(self.repo.put_state, 'cadence', self.cadence['id'], changed)
+                writer.result(timeout=2)
+            finally:
+                release.set()
+            with self.assertRaisesRegex(ContractError, 'effect changed during readback'):
+                pending.result(timeout=5)
+        self.assertEqual(as_payload(self.repo.get_work(item.id)), as_payload(item))
+        self.assertEqual(self.repo.events(item.id), before_events)
+
+    def test_timeout_does_not_record_success(self):
+        job = self.seed()
+        service = ThunderService(self.repo, effect_readers={'email': self.reader})
+        item = service.request_work({'objective': 'Verify synthetic timeout',
+            'context': {'effect_id': job['id'], 'cadence_id': self.cadence['id'], 'channel': 'email'}},
+            'ygor', 'timeout-report')
+        item = service.claim(item.id, item.version, 'ygor')
+        before_events = self.repo.events(item.id)
+        report = {'effect_id': job['id'], 'cadence_id': self.cadence['id'], 'channel': 'email',
+            'status': 'sent', 'receipt_ref': RECEIPT, 'readback': self.expected(),
+            'evidence': [{'source': 'synthetic'}]}
+        with patch.object(self.reader, 'readback', side_effect=TimeoutError('synthetic timeout')):
+            with self.assertRaisesRegex(ContractError, 'effect readback unavailable'):
+                service.record_job_result(item.id, item.version, report, 'ygor')
+        self.assertEqual(as_payload(self.repo.get_work(item.id)), as_payload(item))
+        self.assertEqual(self.repo.events(item.id), before_events)
+
+    def test_change_after_readback_before_transaction_is_rejected(self):
+        job = self.seed()
+        service = ThunderService(self.repo, effect_readers={'email': self.reader})
+        item = service.request_work({'objective': 'Verify synthetic race',
+            'context': {'effect_id': job['id'], 'cadence_id': self.cadence['id'], 'channel': 'email'}},
+            'ygor', 'post-readback-race')
+        item = service.claim(item.id, item.version, 'ygor')
+        before_events = self.repo.events(item.id)
+        report = {'effect_id': job['id'], 'cadence_id': self.cadence['id'], 'channel': 'email',
+            'status': 'sent', 'receipt_ref': RECEIPT, 'readback': self.expected(),
+            'evidence': [{'source': 'synthetic'}]}
+        validate = service._validate_effect_result
+        def race(*args):
+            verified = validate(*args)
+            self.repo.put_state('cadence', self.cadence['id'],
+                                {**self.cadence, 'account_id': 'changed.example.invalid'})
+            return verified
+        with patch.object(service, '_validate_effect_result', side_effect=race):
+            with self.assertRaisesRegex(ContractError, 'effect changed during readback'):
+                service.record_job_result(item.id, item.version, report, 'ygor')
+        self.assertEqual(as_payload(self.repo.get_work(item.id)), as_payload(item))
+        self.assertEqual(self.repo.events(item.id), before_events)
+
+    def _assert_gmail_scope_race_rejected(self, mutate):
+        job = self.seed()
+        service = ThunderService(self.repo, effect_readers={'email': self.reader})
+        item = service.request_work({'objective': 'Verify synthetic receipt race',
+            'context': {'effect_id': job['id'], 'cadence_id': self.cadence['id'], 'channel': 'email'}},
+            'ygor', 'receipt-race')
+        item = service.claim(item.id, item.version, 'ygor')
+        before_events = self.repo.events(item.id)
+        report = {'effect_id': job['id'], 'cadence_id': self.cadence['id'], 'channel': 'email',
+            'status': 'sent', 'receipt_ref': RECEIPT, 'readback': self.expected(),
+            'evidence': [{'source': 'synthetic'}]}
+        validate = service._validate_effect_result
+        def race(*args):
+            verified = validate(*args)
+            mutate(job)
+            return verified
+        with patch.object(service, '_validate_effect_result', side_effect=race):
+            with self.assertRaisesRegex(ContractError, 'effect changed during readback'):
+                service.record_job_result(item.id, item.version, report, 'ygor')
+        self.assertEqual(as_payload(self.repo.get_work(item.id)), as_payload(item))
+        self.assertEqual(self.repo.events(item.id), before_events)
+
+    def test_duplicate_receipt_after_readback_is_rejected(self):
+        def duplicate(_job):
+            other = self.repo.enqueue_effect('other-effect', {'cadence_id': self.cadence['id'], 'step': self.step})
+            self.repo.finish_effect(other['id'], 'sent', 'email:'+RECEIPT, None)
+        self._assert_gmail_scope_race_rejected(duplicate)
+
+    def test_assisted_state_change_after_readback_is_rejected(self):
+        self._assert_gmail_scope_race_rejected(
+            lambda job: self.repo.put_state('codex_assisted', job['id'], {'ticket': {'reply_contract': 'changed'}}))
 
     def test_additional_mime_content_cannot_promote_work_or_append_success(self):
         job = self.seed()

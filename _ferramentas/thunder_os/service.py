@@ -489,10 +489,25 @@ class ThunderService:
         evidence = result.get("evidence")
         if not isinstance(evidence, list) or not evidence:
             raise ContractError("result evidence required")
+        result = deepcopy(dict(result))
+        item = self._item(item_id)
+        failure = result.get("dependency_failure")
+        # Never perform a provider read while holding a caller's write lock.
+        if (not failure and self._operational_result(item, result)
+                and getattr(self.repository._local, 'connection', None) is not None):
+            raise ContractError('effect readback requires an unlocked transaction')
+        verification, snapshot = self._validate_effect_result(item, result) if not failure else (None, None)
         with self.repository.transaction():
-            item = self._item(item_id)
-            failure = result.get("dependency_failure")
-            verification = self._validate_effect_result(item, result) if not failure else None
+            if self._item(item_id) != item:
+                raise ContractError('work changed during readback')
+            if snapshot is not None:
+                effect, cadence, binding, registry_row, receipt_scope = snapshot
+                if (self.repository.effect(effect['id']) != effect
+                        or self.repository.get_state('cadence', cadence['id']) != cadence
+                        or self.repository.get_state('campaign_config', cadence['execution_context']['campaign_id']) != registry_row
+                        or self.campaign_registry.binding(cadence['execution_context']['campaign_id']) != binding
+                        or self._gmail_receipt_scope(effect, binding) != receipt_scope):
+                    raise ContractError('effect changed during readback')
             target = WorkStatus.NEEDS_HUMAN if failure else WorkStatus.SUCCEEDED
             updated = transition(item, expected_version, target)
             next_action = f"revisar dependência: {failure}" if failure else "resultado disponível"
@@ -511,12 +526,24 @@ class ThunderService:
         return (effect.get('state') == 'sent'
                 and step.get('status') in {'failed', 'uncertain', 'needs_reconciliation'})
 
-    def _validate_effect_result(self, item, result):
-        operational = (item.context.get('effect_id') is not None or 'effect_id' in result
+    @staticmethod
+    def _operational_result(item, result):
+        return (item.context.get('effect_id') is not None or 'effect_id' in result
                        or result.get('status') in {'sent', 'verified', 'executed', 'confirmed', 'delivered'}
                        or any(key in result for key in ('receipt_ref', 'provider_receipt', 'readback')))
-        if not operational:
-            return
+
+    def _gmail_receipt_scope(self, effect, binding):
+        if binding['providers'].get('email') != 'gmail' or effect['payload']['step'].get('channel') != 'email':
+            return None
+        receipt = effect['receipt_ref']
+        identifier = receipt.removeprefix('email:gmail:').removeprefix('gmail:')
+        aliases = {'gmail:' + identifier, 'email:gmail:' + identifier}
+        return ([row for row in self.repository.effects() if row.get('receipt_ref') in aliases],
+                self.repository.get_state('codex_assisted', effect['id']))
+
+    def _validate_effect_result(self, item, result):
+        if not self._operational_result(item, result):
+            return None, None
         effect_id = item.context.get('effect_id')
         if not isinstance(effect_id, str) or result.get('effect_id') != effect_id:
             raise ContractError('effect result binding required')
@@ -548,7 +575,9 @@ class ThunderService:
         if reader is None or not callable(getattr(reader, 'readback', None)):
             raise ContractError('effect readback unavailable')
         try:
+            registry_row = self.repository.get_state('campaign_config', cadence['execution_context']['campaign_id'])
             binding = self.campaign_registry.binding(cadence['execution_context']['campaign_id'])
+            receipt_scope = self._gmail_receipt_scope(effect, binding)
             provider = cadence['execution_context']['providers'].get(channel)
             if (reader.provider_name != provider or not reader.account_id
                     or binding['provider_accounts'].get(channel) != reader.account_id):
@@ -567,7 +596,7 @@ class ThunderService:
         return {'source': 'configured_provider_readback', 'effect_id': effect_id,
                 'receipt_ref': effect['receipt_ref'], 'channel': channel,
                 'provider': provider, 'account_id': reader.account_id,
-                'scope': 'message_in_sender_account_not_delivery'}
+                'scope': 'message_in_sender_account_not_delivery'}, (effect, cadence, binding, registry_row, receipt_scope)
 
     def _item(self, item_id: str) -> WorkItem:
         item = self.repository.get_work(item_id)
