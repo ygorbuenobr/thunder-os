@@ -105,8 +105,10 @@ def record_backfill_batch(
                 raise ConnectionIntakeError("connection_row_invalid")
             key = profile_key(row.get("profileUrl"))
             day = _connected_at(row.get("connectedDate")).astimezone(PROVIDER_CALENDAR).date()
-            if key in seen_batch or (last_day is not None and day > last_day):
-                raise ConnectionIntakeError("connection_order_invalid")
+            if key in seen_batch:
+                raise ConnectionIntakeError("connection_order_invalid", reason="duplicate_profile")
+            if last_day is not None and day > last_day:
+                raise ConnectionIntakeError("connection_order_invalid", reason="date_out_of_order")
             seen_batch.add(key)
             last_day = day
             if not anchor_found:

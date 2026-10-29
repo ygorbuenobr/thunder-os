@@ -32,6 +32,22 @@ class ConnectionBackfillTests(unittest.TestCase):
         self.addCleanup(self.scratch.cleanup)
         self.repo = Repository(Path(self.scratch.name) / "state.db")
 
+    def test_invalid_window_reports_safe_cause_without_checkpoint(self):
+        cases = (
+            ([connection(1), connection(1)], "duplicate_profile"),
+            ([connection(1), {**connection(2), "connectedDate": "2026-10-05T13:00:00Z"}],
+             "date_out_of_order"),
+        )
+        for rows, expected in cases:
+            with self.subTest(expected=expected):
+                with self.assertRaises(ConnectionIntakeError) as caught:
+                    record_backfill_batch(self.repo, provider(rows), account_id=ACCOUNT,
+                                          today=date(2026, 10, 5), account_by_profile={},
+                                          fit_evidence_by_account={})
+                self.assertEqual("connection_order_invalid", str(caught.exception))
+                self.assertEqual(expected, caught.exception.reason)
+                self.assertIsNone(self.repo.get_state(BACKFILL_CHECKPOINT, ACCOUNT))
+
     def test_daily_limit_and_cursor_isolation(self):
         self.repo.put_state(LIVE_CHECKPOINT, ACCOUNT, {"marker": "live"})
         rows = [connection(index) for index in range(125)]
@@ -50,6 +66,21 @@ class ConnectionBackfillTests(unittest.TestCase):
         self.assertEqual(25, next_day["processed"])
         self.assertTrue(next_day["complete"])
         self.assertEqual(125, len(self.repo.list_state(profile_kind(ACCOUNT))))
+
+    def test_invalid_window_preserves_existing_checkpoint_and_profiles(self):
+        rows = [connection(index) for index in range(110)]
+        record_backfill_batch(self.repo, provider(rows), account_id=ACCOUNT,
+                              today=date(2026, 10, 5), account_by_profile={}, fit_evidence_by_account={})
+        before = self.repo.get_state(BACKFILL_CHECKPOINT, ACCOUNT)
+        profiles = self.repo.list_state(profile_kind(ACCOUNT))
+        invalid_rows = rows[:]
+        invalid_rows[90] = invalid_rows[89]
+        with self.assertRaises(ConnectionIntakeError) as caught:
+            record_backfill_batch(self.repo, provider(invalid_rows), account_id=ACCOUNT,
+                                  today=date(2026, 10, 6), account_by_profile={}, fit_evidence_by_account={})
+        self.assertEqual("duplicate_profile", caught.exception.reason)
+        self.assertEqual(before, self.repo.get_state(BACKFILL_CHECKPOINT, ACCOUNT))
+        self.assertEqual(profiles, self.repo.list_state(profile_kind(ACCOUNT)))
 
     def test_identity_and_research_limits(self):
         rows = [connection(index) for index in range(8)]

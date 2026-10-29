@@ -168,7 +168,10 @@ def main() -> int:
                           fetch_page=provider.fetch_page,
                           fetch_profile_company=provider.fetch_profile_company)
     except (ConnectionRuntimeError, ConnectionProviderError, ConnectionIntakeError) as exc:
-        print(json.dumps({"status": "blocked", "error_code": str(exc)}), file=sys.stderr)
+        result = {"status": "blocked", "error_code": str(exc)}
+        if isinstance(exc, ConnectionIntakeError) and exc.reason in {"duplicate_profile", "date_out_of_order"}:
+            result["reason"] = exc.reason
+        print(json.dumps(result), file=sys.stderr)
         return 1
     print(json.dumps({"status": "ok", **result}, sort_keys=True))
     return 0

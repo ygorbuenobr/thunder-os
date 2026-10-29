@@ -95,6 +95,42 @@ class ConnectionRuntimeTests(unittest.TestCase):
                          json.loads(stderr))
         self.assertEqual(list(range(20)), incomplete_cursors)
 
+    def test_main_reports_order_reason_without_exposing_profiles(self):
+        from thunder_os.connection_intake import ConnectionIntakeError
+        for reason in ("duplicate_profile", "date_out_of_order"):
+            with self.subTest(reason=reason):
+                def invalid(_cursor):
+                    raise ConnectionIntakeError("connection_order_invalid", reason=reason)
+                code, stdout, stderr = self.run_main("live", invalid)
+                self.assertEqual((1, ""), (code, stdout))
+                self.assertEqual({"status": "blocked", "error_code": "connection_order_invalid",
+                                  "reason": reason}, json.loads(stderr))
+
+    def test_main_reports_invalid_pages_in_live_and_backfill(self):
+        today = datetime.now(timezone.utc).astimezone(ZoneInfo("America/Sao_Paulo")).date()
+        earlier = f"{(today - timedelta(days=1)).isoformat()}T12:00:00-03:00"
+        current = f"{today.isoformat()}T12:00:00-03:00"
+        for mode in ("live", "backfill"):
+            for reason, rows in (
+                ("duplicate_profile", [{"profileUrl": PROFILE, "connectedDate": current}] * 2),
+                ("date_out_of_order", [{"profileUrl": PROFILE, "connectedDate": earlier},
+                                       {"profileUrl": "https://linkedin.com/in/other", "connectedDate": current}]),
+            ):
+                with self.subTest(mode=mode, reason=reason):
+                    code, stdout, stderr = self.run_main(mode, self.pages(rows))
+                    self.assertEqual((1, ""), (code, stdout))
+                    self.assertEqual({"status": "blocked", "error_code": "connection_order_invalid",
+                                      "reason": reason}, json.loads(stderr))
+                    self.assertNotIn(PROFILE, stderr)
+
+    def test_main_does_not_emit_untrusted_reason(self):
+        from thunder_os.connection_intake import ConnectionIntakeError
+        def invalid(_cursor):
+            raise ConnectionIntakeError("connection_order_invalid", reason=PROFILE)
+        code, stdout, stderr = self.run_main("live", invalid)
+        self.assertEqual((1, ""), (code, stdout))
+        self.assertEqual({"status": "blocked", "error_code": "connection_order_invalid"}, json.loads(stderr))
+
     def test_main_projects_backfill_success_and_row_error(self):
         def invalid(_cursor):
             raise ConnectionProviderError("connection_row_invalid")

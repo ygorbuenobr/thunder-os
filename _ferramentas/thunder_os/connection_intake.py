@@ -15,7 +15,9 @@ import unicodedata
 
 
 class ConnectionIntakeError(ValueError):
-    pass
+    def __init__(self, code: str, *, reason: str | None = None):
+        super().__init__(code)
+        self.reason = reason
 
 
 def canonical_profile_slug(value: str) -> str:
@@ -114,8 +116,10 @@ def collect_recent_connections(
                 raise ConnectionIntakeError("connection_row_invalid")
             key = profile_key(row.get("profileUrl"))
             day = _connected_at(row.get("connectedDate")).astimezone(PROVIDER_CALENDAR).date()
-            if key in profiles or (previous is not None and day > previous):
-                raise ConnectionIntakeError("connection_order_invalid")
+            if key in profiles:
+                raise ConnectionIntakeError("connection_order_invalid", reason="duplicate_profile")
+            if previous is not None and day > previous:
+                raise ConnectionIntakeError("connection_order_invalid", reason="date_out_of_order")
             profiles.add(key)
             previous = day
             older |= day < activation_day

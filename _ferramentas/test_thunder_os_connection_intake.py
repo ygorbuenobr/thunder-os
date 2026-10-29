@@ -139,6 +139,26 @@ class ConnectionIntakeTests(unittest.TestCase):
         with self.assertRaisesRegex(ConnectionIntakeError, "connection_order_invalid"):
             collect_recent_connections(unordered, account_id="acct-1", activation_at=NOW)
 
+    def test_invalid_window_reports_safe_cause_without_profile_data(self):
+        cases = (
+            ([{"profileUrl": "https://linkedin.com/in/private-example", "connectedDate": "2026-10-05T13:00:00Z"},
+              {"profileUrl": "https://www.linkedin.com/in/private-example", "connectedDate": "2026-10-05T13:00:00Z"}],
+             "duplicate_profile"),
+            ([{"profileUrl": "https://linkedin.com/in/old", "connectedDate": "2026-10-04T13:00:00Z"},
+              {"profileUrl": "https://linkedin.com/in/new", "connectedDate": "2026-10-05T13:00:00Z"}],
+             "date_out_of_order"),
+        )
+        for rows, expected in cases:
+            with self.subTest(expected=expected):
+                def fetch(cursor):
+                    return {"connections": rows, "endOfList": True, "nextStartIndex": None,
+                            "success": True, "accountId": "acct-1", "sortBy": "recentlyAdded",
+                            "startIndex": cursor, "count": len(rows)}
+                with self.assertRaises(ConnectionIntakeError) as caught:
+                    collect_recent_connections(fetch, account_id="acct-1", activation_at=NOW)
+                self.assertEqual("connection_order_invalid", str(caught.exception))
+                self.assertEqual(expected, caught.exception.reason)
+
     def test_provider_account_echo_must_match(self):
         def wrong_account(cursor):
             return {"connections": [], "endOfList": True, "nextStartIndex": None,
