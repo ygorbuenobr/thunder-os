@@ -469,6 +469,138 @@ class HermesLinkedInCadenceTests(unittest.TestCase):
         self.assertEqual(1, self.console.executes); self.assertEqual(1, len(self.tasks.completions))
         self.assertEqual(1, self.repo.get_state("delegation_usage", "hermes:2026-10-19")["count"])
 
+    def test_crash_after_queue_and_after_dispatch_recovers_without_duplicate_send(self):
+        for after_dispatch in (False, True):
+            with self.subTest(after_dispatch=after_dispatch), tempfile.TemporaryDirectory() as root:
+                repo = Repository(Path(root) / 'state.sqlite')
+                repo.put_state('agent_control', 'global', {'enabled': True, 'paused': False})
+                repo.put_state('delegation', 'hermes', {'enabled': True, 'scopes': ['linkedin_cadence'],
+                    'daily_limit': 30, 'actor': 'ygor', 'audit_actor': 'hermes (delegado)'})
+                tasks = Tasks(task()); provider = Provider(); console = Console(repo, provider, lambda: NOW)
+                app = ConnectSafelyApplication(repo, direct_console=console, provider=provider,
+                    execution_enabled=True, readiness=lambda: {'ready': True},
+                    action_readiness=lambda _a: {'ready': True}, execution_scope='hermes-test', clock=lambda: NOW)
+                runner = HermesLinkedInCadence(repo, tasks, app, clock=lambda: NOW)
+                self.bind_task(runner, runner.approve(approval(), 'ygor'))
+                process = app.process_one
+                def crash(*, job_id):
+                    self.assertEqual(job_id, repo.get_state('linkedin_cadence_task', 'task-1')['job_id'])
+                    if after_dispatch:
+                        process(job_id=job_id)
+                    raise RuntimeError('fixture crash')
+                with patch.object(app, 'process_one', side_effect=crash):
+                    with self.assertRaisesRegex(RuntimeError, 'fixture crash'):
+                        self.execute_with_human_confirmation(runner, app, console, root)
+                self.assertEqual('pending', repo.get_state('linkedin_cadence_task', 'task-1')['status'])
+                self.assertEqual('completed', runner.run_task('task-1')['status'])
+                self.assertEqual(1, console.executes)
+                self.assertEqual(1, len(tasks.completions))
+                self.assertEqual('nao_comprovado', repo.get_state('linkedin_cadence_task','task-1')['task_contract']['sent_at'])
+                self.assertTrue(runner.run_task('task-1')['replayed'])
+                self.assertEqual(1, console.executes)
+
+    def test_crash_while_persisting_task_rolls_back_queue(self):
+        self.approve()
+        append = self.repo.append_state
+        def fail_task(kind, entity_id, payload):
+            if kind == 'linkedin_cadence_task':
+                raise RuntimeError('fixture crash')
+            return append(kind, entity_id, payload)
+        with patch.object(self.repo, 'append_state', side_effect=fail_task):
+            with self.assertRaisesRegex(RuntimeError, 'fixture crash'):
+                self.execute_with_human_confirmation(self.runner, self.app, self.console, self.temp.name)
+        self.assertEqual([], self.repo.list_state('connectsafely_job'))
+        self.assertEqual([], self.repo.list_state('connectsafely_queue_approval'))
+        self.assertIsNone(self.repo.get_state('linkedin_cadence_task', 'task-1'))
+        self.assertEqual(0, self.console.executes)
+
+    def test_crash_during_dispatch_never_requeues_expired_running_job(self):
+        self.approve()
+        with patch.object(self.app, 'process_one', side_effect=RuntimeError('fixture crash')):
+            with self.assertRaisesRegex(RuntimeError, 'fixture crash'):
+                self.execute_with_human_confirmation(self.runner, self.app, self.console, self.temp.name)
+        stored=self.repo.get_state('linkedin_cadence_task','task-1')
+        job=self.repo.get_state('connectsafely_job',stored['job_id'])
+        self.repo.put_state('connectsafely_job',stored['job_id'],
+            {**job,'state':'running','lease_until':NOW+30,'claim_token':'fixture','dispatch_started':True})
+        self.assertEqual('pending',self.runner.run_task('task-1')['status'])
+        job=self.repo.get_state('connectsafely_job',stored['job_id'])
+        self.repo.put_state('connectsafely_job',stored['job_id'],{**job,'lease_until':NOW-1})
+        self.assertEqual('uncertain',self.runner.run_task('task-1')['status'])
+        self.assertEqual('needs_reconciliation',self.repo.get_state('connectsafely_job',stored['job_id'])['state'])
+        self.assertEqual(0,self.console.executes)
+        self.assertEqual([],self.tasks.completions)
+
+    def test_crash_legacy_orphan_job_recovered_with_original_bindings(self):
+        self.approve()
+        process = self.app.process_one
+        def crash(*, job_id):
+            process(job_id=job_id)
+            raise RuntimeError('fixture crash')
+        with patch.object(self.app, 'process_one', side_effect=crash):
+            with self.assertRaisesRegex(RuntimeError, 'fixture crash'):
+                self.execute_with_human_confirmation(self.runner, self.app, self.console, self.temp.name)
+        # Simulate the old version's crash window in this disposable fixture.
+        with self.repo.transaction() as con:
+            con.execute("DELETE FROM thunder_state WHERE kind=? AND entity_id=?", ('linkedin_cadence_task','task-1'))
+        result=self.runner.run_task('task-1')
+        self.assertEqual('completed', result['status'])
+        self.assertEqual(1, self.console.executes)
+        self.assertEqual(1, len(self.tasks.completions))
+        self.assertEqual('nao_comprovado', self.repo.get_state('linkedin_cadence_task','task-1')['task_contract']['sent_at'])
+
+    def test_uncertain_contact_blocks_another_task_without_relying_on_crm(self):
+        self.approve()
+        self.repo.put_state('linkedin_cadence_task', 'another-task', {
+            'task_id': 'another-task', 'contact_id': '101', 'status': 'uncertain'})
+        self.assertEqual('em_cadencia', self.tasks.task['contact_status'])
+        with self.assertRaisesRegex(CadenceBlocked, 'contact_reconciliation_pending'):
+            self.runner.run_task('task-1')
+        self.assertEqual(0, self.console.executes)
+
+    def test_crash_between_completed_and_audit_rolls_back_both(self):
+        self.approve()
+        append = self.repo.append_state
+        def fail_audit(kind, entity_id, payload):
+            if kind == 'linkedin_cadence_audit':
+                raise RuntimeError('fixture audit crash')
+            return append(kind, entity_id, payload)
+        with patch.object(self.repo, 'append_state', side_effect=fail_audit):
+            first = self.execute_with_human_confirmation(self.runner, self.app, self.console, self.temp.name)
+        self.assertEqual('provider_confirmed', first['status'])
+        self.assertEqual('provider_confirmed', self.repo.get_state('linkedin_cadence_task', 'task-1')['status'])
+        self.assertEqual([], self.repo.list_state('linkedin_cadence_audit'))
+        # The fake CRM has already applied the completion and can return the
+        # same readback without applying a second provider delivery.
+        self.tasks.complete = lambda *_args: None
+        self.assertEqual('completed', self.runner.run_task('task-1')['status'])
+        self.assertEqual(1, len(self.repo.list_state('linkedin_cadence_audit')))
+        self.assertEqual(1, self.console.executes)
+
+    def test_pending_stale_uncertain_cannot_overwrite_concurrent_completion(self):
+        state={'task_id':'task-1','status':'uncertain','job_id':'job-1','marker':'cad_li_1',
+               'contact_id':'101','expected_contact_status':'em_cadencia',
+               'task_contract':{'subject':'s','body':'cad_li_1','contact_ids':['101'],
+                                'content':'x','sent_at':'nao_comprovado'}}
+        self.repo.put_state('linkedin_cadence_task','task-1',state)
+        self.repo.put_state('connectsafely_job','job-1',{'state':'needs_reconciliation'})
+        get=self.repo.get_state; changed=[]
+        def interleave(kind, entity_id):
+            value=get(kind, entity_id)
+            if kind == 'connectsafely_job' and not changed:
+                changed.append(True)
+                self.repo.put_state('connectsafely_job','job-1',{'state':'done',
+                    'result':{'status':'sent','receipt_ref':'connectsafely:fixture'}})
+                self.repo.put_state('linkedin_cadence_task','task-1',
+                    {**state,'status':'completed','receipt_ref':'connectsafely:fixture'})
+            return value
+        with patch.object(self.repo, 'get_state', side_effect=interleave):
+            result=self.runner.run_task('task-1')
+        self.assertEqual('completed', result['status'])
+        self.assertEqual('completed', get('linkedin_cadence_task','task-1')['status'])
+        self.assertEqual([], self.tasks.uncertain)
+        self.assertEqual(0, self.console.executes)
+
     def test_uncertain_crm_status_write_retries_without_provider_redelivery(self):
         self.approve();self.console.outcome={"status":"uncertain","error_code":"provider_outcome_unknown","retry_write":False}
         original=self.tasks.mark_uncertain;calls=[]
@@ -479,8 +611,8 @@ class HermesLinkedInCadenceTests(unittest.TestCase):
                 raise RuntimeError("fixture crm readback unavailable")
             return original(contact_id,status)
         self.tasks.mark_uncertain=flaky
-        with self.assertRaisesRegex(RuntimeError,"fixture crm readback unavailable"):
-            self.execute_with_human_confirmation(self.runner, self.app, self.console, self.temp.name)
+        first=self.execute_with_human_confirmation(self.runner, self.app, self.console, self.temp.name)
+        self.assertEqual('pending', first['hubspot_update'])
         self.assertEqual(1,self.console.executes)
         replay=self.runner.run_task("task-1")
         self.assertEqual("uncertain",replay["status"]);self.assertTrue(replay["replayed"])

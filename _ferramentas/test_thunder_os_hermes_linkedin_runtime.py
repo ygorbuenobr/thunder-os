@@ -156,5 +156,58 @@ class RuntimeTests(unittest.TestCase):
             result=run_once(cfg)
         self.assertEqual(2,len(result["processed"]));sleep.assert_called_once_with(37)
 
+    def test_pending_rotation_is_fair_to_due_and_confirmed_with_one_slot(self):
+        cfg={**load_config(self.path), 'max_tasks_per_run': 1}
+        for index, status in enumerate(('uncertain', 'uncertain', 'provider_confirmed')):
+            self.repo.put_state('linkedin_cadence_task', f'pending-{index}', {'status':status})
+        runner=Mock(); runner.repository=self.repo
+        runner.run_task.side_effect=lambda task_id, **kwargs: {'task_id':task_id, 'status':'pending'}
+        tasks=Mock(); tasks.due.return_value=['due-1']
+        with patch('thunder_os.hermes_linkedin_runtime.build', return_value=(runner,tasks,STAMP)):
+            rounds=[run_once(cfg)['processed'][0]['task_id'] for _ in range(6)]
+        self.assertEqual(['pending-0', 'due-1', 'pending-1', 'due-1', 'pending-2', 'due-1'], rounds)
+        self.assertEqual(3, tasks.due.call_count)
+
+    def test_pending_due_search_advances_past_full_page_of_pending(self):
+        cfg={**load_config(self.path), 'max_tasks_per_run': 1}
+        self.repo.put_state('linkedin_cadence_task','pending-0',{'status':'uncertain'})
+        runner=Mock();runner.repository=self.repo
+        runner.run_task.side_effect=lambda task_id, **kwargs: {'task_id':task_id,'status':'pending'}
+        class PagedTasks:
+            def __init__(self): self.calls=[]
+            def due_page(self, *, limit, after):
+                self.calls.append((limit,after))
+                if after is None: return {'ids':['pending-0'],'next_after':'page-2'}
+                return {'ids':['due-1'],'next_after':None}
+        tasks=PagedTasks()
+        with patch('thunder_os.hermes_linkedin_runtime.build',return_value=(runner,tasks,STAMP)):
+            rounds=[run_once(cfg)['processed'][0]['task_id'] for _ in range(3)]
+        self.assertEqual(['pending-0','pending-0','due-1'], rounds)
+        self.assertEqual([(1,None),(1,'page-2')], tasks.calls)
+
+    def test_pending_completed_hubspot_task_retries_after_patch_readback_failure(self):
+        cfg=load_config(self.path)
+        task_id='118775080824'
+        contract={'subject':'LinkedIn: msg 1','body':'cad_li_1','contact_ids':['255570819657'],
+                  'content':'Mensagem','sent_at':'nao_comprovado'}
+        self.repo.put_state('linkedin_cadence_task', task_id, {'task_id':task_id,'status':'provider_confirmed',
+            'job_id':'job-1','receipt_ref':'connectsafely:fixture','task_contract':contract})
+        tasks=Mock(); tasks.due.return_value=[]
+        calls=[]
+        def complete(_task, _receipt, _contract):
+            calls.append('already_applied')
+            if len(calls) == 1: raise RuntimeError('readback unavailable')
+        tasks.complete.side_effect=complete
+        app=Mock(); app.repo=self.repo
+        runner=HermesLinkedInCadence(self.repo,tasks,app,clock=lambda:STAMP)
+        with patch('thunder_os.hermes_linkedin_runtime.build', return_value=(runner,tasks,STAMP)):
+            first=run_once(cfg)['processed'][0]
+            second=run_once(cfg)['processed'][0]
+        self.assertEqual('blocked', first['status'])
+        self.assertEqual('completed', second['status'])
+        self.assertEqual(2,len(calls))
+        self.assertEqual(1,len(self.repo.list_state('linkedin_cadence_audit')))
+        app.process_one.assert_not_called()
+
 
 if __name__=="__main__":unittest.main()

@@ -5,7 +5,7 @@ Plan: `.specs/features/hermes-linkedin-cadence/plan.md`
 
 ## Intent
 
-26 checks in 5 slices. C1-C17 retain their historical scope; C18-C26 add the 2026-10-29 reconciliation and canary decisions. Current final-revision verification is required; the old verification report is not proof of these additions.
+32 checks in 6 slices. C1-C17 retain their historical scope except the explicit C15/C17 supersession below; C18-C26 add the 2026-10-29 reconciliation and canary decisions. Current final-revision verification is required; the old verification report is not proof of these additions.
 
 ## Checks
 
@@ -86,6 +86,32 @@ Proof: `PYTHONPATH=_ferramentas python3 -m unittest -v test_thunder_os_hubspot_t
 Status: complete
 
 ## Coverage
+
+### S6 - Six review findings (2026-10-29)
+
+Sources: Ygor's approval of the six review findings in this conversation; existing plan and code at f55bd412c2aa763dd7cc27358a0cad2d2dace8aa. Scope: local source and isolated synthetic tests; no production activation, CRM write, real provider dispatch or enrollment.
+
+**C27** - Apollo row-level reply `true` blocks even with zero memberships; `false` is not a reply and invalid explicit values fail closed.
+Proof: `PYTHONPATH=_ferramentas python3 -m unittest -k row_level_reply test_thunder_os_canary_readers`.
+
+**C28** - A concurrent CRM change to `respondeu` is never overwritten by an unconditional uncertainty PATCH; uncertainty remains local and observable as pending CRM reconciliation.
+Proof: `PYTHONPATH=_ferramentas python3 -m unittest -k uncertain test_thunder_os_hubspot_tasks test_thunder_os_hermes_linkedin_cadence`.
+
+**C29** - A crash after queueing or dispatch recovers the exact existing task/job and receipt or uncertainty without another provider send.
+Proof: `PYTHONPATH=_ferramentas python3 -m unittest -k crash test_thunder_os_hermes_linkedin_cadence`.
+
+**C30** - A `provider_confirmed` task is resumed even if it has disappeared from HubSpot's NOT_STARTED query after PATCH/readback failure.
+Proof: `PYTHONPATH=_ferramentas python3 -m unittest -k pending test_thunder_os_hermes_linkedin_runtime`.
+
+**C31** - A COMPLETED task is accepted only when readback contains the exact expected receipt and task identity; status-only/missing/altered body never proves completion.
+Proof: `PYTHONPATH=_ferramentas python3 -m unittest -k receipt test_thunder_os_hubspot_tasks`.
+
+**C32** - An invite with empty content can be reviewed and its receipt recorded, while an empty DM remains invalid.
+Proof: `PYTHONPATH=_ferramentas python3 -m unittest -k invite test_thunder_os_hubspot_tasks`; `node _ferramentas/test_painel_delegated_identity_ui.cjs` with the installed isolated browser runtime.
+
+C15/C17 previously asserted an unconditional CRM `incerto` PATCH and its readback. Ygor's explicit race fix supersedes that implementation: no safe CRM synchronization is claimed without atomicity; local pending/alert state is the authoritative safety boundary for this executor, and other external writers are not thereby fenced.
+
+Coverage: Apollo explicit true/false/invalid C27; reply-before/racing/other-state and no PATCH C28; crash queued/dispatched/confirmed/replay C29; CRM patch applied/readback failure and omitted-from-due C30; exact/missing/changed receipt C31; blank invite/blank DM C32. Sweep: authorization and scope remain existing controls; validation C27/C31/C32; dependency failures C28/C30; idempotence/crash C29/C30; concurrency C28/C29; lifecycle and observability C28/C29; no data migration or external effect in scope.
 
 ### S5 - Human-confirmed task delegation and scoped canary (2026-10-29)
 

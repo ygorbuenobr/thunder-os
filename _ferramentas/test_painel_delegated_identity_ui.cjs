@@ -101,6 +101,13 @@ fs.mkdirSync(output,{recursive:true});
       await page.evaluate(({now})=>{window.syntheticClock=now;},{now});
       record=fixture();record.identity.matches=true;record.identity.mismatches=[];await read();
       assert.match(await card.innerText(),/coincidem nesta observação/);assert.equal(await card.locator('[data-di-confirm]').count(),0);
+      record=fixture();record.plan.action='invite';record.plan.content='';await read();
+      assert.match(await card.innerText(),/Convite sem mensagem\./);await confirm();
+      assert.match(await page.locator('[data-di-status]').innerText(),/conferida no registro/);
+      record=fixture();record.plan.content='';await read();
+      assert.equal(await card.count(),0);assert.match(await page.locator('[data-di-status]').innerText(),/Não foi possível conferir/);
+      record=fixture();record.plan.content='  \n  ';await read();
+      assert.equal(await card.count(),0);assert.match(await page.locator('[data-di-status]').innerText(),/Não foi possível conferir/);
       for(const mutate of [p=>p.task_id='999',p=>p.identity.observation_hash='',p=>p.identity.profile.linkedin_url='javascript:alert(1)',p=>p.identity.profile.company='',p=>p.identity.mismatches=['unknown'],p=>p.plan.account_id='different-account',p=>p.plan.recipient_profile_urn='different-profile']){
         record=fixture();mutate(record);await read();assert.equal(await card.count(),0);assert.match(await page.locator('[data-di-status]').innerText(),/Não foi possível conferir/);
       }

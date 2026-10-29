@@ -91,21 +91,41 @@ class HubSpotTasks:
             self._portal_checked = True
 
     def due(self, limit=20):
+        return self.due_page(limit=limit)["ids"]
+
+    def due_page(self, limit=20, after=None):
+        """Read one bounded search page, preserving a checked opaque cursor."""
         if not isinstance(limit, int) or not 1 <= limit <= 50:
             raise ValueError("hubspot_task_limit_invalid")
+        def valid_cursor(value):
+            return isinstance(value, str) and bool(re.fullmatch(r"[A-Za-z0-9_.:/+=-]{1,200}", value))
+        if after is not None and not valid_cursor(after):
+            raise HubSpotTaskError("hubspot_task_cursor_invalid")
         self._portal()
-        response = self._call("POST", "/crm/v3/objects/tasks/search", {
+        query = {
             "filterGroups": [{"filters": [
                 {"propertyName": "hs_task_status", "operator": "EQ", "value": "NOT_STARTED"},
                 {"propertyName": "hubspot_owner_id", "operator": "EQ", "value": self.owner_id},
                 {"propertyName": "hs_task_subject", "operator": "EQ", "value": subject},
             ]} for subject, _action in STEP_CONTRACT.values()],
             "properties": list(self.PROPERTIES), "sorts": ["hs_timestamp"], "limit": limit,
-        })
+        }
+        if after is not None:
+            query["after"] = after
+        response = self._call("POST", "/crm/v3/objects/tasks/search", query)
         rows = response.get("results")
         if not isinstance(rows, list) or len(rows) > limit:
             raise HubSpotTaskError("hubspot_invalid_response")
-        return [str(row["id"]) for row in rows if isinstance(row, dict) and str(row.get("id", "")).isdigit()]
+        paging = response.get("paging")
+        next_cursor = None
+        if paging is not None:
+            if not isinstance(paging, dict) or not isinstance(paging.get("next"), dict):
+                raise HubSpotTaskError("hubspot_task_cursor_invalid")
+            next_cursor = paging["next"].get("after")
+            if not valid_cursor(next_cursor) or next_cursor == after or not rows:
+                raise HubSpotTaskError("hubspot_task_cursor_invalid")
+        return {"ids": [str(row["id"]) for row in rows if isinstance(row, dict) and str(row.get("id", "")).isdigit()],
+                "next_after": next_cursor}
 
     def get(self, task_id):
         if not isinstance(task_id, str) or not task_id.isdigit():
@@ -151,20 +171,21 @@ class HubSpotTasks:
             return {"id": contact_id, "cad_status": "incerto"}
         if current != expected_status:
             raise HubSpotTaskError("hubspot_cadence_status_changed")
-        self._call("PATCH", f"/crm/v3/objects/contacts/{quote(contact_id, safe='')}",
-                   {"properties": {"cad_status": "incerto"}})
-        if self.contact(contact_id)["cad_status"] != "incerto":
-            raise HubSpotTaskError("hubspot_uncertain_status_unconfirmed")
-        return {"id": contact_id, "cad_status": "incerto"}
+        # A read followed by an unconditional PATCH can erase a concurrent
+        # response. Without an atomic compare-and-set, leave the CRM untouched.
+        raise HubSpotTaskError("hubspot_uncertain_atomic_update_unavailable")
 
     def complete(self, task_id, receipt_ref, expected_task):
         if not isinstance(receipt_ref, str) or not receipt_ref.startswith("connectsafely:"):
             raise ValueError("provider_receipt_required")
         if (not isinstance(expected_task, dict)
                 or set(expected_task)!={"subject","body","contact_ids","content","sent_at"}
+                or not all(isinstance(expected_task[key], str) for key in ("subject", "body", "content", "sent_at"))
                 or not isinstance(expected_task["contact_ids"],list)
-                or not all(isinstance(expected_task[key],str) and expected_task[key]
-                           for key in ("content","sent_at"))):
+                or not expected_task["sent_at"]
+                or (not expected_task["content"] and
+                    (expected_task["body"], expected_task["subject"]) !=
+                    ("cad_li_0", STEP_CONTRACT["cad_li_0"][0]))):
             raise ValueError("expected_task_contract_required")
         current = self.get(task_id)
         note = (expected_task["body"] + "\n\n[Thunder OS] Enviado por Hermes via ConnectSafely; "
@@ -174,10 +195,16 @@ class HubSpotTasks:
                 or current["body"] not in {expected_task["body"], note}):
             raise HubSpotTaskError("hubspot_task_changed_after_dispatch")
         if current["status"] == "COMPLETED":
+            if current["body"] != note:
+                raise HubSpotTaskError("hubspot_completion_unconfirmed")
             return {"id": task_id, "status": "COMPLETED"}
+        if current["status"] != "NOT_STARTED":
+            raise HubSpotTaskError("hubspot_task_changed_after_dispatch")
         self._call("PATCH", f"/crm/v3/objects/tasks/{quote(task_id, safe='')}",
                    {"properties": {"hs_task_status": "COMPLETED", "hs_task_body": note}})
         confirmed = self.get(task_id)
-        if confirmed["status"] != "COMPLETED":
+        if (confirmed["status"] != "COMPLETED" or confirmed["body"] != note or
+                confirmed["subject"] != expected_task["subject"] or
+                confirmed["contact_ids"] != expected_task["contact_ids"]):
             raise HubSpotTaskError("hubspot_completion_unconfirmed")
         return {"id": task_id, "status": "COMPLETED"}

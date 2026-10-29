@@ -140,12 +140,48 @@ class ApolloTests(unittest.TestCase):
         reader, _ = self.make([contact])
         self.assertTrue(reader(EMAIL)['suppressed'])
 
-    def test_partial_search_fails_and_null_optout_is_no_record(self):
+    def test_row_level_reply_suppresses_even_without_membership_or_with_negative_membership(self):
+        for memberships in ([], [{'status': 'active', 'replied': False}]):
+            with self.subTest(memberships=memberships):
+                reader, _ = self.make([{'id': 'apollo-1', 'email': EMAIL,
+                    'contact_campaign_statuses': memberships, 'email_replied': True}])
+                result = reader(EMAIL)
+                self.assertTrue(result['suppressed'])
+                self.assertFalse(result['no_record'])
+
+    def test_row_level_reply_false_without_membership_is_clear(self):
+        reader, _ = self.make([{'id': 'apollo-1', 'email': EMAIL,
+            'contact_campaign_statuses': [], 'email_replied': False}])
+        result = reader(EMAIL)
+        self.assertFalse(result['suppressed'])
+        self.assertFalse(result['no_record'])
+
+    def test_existing_contact_without_reply_observation_fails_closed(self):
+        reader, _ = self.make([{'id': 'apollo-1', 'email': EMAIL,
+            'contact_campaign_statuses': []}])
+        with self.assertRaisesRegex(CanaryReadError, 'reply_unavailable'):
+            reader(EMAIL)
+
+    def test_row_level_reply_and_membership_invalid_values_fail_closed(self):
+        for value in (None, 'false', 0, []):
+            for location in ('contact', 'membership'):
+                with self.subTest(value=value, location=location):
+                    contact = {'id': 'apollo-1', 'email': EMAIL,
+                        'contact_campaign_statuses': []}
+                    if location == 'contact':
+                        contact['email_replied'] = value
+                    else:
+                        contact['contact_campaign_statuses'] = [{'replied': value}]
+                    reader, _ = self.make([contact])
+                    with self.assertRaisesRegex(CanaryReadError, 'reply_unavailable'):
+                        reader(EMAIL)
+
+    def test_partial_search_fails_and_null_optout_is_not_suppressed(self):
         reader, _ = self.make(partial_results_only=True)
         with self.assertRaises(CanaryReadError):
             reader(EMAIL)
         reader, _ = self.make([{'id':'apollo-1', 'email':EMAIL, 'contact_campaign_statuses':[],
-                               'email_unsubscribed':None}])
+                               'email_unsubscribed':None, 'email_replied':False}])
         self.assertFalse(reader(EMAIL)['suppressed'])
 
     def test_wrong_team_and_rate_limit_stop_without_retry(self):

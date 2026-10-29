@@ -187,8 +187,50 @@ def run_once(cfg):
     runner,tasks,now=build(cfg)
     if not _business_window(cfg,now):
         return {"source_revision":cfg["source_revision"],"mode":cfg["mode"],"status":"outside_business_hours","processed":[]}
-    outcomes=[]; due=tasks.due(limit=cfg["max_tasks_per_run"])
-    for index,task_id in enumerate(due):
+    outcomes=[]
+    pending = [state["id"] for state in runner.repository.list_state("linkedin_cadence_task")
+               if state.get("status") in {"pending", "provider_confirmed", "uncertain"}]
+    scheduler = runner.repository.get_state("linkedin_cadence_poll_scheduler", "global") or {}
+    maximum = cfg["max_tasks_per_run"]
+    # Alternate when the budget is one; otherwise reserve capacity for both
+    # classes and rotate pending IDs across runs. Stuck reconciliation must not
+    # starve unrelated due tasks, nor should a busy due queue starve recovery.
+    if pending and maximum == 1:
+        pending_slots = 0 if scheduler.get("next_single") == "due" else 1
+    elif pending:
+        pending_slots = min(len(pending), (maximum + 1) // 2)
+    else:
+        pending_slots = 0
+    cursor = int(scheduler.get("pending_cursor", 0)) % len(pending) if pending else 0
+    chosen_pending = [pending[(cursor + index) % len(pending)] for index in range(pending_slots)]
+    due_slots = maximum - len(chosen_pending)
+    due_error = None
+    due = []
+    due_after = scheduler.get("due_after")
+    if due_slots:
+        try:
+            if callable(getattr(type(tasks), "due_page", None)):
+                page = tasks.due_page(limit=maximum, after=due_after)
+                due = page["ids"]
+                due_after = page["next_after"]
+            else:
+                due = tasks.due(limit=maximum)
+        except Exception as exc:
+            due_error = _error_code(exc)
+    due = [task_id for task_id in dict.fromkeys(due) if task_id not in pending]
+    due_cursor = int(scheduler.get("due_cursor", 0)) % len(due) if due else 0
+    chosen_due = [due[(due_cursor + index) % len(due)] for index in range(min(due_slots, len(due)))]
+    # If the due queue is empty, spend the remaining budget on more pending IDs.
+    remaining = maximum - len(chosen_pending) - len(chosen_due)
+    if remaining:
+        chosen_pending += [pending[(cursor + index) % len(pending)]
+                           for index in range(pending_slots, min(len(pending), pending_slots + remaining))]
+    selected = chosen_pending + chosen_due
+    runner.repository.put_state("linkedin_cadence_poll_scheduler", "global", {
+        "next_single": "due" if maximum == 1 and chosen_pending else "pending",
+        "pending_cursor": cursor + len(chosen_pending), "due_cursor": due_cursor + len(chosen_due),
+        "due_after": due_after})
+    for index,task_id in enumerate(selected):
         try:
             confirmation = runner.repository.get_state("linkedin_cadence_human_confirmation", task_id)
             if confirmation:
@@ -200,11 +242,14 @@ def run_once(cfg):
             code=_error_code(exc)
             runner._record_alert(task_id,{"status":"blocked","error_code":code})
             outcomes.append({"task_id":task_id,"status":"blocked","error_code":code})
-        if index + 1 < len(due):
+        if index + 1 < len(selected):
             spacing=cfg["action_spacing_seconds"]
             time.sleep(spacing["min"] + secrets.randbelow(spacing["max"] - spacing["min"] + 1))
-    return {"source_revision":cfg["source_revision"],"config_sha256":cfg["_digest"],
-            "mode":cfg["mode"],"status":"ok","processed":outcomes}
+    summary = {"source_revision":cfg["source_revision"],"config_sha256":cfg["_digest"],
+               "mode":cfg["mode"],"status":"ok","processed":outcomes}
+    if due_error:
+        summary.update(status="partial", due_error=due_error)
+    return summary
 
 
 def _error_code(exc):

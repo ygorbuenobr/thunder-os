@@ -57,7 +57,8 @@ def _task_contract(task: Mapping[str, Any], step: Mapping[str, Any], clock) -> d
     return {
         "subject": task["subject"], "body": task["body"], "contact_ids": list(task["contact_ids"]),
         "content": step["plan"]["content"],
-        "sent_at": datetime.fromtimestamp(clock(), timezone.utc).isoformat(),
+        # The queue time and attempt time do not prove the provider's send time.
+        "sent_at": "nao_comprovado",
     }
 
 
@@ -211,6 +212,7 @@ class HermesLinkedInCadence:
         contacts = task.get("contact_ids")
         if not isinstance(contacts, list) or len(contacts) != 1 or not isinstance(contacts[0], str):
             raise CadenceBlocked("task_contact_ambiguous")
+        self._check_pending_contact(contacts[0], task["id"])
         if task.get("contact_status") not in ACTIVE_CADENCE_STATUSES:
             raise CadenceBlocked("cadence_status_blocked")
         marker = task.get("body")
@@ -240,14 +242,29 @@ class HermesLinkedInCadence:
         step = next(step for step in approval["steps"] if step["marker"] == marker)
         return approval, step
 
+    def _check_pending_contact(self, contact_id: str, task_id: str) -> None:
+        for state in self.repository.list_state("linkedin_cadence_task"):
+            contact = state.get("contact_id")
+            if not contact and len((state.get("task_contract") or {}).get("contact_ids", [])) == 1:
+                contact = state["task_contract"]["contact_ids"][0]
+            if (state.get("task_id", state.get("id")) != task_id
+                    and contact == contact_id
+                    and state.get("status") in {"pending", "uncertain", "provider_confirmed"}):
+                raise CadenceBlocked("contact_reconciliation_pending")
+
     def _complete_confirmed(self, state: Mapping[str, Any], *, replayed: bool) -> dict[str, Any]:
         task_id, receipt = str(state["task_id"]), str(state["receipt_ref"])
         self.tasks.complete(task_id, receipt, state["task_contract"])
-        completed = {**_clean_state(state), "status": "completed"}
-        self.repository.put_state("linkedin_cadence_task", task_id, completed)
         audit_id = payload_hash({"task": task_id, "receipt": receipt})
-        if self.repository.get_state("linkedin_cadence_audit", audit_id) is None:
-            self.repository.append_state("linkedin_cadence_audit", audit_id, completed)
+        with self.repository.transaction():
+            current = self.repository.get_state("linkedin_cadence_task", task_id)
+            if not current or current.get("status") not in {"provider_confirmed", "completed"} or current.get("receipt_ref") != receipt:
+                raise CadenceBlocked("task_reconciliation_changed")
+            completed = {**_clean_state(current), "status": "completed"}
+            if current.get("status") != "completed":
+                self.repository.put_state("linkedin_cadence_task", task_id, completed)
+            if self.repository.get_state("linkedin_cadence_audit", audit_id) is None:
+                self.repository.append_state("linkedin_cadence_audit", audit_id, completed)
         return {"task_id": task_id, "status": "completed", "receipt_ref": receipt,
                 "actor": "hermes (delegado)", **({"replayed": True} if replayed else {})}
 
@@ -255,23 +272,133 @@ class HermesLinkedInCadence:
         value = {**_clean_state(state), "task_id": task_id, "actor": "hermes (delegado)"}
         self.repository.put_state("linkedin_cadence_alert", task_id, value)
 
+    def _resume_job(self, prior: Mapping[str, Any], *, replayed: bool) -> dict[str, Any]:
+        """Recover the persisted job without replaying a possible provider effect."""
+        task_id = str(prior["task_id"])
+        job = self.repository.get_state("connectsafely_job", str(prior.get("job_id", "")))
+        if not job:
+            self._record_alert(task_id, {**_clean_state(prior), "error_code": "job_missing"})
+            return {"task_id": task_id, "status": "uncertain", "error_code": "job_missing"}
+        if job.get("state") == "queued" and prior.get("status") == "uncertain":
+            return {"task_id": task_id, "status": "uncertain", "replayed": replayed,
+                    "error_code": "reconciliation_required"}
+        if job.get("state") in {"queued", "running"}:
+            # The application's claim/lease guard is the sole dispatch authority.
+            # A running, expired claim becomes uncertain, never queued again.
+            self.app.process_one(job_id=job["id"])
+            job = self.repository.get_state("connectsafely_job", job["id"])
+        if job and job.get("state") in {"queued", "running"}:
+            return {"task_id": task_id, "status": "pending", "replayed": replayed}
+        # Serialize against job reconciliation and concurrent task completion.
+        # Re-read both while holding the write lock, so stale observations cannot
+        # regress a completed task to uncertain or replace its receipt.
+        with self.repository.transaction():
+            current = self.repository.get_state("linkedin_cadence_task", task_id)
+            job = self.repository.get_state("connectsafely_job", str(prior.get("job_id", "")))
+            if not current or current.get("job_id") != prior.get("job_id"):
+                raise CadenceBlocked("task_reconciliation_changed")
+            if current.get("status") == "completed":
+                return {"task_id": task_id, "status": "completed", "replayed": True,
+                        "receipt_ref": current.get("receipt_ref")}
+            result = (job or {}).get("result", {})
+            sent = bool(job and job.get("state") == "done" and result.get("status") == "sent" and result.get("receipt_ref"))
+            if current.get("status") == "provider_confirmed":
+                confirmed = _clean_state(current)
+                sent = True
+            elif sent:
+                confirmed = {**_clean_state(current), "status": "provider_confirmed", "receipt_ref": result["receipt_ref"]}
+                self.repository.put_state("linkedin_cadence_task", task_id, confirmed)
+            else:
+                uncertain = bool(job and job.get("state") == "needs_reconciliation")
+                status = "uncertain" if uncertain else "blocked"
+                state = {**_clean_state(current), "status": status,
+                         "error_code": result.get("error_code") or (job or {}).get("error_code") or "connectsafely_not_confirmed"}
+                self.repository.put_state("linkedin_cadence_task", task_id, state)
+        if sent:
+            try:
+                return self._complete_confirmed(confirmed, replayed=replayed)
+            except Exception:
+                return {"task_id": task_id, "status": "provider_confirmed",
+                        "receipt_ref": confirmed["receipt_ref"], "hubspot_completion": "pending"}
+        self._record_alert(task_id, state)
+        if uncertain and not state.get("crm_uncertain_confirmed") and hasattr(self.tasks, "mark_uncertain"):
+            try:
+                self.tasks.mark_uncertain(state["contact_id"], state["expected_contact_status"])
+            except Exception:
+                current = self.repository.get_state("linkedin_cadence_task", task_id)
+                if current and current.get("status") == "completed":
+                    return {"task_id": task_id, "status": "completed", "replayed": True,
+                            "receipt_ref": current.get("receipt_ref")}
+                self._record_alert(task_id, {**state, "error_code": "hubspot_uncertain_status_pending"})
+                return {"task_id": task_id, "status": status, "replayed": replayed,
+                        "error_code": "hubspot_uncertain_status_pending", "hubspot_update": "pending"}
+            with self.repository.transaction():
+                current = self.repository.get_state("linkedin_cadence_task", task_id)
+                if current and current.get("status") == "uncertain" and current.get("job_id") == state.get("job_id"):
+                    state = {**_clean_state(current), "crm_uncertain_confirmed": True}
+                    self.repository.put_state("linkedin_cadence_task", task_id, state)
+        return {"task_id": task_id, "status": status, "replayed": replayed,
+                "error_code": state["error_code"]}
+
+    def _recover_legacy_job(self, task_id: str) -> dict[str, Any] | None:
+        """Recover a pre-upgrade orphan only with its original immutable bindings."""
+        bindings = [item for item in self.repository.list_state("linkedin_cadence_preview_binding")
+                    if item.get("task_id") == task_id]
+        candidates = [(binding, job) for binding in bindings
+                      for job in self.repository.list_state("connectsafely_job")
+                      if job.get("preview_id") == binding.get("preview_id")]
+        if not candidates:
+            return None
+        if len(candidates) != 1:
+            raise CadenceBlocked("legacy_task_job_ambiguous")
+        binding, job = candidates[0]
+        authority = binding.get("authority") or {}
+        preview = self.repository.get_state("connectsafely_preview", binding["preview_id"])
+        queue = self.repository.get_state("connectsafely_queue_approval", job["id"])
+        approval = self.repository.get_state("linkedin_cadence_approval", str(authority.get("id", "")))
+        task = self.tasks.get(task_id)
+        steps = [step for step in (approval or {}).get("steps", []) if step.get("marker") == authority.get("marker")]
+        review = job.get("review") or {}
+        if (not preview or not queue or not approval or len(steps) != 1
+                or job.get("actor") != "hermes (delegado)" or job.get("delegated_authority") != authority
+                or queue.get("actor") != "ygor" or queue.get("executor") != "hermes (delegado)"
+                or queue.get("delegated_authority") != authority or queue.get("review") != review
+                or job.get("campaign_confirmation_hash") != payload_hash(queue.get("campaign_confirmation"))
+                or approval.get("version") != authority.get("version")
+                or approval.get("review_hash") != authority.get("review_hash")
+                or review.get("preview_id") != binding.get("preview_id")
+                or review.get("expected_version") != binding.get("preview_version")
+                or review.get("review_hash") != binding.get("review_hash")
+                or steps[0].get("plan_hash") != plan_hash(preview.get("plan", {}))
+                or task.get("body") != authority.get("marker")
+                or task.get("contact_ids") != [approval.get("hubspot_contact_id")]
+                or payload_hash(dict(task)) != binding.get("task_hash")):
+            raise CadenceBlocked("legacy_task_job_unverified")
+        state = {"status": "pending", "task_id": task_id, "approval_id": approval["id"],
+                 "marker": steps[0]["marker"], "job_id": job["id"], "actor": "hermes (delegado)",
+                 "task_contract": _task_contract(task, steps[0], self.clock),
+                 "contact_id": task["contact_ids"][0], "expected_contact_status": task.get("contact_status"),
+                 "crm_uncertain_confirmed": False}
+        with self.repository.transaction():
+            current = self.repository.get_state("linkedin_cadence_task", task_id)
+            if current:
+                return current
+            self.repository.append_state("linkedin_cadence_task", task_id, state)
+        return state
+
     def run_task(self, task_id: str, *, preview_id: str | None = None,
                  campaign_approval_id: str | None = None) -> dict[str, Any]:
         prior = self.repository.get_state("linkedin_cadence_task", task_id)
         if prior and prior.get("status") == "completed":
+            receipt = prior.get("receipt_ref")
+            if isinstance(receipt, str) and receipt:
+                audit_id = payload_hash({"task": task_id, "receipt": receipt})
+                with self.repository.transaction():
+                    if self.repository.get_state("linkedin_cadence_audit", audit_id) is None:
+                        self.repository.append_state("linkedin_cadence_audit", audit_id, _clean_state(prior))
             return {"task_id": task_id, "status": "completed", "replayed": True,
-                    "receipt_ref": prior.get("receipt_ref")}
+                    "receipt_ref": receipt}
         if prior and prior.get("status") == "uncertain":
-            if not prior.get("crm_uncertain_confirmed") and hasattr(self.tasks, "mark_uncertain"):
-                try:
-                    self.tasks.mark_uncertain(prior["contact_id"], prior["expected_contact_status"])
-                except Exception:
-                    self._record_alert(task_id, {**_clean_state(prior),
-                        "error_code": "hubspot_uncertain_status_pending"})
-                    return {"task_id": task_id, "status": "uncertain", "replayed": True,
-                            "error_code": "hubspot_uncertain_status_pending"}
-                prior = self.repository.put_state("linkedin_cadence_task", task_id, {
-                    **_clean_state(prior), "crm_uncertain_confirmed": True})
             if prior.get("marker") == "cad_li_0":
                 approval = self.repository.get_state("linkedin_cadence_approval", str(prior.get("approval_id", "")))
                 step = next((item for item in (approval or {}).get("steps", [])
@@ -285,21 +412,18 @@ class HermesLinkedInCadence:
                             self.app.reconcile_delegated({"preview_id": job["preview_id"]}, authority)
                         except Exception:
                             pass
-            job = self.repository.get_state("connectsafely_job", str(prior.get("job_id", "")))
-            result = job.get("result", {}) if job else {}
-            if job and job.get("state") == "done" and result.get("status") == "sent" and result.get("receipt_ref"):
-                confirmed = {**_clean_state(prior), "status": "provider_confirmed",
-                             "receipt_ref": result["receipt_ref"]}
-                self.repository.put_state("linkedin_cadence_task", task_id, confirmed)
-                try:
-                    return self._complete_confirmed(confirmed, replayed=True)
-                except Exception:
-                    return {"task_id": task_id, "status": "provider_confirmed",
-                            "receipt_ref": result["receipt_ref"], "hubspot_completion": "pending"}
-            return {"task_id": task_id, "status": "uncertain", "replayed": True,
-                    "error_code": "reconciliation_required"}
+            return self._resume_job(prior, replayed=True)
         if prior and prior.get("status") == "provider_confirmed":
             return self._complete_confirmed(prior, replayed=True)
+        if prior and prior.get("status") == "pending":
+            return self._resume_job(prior, replayed=True)
+        if prior and prior.get("status") == "blocked":
+            return {"task_id": task_id, "status": "blocked", "replayed": True,
+                    "error_code": prior.get("error_code", "connectsafely_not_confirmed")}
+        if not prior:
+            legacy = self._recover_legacy_job(task_id)
+            if legacy:
+                return self._resume_job(legacy, replayed=True)
         task = self.tasks.get(task_id)
         approval, step = self._match(task)
         identity = self._verify_identity(approval, step["plan"])
@@ -338,45 +462,21 @@ class HermesLinkedInCadence:
                 or binding.get("authority") != authority):
             raise CadenceBlocked("task_preview_binding_changed")
         self._check_identity_binding(binding, identity)
-        queued = self.app.enqueue_delegated({
-            "preview_id": preview_id, "expected_version": binding["preview_version"],
-            "review_hash": binding["review_hash"], "campaign_approval_id": campaign_approval_id,
-        }, authority)
-        self.app.process_one(job_id=queued["job_id"])
-        job = self.repository.get_state("connectsafely_job", queued["job_id"])
-        result = job.get("result", {}) if job else {}
-        if job and job.get("state") == "done" and result.get("status") == "sent" and result.get("receipt_ref"):
-            receipt = result["receipt_ref"]
-            state = {"status": "provider_confirmed", "task_id": task_id,
-                     "approval_id": approval["id"], "marker": step["marker"],
-                     "job_id": queued["job_id"], "receipt_ref": receipt,
-                     "actor": "hermes (delegado)",
-                     "task_contract": _task_contract(task, step, self.clock)}
-            self.repository.put_state("linkedin_cadence_task", task_id, state)
-            try:
-                return self._complete_confirmed(state, replayed=False)
-            except Exception:
-                return {"task_id": task_id, "status": "provider_confirmed",
-                        "receipt_ref": receipt, "hubspot_completion": "pending"}
-        uncertain = bool(job and job.get("state") == "needs_reconciliation")
-        status = "uncertain" if uncertain else "blocked"
-        error = result.get("error_code", "connectsafely_not_confirmed")
-        uncertain_state = {
-            "status": status, "task_id": task_id, "approval_id": approval["id"],
-            "marker": step["marker"], "job_id": queued["job_id"], "error_code": error,
-            "actor": "hermes (delegado)",
-            "task_contract": _task_contract(task, step, self.clock),
-            "contact_id": task["contact_ids"][0],
-            "expected_contact_status": task.get("contact_status"),
-            "crm_uncertain_confirmed": False,
-        }
-        self.repository.put_state("linkedin_cadence_task", task_id, uncertain_state)
-        self._record_alert(task_id, {
-            "status": status, "approval_id": approval["id"], "marker": step["marker"],
-            "job_id": queued["job_id"], "error_code": error,
-        })
-        if uncertain and hasattr(self.tasks, "mark_uncertain"):
-            self.tasks.mark_uncertain(task["contact_ids"][0], task.get("contact_status"))
-            self.repository.put_state("linkedin_cadence_task", task_id, {
-                **uncertain_state, "crm_uncertain_confirmed": True})
-        return {"task_id": task_id, "status": status, "error_code": error}
+        # Queue and task context commit together. A process death cannot leave an
+        # actionable queued job without its task/receipt reconciliation context.
+        with self.repository.transaction():
+            prior = self.repository.get_state("linkedin_cadence_task", task_id)
+            if prior:
+                raise CadenceBlocked("task_already_has_job")
+            self._check_pending_contact(task["contact_ids"][0], task_id)
+            queued = self.app.enqueue_delegated({
+                "preview_id": preview_id, "expected_version": binding["preview_version"],
+                "review_hash": binding["review_hash"], "campaign_approval_id": campaign_approval_id,
+            }, authority)
+            state = {"status": "pending", "task_id": task_id, "approval_id": approval["id"],
+                     "marker": step["marker"], "job_id": queued["job_id"],
+                     "actor": "hermes (delegado)", "task_contract": _task_contract(task, step, self.clock),
+                     "contact_id": task["contact_ids"][0],
+                     "expected_contact_status": task.get("contact_status"), "crm_uncertain_confirmed": False}
+            self.repository.append_state("linkedin_cadence_task", task_id, state)
+        return self._resume_job(state, replayed=False)

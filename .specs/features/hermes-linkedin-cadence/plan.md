@@ -112,6 +112,8 @@ No SQL migration. New state kinds use the existing versioned `thunder_state` sto
 | Approval envelope | Contact-scoped, four-step exact plan hashes | Treating the generic `hermes` actor string or HubSpot task alone as authority. |
 | Completion authority | ConnectSafely confirmed receipt | Completing on queue acceptance, HTTP acceptance or an uncertain invitation result. |
 | Canary read-only wiring (2026-10-29) | Reuse the panel's hash-pinned live configuration; compose optional allowlisted readers even when execution is disabled, and inject the scoped SEQD transport into the existing console. No provider calls at composition. | Enabling effects to obtain read access, or silently retaining the unrestricted SEQD transport when a canary scope is configured. |
+| Uncertain CRM status after review (2026-10-29) | Without a proven atomic compare-and-set, preserve the contact's existing CRM status and retain/alert uncertainty locally; explicitly report pending manual CRM reconciliation. | An unconditional read-then-PATCH to `incerto`, which can overwrite a concurrent reply. This supersedes claims that an unconditional CRM PATCH proves safe convergence; do not claim cross-system suppression from local state alone. |
+| Receipt-bound crash recovery (2026-10-29) | Persist a task-to-job binding before the effect, reconcile existing jobs and pending receipts without redelivery, and independently require exact HubSpot receipt readback. | Re-enqueue a consumed preview or treat task status alone as proof of receipt. |
 
 ## Impact
 

@@ -148,9 +148,10 @@ class HubSpotCanaryReader:
 class ApolloCanaryReader:
     """Fresh contact search, never a full-campaign sweep or enrichment.
 
-    No saved contact/membership means no record in this source, scoped to the
-    exact email. A populated membership without an explicit reply observation
-    is unknown and is rejected; active/paused alone is not a negative reply.
+    No saved contact means no record in this source, scoped to the exact email.
+    A saved contact without an explicit reply observation is unknown and is
+    rejected; an empty membership list or active/paused status alone does not
+    prove a negative reply.
     """
     def __init__(self, scope, team_id, credential_loader, *, request=None):
         from .apollo_readonly import _https_request
@@ -194,11 +195,15 @@ class ApolloCanaryReader:
         require(isinstance(memberships, list) and len(memberships) <= 50, 'canary_apollo_reply_unavailable')
         optout = row.get('email_unsubscribed')
         require(optout is None or type(optout) is bool, 'canary_apollo_reply_unavailable')
-        blocked = optout is True or row.get('email_status') in ('unsubscribed', 'bounced')
+        row_reply = row.get('email_replied')
+        require('email_replied' not in row or type(row_reply) is bool, 'canary_apollo_reply_unavailable')
+        require(bool(memberships) or type(row_reply) is bool, 'canary_apollo_reply_unavailable')
+        blocked = optout is True or row_reply is True or row.get('email_status') in ('unsubscribed', 'bounced')
         if memberships:
             for item in memberships:
                 require(isinstance(item, dict), 'canary_apollo_reply_unavailable')
-                replied = item.get('replied', row.get('email_replied'))
+                replied = item.get('replied', row_reply)
+                require('replied' not in item or type(replied) is bool, 'canary_apollo_reply_unavailable')
                 reason = item.get('inactive_reason')
                 if (item.get('in_response_to_emailer_message_id') or reason in
                         ('replied', 'contact_replied', 'unsubscribed', 'bounced')):
@@ -208,7 +213,7 @@ class ApolloCanaryReader:
                 else:
                     raise CanaryReadError('canary_apollo_reply_unavailable')
         return {'target': address, 'complete': True, 'suppressed': blocked,
-                'no_record': not memberships, 'coverage': 'exact_email_saved_contacts'}
+                'no_record': False, 'coverage': 'exact_email_saved_contacts'}
 
 
 class InstantlyCanaryReader:
