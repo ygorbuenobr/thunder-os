@@ -35,6 +35,7 @@ class ConnectSafelyAdapter:
     def messages(self,conversation_urn,limit=10):return self.client.messages(conversation_urn,limit)
     def connections(self,**options):return self.client.connections(**options)
     def sent_invitations(self,**options):return self.client.sent_invitations(**options)
+    def relationship(self,plan):return self.client.relationship(plan)
     def quota(self):return self.client.quota()
     def send(self,plan,*,before_dispatch):return self._port(plan).send(plan,before_dispatch=before_dispatch)
     def reconcile(self,plan,attempted_at):return self._port(plan).reconcile(plan,attempted_at)

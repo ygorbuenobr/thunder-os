@@ -2,6 +2,9 @@
 import concurrent.futures
 import http.client
 import json
+import os
+import socket
+import sys
 from pathlib import Path
 import tempfile
 import threading
@@ -22,11 +25,13 @@ class PanelDiscardTests(unittest.TestCase):
         self.env = patch.dict(panel.os.environ, {'THUNDER_EXTERNAL_EFFECTS_ENABLED': 'true',
             'THUNDER_OS_COPILOT_MODE': 'human_approval', 'THUNDER_OS_ACTORS': 'ygor,codex,hermes'})
         self.env.start(); self.addCleanup(self.env.stop)
-        self.server = panel.ThreadingHTTPServer(('127.0.0.1', 0), panel.Handler)
-        self.server.banco = self.bank
-        self.server.thunder_service = SimpleNamespace()
-        self.server.thunder_nonces = {}
-        self.server.thunder_origin = 'http://127.0.0.1:' + str(self.server.server_port)
+        # Model a trusted Unix ingress. The separate real-nginx suite verifies
+        # production peer executable/UID and rejects TCP header forgery.
+        pidfile = root / 'test-master.pid'
+        pidfile.write_text(str(os.getpid()))
+        self.server = panel.confirmation_server(SimpleNamespace(
+            banco=self.bank, thunder_service=SimpleNamespace(), thunder_nonces={},
+            thunder_origin='http://localhost'), root / 'panel.sock', os.getuid(), sys.executable, pidfile)
         thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         thread.start()
         self.addCleanup(self.server.server_close)
@@ -42,9 +47,17 @@ class PanelDiscardTests(unittest.TestCase):
             if status == 200: headers['X-Thunder-Nonce'] = session['nonce']
         if body is not None: headers['Content-Type'] = 'application/json'
         if method != 'GET': headers['Origin'] = origin or self.server.thunder_origin
-        con = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=5)
+        con = http.client.HTTPConnection('localhost', timeout=5)
+        con.sock = socket.socket(socket.AF_UNIX)
+        con.sock.settimeout(5)
+        con.sock.connect(self.server.server_address)
         try:
-            con.request(method, path, None if body is None else json.dumps(body), headers)
+            try:
+                con.request(method, path, None if body is None else json.dumps(body), headers)
+            except BrokenPipeError:
+                # Unauthorized requests may be rejected before the body write.
+                # Still assert the actual HTTP response below.
+                pass
             result = con.getresponse()
             return result.status, json.loads(result.read())
         finally: con.close()

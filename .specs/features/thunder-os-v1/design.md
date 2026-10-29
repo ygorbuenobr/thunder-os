@@ -329,7 +329,7 @@ Append-only. Sensitive payload bodies are referenced by hash/ref, not duplicated
 - Nginx forwards the authenticated username; the loopback-only app accepts that header only from the configured proxy path.
 - Every browser mutation validates exact `Origin` and a session nonce to prevent cross-site writes.
 - Agent ingress is local CLI or append-only validated envelope in `_entrada/<agent>/thunder-os/`; file path identifies claimed actor but does not grant effect authority.
-- Hermes effect delegation requires a separate server-side credential, persisted scopes, an atomically reserved daily ceiling and a kill switch rechecked by the worker before the provider call. Follow-ups, LinkedIn likes and internal HubSpot writes use the same audit actor `hermes (delegado)`; first touch, new person and suppression override remain human-only.
+- Hermes effect delegation requires a separate server-side credential, persisted scopes, an atomically reserved daily ceiling and a kill switch rechecked by the worker before the provider call. Follow-ups, LinkedIn likes, the exact contact-scoped `linkedin_cadence` package approved by Ygor at D0 and internal HubSpot writes use the same audit actor `hermes (delegado)`. First-touch and new-person authority remains human-only: Hermes may execute the frozen D0 package but cannot select a new person, invent/change copy or override suppression.
 - Claude and Codex cannot approve or dispatch. Hermes cannot set receipts, `sent`, `done` or provider identifiers and can dispatch only an unchanged follow-up from a human-approved cadence.
 - Secrets remain in the profile environment; reports, events and error messages never include them.
 

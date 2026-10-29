@@ -698,14 +698,21 @@ class EmailReadbackTests(unittest.TestCase):
 
     def test_panel_main_real_assembly_is_lazy_and_read_flag_is_independent_of_send(self):
         import painel_servidor as panel
+        from thunder_os.apollo_campaign_reader import ApolloCampaignReader
         from thunder_os.instantly_reader import InstantlyReader
         from thunder_os.panel_verification import HermesVerifyProcess
-        for read_enabled, send_enabled in (('true', 'false'), ('false', 'true')):
-            with self.subTest(read_enabled=read_enabled, send_enabled=send_enabled):
-                server = SimpleNamespace(serve_forever=Mock())
-                root = Path(self.tmp.name)/('panel-'+read_enabled);root.mkdir()
+        for read_enabled, send_enabled, fail in (('true', 'false', False), ('false', 'true', False),
+                                                  ('true', 'false', True), ('false', 'false', 'startup'),
+                                                  ('true', 'true', 'timeout')):
+            with self.subTest(read_enabled=read_enabled, send_enabled=send_enabled, fail=fail):
+                server = SimpleNamespace(serve_forever=Mock(side_effect=RuntimeError('synthetic') if fail is True else None))
+                root = Path(self.tmp.name)/('panel-'+read_enabled+'-'+str(fail));root.mkdir()
                 brain, state = root/'brain', root/'state'
                 brain.mkdir();state.mkdir()
+                apollo_start = ApolloCampaignReader.start
+                def start_then_fail(reader):
+                    apollo_start(reader)
+                    raise RuntimeError('startup synthetic')
                 with patch.dict(os.environ, {'PAINEL_DB': str(state/'panel.db'),
                         'THUNDER_OS_SEQD_READ_ENABLED': read_enabled,
                         'THUNDER_OS_SEQD_SEND_ENABLED': send_enabled,
@@ -714,18 +721,28 @@ class EmailReadbackTests(unittest.TestCase):
                         patch.object(panel, 'ThreadingHTTPServer', return_value=server), \
                         patch.object(panel, 'configure_connectsafely_server'), \
                         patch.object(InstantlyReader, 'start') as start, \
-                        patch.object(InstantlyReader, 'stop'), \
+                        patch.object(InstantlyReader, 'stop', return_value=fail != 'timeout') as stop, \
+                        patch.object(ApolloCampaignReader, 'start', autospec=True,
+                            side_effect=start_then_fail if fail == 'startup' else apollo_start), \
+                        patch.object(ApolloCampaignReader, 'refresh'), \
                         patch.object(HermesVerifyProcess, 'configured') as hermes, \
                         patch('thunder_os.email_readback._seqd_request') as request, \
                         patch('thunder_os.seqd_client.credential_file', side_effect=AssertionError('credential forbidden')):
-                    self.assertEqual(panel.main(['servir']), 0)
+                    if fail is True or fail == 'startup':
+                        with self.assertRaisesRegex(RuntimeError, 'synthetic'):
+                            panel.main(['servir'])
+                    else:
+                        self.assertEqual(panel.main(['servir']), 1 if fail == 'timeout' else 0)
                     readers = server.thunder_service._effect_readers
                     self.assertEqual(set(readers), {'email'} if read_enabled == 'true' else set())
                     if readers:
                         self.assertIsInstance(readers['email'], GmailReceiptReader)
                         self.assertIs(readers['email'].repository, server.thunder_service.repository)
                     request.assert_not_called();hermes.assert_not_called();start.assert_called_once()
-                    server.serve_forever.assert_called_once_with()
+                    if fail == 'startup': server.serve_forever.assert_not_called()
+                    else: server.serve_forever.assert_called_once_with()
+                    stop.assert_called_once()
+                    self.assertFalse(server.thunder_apollo_reader.thread.is_alive())
 
     def test_consumer_main_real_assembly_is_lazy_without_loop_or_reporter(self):
         from thunder_os import continuous_consumer as consumer_module

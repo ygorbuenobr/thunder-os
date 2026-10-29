@@ -8,6 +8,7 @@ with real Apollo/Gmail and the final independent verifier belong to main.
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import json
+import threading
 import unittest
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlsplit
@@ -985,6 +986,34 @@ class CacheTests(unittest.TestCase):
             self.assertIsInstance(reader.provider.gmail, SEQDClient)
             reader.snapshot()
             reader.refresh()
+
+    def test_stop_waits_for_inflight_refresh_and_worker_exits(self):
+        entered, release = threading.Event(), threading.Event()
+        def controlled_refresh():
+            entered.set()
+            release.wait(2)
+        self.reader.refresh = controlled_refresh
+        self.reader.start()
+        self.assertTrue(entered.wait(1))
+        result = []
+        stopper = threading.Thread(target=lambda: result.append(self.reader.stop()))
+        stopper.start()
+        try:
+            self.assertTrue(self.reader.stop_event.wait(1))
+            self.assertTrue(stopper.is_alive())
+        finally:
+            release.set()
+            stopper.join(3)
+        self.assertEqual(result, [True])
+        self.assertFalse(self.reader.thread.is_alive())
+
+    def test_stop_reports_timeout_if_refresh_has_not_finished(self):
+        thread = Mock()
+        thread.is_alive.return_value = True
+        self.reader.thread = thread
+        self.assertFalse(self.reader.stop())
+        thread.join.assert_called_once_with(timeout=6)
+        self.assertTrue(self.reader.stop_event.is_set())
 
     def test_snapshot_cache_only_and_permission_checked_every_access(self):
         self.reader.snapshot()

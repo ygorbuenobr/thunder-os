@@ -163,6 +163,34 @@ class PanelWiringTests(unittest.TestCase):
                          self.repo.get_state('connectsafely_runtime_config', 'active')['config_sha256'])
         self.assertFalse(app.process_one())
 
+    def test_linkedin_cadence_approval_route_persists_exact_human_package_without_provider_call(self):
+        app=self.configure();handler=object.__new__(panel.Handler)
+        steps=[]
+        for number,(marker,subject,action) in enumerate((
+            ('cad_li_0','LinkedIn: convite','invite'),('cad_li_1','LinkedIn: msg 1','dm'),
+            ('cad_li_2','LinkedIn: msg 2','dm'),('cad_li_3','LinkedIn: msg 3','dm'))):
+            steps.append({'marker':marker,'subject':subject,'plan':{
+                'account_id':'a'*24,'account_public_id':'fixture-owner','action':action,
+                'recipient_public_id':'fixture-target','recipient_profile_urn':'urn:li:fsd_profile:TARGET',
+                'channel':'linkedin','messaging_channel':'linkedin_inbox','content':'copy '+marker,
+                'conversation_urn':None if action=='invite' else 'urn:li:msg_conversation:(TARGET,OWNER)'}})
+        body={'id':'cadence-approval-1','hubspot_contact_id':'255570819657','cadence_id':'316669709',
+              'expires_at':'2099-01-01T00:00:00+00:00','steps':steps}
+        handler.server=SimpleNamespace(thunder_service=SimpleNamespace(repository=self.repo),thunder_connectsafely_app=app)
+        handler.command='POST';handler.thunder_actor=lambda:'ygor';handler.corpo=lambda:body
+        handler.responder=lambda status,result:(status,result)
+        status,result=handler.thunder_api(urlsplit('/api/os/v1/linkedin-cadence-approvals'))
+        self.assertEqual(201,status);self.assertEqual('ygor',result['approved_by'])
+        self.assertEqual([],self.repo.list_state('connectsafely_job'))
+        handler.thunder_actor=lambda:'hermes'
+        from thunder_os.hermes_linkedin_cadence import CadenceBlocked
+        with self.assertRaisesRegex(CadenceBlocked,'human_authority_required'):
+            handler.thunder_api(urlsplit('/api/os/v1/linkedin-cadence-approvals'))
+        handler.server.thunder_connectsafely_app=None;handler.thunder_actor=lambda:'ygor'
+        with self.assertRaises(panel.Erro) as failure:
+            handler.thunder_api(urlsplit('/api/os/v1/linkedin-cadence-approvals'))
+        self.assertEqual(503,failure.exception.status)
+
     def test_missing_or_wrong_pin_blocks_startup(self):
         self.config.write_text(json.dumps(self.cfg))
         for pin in ('', '0' * 64):
@@ -209,6 +237,84 @@ class PanelWiringTests(unittest.TestCase):
             app = self.configure()
             self.assertIsNone(app.provider)
             self.assertFalse(app.status('ygor')['enqueue_enabled'])
+
+    def canary_config(self):
+        from thunder_os.seqd_client import MAILBOX
+        return {'version':1, 'contacts':[{'hubspot_contact_id':'123456', 'email':MAILBOX,
+            'channels':['email'], 'email_providers':['apollo','instantly']}],
+            'hubspot':{'credential_file':str(self.root/'never-read-hubspot')},
+            'apollo':{'team_id':'synthetic-team', 'credential_file':str(self.root/'never-read-apollo')},
+            'instantly':{'workspace_id':'synthetic-workspace', 'credential_file':str(self.root/'never-read-instantly')}}
+
+    def test_disabled_panel_composes_optional_canary_readers_without_effect_ports_or_io(self):
+        from thunder_os.canary_readers import CanaryReaders, CanaryReadError
+        self.cfg['execution_enabled'] = False
+        self.cfg['live']['canary_readers'] = self.canary_config()
+        with patch('thunder_os.instantly_reader.private_text', side_effect=AssertionError('secret forbidden')) as secret, \
+             patch('socket.create_connection', side_effect=AssertionError('network forbidden')), \
+             patch('thunder_os.connectsafely_live.build', side_effect=AssertionError('effect composition forbidden')):
+            app = self.configure()
+            self.assertIsNone(app.provider)
+            self.assertIsNone(app.direct)
+            self.assertFalse(app.status('ygor')['enqueue_enabled'])
+            self.assertIsInstance(app.canary_readers, CanaryReaders)
+            self.assertIs(app.repo, app.canary_readers.repository)
+            self.assertEqual('a'*24, app.canary_readers.linkedin.client.account_id)
+            self.assertEqual('fixture-owner', app.canary_readers.linkedin.client.expected_public_id)
+            with self.assertRaises(CanaryReadError):
+                app.canary_readers.check_email('outside@example.invalid')
+            secret.assert_not_called()
+            self.assertEqual([], self.repo.list_state('connectsafely_job'))
+
+    def test_disabled_canary_readers_do_not_bypass_digest_or_recipient_scope(self):
+        self.cfg['execution_enabled'] = False
+        self.cfg['live']['canary_readers'] = self.canary_config()
+        self.config.write_text(json.dumps(self.cfg))
+        with patch('thunder_os.canary_readers.build_canary_readers') as build:
+            with self.assertRaisesRegex(ValueError, 'panel_config_artifact_mismatch'):
+                build_panel_composition(self.repo, config_path=str(self.config), config_sha256='0'*64)
+            build.assert_not_called()
+        self.cfg['live']['canary_readers']['contacts'][0]['email'] = 'outside@example.invalid'
+        with self.assertRaisesRegex(ValueError, 'email_canary_must_target_owner'):
+            self.configure()
+
+    def test_real_panel_main_injects_scoped_seqd_transport_while_all_effects_are_off(self):
+        from thunder_os.apollo_campaign_reader import ApolloCampaignReader
+        from thunder_os.instantly_reader import InstantlyReader
+        from thunder_os.canary_readers import CanarySEQDClient, CanaryReadError
+        self.cfg['execution_enabled'] = False
+        self.cfg['live']['canary_readers'] = self.canary_config()
+        self.config.write_text(json.dumps(self.cfg))
+        brain = self.root/'brain'; brain.mkdir()
+        server = SimpleNamespace(serve_forever=Mock())
+        env = {'PAINEL_DB':str(self.repo.path), 'THUNDER_OS_SEQD_READ_ENABLED':'true',
+            'THUNDER_OS_SEQD_SEND_ENABLED':'true', 'THUNDER_EXTERNAL_EFFECTS_ENABLED':'false',
+            'THUNDER_OS_CONNECTSAFELY_CONFIG':str(self.config),
+            'THUNDER_OS_CONNECTSAFELY_CONFIG_SHA256':self.pin(self.config)['sha256']}
+        with patch.dict(os.environ, env, clear=True), patch.object(panel, 'RAIZ', brain), \
+             patch.object(panel, 'ThreadingHTTPServer', return_value=server), \
+             patch('thunder_os.connectsafely_read_targets.build_read_resolver', return_value=None), \
+             patch.object(ApolloCampaignReader, 'start') as apollo_start, \
+             patch.object(ApolloCampaignReader, 'stop', return_value=True), \
+             patch.object(InstantlyReader, 'start') as instantly_start, \
+             patch.object(InstantlyReader, 'stop', return_value=True), \
+             patch('thunder_os.instantly_reader.private_text', side_effect=AssertionError('secret forbidden')) as secret, \
+             patch('thunder_os.seqd_client.credential_file', side_effect=AssertionError('secret forbidden')), \
+             patch('socket.create_connection', side_effect=AssertionError('network forbidden')):
+            self.assertEqual(0, panel.main(['servir']))
+            app, console = server.thunder_connectsafely_app, server.thunder_seqd_console
+            self.assertIsNone(app.provider)
+            self.assertFalse(app.execution_enabled)
+            self.assertTrue(console.read_enabled)
+            self.assertFalse(console.send_enabled)
+            self.assertIsInstance(console.port, CanarySEQDClient)
+            self.assertIs(console.port.readers, app.canary_readers)
+            with self.assertRaises(CanaryReadError):
+                console.port.contact_search('outside@example.invalid')
+            self.assertEqual([], app.repo.list_state('connectsafely_job'))
+            secret.assert_not_called()
+            apollo_start.assert_called_once(); instantly_start.assert_called_once()
+            server.serve_forever.assert_called_once_with()
 
     def test_evidence_source_and_identity_fail_closed(self):
         self.source.write_text('{"changed":true}')
@@ -321,6 +427,57 @@ class PanelWiringTests(unittest.TestCase):
         self.assertEqual(final,self.repo.get_state('connectsafely_job',job['job_id']))
         app.direct._reconcile.assert_called_once();ledger.reconcile_invitation.assert_called_once()
         self.assertEqual(1,len(self.repo.list_state('connectsafely_reconciliation')))
+
+    def test_delegated_invite_reconciles_under_exact_d0_authority(self):
+        from thunder_os.hermes_linkedin_cadence import (HermesLinkedInCadence,
+            approval_payload_hash, plan_hash)
+        app,preview,job,ledger,result=self.invitation_attempt()
+        delegation=self.repo.put_state('delegation','hermes',{
+            'enabled':True,'scopes':['linkedin_cadence'],'daily_limit':30,
+            'actor':'ygor','audit_actor':'hermes (delegado)'})
+        self.repo.put_state('agent_control', 'global', {'enabled':True, 'paused':False})
+        value={'hubspot_contact_id':'contact-1','cadence_id':'316669709',
+               'expires_at':'2099-01-01T00:00:00+00:00','steps':[{
+                   'marker':'cad_li_0','subject':'LinkedIn: convite','plan':preview['plan'],
+                   'plan_hash':plan_hash(preview['plan'])}],
+               'approved_by':'ygor','status':'active'}
+        value['review_hash']=approval_payload_hash(value)
+        cadence=self.repo.append_state('linkedin_cadence_approval','approval-1',value)
+        authority={'id':cadence['id'],'version':cadence['version'],
+                   'review_hash':cadence['review_hash'],'marker':'cad_li_0'}
+        def clean(row):return {k:v for k,v in row.items() if k not in {'id','version','updated_at'}}
+        origin=self.repo.get_state('connectsafely_preview_origin',preview['id'])
+        self.repo.put_state('connectsafely_preview_origin',preview['id'],{
+            **clean(origin),'executor':'hermes (delegado)','delegated_authority':authority})
+        queued=self.repo.get_state('connectsafely_job',job['job_id'])
+        self.repo.put_state('connectsafely_job',job['job_id'],{
+            **clean(queued),'actor':'hermes (delegado)','delegated_authority':authority})
+        approval=self.repo.get_state('connectsafely_queue_approval',job['job_id'])
+        self.repo.put_state('connectsafely_queue_approval',job['job_id'],{
+            **clean(approval),'executor':'hermes (delegado)','delegated_authority':authority,
+            'delegation_version':delegation['version'],'cadence_approval_hash':cadence['review_hash']})
+        # The one-time dispatch review may expire before the next 30-minute
+        # poll; reconciliation remains read-only and is bound to the current D0.
+        app.clock=lambda:approval['expires_at']+1800
+        task={'id':'task-1','status':'NOT_STARTED','subject':'LinkedIn: convite','body':'cad_li_0',
+              'contact_ids':['contact-1'],'contact_status':'em_cadencia','cadence_id':'316669709'}
+        class Tasks:
+            def __init__(self):self.completions=[]
+            def complete(self,task_id,receipt,expected):self.completions.append((task_id,receipt,expected))
+        tasks=Tasks()
+        self.repo.put_state('linkedin_cadence_task','task-1',{
+            'status':'uncertain','task_id':'task-1','approval_id':cadence['id'],'marker':'cad_li_0',
+            'job_id':job['job_id'],'error_code':'provider_outcome_unknown','actor':'hermes (delegado)',
+            'contact_id':'contact-1','expected_contact_status':'em_cadencia','crm_uncertain_confirmed':True,
+            'task_contract':{**{key:task[key] for key in ('subject','body','contact_ids')},
+                             'content':preview['plan']['content'],'sent_at':'2026-10-19T15:00:00+00:00'}})
+        reconciled=HermesLinkedInCadence(self.repo,tasks,app,clock=app.clock).run_task('task-1')
+        self.assertEqual('completed',reconciled['status'])
+        self.assertEqual('done',self.repo.get_state('connectsafely_job',job['job_id'])['state'])
+        self.assertEqual('connectsafely:urn:li:invitation:123',tasks.completions[0][1])
+        audits=self.repo.list_state('connectsafely_reconciliation')
+        self.assertEqual('hermes (delegado)',audits[0]['actor'])
+        app.direct._reconcile.assert_called_once();ledger.reconcile_invitation.assert_called_once()
 
     def test_invite_observation_alone_keeps_job_uncertain_and_no_ledger_finish(self):
         app,preview,job,ledger,result=self.invitation_attempt()

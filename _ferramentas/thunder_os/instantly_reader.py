@@ -253,3 +253,9 @@ class InstantlyReader:
 
     def stop(self):
         self.stop_event.set()
+        if self.thread is not None:
+            if self.thread.ident is None:
+                return True
+            self.thread.join(timeout=6)
+            return not self.thread.is_alive()
+        return True

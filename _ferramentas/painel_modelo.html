@@ -301,6 +301,14 @@ body[data-aba="cadencias"] .detalhes-sistema{display:none}
 #thunder-integrations-readback time{font-size:12px;color:var(--muted)}
 #hoje-integracoes>details>summary{cursor:pointer;padding-block:12px}
 #connectsafely-console-form{display:grid;gap:8px;max-width:760px}#connectsafely-console-form p{white-space:pre-wrap;overflow-wrap:anywhere}#connectsafely-console-form button{min-height:44px}#connectsafely-console-form input,#connectsafely-console-form textarea{width:100%;box-sizing:border-box}
+#delegated-identity-review{min-width:0;max-width:100%}
+#delegated-identity-review>summary{cursor:pointer;padding-block:12px}
+#delegated-identity-review [data-di-form]{display:grid;gap:8px;max-width:760px}
+#delegated-identity-review input[name="task_id"]{width:100%;font:inherit}
+#delegated-identity-review p,#delegated-identity-review th,#delegated-identity-review td{white-space:normal;overflow-wrap:anywhere}
+#delegated-identity-review button{min-height:44px;white-space:normal;max-width:100%;justify-self:start}
+#delegated-identity-review label:has([data-di-acknowledge]){display:flex;align-items:start;gap:8px;margin-block:12px}
+#delegated-identity-review [data-di-acknowledge]{flex:none;margin-top:5px}
 #hubspot-contact-form{display:grid;gap:8px;max-width:680px}
 #hubspot-contact-form input{width:100%;box-sizing:border-box}
 #hubspot-contact-form button{min-height:44px;justify-self:start}
@@ -701,6 +709,17 @@ body:has(#new-journey:not([hidden])) #hoje-pedido{display:none}
         <button class="btn" type="button" data-cs-recover disabled hidden>Liberar revisão da tentativa não enviada</button>
       </details>
     </form>
+    <details id="delegated-identity-review">
+      <summary>Conferir a identidade de uma tarefa</summary>
+      <p>Compare a referência do HubSpot com o perfil consultado no LinkedIn. Confirmar uma diferença registra somente a identidade desta prévia. O envio continua dependendo do texto exato e da sua autorização.</p>
+      <form data-di-form>
+        <label for="di-task-id">ID da tarefa no HubSpot</label>
+        <input id="di-task-id" name="task_id" inputmode="numeric" pattern="[0-9]+" maxlength="30" required autocomplete="off">
+        <button class="btn" type="submit" data-di-load>Consultar prévias desta tarefa</button>
+      </form>
+      <p data-di-status role="status" aria-live="polite">Informe uma tarefa para consultar.</p>
+      <div data-di-previews></div>
+    </details>
   </section>
   <section class="grupo-dia" id="hoje-hubspot" aria-labelledby="h-hoje-hubspot">
     <h2 id="h-hoje-hubspot">Contato no HubSpot</h2>
@@ -1455,6 +1474,80 @@ ThunderConnectSafely.mount($('connectsafely-console-form'),{api:(...args)=>{
   return apiServidor(...args);
 }});
 /* THUNDER_CONNECTSAFELY_END */
+/* THUNDER_DELEGATED_IDENTITY_BEGIN */
+(function(root){
+  'use strict';
+  const labels={linkedin_url:'Perfil LinkedIn',name:'Nome',company:'Empresa atual'};
+  const hash=value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
+  function linkedin(value){
+    try{const url=new URL(value);return url.protocol==='https:'&&!url.username&&!url.password&&!url.port&&['linkedin.com','www.linkedin.com'].includes(url.hostname)&&/^\/in\/[a-zA-Z0-9_.%-]+\/?$/.test(url.pathname)&&!url.search&&!url.hash;}catch{return false;}
+  }
+  function valid(p,task){
+    const i=p?.identity,c=i?.contact,l=i?.profile;
+    return p?.task_id===task&&typeof p.id==='string'&&/^[A-Za-z0-9_-]{1,100}$/.test(p.id)&&Number.isSafeInteger(p.version)&&p.version>0&&hash(p.review_hash)&&Number.isFinite(p.expires_at)&&typeof p.simulation==='boolean'&&p.plan?.channel==='linkedin'&&['dm','invite'].includes(p.plan.action)&&typeof p.plan.content==='string'&&p.plan.content.length>0&&typeof i.matches==='boolean'&&hash(i.observation_hash)&&Array.isArray(i.mismatches)&&i.mismatches.every(k=>Object.hasOwn(labels,k))&&new Set(i.mismatches).size===i.mismatches.length&&i.matches===(i.mismatches.length===0)&&typeof c?.id==='string'&&/^\d+$/.test(c.id)&&linkedin(c.linkedin_url)&&linkedin(l?.linkedin_url)&&typeof l.account_id==='string'&&l.account_id===p.plan.account_id&&typeof l.profile_urn==='string'&&l.profile_urn===p.plan.recipient_profile_urn&&[c.name,c.company,l.name,l.company].every(v=>typeof v==='string'&&v.trim().length>0);
+  }
+  function confirmed(p){const c=p.identity_confirmation;return c?.actor==='ygor'&&c.preview_id===p.id&&c.review_hash===p.review_hash&&c.observation_hash===p.identity.observation_hash;}
+  function mount(container,{api,clock=()=>Date.now()/1000}){
+    const doc=container.ownerDocument,form=container.querySelector('[data-di-form]'),field=form.elements.namedItem('task_id'),status=container.querySelector('[data-di-status]'),list=container.querySelector('[data-di-previews]'),load=container.querySelector('[data-di-load]');
+    let generation=0,busy=false;
+    const node=(tag,value)=>{const el=doc.createElement(tag);if(value!==undefined)el.textContent=value;return el;};
+    function message(value){status.textContent=value;}
+    function change(){generation++;list.replaceChildren();message('Tarefa alterada. Consulte as prévias antes de confirmar.');}
+    field.addEventListener('input',change);
+    function render(p,task,g){
+      const card=node('article');card.className='nj-warning';card.dataset.diPreview=p.id;
+      card.appendChild(node('h3',p.simulation?'SIMULAÇÃO · conferir identidade':'Conferir identidade antes de autorizar o envio'));
+      card.appendChild(node('p','Tarefa '+task+' · contato HubSpot '+p.identity.contact.id));
+      const table=node('table');table.style.width='100%';table.style.tableLayout='fixed';table.style.overflowWrap='anywhere';
+      const head=node('thead'),hr=node('tr');for(const label of ['Campo','Referência no HubSpot','Perfil consultado no LinkedIn'])hr.appendChild(node('th',label));head.appendChild(hr);table.appendChild(head);
+      const body=node('tbody');for(const key of Object.keys(labels)){const tr=node('tr');tr.dataset.diField=key;tr.appendChild(node('th',labels[key]+(p.identity.mismatches.includes(key)?' · diferente':'')));tr.appendChild(node('td',p.identity.contact[key]));tr.appendChild(node('td',p.identity.profile[key]));body.appendChild(tr);}table.appendChild(body);card.appendChild(table);
+      card.appendChild(node('h4','Texto exato desta prévia'));const content=node('p',p.plan.content);content.style.whiteSpace='pre-wrap';content.style.overflowWrap='anywhere';card.appendChild(content);
+      card.appendChild(node('p','Válida até '+new Date(p.expires_at*1000).toLocaleString('pt-BR')+'. Alterar o contato ou o texto exige outra revisão.'));
+      const info=node('details');info.appendChild(node('summary','Referências desta conferência'));info.appendChild(node('p','Prévia: '+p.id));info.appendChild(node('p','Hash do texto: '+p.review_hash));info.appendChild(node('p','Hash da identidade: '+p.identity.observation_hash));card.appendChild(info);
+      if(p.identity.matches){card.appendChild(node('p','URL, nome e empresa coincidem nesta observação. Esta leitura não autoriza envio.'));list.appendChild(card);return;}
+      if(confirmed(p)){card.appendChild(node('p','Identidade divergente confirmada para esta prévia. Nenhum envio autorizado por esta confirmação.'));list.appendChild(card);return;}
+      card.appendChild(node('p','Confira as diferenças acima. Se não reconhecer a pessoa, não confirme e corrija o contato na fonte.'));
+      if(p.state!=='review_required'||p.expires_at<=clock()){card.appendChild(node('p','Prévia expirada ou indisponível. Consulte uma prévia atual.'));list.appendChild(card);return;}
+      const choice=node('label'),check=node('input');check.type='checkbox';check.dataset.diAcknowledge='';choice.appendChild(check);choice.appendChild(node('span',' Reconheço as diferenças e confirmo que este é o contato desta tarefa.'));card.appendChild(choice);
+      const button=node('button','Confirmar identidade desta prévia');button.type='button';button.className='btn';button.disabled=true;button.dataset.diConfirm='';card.appendChild(button);
+      check.addEventListener('change',()=>{button.disabled=busy||!check.checked||g!==generation||p.expires_at<=clock();});
+      button.addEventListener('click',async()=>{
+        if(busy||!check.checked||g!==generation)return;
+        if(p.expires_at<=clock()){button.disabled=true;check.disabled=true;message('A prévia expirou. Consulte novamente antes de confirmar.');return;}
+        busy=true;load.disabled=true;button.disabled=true;check.disabled=true;
+        try{
+          const result=await api('/api/os/v1/linkedin-cadence-identity-confirmations','POST',{preview_id:p.id,review_hash:p.review_hash,observation_hash:p.identity.observation_hash,identity_confirmation:'CONFIRMO A IDENTIDADE DIVERGENTE'});
+          if(result?.actor!=='ygor'||result.preview_id!==p.id||result.review_hash!==p.review_hash||result.observation_hash!==p.identity.observation_hash)throw Error('confirmation mismatch');
+          if(g!==generation)return;
+          await read(task,g,p.id);
+        }catch{
+          if(g===generation){button.disabled=true;check.disabled=true;message('A confirmação não foi comprovada. Consulte novamente para conferir o registro antes de repetir.');}
+        }finally{busy=false;load.disabled=false;}
+      });
+      list.appendChild(card);
+    }
+    async function read(task,g,confirmedId){
+      const result=await api('/api/os/v1/linkedin-cadence-previews?task_id='+encodeURIComponent(task));
+      if(g!==generation)return;
+      if(result?.read_only!==true||result.task_id!==task||!Array.isArray(result.previews)||result.previews.length>50||!result.previews.every(p=>valid(p,task)))throw Error('invalid identity preview');
+      if(confirmedId&&!result.previews.some(p=>p.id===confirmedId&&confirmed(p)))throw Error('confirmation readback missing');
+      list.replaceChildren();for(const p of result.previews)render(p,task,g);
+      message(confirmedId?'Confirmação de identidade conferida no registro. Nenhum envio foi solicitado.':result.previews.length?'Confira a identidade e o texto exato de cada prévia.':'Nenhuma prévia vinculada a esta tarefa nesta consulta.');
+    }
+    form.addEventListener('submit',async event=>{
+      event.preventDefault();if(busy)return;const task=field.value.trim();if(!/^\d{1,30}$/.test(task)){message('Informe o ID numérico da tarefa no HubSpot.');return;}
+      const g=++generation;busy=true;load.disabled=true;list.replaceChildren();message('Consultando prévias vinculadas à tarefa…');
+      try{await read(task,g);}catch{if(g===generation){list.replaceChildren();message('Não foi possível conferir a identidade desta tarefa. Nenhuma confirmação foi registrada.');}}finally{busy=false;load.disabled=false;}
+    });
+    return {invalidate:change};
+  }
+  root.ThunderDelegatedIdentity={mount};
+})(typeof globalThis!=='undefined'?globalThis:this);
+/* THUNDER_DELEGATED_IDENTITY_END */
+ThunderDelegatedIdentity.mount($('delegated-identity-review'),{api:(...args)=>{
+  if(MODO!=='servidor'||!apiServidor)return Promise.reject(new Error('Consulta indisponível.'));
+  return apiServidor(...args);
+}});
 /* THUNDER_HUBSPOT_CONTACT_BEGIN */
 /* Explicit contact review only. Never sends messages or executes automatically. */
 (function(root){

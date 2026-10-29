@@ -6,11 +6,16 @@ import fcntl
 import hashlib
 import json
 import os
+import pwd
 from pathlib import Path
 import re
 import secrets
 import shlex
 import sqlite3
+import socket
+import socketserver
+import struct
+import stat
 import subprocess
 import sys
 import time
@@ -51,6 +56,75 @@ AGENTTRAIL_INGRESS_TOKEN = Path('/etc/thunder-os/agenttrail-ingress.token')
 LIMITE = 200 * 1024
 COLECOES = ('itens', 'regras', 'sugestoes')
 TZ = ZoneInfo('America/Sao_Paulo')
+
+
+class ConfirmationUnixServer(ThreadingHTTPServer):
+    address_family = socket.AF_UNIX
+
+    def server_bind(self):
+        # HTTPServer assumes a TCP (host, port) tuple; Unix addresses are paths.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = 'localhost', 0
+
+    def server_close(self):
+        super().server_close()
+        identity = getattr(self, '_owned_socket_identity', None)
+        if identity is None:
+            return
+        try:
+            current = os.lstat(self.server_address)
+            if stat.S_ISSOCK(current.st_mode) and (current.st_dev, current.st_ino) == identity:
+                os.unlink(self.server_address)
+        except FileNotFoundError:
+            pass
+        self._owned_socket_identity = None
+
+
+def confirmation_server(panel, path, nginx_uid, nginx_executable, nginx_pid_file='/run/nginx.pid'):
+    """Create a new socket only under an owner-controlled, non-writable directory."""
+    path = Path(path)
+    if not path.is_absolute() or path.name in ('', '.', '..') or path.parent.resolve() != path.parent:
+        raise ValueError('invalid confirmation socket path')
+    parent = path.parent.stat()
+    if (not stat.S_ISDIR(parent.st_mode) or parent.st_uid != os.geteuid()
+            or parent.st_mode & 0o022 or path.is_symlink()):
+        raise ValueError('unsafe confirmation socket directory')
+    if path.exists():
+        previous = path.lstat()
+        if not stat.S_ISSOCK(previous.st_mode) or previous.st_uid != os.geteuid():
+            raise ValueError('unsafe existing confirmation socket')
+        # A SIGTERM can leave a socket pathname behind. Never replace an active
+        # listener, or an inode changed while we checked it.
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+            probe.settimeout(1)
+            try:
+                probe.connect(str(path))
+            except ConnectionRefusedError:
+                current = path.lstat()
+                if (current.st_dev, current.st_ino) != (previous.st_dev, previous.st_ino):
+                    raise ValueError('confirmation socket changed')
+                path.unlink()
+            else:
+                raise ValueError('confirmation socket already active')
+    account = pwd.getpwuid(nginx_uid)
+    if not os.path.isabs(nginx_executable) or not os.path.isfile(nginx_executable):
+        raise ValueError('invalid nginx executable')
+    previous_umask = os.umask(0o777)
+    try:
+        server = ConfirmationUnixServer(str(path), Handler)
+    finally:
+        os.umask(previous_umask)
+    socket_stat = path.lstat()
+    server._owned_socket_identity = (socket_stat.st_dev, socket_stat.st_ino)
+    os.chown(path, os.geteuid(), account.pw_gid)
+    os.chmod(path, 0o660)
+    for name, value in vars(panel).items():
+        if name.startswith('thunder_') or name in ('banco', 'source_sha'):
+            setattr(server, name, value)
+    server.thunder_nginx_uid = nginx_uid
+    server.thunder_nginx_executable = nginx_executable
+    server.thunder_nginx_pid_file = str(nginx_pid_file)
+    return server
 
 
 class Erro(Exception):
@@ -1312,11 +1386,10 @@ class Handler(BaseHTTPRequestHandler):
         actor = self.headers.get('X-Authenticated-User', '')
         allowed = frozenset(filter(None, os.environ.get(
             'THUNDER_OS_ACTORS', 'ygor,hermes,claude,codex').split(',')))
-        remote = self.client_address[0]
         with NONCE_LOCK:
             issued = self.prune_nonces()
             entry = issued.pop(nonce, None)
-        if (remote not in {'127.0.0.1', '::1'} or origin != self.server.thunder_origin
+        if (not self.trusted_confirmation_peer() or origin != self.server.thunder_origin
                 or not nonce or not entry or entry[0] != actor or actor not in allowed
                 or self.headers.get('X-Thunder-Actor')):
             raise Erro('Autorização Thunder OS inválida', 401)
@@ -1327,11 +1400,41 @@ class Handler(BaseHTTPRequestHandler):
                 raise Erro('Credencial própria do Hermes ausente ou inválida', 401)
         return actor
 
+    def trusted_confirmation_peer(self):
+        """Only the separately configured Unix listener may assert proxy identity."""
+        expected_uid = getattr(self.server, 'thunder_nginx_uid', None)
+        if expected_uid is None or getattr(getattr(self, 'connection', None), 'family', None) != socket.AF_UNIX:
+            return False
+        try:
+            pid, uid, _gid = struct.unpack('3i', self.connection.getsockopt(
+                socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize('3i')))
+            if uid != expected_uid or not os.path.samefile(
+                    f'/proc/{pid}/exe', self.server.thunder_nginx_executable):
+                return False
+            # UID and executable alone also admit an independently started nginx.
+            # Bind workers to the configured root-controlled service master.
+            pidfile = Path(self.server.thunder_nginx_pid_file)
+            info = pidfile.lstat()
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                    or info.st_mode & 0o022):
+                return False
+            master_text = pidfile.read_text(encoding='ascii').strip()
+            if not re.fullmatch(r'[0-9]{1,10}', master_text):
+                return False
+            master = int(master_text)
+            if master <= 1 or not os.path.samefile(
+                    f'/proc/{master}/exe', self.server.thunder_nginx_executable):
+                return False
+            process_fields = Path(f'/proc/{pid}/stat').read_text().rpartition(') ')[2].split()
+            return pid == master or (len(process_fields) > 1 and int(process_fields[1]) == master)
+        except (OSError, ValueError, AttributeError):
+            return False
+
     def thunder_proxy_actor(self):
         actor = self.headers.get('X-Authenticated-User', '')
         allowed = frozenset(filter(None, os.environ.get(
             'THUNDER_OS_ACTORS', 'ygor,hermes,claude,codex').split(',')))
-        if self.client_address[0] not in {'127.0.0.1', '::1'} or actor not in allowed:
+        if not self.trusted_confirmation_peer() or actor not in allowed:
             raise Erro('Identidade autenticada ausente', 401)
         if actor == 'hermes':
             expected = getattr(self.server, 'thunder_hermes_credential', '')
@@ -1524,6 +1627,9 @@ class Handler(BaseHTTPRequestHandler):
                 'Não foi possível concluir: confira os dados, as fontes e a revisão atual.'), status) from None
 
     def thunder_api(self, rota):
+        if getattr(getattr(self, 'connection', None), 'family', None) == socket.AF_UNIX:
+            if not self.trusted_confirmation_peer():
+                raise Erro('Ingresso de confirmação inválido.', 403)
         service = getattr(self.server, 'thunder_service', None)
         if service is None:
             raise Erro('Thunder OS indisponível', 503)
@@ -1791,6 +1897,33 @@ class Handler(BaseHTTPRequestHandler):
                 raise Erro('Consulta de conexões inválida')
             return self.responder(200, connection_panel_projection(
                 service, view=view, offset=int(raw_offset), limit=int(raw_limit)))
+        if self.command == 'GET' and rota.path == '/api/os/v1/linkedin-cadence-previews':
+            if self.thunder_proxy_actor() != 'ygor':
+                raise AuthorizationError('Somente Ygor pode revisar esta prévia.')
+            query = parse_qs(rota.query, keep_blank_values=True)
+            if (set(query) != {'task_id'} or len(query['task_id']) != 1
+                    or not re.fullmatch(r'[0-9]{1,30}', query['task_id'][0])):
+                raise Erro('Informe o ID exato da tarefa.')
+            app = getattr(self.server, 'thunder_connectsafely_app', None)
+            if app is None:
+                raise Erro('ConnectSafely não configurado', 503)
+            task_id = query['task_id'][0]
+            previews = []
+            for binding in reversed(service.repository.list_state('linkedin_cadence_preview_binding')):
+                if binding.get('task_id') != task_id:
+                    continue
+                preview = app.preview(binding['preview_id'], 'ygor')
+                confirmation = service.repository.get_state(
+                    'linkedin_cadence_identity_confirmation', binding['preview_id'])
+                confirmed = bool(confirmation and confirmation.get('actor') == 'ygor'
+                    and confirmation.get('review_hash') == binding.get('review_hash')
+                    and confirmation.get('observation_hash') == binding.get('identity_hash'))
+                previews.append({**preview, 'task_id': task_id,
+                    'identity': binding.get('identity'),
+                    'identity_confirmation': confirmation if confirmed else None})
+                if len(previews) >= 50:
+                    break
+            return self.responder(200, {'read_only': True, 'task_id': task_id, 'previews': previews})
         if rota.query:
             raise Erro('Rota Thunder OS inválida', 405)
         if self.command == 'GET' and rota.path == '/api/os/v1/panel-capabilities':
@@ -2250,6 +2383,103 @@ class Handler(BaseHTTPRequestHandler):
             return self.responder(201, service.authorize_capabilities(body, actor))
         if rota.path == '/api/os/v1/delegations/hermes':
             return self.responder(200, service.configure_hermes_delegation(body, actor))
+        if rota.path == '/api/os/v1/linkedin-cadence-approvals':
+            app = getattr(self.server, 'thunder_connectsafely_app', None)
+            if app is None or app.direct is None:
+                raise Erro('ConnectSafely não configurado', 503)
+            from thunder_os.hermes_linkedin_cadence import HermesLinkedInCadence
+            result = HermesLinkedInCadence(service.repository, None, app).approve(body, actor)
+            return self.responder(201, result)
+        if rota.path == '/api/os/v1/linkedin-cadence-task-bindings':
+            if actor != 'ygor':
+                raise AuthorizationError('Somente Ygor pode vincular a tarefa.')
+            required = {'task_id', 'approval_id', 'approval_version', 'review_hash', 'marker'}
+            if (not isinstance(body, dict) or set(body) != required
+                    or not isinstance(body['task_id'], str) or not body['task_id'].isdigit()
+                    or not isinstance(body['approval_id'], str) or not body['approval_id']
+                    or type(body['approval_version']) is not int):
+                raise Erro('Vínculo de tarefa inválido')
+            from thunder_os.hermes_linkedin_runtime import task_cadence_binding
+            app = getattr(self.server, 'thunder_connectsafely_app', None)
+            if app is None:
+                raise Erro('ConnectSafely não configurado', 503)
+            with service.repository.transaction():
+                approval = service.repository.get_state('linkedin_cadence_approval', body['approval_id'])
+                if not approval:
+                    raise Erro('Aprovação não encontrada.', 409)
+                binding = {'task_id': body['task_id'], 'approval_id': body['approval_id'],
+                           'approval_version': body['approval_version'], 'review_hash': body['review_hash'],
+                           'marker': body['marker'], 'contact_id': approval.get('hubspot_contact_id'),
+                           'cadence_id': approval.get('cadence_id'), 'actor': actor}
+                existing = service.repository.get_state('linkedin_cadence_task_binding', body['task_id'])
+                if existing and any(existing.get(k) != v for k, v in binding.items()):
+                    raise Erro('A tarefa já possui outro vínculo.', 409)
+                if not existing:
+                    service.repository.append_state('linkedin_cadence_task_binding', body['task_id'], binding)
+                if task_cadence_binding(service.repository, body['task_id'], clock=app.clock) is None:
+                    raise Erro('Aprovação expirada ou alterada.', 409)
+            return self.responder(201, binding)
+        if rota.path == '/api/os/v1/linkedin-cadence-identity-confirmations':
+            if not self.trusted_confirmation_peer():
+                raise Erro('Confirmação exige proxy local autenticado.', 403)
+            if actor != 'ygor':
+                raise AuthorizationError('Somente Ygor pode confirmar identidade divergente.')
+            required = {'preview_id', 'review_hash', 'observation_hash', 'identity_confirmation'}
+            if (not isinstance(body, dict) or set(body) != required
+                    or any(not isinstance(body[key], str) or not body[key] for key in required)
+                    or body['identity_confirmation'] != 'CONFIRMO A IDENTIDADE DIVERGENTE'):
+                raise Erro('Confirmação de identidade inválida.')
+            app = getattr(self.server, 'thunder_connectsafely_app', None)
+            if app is None:
+                raise Erro('ConnectSafely não configurado', 503)
+            with service.repository.transaction():
+                binding = service.repository.get_state('linkedin_cadence_preview_binding', body['preview_id'])
+                preview = service.repository.get_state('connectsafely_preview', body['preview_id'])
+                if (not binding or not preview or binding.get('preview_id') != body['preview_id']
+                        or binding.get('review_hash') != body['review_hash']
+                        or binding.get('identity_hash') != body['observation_hash']
+                        or preview.get('review_hash') != body['review_hash']
+                        or preview.get('version') != binding.get('preview_version')
+                        or preview.get('state') != 'review_required'
+                        or not isinstance(preview.get('expires_at'), (int, float))
+                        or preview['expires_at'] <= app.clock()):
+                    raise Erro('A prévia ou a identidade mudou ou expirou.', 409)
+                confirmation = {'actor': actor, 'preview_id': body['preview_id'],
+                                'review_hash': body['review_hash'], 'observation_hash': body['observation_hash']}
+                existing = service.repository.get_state('linkedin_cadence_identity_confirmation', body['preview_id'])
+                if existing and any(existing.get(k) != v for k, v in confirmation.items()):
+                    raise Erro('A prévia já possui outra confirmação.', 409)
+                if not existing:
+                    service.repository.append_state('linkedin_cadence_identity_confirmation', body['preview_id'], confirmation)
+            return self.responder(201, confirmation)
+        if rota.path == '/api/os/v1/linkedin-cadence-campaign-confirmations':
+            if not self.trusted_confirmation_peer():
+                raise Erro('Confirmação exige proxy local autenticado.', 403)
+            if actor != 'ygor':
+                raise AuthorizationError('Somente Ygor pode confirmar a campanha.')
+            required = {'task_id', 'preview_id', 'expected_version', 'review_hash', 'execution_confirmation'}
+            if not isinstance(body, dict) or set(body) != required or not isinstance(body['task_id'], str) or not body['task_id']:
+                raise Erro('Confirmação de tarefa inválida')
+            app = getattr(self.server, 'thunder_connectsafely_app', None)
+            if app is None:
+                raise Erro('ConnectSafely não configurado', 503)
+            with service.repository.transaction():
+                binding = service.repository.get_state('linkedin_cadence_preview_binding', body['preview_id'])
+                if (not binding or binding.get('task_id') != body['task_id']
+                        or binding.get('preview_version') != body['expected_version']
+                        or binding.get('review_hash') != body['review_hash']):
+                    raise Erro('A prévia não corresponde à tarefa.', 409)
+                approved = app.approve_delegated_campaign({k: v for k, v in body.items() if k != 'task_id'}, actor)
+                confirmation = {'task_id': body['task_id'], 'preview_id': body['preview_id'],
+                                'campaign_approval_id': approved['campaign_approval_id'],
+                                'review_hash': body['review_hash'], 'actor': actor}
+                existing = service.repository.get_state('linkedin_cadence_human_confirmation', body['task_id'])
+                if existing:
+                    if any(existing.get(k) != v for k, v in confirmation.items()):
+                        raise Erro('A tarefa já possui outra confirmação.', 409)
+                else:
+                    service.repository.append_state('linkedin_cadence_human_confirmation', body['task_id'], confirmation)
+            return self.responder(201, confirmation)
         if rota.path == '/api/os/v1/likes':
             return self.responder(202, service.dispatch_like(body, actor))
         if rota.path == '/api/os/v1/identities/resolve':
@@ -2314,6 +2544,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def executar(self):
         try:
+            if getattr(getattr(self, 'connection', None), 'family', None) == socket.AF_UNIX:
+                if not self.trusted_confirmation_peer():
+                    raise Erro('Ingresso de confirmação inválido.', 403)
             copiloto = os.environ.get('THUNDER_OS_COPILOT_MODE','') == 'human_approval'
             bloqueado = (self.command not in {'GET', 'HEAD'} and (not external_effects_enabled() or restricted_mode() or copiloto)
                     and not urlsplit(self.path).path.startswith('/api/os/v1/'))
@@ -2511,7 +2744,6 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
                     load_capture_secret, enabled=Path(INSTANTLY_CAPTURE_SECRET_FILE).is_file())
                 from thunder_os.instantly_reader import InstantlyReader
                 servidor.thunder_instantly_reader = InstantlyReader(repository)
-                servidor.thunder_instantly_reader.start()
             from thunder_os.reply_control import ReplyControl
             from thunder_os.campaign_registry import CampaignRegistry
             servidor.thunder_reply_control = ReplyControl(repository, CampaignRegistry(repository),
@@ -2527,7 +2759,13 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
             configure_connectsafely_server(servidor, servidor.thunder_service.repository, connectsafely_factory)
             seqd_read = os.environ.get('THUNDER_OS_SEQD_READ_ENABLED', '') == 'true'
             seqd_send = external_effects_enabled() and os.environ.get('THUNDER_OS_SEQD_SEND_ENABLED', '') == 'true'
+            canary_readers = getattr(servidor.thunder_connectsafely_app, 'canary_readers', None)
+            seqd_transport = None
+            if canary_readers is not None:
+                from thunder_os.canary_readers import CanarySEQDClient
+                seqd_transport = CanarySEQDClient(canary_readers)
             servidor.thunder_seqd_console = SEQDConsole(servidor.thunder_service.repository,
+                transport=seqd_transport,
                 read_enabled=seqd_read, send_enabled=seqd_send,
                 campaign_sheet_store=servidor.thunder_service.knowledge_store,
                 dispatch_authorized=lambda: external_effects_enabled() and (restricted_mode() or os.environ.get('THUNDER_OS_COPILOT_MODE','') == 'human_approval'))
@@ -2583,8 +2821,6 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
                 RAIZ, repo=servidor.thunder_today_readonly.repo)
             from thunder_os.apollo_campaign_reader import ApolloCampaignReader
             servidor.thunder_apollo_reader = ApolloCampaignReader(repository) if runtime is None else None
-            if servidor.thunder_apollo_reader is not None:
-                servidor.thunder_apollo_reader.start()
             servidor.thunder_journey_readonly = JourneyReadonly(servidor.thunder_today_readonly,
                 cadence_reader=getattr(servidor, 'thunder_cadence_readonly', None),
                 accounts=servidor.thunder_account_cadence_readonly,
@@ -2640,12 +2876,35 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
             servidor.source_sha = release_source_sha()
             if runtime is not None:
                 print(json.dumps({'role':'connectsafely-web','port':servidor.server_port,'config_sha256':runtime['_digest']}),flush=True)
+            stopped = True
+            confirmation = None
+            confirmation_thread = None
             try:
+                socket_path = os.environ.get('THUNDER_CONFIRMATION_SOCKET', '')
+                if socket_path:
+                    uid = int(os.environ.get('THUNDER_CONFIRMATION_NGINX_UID', ''))
+                    executable = os.environ.get('THUNDER_CONFIRMATION_NGINX_EXECUTABLE', '')
+                    confirmation = confirmation_server(servidor, socket_path, uid, executable,
+                        os.environ.get('THUNDER_CONFIRMATION_NGINX_PID_FILE', '/run/nginx.pid'))
+                    confirmation_thread = threading.Thread(target=confirmation.serve_forever, daemon=True)
+                    confirmation_thread.start()
+                for name in ('thunder_instantly_reader', 'thunder_apollo_reader'):
+                    reader = getattr(servidor, name, None)
+                    if reader is not None:
+                        reader.start()
                 servidor.serve_forever()
             finally:
-                reader = getattr(servidor, 'thunder_instantly_reader', None)
-                if reader is not None:
-                    reader.stop()
+                if confirmation is not None:
+                    confirmation.shutdown()
+                    confirmation.server_close()
+                    confirmation_thread.join(timeout=6)
+                for name in ('thunder_instantly_reader', 'thunder_apollo_reader'):
+                    reader = getattr(servidor, name, None)
+                    if reader is not None and not reader.stop():
+                        print(f'{name} did not stop within 6 seconds', file=sys.stderr)
+                        stopped = False
+            if not stopped:
+                return 1
         return 0
     except Erro as e:
         print(json.dumps({'erro': str(e)}, ensure_ascii=False), file=sys.stderr)

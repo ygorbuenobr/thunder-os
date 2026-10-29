@@ -147,8 +147,8 @@ class ConnectSafelyConsole:
             raise ConnectSafelyError('campaign_review_invalid')
         return self.campaign_gate().review(body['preview_id'], body['campaign_id'])
 
-    def execute(self,body,actor=None,*,dispatch_guard=None):
-        return self._execute(body, actor, dispatch_guard=dispatch_guard)
+    def execute(self,body,actor=None,*,dispatch_guard=None,pre_dispatch_check=None):
+        return self._execute(body, actor, dispatch_guard=dispatch_guard,pre_dispatch_check=pre_dispatch_check)
 
     def execute_native(self, body, job, *, before_dispatch):
         """Trusted application entry; consume the canonical Service authority once.
@@ -163,7 +163,7 @@ class ConnectSafelyConsole:
             raise ConnectSafelyError('native_dispatch_fence_required')
         return self._execute(body, 'ygor', dispatch_guard=before_dispatch, native_job=job)
 
-    def _execute(self,body,actor=None,*,dispatch_guard=None,native_job=None):
+    def _execute(self,body,actor=None,*,dispatch_guard=None,native_job=None,pre_dispatch_check=None):
         self._actor(actor)
         gate = None
         campaign_record = None
@@ -251,6 +251,10 @@ class ConnectSafelyConsole:
                         self._event(effect,started,'dispatch_started')
                     dispatched=True
                     return True
+                # Remote readbacks must happen outside the database transaction and
+                # before the pessimistic marker, so a refusal proves no dispatch.
+                if pre_dispatch_check is not None and pre_dispatch_check() is not True:
+                    raise ConnectSafelyError('dispatch_guard_denied')
                 # Durable pessimistic send marker before the configuration fence.
                 # A crash or lost response cannot be mistaken for zero dispatch.
                 with self.repo.transaction():

@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "mode": "disabled",
+  "execution_enabled": false,
+  "repository": "/var/lib/thunder-os/painel.db",
+  "source_revision": "replace-with-release-sha",
+  "source_revision_file": "/opt/thunder-os/current/REVISION",
+  "poll_minutes": 30,
+  "max_tasks_per_run": 5,
+  "timezone": "America/Sao_Paulo",
+  "business_hours": {
+    "start": "08:00",
+    "end": "19:00",
+    "weekdays": [0, 1, 2, 3, 4]
+  },
+  "action_spacing_seconds": {"min": 30, "max": 90},
+  "daily_cap": 30,
+  "kill_switch": "thunder_state:delegation/hermes.enabled"
+}

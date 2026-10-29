@@ -82,6 +82,9 @@ def build_panel_composition(repository, *, config_path, config_sha256):
         from .connectsafely_composition import ConnectSafelyComposition
         composition = ConnectSafelyComposition(ConnectSafelyApplication(repository))
     composition.application.direct_target_resolution = not live['social_enabled']
+    if getattr(composition.application, 'canary_readers', None) is None:
+        from .canary_readers import install_canary_readers
+        install_canary_readers(composition.application, repository, cfg)
     return composition
 
 
@@ -254,4 +257,6 @@ def build(repository,cfg):
     else:
         composition.application.resolve_target=lambda body:resolve_target(body,account_id=account,public_id=public,
             load_evidence=lambda:evidence(live['author_evidence']))
+    from .canary_readers import install_canary_readers
+    install_canary_readers(composition.application, repository, cfg)
     return composition
