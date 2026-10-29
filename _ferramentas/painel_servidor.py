@@ -732,6 +732,16 @@ class Banco:
             campos = {k: v for k, v in campos.items() if not k.startswith('_') and k != 'fila_ref'}
         with self.lock('_log/.painel.lock'), self.conexao() as con:
             anterior = self.ler(con, nome, id)
+            if nome == 'itens' and not importar and not upsert:
+                antiga = (anterior or {}).get('cadencia')
+                if anterior and 'cadencia' in campos and campos['cadencia'] != antiga:
+                    raise Erro('Vínculo de cadência existente não pode ser alterado neste cartão.', 409)
+                if campos.get('status') == 'aprovado':
+                    if 'cadencia' in campos and campos['cadencia'] != antiga:
+                        raise Erro('Não altere o vínculo de cadência durante a aprovação.', 409)
+                    if antiga is not None:
+                        # Este JSON legado não comprova aprovação nem vínculo canônico OS.
+                        raise Erro('Cadência não pode ser aprovada pelo cartão legado; use a revisão de cadência.', 409)
             if nome == 'itens' and anterior and anterior.get('_descarte'):
                 raise Erro('Cartão descartado é terminal; crie outro cartão para uma nova decisão.', 409)
             if criar and anterior:

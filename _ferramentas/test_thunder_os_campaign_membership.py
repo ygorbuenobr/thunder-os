@@ -455,6 +455,7 @@ class CampaignMembershipTests(unittest.TestCase):
 
     def test_http_fixed_transport_and_loader(self):
         from thunder_os.hubspot_console import systemd_hubspot_credential
+        from thunder_os.hubspot_read_budget import HubSpotReadBudget
         self.assertIs(CampaignMembershipHubSpot.__init__.__kwdefaults__['credential_loader'],
                       systemd_hubspot_credential)
         loader = Mock(return_value='synthetic-token')
@@ -462,11 +463,15 @@ class CampaignMembershipTests(unittest.TestCase):
         response = connection.getresponse.return_value
         response.status = 200
         response.read.return_value = json.dumps({'portalId': int(PORTAL_ID)}).encode()
-        with patch('http.client.HTTPSConnection', return_value=connection) as https:
+        clock = Mock(side_effect=[100.0] + [100.25] * 20)
+        budget = HubSpotReadBudget(monotonic=clock, sleep=lambda _: self.fail('unexpected pacing'))
+        with patch('thunder_os.hubspot_read_budget.SHARED_READ_BUDGET', budget), \
+                patch('http.client.HTTPSConnection', return_value=connection) as https:
             port = CampaignMembershipHubSpot(credential_loader=loader)
             self.assertEqual(port.portal(), PORTAL_ID)
         self.assertEqual(https.call_args.args, ('api.hubapi.com', 443))
-        self.assertEqual(https.call_args.kwargs['timeout'], 20)
+        # Admission consumed .25 seconds of the total 20-second read budget.
+        self.assertEqual(https.call_args.kwargs['timeout'], 19.75)
         connection.request.assert_called_once()
         self.assertEqual(connection.request.call_args.args[:2], ('GET', '/account-info/v3/details'))
         connection.close.assert_called_once()

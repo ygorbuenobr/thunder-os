@@ -3895,13 +3895,19 @@ function estadoEfeitoHumano(status){
 }
 function cadenciaHTML(cadencia){
   if(!cadencia||!Array.isArray(cadencia.steps)||!cadencia.steps.length)return '';
+  const cartaoLegado=arguments[1]===true;
   const passos=[...cadencia.steps].sort((a,b)=>Number(a.order)-Number(b.order));
   const canais={linkedin:'LinkedIn',email:'E-mail',whatsapp:'WhatsApp'};
   const intervalo=h=>Number(h)===0?'no início':`${esc(h)} horas depois do contato anterior`;
   const aviso=cadencia.approval_invalidated?'A sequência mudou. Confira novamente antes de aprovar.':cadencia.reply_received?'A sequência foi pausada porque essa pessoa respondeu.':cadencia.partial_error?'Uma parte está indisponível. As demais informações continuam válidas.':'';
   const fichaBloqueada=['incomplete','stale'].includes(cadencia.campaign_sheet_status);
   const fichaLabel=cadencia.campaign_sheet_label||(cadencia.campaign_sheet_status==='stale'?'versão anterior':cadencia.campaign_sheet_status==='incomplete'?'ficha incompleta':'');
-  const proxima=fichaBloqueada?'Revisar a ficha da campanha antes de confirmar':cadencia.reply_received?'Ler a resposta e decidir o próximo passo':cadencia.approval_invalidated?'Revisar somente o que mudou':cadencia.next_action||'Aprovar a sequência completa';
+  const plataformaExterna=['hubspot_seq','apollo','instantly','chattie','codex_local'].includes(cadencia.execution_context?.platform);
+  const plataformaDesconhecida=cadencia.execution_context?.platform!=='thunder_os'&&!plataformaExterna;
+  if(plataformaExterna)cadencia={...cadencia,execution_confirmation:null,execution_question:'Esta campanha usa uma plataforma externa. A aprovação e a execução por este cartão não estão disponíveis.',next_action:'Consultar o fluxo da plataforma antes de decidir'};
+  if(plataformaDesconhecida)cadencia={...cadencia,execution_confirmation:null,execution_question:'A plataforma desta campanha não foi identificada. Aprovação e execução estão indisponíveis neste cartão.',next_action:'Verificar a plataforma e o fluxo da campanha'};
+  if(cartaoLegado&&!plataformaExterna&&!plataformaDesconhecida)cadencia={...cadencia,execution_confirmation:null,execution_question:'Esta visualização não aprova cadências. Consulte o andamento no OS para revisar o pacote.',next_action:'Consultar o andamento no OS'};
+  const proxima=fichaBloqueada?'Revisar a ficha da campanha antes de confirmar':cadencia.reply_received?'Ler a resposta e decidir o próximo passo':plataformaExterna||plataformaDesconhecida?cadencia.next_action:cadencia.approval_invalidated?'Revisar somente o que mudou':cadencia.next_action||'Aprovar a sequência completa';
   return `<section class="cadencia-revisao" aria-label="Sequência de contatos"><div><b>Para:</b> ${esc(cadencia.recipient||'destinatário a confirmar')}</div><div><b>Objetivo:</b> ${esc(cadencia.objective||'objetivo a confirmar')}</div><div><b>Base da abordagem:</b> ${esc(cadencia.source_context||'pesquisa ainda precisa ser confirmada')}</div>${cadencia.research_hash?`<details><summary>Informações para suporte</summary><div>Referência da pesquisa: ${esc(cadencia.research_hash)}</div></details>`:''}<div><b>Consequência:</b> ${esc(cadencia.consequence||'autoriza somente estes contatos')}</div><div><b>Custo:</b> ${esc(cadencia.cost||'sem custo informado')}</div>${fichaLabel?`<div class="${fichaBloqueada?'alerta-humano':'frescor'}" role="status">Ficha da campanha: ${esc(fichaLabel)}${cadencia.campaign_sheet_version?` · ${esc(cadencia.campaign_sheet_version)}`:''}</div>`:''}${aviso?`<div class="alerta-humano" role="status">${esc(aviso)}</div>`:''}<ol>${passos.map(p=>`<li><b>${esc(canais[p.channel]||p.channel)} · ${intervalo(p.interval_hours)}</b>${p.subject?`<p><b>Assunto:</b> ${esc(p.subject)}</p>`:''}<p>${esc(p.content||'Conteúdo a confirmar')}</p><span class="frescor">${esc(estadoEfeitoHumano(p.status))}${p.effective_due_at?` · previsto para ${esc(p.effective_due_at)}`:p.predecessor_id?' · aguarda confirmação anterior':p.due_at?` · previsto para ${esc(p.due_at)}`:''}</span>${p.receipt_ref?`<details><summary>Confirmação registrada</summary>${esc(p.receipt_ref)}</details>`:''}</li>`).join('')}</ol>${cadencia.pause_reason?`<p>Motivo da pausa: ${esc(cadencia.pause_reason)}</p>`:''}<p>${esc(cadencia.execution_question||"Confirme plataforma, campanha e regras antes de executar.")}</p><div class="proxima-decisao">Próxima ação: ${esc(proxima)}</div>${!fichaBloqueada&&['ready_for_review','approved'].includes(cadencia.status)&&cadencia.id&&Number.isInteger(cadencia.version)&&cadencia.review_hash&&cadencia.execution_confirmation?`<button class="btn pri" type="button" data-os-approve="${esc(cadencia.id)}" data-os-version="${esc(cadencia.version)}" data-os-review-hash="${esc(cadencia.review_hash)}" data-os-confirmation="${esc(JSON.stringify(cadencia.execution_confirmation))}" data-os-question="${esc(cadencia.execution_question)}">Confirmar campanha e lote</button>`:''}</section>`;
 }
 function variantesHTML(it){
@@ -3932,6 +3938,7 @@ function briefingCardHTML(it, today=false){
 }
 function cardHTML(it){
   if(it.origem==='briefing') return briefingCardHTML(it);
+  const cadenciaSemExecucao=it.cadencia!=null;
   const id = it.id, st = it.status || 'pendente', aberto = st === 'pendente' || st === 'erro' || (it.tipo === 'comentario' && st === 'copiar') || (it.tipo === 'whatsapp' && st === 'aguardando-confirmacao');
   const texto = sujo[id] ?? it.texto ?? '';
   const preparando = MODO === 'servidor' && it.origem === 'aceite' && !String(it.texto||'').trim();
@@ -3958,7 +3965,7 @@ function cardHTML(it){
     </div>
     ${it.nota && st !== 'pendente' ? `<div class="msg ${st==='erro'?'erro':''}">${esc(it.nota)}</div>` : ''}
     ${pesquisaHTML(it)}
-    ${typeof cadenciaHTML==='function'?cadenciaHTML(it.cadencia):''}
+    ${typeof cadenciaHTML==='function'?cadenciaHTML(it.cadencia,true):''}
     ${it.tipo === 'decisao' ? '' : it.tipo === 'pedido' ? `<div class="porque">${esc(it.acao_aprovada||'')}</div>` : `
     ${variantesHTML(it)}<div ${temVariantes?'hidden':''}>
       <label class="rot" for="txt-${esc(id)}">${it.tipo==='comentario'?'Comentário sugerido':'Mensagem sugerida'}${vers.length>1?` · versão ${vers.length}`:''}</label>
@@ -3970,7 +3977,7 @@ function cardHTML(it){
     ${aberto && dono ? `
     <div class="acoes">
       ${descartar ? `<button class="btn pri" type="button" data-a="descartar">Descartar</button>` : ''}
-      ${it.tipo === 'decisao' ? (it.opcoes||[]).map(o=>`<button class="btn ${descartar?'':'pri'}" type="button" data-a="opcao" data-opcao="${esc(o.id)}">${esc(o.rotulo)}</button>`).join('') : it.tipo === 'whatsapp' ? `<button class="btn ${descartar?'':'pri'}" type="button" data-a="whatsapp">Copiar e abrir WhatsApp</button><button class="btn" type="button" data-a="whatsapp-feito">Já mandei</button>` : it.tipo !== 'pedido' && !preparando ? `<button class="btn ${descartar?'':conf?'conf':'pri'}" type="button" data-a="aprovar">${conf ? (envia ? `Confirmar ${it.tipo==='comentario'?'comentário':'envio'} para ${esc((it.pessoa||'').split(' ')[0])}` : 'Confirmar') : rot}</button>` : ''}
+      ${it.tipo === 'decisao' ? (cadenciaSemExecucao?'':(it.opcoes||[]).map(o=>`<button class="btn ${descartar?'':'pri'}" type="button" data-a="opcao" data-opcao="${esc(o.id)}">${esc(o.rotulo)}</button>`).join('')) : it.tipo === 'whatsapp' && !cadenciaSemExecucao ? `<button class="btn ${descartar?'':'pri'}" type="button" data-a="whatsapp">Copiar e abrir WhatsApp</button><button class="btn" type="button" data-a="whatsapp-feito">Já mandei</button>` : it.tipo !== 'pedido' && it.tipo !== 'whatsapp' && !preparando && !cadenciaSemExecucao ? `<button class="btn ${descartar?'':conf?'conf':'pri'}" type="button" data-a="aprovar">${conf ? (envia ? `Confirmar ${it.tipo==='comentario'?'comentário':'envio'} para ${esc((it.pessoa||'').split(' ')[0])}` : 'Confirmar') : rot}</button>` : ''}
       ${preparando ? '' : conf ? `<button class="btn fraco" type="button" data-a="cancelar">Voltar</button>` : `<button class="btn" type="button" data-a="falar">${it.tipo==='decisao'?'Perguntar':'Refazer ou perguntar'}</button>`}
       ${!descartar ? `<button class="btn fraco alerta" type="button" data-a="descartar">Descartar</button>` : ''}
       <span class="msg" role="status" id="msg-${esc(id)}"></span>
@@ -3991,12 +3998,13 @@ function cardHTML(it){
 
 function todayCardHTML(it){
   if(it.origem==='briefing') return briefingCardHTML(it,true);
+  const cadenciaSemExecucao=it.cadencia!=null;
   const st=it.status||'pendente', confirma=confirmar[it.id], envia=['dm','comentario'].includes(it.tipo);
   const rotulo=it.cadencia?'Aprovar sequência':it.tipo==='comentario'?'Aprovar e comentar':envia?'Aprovar e enviar':'Aprovar';
   return `<article class="card" data-today-id="${esc(it.id)}" data-st="${esc(st)}"><h3>${esc(tituloItem(it))}</h3>
     ${it.porque?`<div class="porque">${esc(it.porque)}</div>`:''}<div class="cab"><span class="chip">${esc(TIPO[it.tipo]||it.tipo||'item')}</span><span class="chip st-${esc(st)}">${esc(ST[st]||st)}</span>${verConta(it)}</div>
-    ${it.texto?`<div class="resposta-texto">${esc(it.texto)}</div>`:''}${cadenciaHTML(it.cadencia)}<div class="acoes">
-    ${it.tipo==='decisao'?(it.opcoes||[]).map(o=>`<button class="btn pri" type="button" data-today-a="opcao" data-opcao="${esc(o.id)}">${esc(o.rotulo)}</button>`).join(''):it.tipo==='pedido'?'':`<button class="btn ${confirma?'conf':'pri'}" type="button" data-today-a="aprovar">${confirma?(envia?`Confirmar ${it.tipo==='comentario'?'comentário':'envio'}`:'Confirmar'):rotulo}</button>`}
+    ${it.texto?`<div class="resposta-texto">${esc(it.texto)}</div>`:''}${cadenciaHTML(it.cadencia,true)}<div class="acoes">
+    ${it.tipo==='decisao'?(cadenciaSemExecucao?'':(it.opcoes||[]).map(o=>`<button class="btn pri" type="button" data-today-a="opcao" data-opcao="${esc(o.id)}">${esc(o.rotulo)}</button>`).join('')):it.tipo==='pedido'||cadenciaSemExecucao?'':`<button class="btn ${confirma?'conf':'pri'}" type="button" data-today-a="aprovar">${confirma?(envia?`Confirmar ${it.tipo==='comentario'?'comentário':'envio'}`:'Confirmar'):rotulo}</button>`}
     ${confirma?'<button class="btn" type="button" data-today-a="cancelar">Voltar</button>':''}<button class="btn fraco alerta" type="button" data-today-a="descartar">Descartar</button><span class="msg" id="msg-hoje-${esc(it.id)}" role="status"></span></div></article>`;
 }
 

@@ -28,9 +28,11 @@ const button = {disabled:false,dataset:{osApprove:'b',osVersion:'1',osReviewHash
   await handler({target:{closest:()=>button}});
   assert.equal(calls.length,1);
   assert.equal(JSON.stringify(calls[0][2].execution_confirmation), JSON.stringify(confirmation));
-  const draft = {id:'b',version:1,review_hash:'h',status:'approved',steps:[{channel:'email',content:'offline',order:1,interval_hours:0}]};
+  const draft = {id:'b',version:1,review_hash:'h',status:'approved',execution_context:{platform:'thunder_os'},steps:[{channel:'email',content:'offline',order:1,interval_hours:0}]};
   assert(!sandbox.cadenciaHTML(draft).includes('data-os-approve='),'legacy must not render execution button');
   assert(sandbox.cadenciaHTML({...draft,execution_confirmation:confirmation,execution_question:'Confirmar?'}).includes('data-os-approve='),'approved batch must permit fresh resume confirmation');
+  for (const execution_context of [undefined,{platform:'unknown'}])
+    assert(!sandbox.cadenciaHTML({...draft,execution_context,execution_confirmation:confirmation}).includes('data-os-approve='),'unknown campaign platform must not render execution button');
   console.log('PASS: cancel, explicit payload, legacy blocked, resume confirmation UI source');
 })().catch(error=>{console.error(error);process.exitCode=1});
 
