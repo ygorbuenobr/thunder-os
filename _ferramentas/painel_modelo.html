@@ -2217,7 +2217,15 @@ const journeyVisibleRecord=row=>row?.internal_test===true?journeyInternalSelecte
 const journeyRecordLabel=row=>row?.internal_test===true?'Teste interno · excluído das métricas BR':journeyVisitor(row)?'Visitantes · rascunhos':row?.campaign_id||'Sem vínculo';
 const journeyText=value=>typeof value==='string'?value:typeof value==='number'?String(value):'';
 const journeyDescribe=value=>typeof value==='string'?value:value&&typeof value==='object'?JSON.stringify(value):journeyText(value);
-const journeyDate=value=>value?cadReadDate(value):'Data não informada';
+const journeyDate=value=>{
+  if(!value)return 'Data não informada';
+  if(typeof value==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(value)){
+    const [year,month,day]=value.split('-').map(Number),date=new Date(value+'T00:00:00Z');
+    return !Number.isNaN(date.getTime())&&date.getUTCFullYear()===year&&date.getUTCMonth()+1===month&&date.getUTCDate()===day
+      ? `${String(day).padStart(2,'0')}/${String(month).padStart(2,'0')}/${year}` : 'Data não disponível';
+  }
+  return cadReadDate(value);
+};
 // Dates come exclusively from the projection; never infer them from the browser clock.
 function journeyItemProvenance(item){
   const basis=journeyText(item.date_basis);

@@ -41,7 +41,10 @@ const detail = id => ({id, title: 'Original integral sintético', meta: 'Origem 
 const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', company: 'Empresa sintética', campaign_id: br,
   contact: 'Contato documental sintético', thesis: 'Tese documental original.\n' + attack, method: 'MÉTODO-SINTÉTICO',
   source: {path: 'fixtures/account.md', sha256: 'a'.repeat(64)}, limitations: ['Fonte sintética sem aprovação canônica.', ...Array.from({length: 57}, (_, i) => 'unrelated/catalog-account-' + i + '/cadencia.md')],
-  tabs: {research: [{text: 'Fato original sintético. ' + attack, label: 'Fonte pública sintética', published_on: collected, source_url: source.url}],
+  tabs: {research: [{text: 'Fato original sintético. ' + attack, label: 'Fonte pública sintética', published_on: '2030-01-01', source_url: source.url},
+    {text: 'Data impossível', label: 'Fonte inválida', published_on: '2030-02-30', source_url: source.url},
+    {text: 'Data maliciosa', label: 'Fonte maliciosa', published_on: attack, source_url: source.url},
+    {text: 'Instante UTC', label: 'Fonte com horário', published_on: '2030-01-01T00:00:00Z', source_url: source.url}],
     dossier: [{key: 'M1', classification: 'hipótese', text: 'Hipótese original sem reescrita.', sources: [source]}],
     context: [{path: 'fixtures/context.md', sha256: 'b'.repeat(64), status: 'ok', usage: 'Uso original do contexto.'}],
     cadence: ['D0', 'D3', 'D7', 'D12', 'D15'].map((day, i) => ({id: 'touch:' + day, day, date: collected, channel: i % 2 ? 'LinkedIn' : 'E-mail', ammunition: 'M' + (i + 1), stop_condition: 'Parar se houver resposta.', status: 'aguardando revisão', subject: 'Assunto sintético ' + day, text: 'Original ' + day + '\n\n' + draft + '\nTOUCH_END_' + day, source_hash: String(i + 1).repeat(64)})),
@@ -55,7 +58,7 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
       const page = await browser.newPage({viewport});
       const requests = [], errors = [];
       let state = journey(), accountState = account(), fail = false, detailFail = false, accountFail = false, listFail = false, hold = false, release;
-      let canonical = false, canonicalBlocked = false, canonicalBadId = false, reviewFail = false, visitorMode = false;
+      let canonical = false, canonicalBlocked = false, canonicalBadId = false, reviewFail = false, visitorMode = false, reviewOverride = null;
       let version = 5;
       const stepText = {D0: draft, D3: 'Outro toque sintético original.'}, approved = new Set(), discarded = new Set();
       const visitors = Array.from({length: 10}, (_, i) => ({id: 'visitor-' + i, name: 'Conta visitante sintética ' + i, company: 'Empresa visitante sintética', campaign_id: null, source_group: 'visitantes-2026-10-22', reviewable: i < 6, readiness: i < 6 ? 'Pronto para revisão local' : i === 8 ? 'Bloqueado por região' : i === 9 ? 'Descartado' : 'Aguardar manhã'}));
@@ -63,6 +66,7 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
       const localStep = step => step.replace(/:email$/, '');
       const reviewFor = wire => { const step = localStep(wire); return ({cadence_id: 'cadence:company.example.invalid', step_id: wireStep(step), expected_version: version, review_hash: String(version).repeat(64).slice(0, 64),
         context_hash: 'c'.repeat(64), content: stepText[step], subject: 'Assunto canônico ' + step,
+        recipient: 'fixture@example.invalid', channel: 'email', order: step === 'D0' ? 1 : 2, interval_hours: step === 'D0' ? 0 : 72,
         can_approve: !canonicalBlocked, blockers: canonicalBlocked ? ['Controle global pausado na fixture.'] : [],
         execution_confirmation: canonicalBlocked ? null : {confirmed: true, batch_id: 'cadence:company.example.invalid', batch_version: version, control_version: 0, scope_hash: (step === 'D0' ? 'd' : 'e').repeat(64),
           context: {platform: 'thunder_os', campaign_id: br, campaign_version: 'fixture-v1', rules_version: 'rules-fixture-v1', rules_hash: 'a'.repeat(64), configuration_hash: 'b'.repeat(64), run_id: 'fixture-run', providers: {email: 'fixture_only'}}}}); };
@@ -95,7 +99,7 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
           if (operation === 'revise') fields.push('content', 'subject');
           if (operation === 'discard') fields.push('reason');
           assert.deepEqual(Object.keys(body).sort(), fields.sort(), 'Strict exact-step schema');
-          if (operation === 'review') { if (reviewFail) return route.fulfill({status: 503, contentType: 'application/json', body: JSON.stringify({erro: 'Revisão sintética indisponível. Tente novamente.'})}); return send(review); }
+          if (operation === 'review') { if (reviewFail) return route.fulfill({status: 503, contentType: 'application/json', body: JSON.stringify({erro: 'Revisão sintética indisponível. Tente novamente.'})}); return send(reviewOverride ? {...review, ...reviewOverride} : review); }
           assert.equal(body.expected_version, review.expected_version);
           assert.equal(body.review_hash, review.review_hash);
           if (operation === 'approve') { assert.deepEqual(body.execution_confirmation, review.execution_confirmation); approved.add(step); }
@@ -329,6 +333,7 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
       await page.locator('#journey-account-tabs').waitFor();
       assert.equal(await page.locator('body').getAttribute('data-aba'), 'contas');
       assert.deepEqual(await page.locator('#journey-account-tabs button').allTextContents(), ['Pesquisa ABM', 'Dossiê', 'Contexto usado', 'Cadência', 'Antes de aprovar (2)']);
+      await page.locator('#journey-account-identity summary').click();
       assert.match(await page.locator('#journey-account-body').innerText(), /fixtures\/account.md/);
       const accountStatus = await page.locator('#journey-account-status').innerText();
       assert(accountStatus.length < 220, 'Account header remains compact despite catalog-wide diagnostics');
@@ -339,7 +344,16 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
       await page.screenshot({path: path.join(output, `account-header-${viewport.width}.png`)});
       for (const [key, content] of [['research','Fato original sintético'], ['dossier','Hipótese original sem reescrita'], ['context','Uso original do contexto'], ['before_approval','Confirmar vínculo canônico']]) {
         await page.locator(`[data-journey-tab=${key}]`).click();
+        if (key === 'before_approval') {
+          for (const summary of await page.locator('#journey-account-panel details summary').all()) await summary.click();
+        }
         assert((await page.locator('#journey-account-panel').innerText()).includes(content));
+        if (key === 'research') {
+          assert.match(await page.locator('#journey-account-panel').innerText(), /01\/01\/2030/, 'Date-only source publication keeps its calendar day in São Paulo');
+          assert.equal((await page.locator('#journey-account-panel').innerText()).match(/Data não disponível/g)?.length, 2, 'Invalid dates are not normalized or rendered as markup');
+          assert.match(await page.locator('#journey-account-panel').innerText(), /31\/12\/2029, 21:00/, 'Timestamps retain the São Paulo timezone conversion');
+          assert.equal(await page.locator('#journey-account-panel img, #journey-account-panel script').count(), 0);
+        }
       }
       assert.match(await page.locator('#journey-account-panel').innerText(), /Nota contextual/);
       assert.match(await page.locator('#journey-account-panel').innerText(), /Bloqueante/);
@@ -425,9 +439,19 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
       assert.match(await canonicalEditor.locator('[data-journey-review-body]').innerText(), /Controle global pausado/);
       assert.equal(await canonicalEditor.locator('[data-journey-approve]').count(), 0);
       canonicalBlocked = false;
+      for (const [field, value] of [['recipient', undefined], ['recipient', '  '], ['channel', undefined], ['channel', ''], ['order', undefined], ['order', 0], ['interval_hours', undefined], ['interval_hours', -1], ['interval_hours', 87601]]) {
+        reviewOverride = {[field]: value};
+        await canonicalEditor.locator('[data-journey-review]').click();
+        await page.waitForFunction(() => !document.querySelector('#journey-detail-body [data-journey-review]').disabled);
+        assert.match(await canonicalEditor.locator('[data-journey-operation]').innerText(), /Revisão inválida/, `${field} inválido deve rejeitar revisão`);
+        assert.equal(await canonicalEditor.locator('[data-journey-approve]').count(), 0, `${field} inválido não permite aprovar`);
+      }
+      assert.equal(mutations().filter(row => row.path.endsWith('/approve')).length, 0);
+      reviewOverride = null;
       await canonicalEditor.locator('[data-journey-review]').click();
       await canonicalEditor.locator('[data-journey-confirm]').waitFor();
       assert.match(await canonicalEditor.locator('[data-journey-review-body]').innerText(), /BR-UI-FIXTURE[\s\S]*fixture-v1[\s\S]*rules-fixture-v1/);
+      assert.match(await canonicalEditor.locator('[data-journey-review-body]').innerText(), /Destinatário: fixture@example\.invalid · Canal: email · Ordem: 1 · Intervalo: 0 horas/);
       assert.equal(await canonicalEditor.locator('[data-journey-approve]').isDisabled(), true);
       const downloadPromise=page.waitForEvent('download');
       await canonicalEditor.locator('[data-journey-assisted]').click();
@@ -449,6 +473,7 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
       await canonicalEditor.locator('[data-journey-review]').waitFor();
       await canonicalEditor.locator('[data-journey-review]').click();
       await canonicalEditor.locator('[data-journey-confirm]').waitFor();
+      assert.match(await canonicalEditor.locator('[data-journey-review-body]').innerText(), /Destinatário: fixture@example\.invalid · Canal: email · Ordem: 2 · Intervalo: 72 horas/);
       await canonicalEditor.locator('[data-journey-confirm]').check();
       await canonicalEditor.locator('[data-journey-text]').fill('D3 editado localmente para revisão exata.');
       assert.equal(await canonicalEditor.locator('[data-journey-approve]').isDisabled(), true, 'Editing invalidates approval of the previous review');
