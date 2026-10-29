@@ -373,24 +373,42 @@ class HermesLinkedInCadenceTests(unittest.TestCase):
                 temp.cleanup()
 
     def test_each_valid_due_step_previews_the_exact_frozen_approved_copy(self):
-        for marker in STEP_CONTRACT:
+        expected_steps = (
+            ('cad_li_0', 'LinkedIn: convite', 'invite', 'Convite aprovado', None),
+            ('cad_li_1', 'LinkedIn: msg 1', 'dm', 'Mensagem aprovada cad_li_1', 'urn:li:msg_conversation:(lead123,owner123)'),
+            ('cad_li_2', 'LinkedIn: msg 2', 'dm', 'Mensagem aprovada cad_li_2', 'urn:li:msg_conversation:(lead123,owner123)'),
+            ('cad_li_3', 'LinkedIn: msg 3', 'dm', 'Mensagem aprovada cad_li_3', 'urn:li:msg_conversation:(lead123,owner123)'),
+        )
+        for marker, subject, action, content, conversation in expected_steps:
             with self.subTest(marker=marker), tempfile.TemporaryDirectory() as root:
                 repo = Repository(Path(root) / 'state.sqlite')
                 repo.put_state('agent_control', 'global', {'enabled': True, 'paused': False})
                 repo.put_state('delegation', 'hermes', {'enabled': True, 'scopes': ['linkedin_cadence'],
                     'daily_limit': 30, 'actor': 'ygor', 'audit_actor': 'hermes (delegado)'})
-                tasks = Tasks(task(marker)); provider = Provider()
+                tasks = Tasks({'id': 'task-1', 'status': 'NOT_STARTED',
+                    'due_at': '2026-10-19T14:00:00+00:00', 'subject': subject,
+                    'body': marker, 'contact_ids': ['101'], 'contact_status': 'em_cadencia',
+                    'cadence_id': '316669709'}); provider = Provider()
                 provider.relationship_status = 'NOT_CONNECTED' if marker == 'cad_li_0' else 'CONNECTED'
                 console = Console(repo, provider, lambda: NOW)
                 app = ConnectSafelyApplication(repo, direct_console=console, provider=provider,
                     execution_enabled=True, readiness=lambda: {'ready': True},
                     action_readiness=lambda _a: {'ready': True}, execution_scope='hermes-test', clock=lambda: NOW)
                 runner = HermesLinkedInCadence(repo, tasks, app, clock=lambda: NOW)
-                self.bind_task(runner, runner.approve(approval(), 'ygor'))
+                approved = runner.approve(approval(), 'ygor')
+                self.bind_task(runner, approved)
                 result = runner.run_task('task-1')
                 self.assertEqual('human_confirmation_required', result['status'])
                 preview = repo.get_state('connectsafely_preview', result['preview_id'])
-                self.assertEqual(plan(marker), preview['plan'])
+                expected_plan = {'account_id': 'cs-account', 'account_public_id': 'ygorbuenobr',
+                    'action': action, 'recipient_public_id': 'lead-public',
+                    'recipient_profile_urn': 'urn:li:fsd_profile:lead123', 'channel': 'linkedin',
+                    'messaging_channel': 'linkedin_inbox', 'content': content,
+                    'conversation_urn': conversation}
+                approved_step = next(step for step in approved['steps'] if step['marker'] == marker)
+                self.assertEqual(subject, approved_step['subject'])
+                self.assertEqual(expected_plan, approved_step['plan'])
+                self.assertEqual(expected_plan, preview['plan'])
                 self.assertEqual(0, console.executes)
                 self.assertEqual([], tasks.completions)
                 self.assertEqual([], tasks.uncertain)
@@ -422,14 +440,20 @@ class HermesLinkedInCadenceTests(unittest.TestCase):
         self.assertEqual(original, self.repo.get_state('linkedin_cadence_approval', original['id']))
 
     def test_relationship_gate_matches_step_kind(self):
-        for marker, allowed in (("cad_li_0", "NOT_CONNECTED"), ("cad_li_1", "CONNECTED")):
+        for marker, subject, allowed in (("cad_li_0", "LinkedIn: convite", "NOT_CONNECTED"),
+                ("cad_li_1", "LinkedIn: msg 1", "CONNECTED"),
+                ("cad_li_2", "LinkedIn: msg 2", "CONNECTED"),
+                ("cad_li_3", "LinkedIn: msg 3", "CONNECTED")):
             for observed in ("NOT_CONNECTED", "CONNECTED", "INVITATION_SENT", "INVITATION_RECEIVED", "", None, "UNKNOWN"):
                 with self.subTest(marker=marker, observed=observed):
                     temp = tempfile.TemporaryDirectory(); repo = Repository(Path(temp.name) / "s.sqlite")
                     repo.put_state("agent_control", "global", {"enabled": True, "paused": False})
                     repo.put_state("delegation", "hermes", {"enabled": True, "scopes": ["linkedin_cadence"],
                         "daily_limit": 30, "actor": "ygor", "audit_actor": "hermes (delegado)"})
-                    tasks = Tasks(task(marker)); provider = Provider(); provider.relationship_status = observed
+                    tasks = Tasks({'id': 'task-1', 'status': 'NOT_STARTED',
+                        'due_at': '2026-10-19T14:00:00+00:00', 'subject': subject,
+                        'body': marker, 'contact_ids': ['101'], 'contact_status': 'em_cadencia',
+                        'cadence_id': '316669709'}); provider = Provider(); provider.relationship_status = observed
                     console = Console(repo, provider, lambda: NOW)
                     app = ConnectSafelyApplication(repo, direct_console=console, provider=provider,
                         execution_enabled=True, readiness=lambda: {"ready": True},
