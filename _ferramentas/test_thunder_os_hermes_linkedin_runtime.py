@@ -185,6 +185,26 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(['pending-0','pending-0','due-1'], rounds)
         self.assertEqual([(1,None),(1,'page-2')], tasks.calls)
 
+    def test_pending_due_pages_do_not_skip_unselected_ids_with_two_slots(self):
+        cfg={**load_config(self.path), 'max_tasks_per_run': 2}
+        self.repo.put_state('linkedin_cadence_task','pending-0',{'status':'uncertain'})
+        runner=Mock();runner.repository=self.repo
+        runner.run_task.side_effect=lambda task_id, **kwargs: {'task_id':task_id,'status':'pending'}
+        class PagedTasks:
+            def __init__(self): self.calls=[]
+            def due_page(self, *, limit, after):
+                self.calls.append((limit,after))
+                ids=['due-1','due-2','due-3','due-4']
+                start=int(after or 0); end=min(start+limit,len(ids))
+                return {'ids':ids[start:end], 'next_after':str(end) if end < len(ids) else None}
+        tasks=PagedTasks()
+        with patch('thunder_os.hermes_linkedin_runtime.build',return_value=(runner,tasks,STAMP)), \
+             patch('thunder_os.hermes_linkedin_runtime.time.sleep'):
+            rounds=[run_once(cfg)['processed'] for _ in range(4)]
+        self.assertEqual(['due-1','due-2','due-3','due-4'],
+                         [row[1]['task_id'] for row in rounds])
+        self.assertEqual([(1,None),(1,'1'),(1,'2'),(1,'3')],tasks.calls)
+
     def test_pending_completed_hubspot_task_retries_after_patch_readback_failure(self):
         cfg=load_config(self.path)
         task_id='118775080824'

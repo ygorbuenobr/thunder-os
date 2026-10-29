@@ -210,7 +210,9 @@ def run_once(cfg):
     if due_slots:
         try:
             if callable(getattr(type(tasks), "due_page", None)):
-                page = tasks.due_page(limit=maximum, after=due_after)
+                # Advancing a cursor past a page larger than the available due
+                # capacity would silently skip some of that page indefinitely.
+                page = tasks.due_page(limit=due_slots, after=due_after)
                 due = page["ids"]
                 due_after = page["next_after"]
             else:
