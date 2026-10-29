@@ -9,7 +9,7 @@ from unittest.mock import Mock,patch
 from thunder_os.models import payload_hash
 from thunder_os.worker import WorkerRuntime
 from thunder_os.email_readback import GmailReceiptReader
-from thunder_os.thunder_email_runtime import GmailCadenceAdapter,ThunderEmailCycle,configured_adapter,configured_cycle,_hash
+from thunder_os.thunder_email_runtime import GmailCadenceAdapter,ThunderEmailCycle,configured_adapter,configured_cycle,_hash,_business_hash
 from thunder_os.seqd_client import MAILBOX_ID,WORKSPACE_ID
 from thunder_os.seqd_client import MAILBOX
 from thunder_os.contact_history import ContactHistoryReadonly
@@ -26,8 +26,7 @@ class Mail:
  def reconcile(self,key):
   self.reads.append(key);return {'mailbox':MAILBOX,'status':'sent','provider_id':'abc123','message_id':self.message_id()}
  def message_id(self):
-  e=self.envelope
-  return '<thunderos.'+_hash({'mailbox':MAILBOX_ID,'workspace':WORKSPACE_ID,**{k:e[k] for k in ('to','subject','body','thread_id')}})+'@thundermustard.com>'
+  return '<thunderos.'+_business_hash(self.envelope)+'@thundermustard.com>'
  def read(self,ident):
   e=self.envelope
   return {'mailbox':MAILBOX,'status':'ok','message':{'id':ident,'thread_id':'def456','from':MAILBOX,
@@ -71,6 +70,30 @@ class ThunderEmailTests(unittest.TestCase):
     crm_enabled=True,authorize=lambda plan:plan['contact_id']=='100',reply_enabled=True)
  def sent(self):
   self.assertTrue(self.worker.process_one());self.assertEqual(self.repo.effect(self.job['id'])['state'],'sent')
+ def test_send_requires_matching_readback_and_never_retries_uncertain(self):
+  original=self.mail.read
+  def mismatch(ident):
+   result=original(ident);result['message']['body']='different content'
+   return result
+  with patch.object(self.mail,'read',side_effect=mismatch):
+   self.assertTrue(self.worker.process_one())
+  self.assertEqual(self.repo.effect(self.job['id'])['state'],'uncertain')
+  key=self.adapter._key(self.policy)
+  self.assertEqual(self.repo.get_state('gmail_cadence_attempt',key)['phase'],'uncertain')
+  self.worker.process_one()
+  self.assertEqual(len(self.mail.sends),1)
+ def test_send_readback_unavailable_stays_uncertain(self):
+  with patch.object(self.mail,'read',side_effect=TimeoutError('read unavailable')):
+   self.assertTrue(self.worker.process_one())
+  self.assertEqual(self.repo.effect(self.job['id'])['state'],'uncertain')
+  self.assertEqual(len(self.mail.sends),1)
+ def test_business_hash_binds_optional_reply_parent(self):
+  envelope={'to':'person@example.invalid','subject':'Subject','body':'Body','thread_id':'def456'}
+  base={'mailbox':MAILBOX_ID,'workspace':WORKSPACE_ID,**envelope}
+  self.assertEqual(_business_hash(envelope),_hash(base))
+  reply={**envelope,'reply_message_id':'abc123'}
+  self.assertEqual(_business_hash(reply),_hash({**base,'reply_message_id':'abc123'}))
+  self.assertNotEqual(_business_hash(reply),_business_hash({**reply,'reply_message_id':'abc124'}))
  def test_whole_existing_worker_receipt_email_reply_stop(self):
   self.sent();self.assertEqual(len(self.mail.sends),1);self.assertEqual(len(self.ledger.calls),1)
   self.assertEqual(self.mail.sends[0]['to'],self.step['recipient'])
@@ -203,6 +226,12 @@ class ThunderEmailTests(unittest.TestCase):
   script="const c=require('./_ferramentas/seqd_bridge/contract.cjs');let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{let e=JSON.parse(s);const key='a'.repeat(64);e.approval_signature=c.signature(e,key);c.validate(e,key,Date.now());process.stdout.write('PASS');});"
   result=subprocess.run(['node','-e',script],input=json.dumps(self.mail.envelope),text=True,capture_output=True,check=True)
   self.assertEqual(result.stdout,'PASS')
+ def test_reply_business_hash_matches_node_bridge(self):
+  import json,subprocess
+  envelope={'to':'person@example.invalid','subject':'Subject','body':'Body','thread_id':'def456','reply_message_id':'abc123'}
+  script="const c=require('./_ferramentas/seqd_bridge/contract.cjs');let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>process.stdout.write(c.hash(c.business(JSON.parse(s)))));"
+  result=subprocess.run(['node','-e',script],input=json.dumps(envelope),text=True,capture_output=True,check=True)
+  self.assertEqual(_business_hash(envelope),result.stdout)
  def test_runtime_factory_composes_same_repository_disabled_by_default(self):
   from thunder_os.worker import build_runtime
   with patch.dict('os.environ',{'THUNDER_EXTERNAL_EFFECTS_ENABLED':'true','THUNDER_OS_DB':str(Path(self.tmp.name)/'factory.sqlite'),
@@ -229,6 +258,18 @@ class ThunderEmailTests(unittest.TestCase):
   self.worker.process_one();self.assertEqual(len(self.mail.sends),1)
   with scenario.database() as (con,_):
    self.assertEqual(con.execute('SELECT status,provider_id FROM toques').fetchall(),[('feito','gmail:abc123')])
+ def test_reconcile_existing_uncertain_reply_uses_original_parent_bound_key(self):
+  self.reconciliation_fixture()
+  key=self.adapter._key(self.policy);attempt=self.repo.get_state('gmail_cadence_attempt',key)
+  envelope={**attempt['envelope'],'thread_id':'def456','reply_message_id':'abc111'}
+  envelope['idempotency_key']=_business_hash(envelope)
+  self.repo.put_state('gmail_cadence_attempt',key,{**attempt,'envelope':envelope})
+  self.mail.envelope=deepcopy(envelope)
+  preview=self.cycle.preview_reconciliation('batch-1','s1')
+  result=self.cycle.confirm_reconciliation('batch-1','s1',preview['review_hash'])
+  self.assertEqual(result['status'],'confirmed')
+  self.assertEqual(self.mail.reads[-1],envelope['idempotency_key'])
+  self.assertEqual(len(self.mail.sends),1)
  def test_reconciliation_wrong_nonce_or_message_id_keeps_uncertain(self):
   self.reconciliation_fixture();preview=self.cycle.preview_reconciliation('batch-1','s1')
   with self.assertRaisesRegex(ValueError,'review_changed'):self.cycle.confirm_reconciliation('batch-1','s1','wrong')

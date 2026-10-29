@@ -23,7 +23,7 @@ from thunder_os.connectsafely_console import ConnectSafelyConsole
 from thunder_os.connectsafely_application import ConnectSafelyApplication
 from thunder_os.native_cadence import ACTION_FIELDS
 from thunder_os.native_cadence_execution import NativeCadenceExecutor, NativeRoute
-from thunder_os.thunder_email_runtime import GmailCadenceAdapter
+from thunder_os.thunder_email_runtime import GmailCadenceAdapter, _business_hash
 from thunder_os.seqd_client import MAILBOX
 from thunder_os.worker import WorkerRuntime
 from thunder_os.providers.result import ProviderResult
@@ -85,7 +85,7 @@ class FakeGmail:
     def send(self, envelope):
         self.sends.append(deepcopy(envelope));ident=format(len(self.sends),'x')+'abc'
         parent=self.messages.get(envelope.get('reply_message_id'))
-        mid='<s51-'+ident+'@example.invalid>'
+        mid='<thunderos.'+_business_hash(envelope)+'@thundermustard.com>'
         headers=[{'name':'Message-ID','value':mid}]
         if parent:
             ref=parent['message_id'];prior=next((h['value'] for h in parent['headers'] if h['name']=='References'),'')

@@ -45,6 +45,14 @@ def _hash(value):
     return hashlib.sha256(canonical(value)).hexdigest()
 
 
+def _business_hash(envelope):
+    business={'mailbox':MAILBOX_ID,'workspace':WORKSPACE_ID,'to':envelope['to'],
+              'subject':envelope['subject'],'body':envelope['body'],'thread_id':envelope.get('thread_id')}
+    if 'reply_message_id' in envelope:
+        business['reply_message_id']=envelope['reply_message_id']
+    return _hash(business)
+
+
 class GmailCadenceAdapter:
     provider_name = 'gmail'
     account_id = MAILBOX
@@ -135,6 +143,15 @@ class GmailCadenceAdapter:
             confirmed=(result.get('mailbox')==MAILBOX and result.get('status')=='sent'
                 and isinstance(result.get('provider_id'),str) and re.fullmatch(r'[a-f0-9]{1,64}',result['provider_id']))
             receipt='gmail:'+result['provider_id'] if confirmed else None
+            if confirmed:
+                message=GmailReceiptReader(self.repo,self.client).read_message(receipt)
+                envelope=row['envelope']
+                business_hash=_business_hash(envelope)
+                require(envelope['idempotency_key']==business_hash,'gmail_attempt_scope_mismatch')
+                expected_id='<thunderos.'+business_hash+'@thundermustard.com>'
+                require(message.get('source_message_id')==expected_id
+                    and message.get('to')==envelope['to'] and message.get('subject')==envelope['subject']
+                    and message.get('content')==envelope['body'],'gmail_send_readback_mismatch')
             self.repo.put_state('gmail_cadence_attempt',key,{**row,'phase':'sent' if confirmed else 'uncertain','receipt_ref':receipt})
             return ProviderResult(effect['effect_id'],'confirmed' if confirmed else 'uncertain',receipt)
         except Exception:
@@ -199,8 +216,7 @@ class ThunderEmailCycle:
                 and isinstance(result.get('provider_id'),str) and re.fullmatch(r'[a-f0-9]{1,64}',result['provider_id']), 'gmail_receipt_not_confirmed')
         receipt='gmail:'+result['provider_id']
         message=self.reader.read_message(receipt)
-        business_hash=_hash({'mailbox':MAILBOX_ID,'workspace':WORKSPACE_ID,'to':envelope['to'],
-            'subject':envelope['subject'],'body':envelope['body'],'thread_id':envelope.get('thread_id')})
+        business_hash=_business_hash(envelope)
         require(envelope['idempotency_key']==business_hash and policy['recipient']==step['recipient']
                 and policy['subject']==step['subject'] and policy['content_hash']==payload_hash(step['content']),
                 'gmail_attempt_scope_mismatch')
