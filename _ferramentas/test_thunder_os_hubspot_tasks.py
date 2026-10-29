@@ -115,4 +115,24 @@ class HubSpotTasksTests(unittest.TestCase):
         self.assertFalse(any(call[0]=="PATCH" for call in transport.calls))
 
 
+    def test_wrong_owner_blocks_before_contact_read_or_completion_patch(self):
+        class WrongOwner(Transport):
+            def __call__(self,method,path,body,headers,timeout):
+                status,raw=super().__call__(method,path,body,headers,timeout)
+                value=json.loads(raw)
+                if method=='GET' and '/objects/tasks/' in path:
+                    value['properties']['hubspot_owner_id']='1'
+                return status,json.dumps(value).encode()
+        transport=WrongOwner()
+        expected={'subject':'LinkedIn: msg 1','body':'cad_li_1','contact_ids':['255570819657'],
+                  'content':'Mensagem aprovada','sent_at':'2026-10-19T15:00:00+00:00'}
+        with patch.dict(os.environ,{'HUBSPOT_ACCESS_TOKEN':'fixture-token'},clear=True):
+            port=HubSpotTasks('51412240','92901049','HUBSPOT_ACCESS_TOKEN',request=transport)
+            with self.assertRaisesRegex(HubSpotTaskError,'task_scope_mismatch'):
+                port.get('118775080824')
+            with self.assertRaisesRegex(HubSpotTaskError,'task_scope_mismatch'):
+                port.complete('118775080824','connectsafely:receipt-1',expected)
+        self.assertFalse(any(call[0]=='PATCH' or '/objects/contacts/' in call[1] for call in transport.calls))
+
+
 if __name__=="__main__":unittest.main()

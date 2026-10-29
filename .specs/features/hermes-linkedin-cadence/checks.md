@@ -20,7 +20,7 @@ Proof: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=_ferramentas:/root/.hermes/profiles
 Status: complete
 
 **C12** - `POST /api/os/v1/linkedin-cadence-approvals` persists the exact Ygor package without provider calls or queued effects and fails closed for invalid authority/configuration (HLC-01, AC 1-3)
-Proof: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=_ferramentas:/root/.hermes/profiles/ygor-personal/brain/_ferramentas:/root/.hermes/profiles/ygor-personal/brain python3 -m unittest -v -k test_linkedin_cadence_approval_route_persists_exact_human_package_without_provider_call _ferramentas.test_thunder_os_connectsafely_panel_wiring`
+Proof: `PYTHONPATH=_ferramentas python3 -m unittest -v test_thunder_os_connectsafely_panel_wiring.PanelWiringTests.test_linkedin_cadence_approval_route_persists_exact_human_package_without_provider_call test_thunder_os_connectsafely_panel_wiring.PanelWiringTests.test_approval_route_returns_201_400_and_503_over_authenticated_unix_http`
 Status: complete
 
 ### S2 - Deterministic task gate
@@ -66,7 +66,7 @@ Status: complete
 ### S4 - Bounded runtime configuration
 
 **C9** - Disabled/synthetic/live config validation rejects relative paths, embedded secrets, identity mismatch and unbounded polling; checked-in example remains disabled (HLC-04, AC 10-11)
-Proof: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=_ferramentas:/root/.hermes/profiles/ygor-personal/brain/_ferramentas:/root/.hermes/profiles/ygor-personal/brain python3 -m unittest -v -k test_runtime_config_is_explicit_bounded_and_secret_free _ferramentas.test_thunder_os_hermes_linkedin_runtime`
+Proof: `PYTHONPATH=_ferramentas python3 -m unittest -v test_thunder_os_hermes_linkedin_runtime.RuntimeTests.test_runtime_config_is_explicit_bounded_and_secret_free test_thunder_os_hermes_linkedin_runtime.RuntimeTests.test_live_runtime_rejects_account_identity_mismatch_without_provider_io`
 Status: complete
 
 **C14** - Runtime refuses a revision-file mismatch and inserts exactly one bounded random 30-90 second delay between two due tasks (HLC-04, AC 11)
@@ -77,12 +77,12 @@ Status: complete
 Proof: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=_ferramentas:/root/.hermes/profiles/ygor-personal/brain/_ferramentas:/root/.hermes/profiles/ygor-personal/brain python3 -m unittest -v _ferramentas.test_thunder_os_hubspot_tasks`
 Status: complete
 
-**C10** - `--once` synthetic runtime completes one fixture task and prints a sanitized revision-bound summary without sockets or secrets (HLC-04, AC 12)
-Proof: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=_ferramentas:/root/.hermes/profiles/ygor-personal/brain/_ferramentas:/root/.hermes/profiles/ygor-personal/brain python3 -m unittest -v -k test_synthetic_once_runs_end_to_end_without_network _ferramentas.test_thunder_os_hermes_linkedin_runtime`
-Status: complete
+**C10** - `--once` synthetic runtime prints a sanitized revision-bound summary without sockets/secrets; missing identity fails closed, while explicit injected synthetic identity yields a human-confirmation preview and zero completion. The separate synthetic authenticated panel flow proves exact receipt-bound completion only after human confirmation (HLC-04, superseded AC 12).
+Proof: `PYTHONPATH=_ferramentas python3 -m unittest -v test_thunder_os_hermes_linkedin_runtime.RuntimeTests.test_synthetic_once_waits_for_human_without_network test_thunder_os_hermes_linkedin_runtime.RuntimeTests.test_synthetic_runtime_without_identity_source_fails_closed test_thunder_os_delegated_panel_runtime.PanelDelegateTests.test_authenticated_confirmation_resumes_exact_task_in_memory`
+Status: current verification pending; historical automatic-completion proof superseded by Ygor's human-confirmation decision
 
 **C11** - HubSpot adapter pins portal, owner, exact post-dispatch task contract and receipt before the sole completion patch (HLC-03, AC 7-9; HLC-04, AC 11)
-Proof: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=_ferramentas:/root/.hermes/profiles/ygor-personal/brain/_ferramentas:/root/.hermes/profiles/ygor-personal/brain python3 -m unittest -v -k test_exact_portal_owner_task_and_receipt_bound_completion _ferramentas.test_thunder_os_hubspot_tasks`
+Proof: `PYTHONPATH=_ferramentas python3 -m unittest -v test_thunder_os_hubspot_tasks.HubSpotTasksTests.test_exact_portal_owner_task_and_receipt_bound_completion test_thunder_os_hubspot_tasks.HubSpotTasksTests.test_wrong_owner_blocks_before_contact_read_or_completion_patch test_thunder_os_hubspot_tasks.HubSpotTasksTests.test_wrong_portal_or_owner_never_writes`
 Status: complete
 
 ## Coverage
@@ -94,7 +94,7 @@ Proof: `PYTHONPATH=_ferramentas python3 -m unittest test_thunder_os_delegated_ca
 Status: verification pending
 
 **C19** - Task-to-cadence binding is explicit and contact-exact, with no Sequences enrollment prerequisite; ambiguous/missing bindings fail closed.
-Proof: `PYTHONPATH=_ferramentas python3 -m unittest test_thunder_os_hubspot_tasks`
+Proof: `PYTHONPATH=_ferramentas python3 -m unittest test_thunder_os_hubspot_tasks test_thunder_os_hermes_linkedin_cadence.HermesLinkedInCadenceTests`
 Status: verification pending
 
 **C20** - URL/name/current-company comparison binds divergence confirmation to the exact preview/observation; absence, change or expiry blocks dispatch.

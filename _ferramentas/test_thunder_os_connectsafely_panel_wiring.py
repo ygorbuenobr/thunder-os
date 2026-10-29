@@ -1,7 +1,12 @@
 """Panel activation contract, isolated state and mocked external boundaries only."""
 import hashlib
+import http.client
 import json
 import os
+import socket
+import sys
+import threading
+import time
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -196,6 +201,67 @@ class PanelWiringTests(unittest.TestCase):
         for pin in ('', '0' * 64):
             with self.subTest(pin=pin), self.assertRaises(ValueError):
                 build_panel_composition(self.repo, config_path=str(self.config), config_sha256=pin)
+
+    def test_approval_route_returns_201_400_and_503_over_authenticated_unix_http(self):
+        app = self.configure()
+        steps = []
+        from thunder_os.hermes_linkedin_cadence import STEP_CONTRACT
+        for marker, (subject, action) in STEP_CONTRACT.items():
+            steps.append({'marker':marker,'subject':subject,'plan':{
+                'account_id':'a'*24, 'account_public_id':'fixture-owner', 'action':action,
+                'recipient_public_id':'fixture-target', 'recipient_profile_urn':'urn:li:fsd_profile:TARGET',
+                'channel':'linkedin', 'messaging_channel':'linkedin_inbox', 'content':'synthetic '+marker,
+                'conversation_urn':None if action == 'invite' else 'urn:li:msg_conversation:(TARGET,OWNER)'}})
+        approved = {'id':'unix-http-approval','hubspot_contact_id':'123456','cadence_id':'fixture-task-cadence',
+                    'expires_at':'2099-01-01T00:00:00+00:00','steps':steps}
+        origin = 'https://painel.r3xdigital.tech'
+        base = SimpleNamespace(banco=None, thunder_service=SimpleNamespace(repository=self.repo),
+            thunder_connectsafely_app=app, thunder_origin=origin, thunder_nonces={})
+        pidfile = self.root/'fixture-proxy.pid'
+        pidfile.write_text(str(os.getpid()))
+        server = panel.confirmation_server(base, self.root/'approval-http.sock', os.getuid(),
+                                            sys.executable, str(pidfile))
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        def request(payload, nonce):
+            # This fixture is the permitted local proxy peer: actual SO_PEERCRED,
+            # Python executable and PID file are checked by the real Handler.
+            server.thunder_nonces[nonce] = ('ygor', time.monotonic()+30)
+            data = json.dumps(payload).encode()
+            header = ('POST /api/os/v1/linkedin-cadence-approvals HTTP/1.1\r\n'
+                'Host: painel.r3xdigital.tech\r\nContent-Type: application/json\r\n'
+                'Origin: '+origin+'\r\nX-Authenticated-User: ygor\r\nX-Thunder-Nonce: '+nonce+
+                '\r\nContent-Length: '+str(len(data))+'\r\nConnection: close\r\n\r\n').encode()
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                connection.settimeout(3)
+                connection.connect(str(self.root/'approval-http.sock'))
+                connection.sendall(header+data)
+                response = http.client.HTTPResponse(connection)
+                response.begin()
+                return response.status, json.loads(response.read())
+        try:
+            with patch('socket.create_connection', side_effect=AssertionError('external network forbidden')), \
+                 patch('thunder_os.instantly_reader.private_text', side_effect=AssertionError('secret forbidden')):
+                status, result = request(approved, 'synthetic-valid-nonce')
+                self.assertEqual(201, status)
+                self.assertEqual('ygor', result['approved_by'])
+                persisted = self.repo.get_state('linkedin_cadence_approval', approved['id'])
+                self.assertEqual(result, persisted)
+                status, invalid = request({'id':'missing-required-fields'}, 'synthetic-invalid-nonce')
+                self.assertEqual(400, status)
+                self.assertIn('erro', invalid)
+                self.assertIsNone(self.repo.get_state('linkedin_cadence_approval','missing-required-fields'))
+                server.thunder_connectsafely_app = None
+                status, absent = request(approved, 'synthetic-absent-nonce')
+                self.assertEqual(503, status)
+                self.assertIn('erro', absent)
+                self.assertEqual([], self.repo.list_state('connectsafely_job'))
+                self.assertEqual([], self.repo.effects())
+        finally:
+            server.shutdown()
+            server.server_close()
+            worker.join(timeout=3)
+        self.assertFalse(worker.is_alive())
 
     def test_path_must_be_absolute_and_not_symlink(self):
         self.config.write_text(json.dumps(self.cfg))

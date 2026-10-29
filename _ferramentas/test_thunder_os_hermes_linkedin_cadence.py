@@ -370,6 +370,32 @@ class HermesLinkedInCadenceTests(unittest.TestCase):
                 self.assertEqual(0, console.executes); self.assertEqual([], tasks.completions)
                 temp.cleanup()
 
+    def test_match_rejects_two_active_approvals_without_task_binding_before_provider_or_job(self):
+        first = self.runner.approve(approval('first-active'), 'ygor')
+        second = self.runner.approve(approval('second-active'), 'ygor')
+        self.assertIsNone(self.repo.get_state('linkedin_cadence_task_binding', 'task-1'))
+        with self.assertRaisesRegex(CadenceBlocked, 'task_approval_ambiguous_or_missing'):
+            self.runner.run_task('task-1')
+        self.assertEqual(0, self.provider.reads)
+        self.assertEqual(0, self.console.executes)
+        self.assertEqual([], self.tasks.completions)
+        self.assertEqual([], self.repo.list_state('connectsafely_job'))
+        self.assertEqual([], self.repo.effects())
+        self.assertEqual(first, self.repo.get_state('linkedin_cadence_approval', first['id']))
+        self.assertEqual(second, self.repo.get_state('linkedin_cadence_approval', second['id']))
+
+    def test_match_rejects_multiple_task_contacts_before_provider_or_job(self):
+        original = self.approve()
+        self.tasks.task['contact_ids'] = ['101', '102']
+        with self.assertRaisesRegex(CadenceBlocked, 'task_contact_ambiguous'):
+            self.runner.run_task('task-1')
+        self.assertEqual(0, self.provider.reads)
+        self.assertEqual(0, self.console.executes)
+        self.assertEqual([], self.tasks.completions)
+        self.assertEqual([], self.repo.list_state('connectsafely_job'))
+        self.assertEqual([], self.repo.effects())
+        self.assertEqual(original, self.repo.get_state('linkedin_cadence_approval', original['id']))
+
     def test_relationship_gate_matches_step_kind(self):
         for marker, allowed in (("cad_li_0", "NOT_CONNECTED"), ("cad_li_1", "CONNECTED")):
             for observed in ("NOT_CONNECTED", "CONNECTED", "INVITATION_SENT", "INVITATION_RECEIVED"):
@@ -409,6 +435,8 @@ class HermesLinkedInCadenceTests(unittest.TestCase):
         for outcome in (
             {"status": "blocked", "error_code": "provider_rejected", "retry_write": False},
             {"status": "blocked", "error_code": "provider_denied", "retry_write": False},
+            {"status": "failed", "error_code": "provider_failed", "retry_write": False},
+            {"status": "rejected", "error_code": "provider_rejected", "retry_write": False},
             {"status": "uncertain", "error_code": "provider_outcome_unknown", "retry_write": False},
         ):
             with self.subTest(outcome=outcome):

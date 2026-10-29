@@ -149,13 +149,16 @@ class ConnectionWorkerTests(unittest.TestCase):
                                              connectsafely_account_id=ACCOUNT, profile=PROFILE)
         self.assertEqual(first.id, second.id)
         self.assertEqual(1, len(self.repo.outbox()))
-        lease = self.claim()
+        # Lease time must begin at this claim, not at module import: a preceding
+        # slow test must not consume this test's thirty-second lease.
+        now = datetime.now(timezone.utc)
+        lease = self.eligible.claim_outbox("local-test", now, timedelta(seconds=30), kind="agent_job")
         self.assertIsNotNone(lease)
         self.assertEqual(first.id, lease["entity_id"])
         restarted = EligibleRepository(Repository(self.path), self.owner)
-        self.assertIsNone(restarted.claim_outbox("restarted", NOW, timedelta(seconds=30), kind="agent_job"))
+        self.assertIsNone(restarted.claim_outbox("restarted", now, timedelta(seconds=30), kind="agent_job"))
         self.repo.finish_outbox(lease["id"], lease["lease_owner"])
-        self.assertIsNone(restarted.claim_outbox("restarted", NOW + timedelta(seconds=31),
+        self.assertIsNone(restarted.claim_outbox("restarted", now + timedelta(seconds=31),
                                                 timedelta(seconds=30), kind="agent_job"))
         self.assertEqual(1, len(self.repo.outbox()))
 

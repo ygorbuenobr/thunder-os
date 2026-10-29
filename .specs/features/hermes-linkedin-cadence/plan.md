@@ -66,7 +66,7 @@ After this change, a bounded Hermes runner can execute exactly one due HubSpot L
 
 10. The checked-in runner SHALL default to disabled external effects, require explicit absolute configuration paths and support a synthetic mode that cannot open provider or HubSpot sockets.
 11. The live configuration contract SHALL name the HubSpot portal/owner, ConnectSafely account/public identity, polling bound, weekdays 08:00-19:00 Sao Paulo, random 30-90 second inter-action spacing, daily cap, kill switch and a revision file equal to the configured source revision; secrets SHALL be referenced by environment variable name, never stored in the file.
-12. WHEN a `--once` synthetic run receives a valid fixture THEN it SHALL prove the producer-to-consumer journey from due task through receipt-bound completion and emit a sanitized summary containing source revision, mode and processed outcome with zero secret values.
+12. WHEN a `--once` synthetic run receives a valid fixture THEN it SHALL emit a sanitized revision/mode/outcome summary without provider sockets or secrets. Missing identity evidence SHALL block; with explicit injected synthetic identity evidence it SHALL stop at the human-confirmation preview, not auto-complete. The separate authenticated synthetic panel-to-delegate proof SHALL complete the exact task only after the human confirmation and receipt. This supersedes the original auto-completing CLI fixture under the 2026-10-29 human-confirmation decision.
 
 ## Traceability
 

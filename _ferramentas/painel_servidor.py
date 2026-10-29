@@ -2759,7 +2759,7 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
             configure_connectsafely_server(servidor, servidor.thunder_service.repository, connectsafely_factory)
             seqd_read = os.environ.get('THUNDER_OS_SEQD_READ_ENABLED', '') == 'true'
             seqd_send = external_effects_enabled() and os.environ.get('THUNDER_OS_SEQD_SEND_ENABLED', '') == 'true'
-            canary_readers = getattr(servidor.thunder_connectsafely_app, 'canary_readers', None)
+            canary_readers = getattr(getattr(servidor, 'thunder_connectsafely_app', None), 'canary_readers', None)
             seqd_transport = None
             if canary_readers is not None:
                 from thunder_os.canary_readers import CanarySEQDClient

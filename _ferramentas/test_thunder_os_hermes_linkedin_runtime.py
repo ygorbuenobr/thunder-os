@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from thunder_os.db import Repository
@@ -97,6 +98,29 @@ class RuntimeTests(unittest.TestCase):
         self.assertNotIn("secret",output.getvalue().lower())
         stored=Repository(self.db).get_state("linkedin_cadence_task","118775080824")
         self.assertIsNone(stored)
+
+    def test_live_runtime_rejects_account_identity_mismatch_without_provider_io(self):
+        from thunder_os.hermes_linkedin_runtime import build
+        configured = {'account_id':'fixture-account', 'public_id':'fixture-owner'}
+        cfg = {**self.config, 'mode':'live', 'connectsafely_config':str(self.path),
+               'connectsafely_identity':configured,
+               'hubspot':{'portal_id':'51412240', 'owner_id':'92901049', 'token_env':'HUBSPOT_ACCESS_TOKEN'}}
+        for changed in ({'account_id':'other-account'}, {'public_id':'other-owner'}):
+            provider = SimpleNamespace(account_id=configured['account_id'],
+                                       expected_public_id=configured['public_id'])
+            for key,value in changed.items():
+                setattr(provider, 'expected_public_id' if key == 'public_id' else key, value)
+            app = SimpleNamespace(provider=provider)
+            with self.subTest(changed=changed), \
+                 patch.dict(os.environ, {'THUNDER_EXTERNAL_EFFECTS_ENABLED':'true'}, clear=True), \
+                 patch('socket.create_connection', side_effect=AssertionError('network forbidden')), \
+                 patch('thunder_os.hermes_linkedin_runtime.load_cs_config', return_value={'live':configured}), \
+                 patch('thunder_os.hermes_linkedin_runtime.build_connectsafely', return_value=SimpleNamespace(application=app)), \
+                 patch('thunder_os.hermes_linkedin_runtime.HubSpotTasks') as tasks:
+                with self.assertRaisesRegex(ValueError, 'connectsafely_identity_mismatch'):
+                    build(cfg)
+                tasks.assert_not_called()
+        self.assertEqual([], self.repo.list_state('connectsafely_job'))
 
     def test_synthetic_runtime_without_identity_source_fails_closed(self):
         output=io.StringIO()

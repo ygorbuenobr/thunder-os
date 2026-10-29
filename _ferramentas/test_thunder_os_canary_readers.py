@@ -39,6 +39,19 @@ def wire(data, status=200):
 
 
 class ScopeTests(unittest.TestCase):
+    def test_exact_two_contacts_are_allowed_but_zero_and_three_are_rejected(self):
+        second = row(hubspot_contact_id='654321', email='second@example.invalid', channels=['linkedin'],
+            linkedin_public_id='second', linkedin_profile_urn=RECIPIENT, apollo_contact_id='apollo-second')
+        configured = scope(row(), second)
+        self.assertEqual(2, len(configured.by_id))
+        self.assertEqual(('email',), configured.contact(CONTACT).channels)
+        self.assertEqual(('linkedin',), configured.contact('654321').channels)
+        third = row(hubspot_contact_id='987654', email='third@example.invalid', channels=['linkedin'],
+            linkedin_public_id='third', linkedin_profile_urn='urn:li:fsd_profile:third', apollo_contact_id='apollo-third')
+        for contacts in ([], [row(),second,third]):
+            with self.subTest(count=len(contacts)), self.assertRaisesRegex(CanaryReadError,'canary_config_invalid'):
+                CanaryScope({'version':1,'contacts':contacts}, owner_public_id='owner-public')
+
     def test_self_email_does_not_require_linkedin(self):
         target = scope().email(EMAIL)
         self.assertEqual('', target.linkedin_profile_urn)
