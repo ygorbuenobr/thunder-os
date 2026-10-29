@@ -61,6 +61,7 @@ ALLOWED_FILES = {
     "_ferramentas/test_painel_journey_review_ui.cjs",
     "_ferramentas/test_painel_reply_control_ui.cjs",
     "_ferramentas/test_thunder_os_seqd_deadline.py",
+    "_ferramentas/test_gmail_reconciliation_ui.cjs",
     ".checks/panel-pending-discard.md",
     "scripts/test_panel_discard.cjs",
     ".specs/features/thunder-os-v1/campaign-execution-confirmation.md",

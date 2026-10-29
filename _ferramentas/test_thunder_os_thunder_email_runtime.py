@@ -278,6 +278,11 @@ class ThunderEmailTests(unittest.TestCase):
   self.assertEqual(result['status'],'confirmed');self.assertEqual(len(self.mail.sends),1)
   self.assertEqual(self.repo.effect(self.job['id'])['state'],'sent')
   self.assertEqual(self.cycle.prepare_email('gmail:abc123')['contact_id'],'100')
+  preview=self.cycle.preview_reconciliation('batch-1','s1')
+  self.cycle.confirm_reconciliation('batch-1','s1',preview['review_hash'])
+  self.worker.process_one();self.assertEqual(len(self.mail.sends),1)
+  with scenario.database() as (con,_):
+   self.assertEqual(con.execute('SELECT status,provider_id FROM toques').fetchall(),[('feito','gmail:abc123')])
  def test_readback_timeout_recovered_only_by_reviewed_confirmation(self):
   from test_thunder_os_eval_trajectory import EvalTrajectoryTests
   scenario=EvalTrajectoryTests();scenario.setUp();self.addCleanup(scenario.doCleanups)
@@ -292,11 +297,31 @@ class ThunderEmailTests(unittest.TestCase):
   self.cycle.confirm_reconciliation('batch-1','s1',preview['review_hash'])
   self.assertEqual(self.repo.effect(self.job['id'])['state'],'sent')
   self.assertEqual(len(self.mail.sends),1)
+ def test_review_projection_and_preview_bind_exact_uncertain_effect(self):
+  self.reconciliation_fixture()
+  step=next(c for c in self.service.today()['cadences'] if c['id']=='batch-1')['steps'][0]
+  self.assertEqual(step['gmail_reconciliation'],{'state':'available','cadence_id':'batch-1',
+                   'step_id':'s1','effect_id':self.job['id']})
   preview=self.cycle.preview_reconciliation('batch-1','s1')
-  self.cycle.confirm_reconciliation('batch-1','s1',preview['review_hash'])
-  self.worker.process_one();self.assertEqual(len(self.mail.sends),1)
-  with scenario.database() as (con,_):
-   self.assertEqual(con.execute('SELECT status,provider_id FROM toques').fetchall(),[('feito','gmail:abc123')])
+  self.assertEqual((preview['cadence_id'],preview['step_id'],preview['effect_id']),('batch-1','s1',self.job['id']))
+  self.assertEqual((preview['recipient'],preview['subject'],preview['content']),
+                   (self.step['recipient'],self.step['subject'],self.step['content']))
+ def test_duplicate_step_effect_blocks_projection_and_reconciliation(self):
+  self.reconciliation_fixture()
+  self.repo.enqueue_effect('different-synthetic-effect',self.job['payload'])
+  step=next(c for c in self.service.today()['cadences'] if c['id']=='batch-1')['steps'][0]
+  self.assertEqual(step['status'],'needs_reconciliation')
+  self.assertEqual(step['gmail_reconciliation'],{'state':'blocked','reason':'ambiguous_effects'})
+  self.assertIsNone(step['receipt_ref'])
+  with self.assertRaisesRegex(ValueError,'ambiguous_effects'):
+   self.cycle.preview_reconciliation('batch-1','s1')
+  self.assertEqual(len(self.mail.sends),1)
+ def test_duplicate_effect_created_after_preview_blocks_confirmation(self):
+  self.reconciliation_fixture();preview=self.cycle.preview_reconciliation('batch-1','s1')
+  self.repo.enqueue_effect('different-synthetic-effect',self.job['payload'])
+  with self.assertRaisesRegex(ValueError,'ambiguous_effects'):
+   self.cycle.confirm_reconciliation('batch-1','s1',preview['review_hash'])
+  self.assertEqual(self.repo.effect(self.job['id'])['state'],'uncertain')
  def test_reconcile_existing_uncertain_reply_uses_original_parent_bound_key(self):
   self.reconciliation_fixture()
   key=self.adapter._key(self.policy);attempt=self.repo.get_state('gmail_cadence_attempt',key)
@@ -333,7 +358,8 @@ class ThunderEmailTests(unittest.TestCase):
   with scenario.database() as (con,_):self.assertEqual(con.execute('SELECT status,provider_id FROM toques').fetchall(),[('incerto',None)])
   with self.repo.transaction() as con:
    con.execute('UPDATE thunder_effect_jobs SET receipt_ref=NULL WHERE id=?',(self.job['id'],))
-  second=self.repo.enqueue_effect('synthetic-conflicting-receipt',deepcopy(self.job['payload']))
+  other=deepcopy(self.job['payload']);other['step']['id']='different-step'
+  second=self.repo.enqueue_effect('synthetic-conflicting-receipt',other)
   with self.repo.transaction() as con:
    con.execute("UPDATE thunder_effect_jobs SET state='sent',receipt_ref='email:gmail:abc123' WHERE id=?",(second['id'],))
   preview=self.cycle.preview_reconciliation('batch-1','s1')

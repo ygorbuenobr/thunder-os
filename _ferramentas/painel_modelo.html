@@ -1898,6 +1898,54 @@ setInterval(()=>{if(!document.hidden&&document.body.dataset.aba==='sistema'&&!$(
 })(typeof globalThis!=='undefined'?globalThis:this);
 /* THUNDER_WORK_RESULT_END */
 
+/* THUNDER_GMAIL_RECONCILIATION_BEGIN */
+(function(root){
+  'use strict';
+  const id=v=>typeof v==='string'&&/^[A-Za-z0-9_-]{1,100}$/.test(v);
+  const hash=v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
+  function validBinding(b,c,s){return b?.state==='available'&&id(b.cadence_id)&&id(b.step_id)&&id(b.effect_id)&&b.cadence_id===c.id&&b.step_id===s.id;}
+  function validPreview(p,b){return p&&p.cadence_id===b.cadence_id&&p.step_id===b.step_id&&p.effect_id===b.effect_id&&typeof p.recipient==='string'&&p.recipient.length>0&&typeof p.subject==='string'&&typeof p.content==='string'&&/^gmail:[a-f0-9]{1,64}$/.test(p.receipt_ref||'')&&hash(p.review_hash);}
+  function render(cadences,escape){
+    return cadences.flatMap(c=>(Array.isArray(c.steps)?c.steps:[]).flatMap(s=>{
+      const b=s.gmail_reconciliation;if(!b)return [];
+      if(!validBinding(b,c,s))return [`<article class="card"><h3>E-mail precisa de conferência</h3><p>Não foi possível identificar com segurança o envio. Não reenvie; consulte o suporte.</p></article>`];
+      return [`<article class="card" data-gmail-reconcile data-cadence="${escape(b.cadence_id)}" data-step="${escape(b.step_id)}" data-effect="${escape(b.effect_id)}"><h3>E-mail com resultado incerto</h3><p>A confirmação anterior não chegou. Consulte o histórico; nenhum envio será repetido.</p><button type="button" class="btn" data-gmail-preview>Consultar resultado</button><div data-gmail-review></div><p role="status" aria-live="polite" data-gmail-status></p></article>`];
+    })).join('');
+  }
+  function mount(container,api){
+    const pending=new WeakMap(),busy=new WeakSet();
+    container.addEventListener('click',async event=>{
+      const button=event.target.closest('[data-gmail-preview],[data-gmail-confirm]');if(!button||button.disabled)return;
+      const card=button.closest('[data-gmail-reconcile]');if(!card||!container.contains(card)||busy.has(card))return;
+      const b={state:'available',cadence_id:card.dataset.cadence,step_id:card.dataset.step,effect_id:card.dataset.effect};
+      if(!id(b.cadence_id)||!id(b.step_id)||!id(b.effect_id))return;
+      const status=card.querySelector('[data-gmail-status]'),review=card.querySelector('[data-gmail-review]');
+      button.disabled=true;busy.add(card);
+      try{
+        if(button.hasAttribute('data-gmail-preview')){
+          pending.delete(card);review.replaceChildren();status.textContent='Consultando o histórico. Nenhum envio será feito.';
+          const p=await api('/api/os/v1/integrations/thunder-email/reconcile-preview','POST',{cadence_id:b.cadence_id,step_id:b.step_id});
+          if(!container.contains(card)||!validPreview(p,b))throw Error('invalid preview');
+          const doc=card.ownerDocument,add=(tag,text)=>{const n=doc.createElement(tag);n.textContent=text;review.appendChild(n);return n;};
+          add('h4','Confira o envio encontrado');add('p','Destinatário: '+p.recipient);add('p','Assunto: '+p.subject);add('pre',p.content);add('p','Recibo: '+p.receipt_ref);
+          const label=add('label',''),check=doc.createElement('input');check.type='checkbox';label.appendChild(check);label.appendChild(doc.createTextNode(' Confirmo registrar este recibo para este e-mail.'));
+          const confirm=add('button','Confirmar recibo');confirm.type='button';confirm.className='btn';confirm.setAttribute('data-gmail-confirm','');confirm.disabled=true;check.addEventListener('change',()=>{confirm.disabled=!check.checked;});
+          pending.set(card,p);status.textContent='Revise os dados antes de confirmar. Nenhum envio será feito.';
+        }else{
+          const p=pending.get(card);if(!validPreview(p,b))throw Error('preview expired');
+          pending.delete(card);review.replaceChildren();status.textContent='Registrando o recibo; nenhum envio será feito.';
+          const result=await api('/api/os/v1/integrations/thunder-email/reconcile-confirm','POST',{cadence_id:b.cadence_id,step_id:b.step_id,review_hash:p.review_hash});
+          if(result?.status!=='confirmed'||result?.receipt_ref!==p.receipt_ref||result?.send_attempted!==false)throw Error('confirmation uncertain');
+          status.textContent='Recibo confirmado. Atualize o andamento para conferir o estado.';
+        }
+      }catch(e){pending.delete(card);review.replaceChildren();status.textContent='Não foi possível confirmar o resultado. Não reenvie; consulte o histórico novamente.';}
+      finally{busy.delete(card);if(button.hasAttribute('data-gmail-preview'))button.disabled=false;}
+    });
+  }
+  root.ThunderGmailReconciliation={validBinding,validPreview,render,mount};
+})(typeof globalThis!=='undefined'?globalThis:this);
+/* THUNDER_GMAIL_RECONCILIATION_END */
+
 function thunderOSHTML(dados){
   const trabalhos=Array.isArray(dados?.work)?dados.work:[];
   const estados={requested:'Pedido registrado',in_progress:'Em andamento',needs_human:'Precisa da sua decisão',succeeded:'Resultado disponível',failed:'Falha: revisar',cancelled:'Cancelado'};
@@ -1917,9 +1965,10 @@ function thunderOSHTML(dados){
   const alertas=(dados.operator_alerts||[]).flatMap(a=>Array.isArray(a.alerts)?a.alerts:(a.active===true?[a]:[])).map(a=>`<p class="msg erro">${esc(a.message||'O assistente precisa de atenção. Confira os detalhes antes de retomar.')}${a.code?`<details><summary>Informações para suporte</summary>${esc(a.code)}</details>`:''}</p>`).join('');
   const usos=Array.isArray(dados.agent_usage)?dados.agent_usage:[];
   const operacao=`<article class="card"><h3>Assistente de pesquisa</h3><p>${!controle.enabled?'Ainda não configurado':controle.paused?'Pedidos pausados':'Disponível para os pedidos permitidos'}. As aprovações de ações externas são tratadas separadamente em cada canal.</p><p>${usos.length} pedidos processados. O custo desses pedidos não é calculado pelo painel.</p><button class="btn" data-os-agent="${controle.paused?'resume':'pause'}" data-os-version="${Number(controle.version)||0}" ${!controle.enabled?'disabled':''}>${controle.paused?'Retomar pedidos':'Pausar pedidos'}</button> <button class="btn" data-os-agent="reset_circuit" data-os-version="${Number(controle.version)||0}">Reavaliar bloqueio após falha</button>${alertas}</article>`;
-  return operacao+acompanhamento+principal+revisoes+rascunhos+classificacoes+pagas+erros.map(e=>`<p class="msg erro">${esc(e.guidance)} As outras áreas continuam disponíveis.</p>`).join('');
+  return operacao+acompanhamento+principal+ThunderGmailReconciliation.render(cadencias,esc)+revisoes+rascunhos+classificacoes+pagas+erros.map(e=>`<p class="msg erro">${esc(e.guidance)} As outras áreas continuam disponíveis.</p>`).join('');
 }
 
+ThunderGmailReconciliation.mount($('thunder-os-readback'),(...args)=>apiServidor(...args));
 $('thunder-os-readback').addEventListener('click',async ev=>{
   const botao=ev.target.closest('[data-os-agent],[data-os-cancel]');if(!botao||botao.disabled)return;
   botao.disabled=true;

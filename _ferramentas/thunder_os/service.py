@@ -1537,22 +1537,55 @@ class ThunderService:
             except Exception:
                 values[name] = []
                 partial_errors.append({"source": name, "guidance": f"{name} indisponível; tente novamente"})
-        effect_by_step = {
-            (effect["payload"].get("cadence_id"), effect["payload"].get("step", {}).get("id")): effect
-            for effect in values["effects"]
-        }
+        effects_by_step = {}
+        for effect in values['effects']:
+            key = (effect['payload'].get('cadence_id'), effect['payload'].get('step', {}).get('id'))
+            effects_by_step.setdefault(key, []).append(effect)
+
+        def project_step(cadence, step):
+            from .seqd_client import MAILBOX
+            key = (cadence['id'], step.get('id'))
+            effects = effects_by_step.get(key, [])
+            projected = {**step, 'effective_due_at': (due.isoformat() if
+                (due := effective_due(step, values['effects'], cadence['id'])) is not None else None)}
+            if any(error['source'] == 'effects' for error in partial_errors):
+                return {**projected, 'status':'needs_reconciliation', 'error_code':'effects_unavailable'}
+            if len(effects) > 1:
+                return {**projected, 'status':'needs_reconciliation', 'error_code':'ambiguous_effects',
+                    'receipt_ref':None, 'gmail_reconciliation':{'state':'blocked','reason':'ambiguous_effects'}}
+            if not effects:
+                return projected
+            effect = effects[0]
+            conflict = self._receipt_conflict(cadence, effect)
+            projected.update(status='needs_reconciliation' if conflict else effect['state'],
+                             receipt_ref=effect.get('receipt_ref'))
+            if conflict:
+                projected.update(recorded_step_status=step.get('status'), error_code='receipt_card_conflict')
+            if (step.get('channel') == 'email' and 'native' not in step
+                    and effect['state'] in {'uncertain','needs_reconciliation'}):
+                try:
+                    attempt_key = payload_hash({'mailbox':MAILBOX,'cadence':cadence['id'],'step':step['id']})
+                    attempt = self.repository.get_state('gmail_cadence_attempt',attempt_key)
+                    registry = self.campaign_registry
+                    context = cadence['execution_context']; binding = registry.binding(context['campaign_id'])
+                    valid = (not conflict and attempt and attempt.get('job_id') == effect['id']
+                             and attempt.get('phase') in {'dispatch_started','uncertain','sent','confirmed'}
+                             and all(effect['payload']['step'].get(k) == step.get(k) for k in ('channel','recipient','subject','content'))
+                             and all(attempt.get('envelope',{}).get(k) == step.get(v) for k,v in
+                                     (('to','recipient'),('subject','subject'),('body','content')))
+                             and registry.load(context['campaign_id']) == context
+                             and binding['providers'].get('email') == 'gmail'
+                             and binding['provider_accounts'].get('email') == MAILBOX)
+                except Exception:
+                    valid = False
+                projected['gmail_reconciliation'] = ({'state':'available','cadence_id':cadence['id'],
+                    'step_id':step['id'],'effect_id':effect['id']} if valid else
+                    {'state':'blocked','reason':'attempt_unavailable'})
+            return projected
         values["cadences"] = [{
             **cadence, "review_hash": self.cadence_review_hash(cadence),
             **self.campaign_review_view(cadence),
-            "steps": [{**step,
-                       "effective_due_at": (due.isoformat() if (due := effective_due(step, values["effects"], cadence["id"])) is not None else None),
-                       **({"status": ('needs_reconciliation' if self._receipt_conflict(cadence, effect_by_step[(cadence['id'], step['id'])])
-                                      else effect_by_step[(cadence["id"], step["id"])]["state"]),
-                           **({'recorded_step_status': step['status'], 'error_code': 'receipt_card_conflict'}
-                              if self._receipt_conflict(cadence, effect_by_step[(cadence['id'], step['id'])]) else {}),
-                           "receipt_ref": effect_by_step[(cadence["id"], step["id"])].get("receipt_ref")}
-                          if (cadence["id"], step.get("id")) in effect_by_step else {})}
-                      for step in cadence.get("steps", [])],
+            "steps": [project_step(cadence, step) for step in cadence.get("steps", [])],
         } for cadence in values["cadences"]]
         priorities = []
         for reply in values["replies"]:

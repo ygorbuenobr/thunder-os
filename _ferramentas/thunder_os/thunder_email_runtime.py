@@ -221,15 +221,22 @@ class ThunderEmailCycle:
         self.importer=ExternalEmailImport(repo,crm,enabled=crm_enabled,authorize=self._authorize,plan_validator=validate_gmail_plan)
         self.reply_control=ReplyControl(repo,CampaignRegistry(repo),external_pause_enabled=False)
 
+    def _unique_reconciliation_job(self,cadence_id,step_id,job_id):
+        jobs=[row for row in self.repo.effects() if row['payload'].get('cadence_id')==cadence_id
+              and row['payload'].get('step',{}).get('id')==step_id]
+        require(len(jobs)==1 and jobs[0]['id']==job_id,'gmail_reconciliation_ambiguous_effects')
+
     def _reconciliation(self,cadence_id,step_id):
         require(self.reconcile_enabled is True,'gmail_reconciliation_disabled')
         key=payload_hash({'mailbox':MAILBOX,'cadence':cadence_id,'step':step_id})
         attempt=self.repo.get_state('gmail_cadence_attempt',key)
         require(attempt and attempt['phase'] in {'dispatch_started','uncertain','sent','confirmed'},'gmail_attempt_not_started')
         job=self.repo.effect(attempt['job_id']);cadence=self.repo.get_state('cadence',cadence_id)
+        self._unique_reconciliation_job(cadence_id,step_id,attempt['job_id'])
         require(job and cadence and job['state'] in {'uncertain','needs_reconciliation','sent'}
                 and not job.get('lease_owner') and job.get('error_code')!='duplicate_consumed_effect','gmail_job_not_reconcilable')
         step=job['payload']['step'];context=cadence['execution_context'];registry=CampaignRegistry(self.repo)
+        require(step.get('channel')=='email' and 'native' not in step,'gmail_reconciliation_scope_invalid')
         binding=registry.binding(context['campaign_id'])
         require(job['payload']['cadence_id']==cadence_id and step['id']==step_id
                 and registry.load(context['campaign_id'])==context and binding['providers'].get('email')=='gmail'
@@ -258,13 +265,17 @@ class ThunderEmailCycle:
         require(self.repo.effect(job['id'])==job and self.repo.get_state('cadence',cadence_id)==cadence
                 and self.repo.get_state('gmail_cadence_attempt',key)==attempt
                 and registry.load(context['campaign_id'])==context,'gmail_reconciliation_changed_during_read')
+        self._unique_reconciliation_job(cadence_id,step_id,job['id'])
         proof={'job':job,'cadence':cadence,'attempt':attempt,'receipt_ref':receipt,'message':message}
         return key,proof
 
     def preview_reconciliation(self,cadence_id,step_id):
         _,proof=self._reconciliation(cadence_id,step_id)
         return {'review_hash':payload_hash(proof),'receipt_ref':proof['receipt_ref'],
-                'effect_id':proof['job']['id'],'send_attempted':False,'scope':'historical_receipt_confirmation'}
+                'effect_id':proof['job']['id'],'cadence_id':cadence_id,'step_id':step_id,
+                'recipient':proof['message']['to'],'subject':proof['message']['subject'],
+                'content':proof['message']['content'],
+                'send_attempted':False,'scope':'historical_receipt_confirmation'}
 
     def confirm_reconciliation(self,cadence_id,step_id,review_hash):
         key,proof=self._reconciliation(cadence_id,step_id)
@@ -272,6 +283,7 @@ class ThunderEmailCycle:
         require(self.ledger is not None,'gmail_reconciliation_ledger_required')
         job=proof['job'];receipt=proof['receipt_ref'];cadence=proof['cadence']
         with self.repo.transaction():
+            self._unique_reconciliation_job(cadence_id,step_id,job['id'])
             require(self.repo.effect(job['id'])==job and self.repo.get_state('cadence',cadence_id)==cadence
                     and self.repo.get_state('gmail_cadence_attempt',key)==proof['attempt']
                     and CampaignRegistry(self.repo).load(cadence['execution_context']['campaign_id'])==cadence['execution_context'],
