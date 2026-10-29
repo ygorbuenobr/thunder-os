@@ -60,6 +60,7 @@ ALLOWED_FILES = {
     "_ferramentas/test_painel_work_result_ui.cjs",
     "_ferramentas/test_painel_journey_review_ui.cjs",
     "_ferramentas/test_painel_reply_control_ui.cjs",
+    "_ferramentas/test_thunder_os_seqd_deadline.py",
     ".checks/panel-pending-discard.md",
     "scripts/test_panel_discard.cjs",
     ".specs/features/thunder-os-v1/campaign-execution-confirmation.md",

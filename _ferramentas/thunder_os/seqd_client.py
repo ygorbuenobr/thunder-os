@@ -2,10 +2,12 @@
 import hashlib
 import hmac
 import http.client
+import io
 import json
 import os
 import re
 import stat
+import time
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
@@ -44,13 +46,71 @@ def credential_file():
         raise SEQDError('seqd_credential_unavailable') from None
 
 
+class _DeadlineReader(io.RawIOBase):
+    def __init__(self, sock, deadline):
+        self._sock, self._deadline = sock, deadline
+        self._raw = sock.makefile('rb', buffering=0)
+
+    def readable(self):
+        return True
+
+    def readinto(self, buffer):
+        self._sock.settimeout(_remaining(self._deadline))
+        return self._raw.readinto(buffer)
+
+    def close(self):
+        try:
+            self._raw.close()
+        finally:
+            super().close()
+
+
+def _remaining(deadline):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError('seqd deadline exceeded')
+    return remaining
+
+
+class _DeadlineSocket:
+    def __init__(self, sock, deadline):
+        self._sock, self._deadline = sock, deadline
+
+    def sendall(self, data):
+        self._sock.settimeout(_remaining(self._deadline))
+        self._sock.sendall(data)
+
+    def makefile(self, mode, buffering=None):
+        if mode != 'rb':
+            raise ValueError('unsupported socket mode')
+        return io.BufferedReader(_DeadlineReader(self._sock, self._deadline))
+
+    def close(self):
+        self._sock.close()
+
+
+class _DeadlineConnection(http.client.HTTPConnection):
+    def __init__(self, deadline):
+        self._deadline = deadline
+        super().__init__('127.0.0.1', 8792, timeout=_remaining(deadline))
+
+    def connect(self):
+        self.timeout = _remaining(self._deadline)
+        super().connect()
+        self.sock = _DeadlineSocket(self.sock, self._deadline)
+
+
 def _request(method, path, body, headers, timeout):
-    connection = http.client.HTTPConnection('127.0.0.1', 8792, timeout=timeout)
+    deadline = time.monotonic() + timeout
+    connection = _DeadlineConnection(deadline)
+    response = None
     try:
         connection.request(method, path, body=json.dumps(body).encode() if body is not None else None, headers=headers)
         response = connection.getresponse()
         return response.status, response.read(1_000_001)
     finally:
+        if response is not None:
+            response.close()
         connection.close()
 
 

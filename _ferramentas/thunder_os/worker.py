@@ -117,18 +117,22 @@ class WorkerRuntime:
         self.last_progress_at = None
         self._last_health = 0.0
         self._reconciliation_cursor = 0
-        self._native_reconciliation_seen = set()
+        # Bound and space read-only retries per immutable job snapshot.
+        self._native_reconciliation_attempts = {}
 
     def stop(self, *_args: Any) -> None:
         self.running = False
 
     def _health(self, state: str) -> None:
+        with self.repository._connect() as connection:
+            waiting = connection.execute("SELECT count(*) FROM thunder_effect_jobs WHERE state IN ('uncertain','needs_reconciliation') AND json_extract(payload,'$.step.native.action')='email'").fetchone()[0]
         value = {
             "status": state, "pid": os.getpid(), "source_sha": self.revision,
             "worker_id": self.worker_id, "uncertain_retry": False,
             "external_effects_enabled": True,
             "processed": self.processed, "heartbeat_at": datetime.now(timezone.utc).isoformat(),
             "readiness": state == "ok", "last_progress_at": self.last_progress_at,
+            "native_reconciliation_waiting": waiting,
             "campaign_confirmation_required": True,
             "capabilities": {channel: getattr(adapter, "capability", "injected") for channel, adapter in self.adapters.items()},
         }
@@ -217,6 +221,7 @@ class WorkerRuntime:
             # Same SQLite write transaction fences canonical campaign config,
             # approvals, pause/revocation, job ownership and receipt persistence.
             # Do not heartbeat from another connection while owning this fence.
+            result = None
             with self.repository.effect_dispatch_fence(job["id"], job["lease_owner"]):
                 gate_error = self._runtime_gate(payload, step, expected)
                 if gate_error:
@@ -231,6 +236,12 @@ class WorkerRuntime:
                     # Commit uncertainty inside the fence; never roll authority
                     # back into a replayable job after a possible remote effect.
                     finish("uncertain", None, "worker_execution_uncertain")
+            if result is not None and result.status == "uncertain" and result.error_code == "gmail_readback_pending":
+                try:
+                    adapter.confirm_immediate(job, self.ledger)
+                except Exception:
+                    # Historical confirmation remains available through its reviewed path.
+                    pass
         except TouchBlocked as exc:
             finish("failed", None, str(exc))
         except RepositoryConflict:
@@ -355,6 +366,9 @@ class WorkerRuntime:
                     finish(state, result.receipt_ref, result.error_code)
                 except Exception:
                     finish("uncertain", error="native_execution_uncertain")
+            current = self.repository.effect(job['id'])
+            if current and current['state'] in {'uncertain','needs_reconciliation'}:
+                self._reconcile_native_registered(current)
         except RepositoryConflict:
             pass
         except Exception as exc:
@@ -421,36 +435,67 @@ class WorkerRuntime:
 
     def _reconcile_registered_effects(self) -> None:
         jobs = self.repository.reconciliation_effects(after_rowid=self._reconciliation_cursor)
-        for job in jobs:
+        for index, job in enumerate(jobs):
+            marker = (job['id'], job['updated_at'], job['state'])
+            for stale in [key for key in self._native_reconciliation_attempts if key[0] == job['id'] and key != marker]:
+                self._native_reconciliation_attempts.pop(stale, None)
+            self._reconciliation_cursor = job["reconciliation_cursor"]
             if self._is_native(job):
                 if self.native_executor is not None and job['state'] in {'uncertain','needs_reconciliation'}:
-                    self._reconcile_native_registered(job)
+                    attempts, next_at = self._native_reconciliation_attempts.get(marker, (0, 0))
+                    action = job['payload']['step'].get('native',{}).get('action')
+                    if time.monotonic() >= next_at and (action == 'email' or not attempts):
+                        self._reconcile_native_registered(job)
+                        # Resume after this row next cycle; eligible later jobs cannot starve.
+                        if index == len(jobs)-1 and len(jobs) < 100:
+                            self._reconciliation_cursor = 0
+                        return
             else:
                 self._reconcile_duplicate_effect(job)
-            self._reconciliation_cursor = job["reconciliation_cursor"]
         if len(jobs) < 100:
             self._reconciliation_cursor = 0
 
     def _reconcile_native_registered(self, job):
         snapshot = self.repository.effect(job['id'])
         marker = (snapshot['id'], snapshot['updated_at'], snapshot['state'])
-        if marker in self._native_reconciliation_seen:
+        action = snapshot['payload']['step'].get('native',{}).get('action')
+        attempts, next_at = self._native_reconciliation_attempts.get(marker, (0, 0))
+        now = time.monotonic()
+        if now < next_at or (action != 'email' and attempts):
             return
-        self._native_reconciliation_seen.add(marker)
-        cadence_id = snapshot['payload'].get('cadence_id')
-        cadence = self.repository.get_state('cadence',cadence_id)
+        if action == 'email' and attempts >= 3:
+            attempts = 0
+        attempts += 1
+        self._native_reconciliation_attempts[marker] = (attempts, float('inf'))
         try:
+            cadence_id = snapshot['payload'].get('cadence_id')
+            cadence = self.repository.get_state('cadence',cadence_id)
+            approval = self.repository.get_state('approval',cadence_id)
+            control = self.repository.get_state('control','global')
             result = self.native_executor.reconcile_job(snapshot)
             if (not isinstance(result, ProviderResult) or result.effect_id != snapshot['payload']['step']['id']
                     or result.status != 'confirmed' or not result.receipt_ref):
                 return
             with self.repository.transaction():
-                if self.repository.get_state('cadence',cadence_id) != cadence:
+                if (self.repository.get_state('cadence',cadence_id) != cadence
+                        or self.repository.get_state('approval',cadence_id) != approval
+                        or self.repository.get_state('control','global') != control):
                     return
+                self.repository.validate_uncertain_receipt(snapshot,result.receipt_ref)
+                step = snapshot['payload']['step']
+                if step.get('native',{}).get('action') == 'email':
+                    touch_step = self.native_executor._email_touch_step(snapshot,step)
+                    stored = self.ledger.confirm_receipt(snapshot['effect_key'],touch_step,result.receipt_ref)
+                    if stored['status'] != 'sent' or stored.get('receipt_ref') != result.receipt_ref:
+                        return
                 self.repository.confirm_uncertain_receipt(snapshot,result.receipt_ref)
+            self._native_reconciliation_attempts.pop(marker, None)
         except Exception:
             # A failed/ambiguous read never renews approval or requeues a send.
             return
+        finally:
+            if marker in self._native_reconciliation_attempts:
+                self._native_reconciliation_attempts[marker] = (attempts, time.monotonic() + (60 if attempts == 3 else 5))
 
     @contextmanager
     def _keep_lease(self, job):

@@ -143,20 +143,51 @@ class GmailCadenceAdapter:
             confirmed=(result.get('mailbox')==MAILBOX and result.get('status')=='sent'
                 and isinstance(result.get('provider_id'),str) and re.fullmatch(r'[a-f0-9]{1,64}',result['provider_id']))
             receipt='gmail:'+result['provider_id'] if confirmed else None
-            if confirmed:
-                message=GmailReceiptReader(self.repo,self.client).read_message(receipt)
-                envelope=row['envelope']
-                business_hash=_business_hash(envelope)
-                require(envelope['idempotency_key']==business_hash,'gmail_attempt_scope_mismatch')
-                expected_id='<thunderos.'+business_hash+'@thundermustard.com>'
-                require(message.get('source_message_id')==expected_id
-                    and message.get('to')==envelope['to'] and message.get('subject')==envelope['subject']
-                    and message.get('content')==envelope['body'],'gmail_send_readback_mismatch')
-            self.repo.put_state('gmail_cadence_attempt',key,{**row,'phase':'sent' if confirmed else 'uncertain','receipt_ref':receipt})
-            return ProviderResult(effect['effect_id'],'confirmed' if confirmed else 'uncertain',receipt)
+            # Receipt is provisional until a read outside the dispatch fence.
+            self.repo.put_state('gmail_cadence_attempt',key,{**row,'phase':'uncertain','receipt_ref':receipt})
+            return ProviderResult(effect['effect_id'],'uncertain',receipt,
+                                  'gmail_readback_pending' if confirmed else 'gmail_send_uncertain')
         except Exception:
             self.repo.put_state('gmail_cadence_attempt',key,{**row,'phase':'uncertain'})
             return ProviderResult(effect['effect_id'],'uncertain',error_code='gmail_send_uncertain')
+
+    def confirm_immediate(self, job, ledger):
+        """Confirm only this dispatch's provisional receipt; never repeat a send."""
+        require(not self.repo.dispatch_fence_active,'gmail_readback_under_fence')
+        snapshot=self.repo.effect(job['id']); step=job['payload']['step']
+        require(snapshot and snapshot['state']=='uncertain' and snapshot['error_code']=='gmail_readback_pending'
+                and snapshot['payload']==job['payload'] and snapshot['effect_key']==job['effect_key'], 'gmail_immediate_job_changed')
+        receipt=snapshot['receipt_ref']; key=payload_hash({'mailbox':MAILBOX,'cadence':job['payload']['cadence_id'],'step':step['id']})
+        attempt=self.repo.get_state('gmail_cadence_attempt',key)
+        cadence=self.repo.get_state('cadence',job['payload']['cadence_id'])
+        approval=self.repo.get_state('approval',job['payload']['cadence_id'])
+        control=self.repo.get_state('control','global')
+        require(attempt and attempt['phase']=='uncertain' and attempt.get('receipt_ref')==receipt
+                and attempt['job_id']==job['id'] and cadence and approval, 'gmail_immediate_attempt_changed')
+        envelope=attempt['envelope']; business_hash=_business_hash(envelope)
+        context=cadence['execution_context'];registry=CampaignRegistry(self.repo)
+        binding=registry.binding(context['campaign_id'])
+        require(registry.load(context['campaign_id'])==context and binding['providers'].get('email')=='gmail'
+                and binding['provider_accounts'].get('email')==MAILBOX
+                and envelope['to']==step['recipient'] and envelope['subject']==step['subject']
+                and envelope['body']==step['content'] and envelope['idempotency_key']==business_hash,
+                'gmail_attempt_scope_mismatch')
+        message=GmailReceiptReader(self.repo,self.client).read_message(receipt)
+        require(message.get('source_message_id')=='<thunderos.'+business_hash+'@thundermustard.com>'
+                and message.get('to')==envelope['to'] and message.get('subject')==envelope['subject']
+                and message.get('content')==envelope['body'],'gmail_send_readback_mismatch')
+        with self.repo.transaction():
+            require(self.repo.effect(job['id'])==snapshot and self.repo.get_state('gmail_cadence_attempt',key)==attempt
+                    and self.repo.get_state('cadence',job['payload']['cadence_id'])==cadence
+                    and self.repo.get_state('approval',job['payload']['cadence_id'])==approval
+                    and self.repo.get_state('control','global')==control
+                    and registry.load(context['campaign_id'])==context
+                    and registry.binding(context['campaign_id'])==binding,'gmail_immediate_changed')
+            self.repo.validate_uncertain_receipt(snapshot,receipt)
+            stored=ledger.confirm_receipt(job['effect_key'],step,receipt)
+            require(stored['status']=='sent' and stored['receipt_ref']==receipt,'gmail_ledger_receipt_conflict')
+            self.repo.confirm_uncertain_receipt(snapshot,receipt)
+            self.repo.put_state('gmail_cadence_attempt',key,{**attempt,'phase':'sent'})
 
     def reconcile(self,cadence_id,step_id):
         """Read remote receipt only; never calls send and never reopens a claim."""

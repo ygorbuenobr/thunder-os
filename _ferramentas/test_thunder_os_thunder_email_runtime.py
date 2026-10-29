@@ -5,6 +5,8 @@ from email.utils import format_datetime
 from pathlib import Path
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 from unittest.mock import Mock,patch
 from thunder_os.models import payload_hash
 from thunder_os.worker import WorkerRuntime
@@ -62,6 +64,11 @@ class ThunderEmailTests(unittest.TestCase):
   self.adapter=GmailCadenceAdapter(self.repo,client=self.mail,enabled=True,policy_loader=lambda:deepcopy(self.policy))
   self.worker=WorkerRuntime(self.repo,self.ledger,{'email':self.adapter},worker_id='synthetic-worker',
     health_path=Path(self.tmp.name)/'health.json',revision='synthetic')
+  def confirm_receipt(key,step,receipt):
+   row=self.ledger.rows[key]
+   if row['id']!=step['id'] or row.get('receipt_ref') not in (None,receipt):raise ValueError('ledger scope changed')
+   return self.ledger.finish(key,'sent',receipt)
+  self.ledger.confirm_receipt=confirm_receipt
   self.worker.authorization_service.current_research=lambda _:self.research
   self.worker.authorization_service.campaign_sheet_store=self.sheet_store
   self.reader=GmailReceiptReader(self.repo,self.mail)
@@ -86,6 +93,24 @@ class ThunderEmailTests(unittest.TestCase):
   with patch.object(self.mail,'read',side_effect=TimeoutError('read unavailable')):
    self.assertTrue(self.worker.process_one())
   self.assertEqual(self.repo.effect(self.job['id'])['state'],'uncertain')
+  self.assertEqual(len(self.mail.sends),1)
+ def test_readback_releases_writer_and_rejects_concurrent_pause(self):
+  entered=Event();resume=Event();original=self.mail.read
+  def blocked(ident):
+   entered.set()
+   if not resume.wait(5):raise TimeoutError('test read timed out')
+   return original(ident)
+  with patch.object(self.mail,'read',side_effect=blocked), ThreadPoolExecutor(max_workers=2) as pool:
+   future=pool.submit(self.worker.process_one)
+   try:
+    self.assertTrue(entered.wait(5))
+    write=pool.submit(self.repo.put_state,'control','global',{'paused':True})
+    self.assertTrue(write.result(timeout=2)['paused'])
+   finally:resume.set()
+   self.assertTrue(future.result(timeout=5))
+  self.assertEqual(self.repo.effect(self.job['id'])['state'],'uncertain')
+  self.assertEqual(len(self.mail.sends),1)
+  self.worker.process_one()
   self.assertEqual(len(self.mail.sends),1)
  def test_business_hash_binds_optional_reply_parent(self):
   envelope={'to':'person@example.invalid','subject':'Subject','body':'Body','thread_id':'def456'}
@@ -253,6 +278,20 @@ class ThunderEmailTests(unittest.TestCase):
   self.assertEqual(result['status'],'confirmed');self.assertEqual(len(self.mail.sends),1)
   self.assertEqual(self.repo.effect(self.job['id'])['state'],'sent')
   self.assertEqual(self.cycle.prepare_email('gmail:abc123')['contact_id'],'100')
+ def test_readback_timeout_recovered_only_by_reviewed_confirmation(self):
+  from test_thunder_os_eval_trajectory import EvalTrajectoryTests
+  scenario=EvalTrajectoryTests();scenario.setUp();self.addCleanup(scenario.doCleanups)
+  self.worker.ledger=scenario.ledger;self.cycle.ledger=scenario.ledger;self.cycle.reconcile_enabled=True
+  with patch.object(self.mail,'read',side_effect=TimeoutError('synthetic read timeout')):
+   self.assertTrue(self.worker.process_one())
+  self.assertEqual(self.repo.effect(self.job['id'])['state'],'uncertain')
+  self.worker.process_one()
+  self.assertEqual(self.repo.effect(self.job['id'])['state'],'uncertain')
+  preview=self.cycle.preview_reconciliation('batch-1','s1')
+  self.assertEqual(self.repo.effect(self.job['id'])['state'],'uncertain')
+  self.cycle.confirm_reconciliation('batch-1','s1',preview['review_hash'])
+  self.assertEqual(self.repo.effect(self.job['id'])['state'],'sent')
+  self.assertEqual(len(self.mail.sends),1)
   preview=self.cycle.preview_reconciliation('batch-1','s1')
   self.cycle.confirm_reconciliation('batch-1','s1',preview['review_hash'])
   self.worker.process_one();self.assertEqual(len(self.mail.sends),1)

@@ -257,7 +257,7 @@ class NativeCadenceExecutor:
         prepared = self._prepared.get(job['id'])
         require(bool(prepared), 'native_job_not_prepared')
         if prepared['kind'] == 'reconcile':
-            return self.reconcile_job(job)
+            return ProviderResult(job['payload']['step']['id'],'uncertain',error_code='native_reconciliation_required')
         cadence, context, step, route = self._scope(job)
         if prepared['kind'] == 'linkedin':
             plan = self._plan(job,context,step,route)
@@ -286,11 +286,6 @@ class NativeCadenceExecutor:
             return before_dispatch()
         effect = {'target':step['recipient'],'subject':step['subject'],'content':step['content'],'effect_id':step['id']}
         result = adapter.send(effect,before_dispatch=guard)
-        if result.status == 'confirmed':
-            try:
-                self._email_readback(job,result.receipt_ref,prepared['parent'])
-            except Exception:
-                result = ProviderResult(step['id'],'uncertain',error_code='native_email_readback_mismatch')
         stored = self.ledger.finish(job['effect_key'], 'sent' if result.status == 'confirmed' else 'uncertain', result.receipt_ref,result.error_code)
         return ProviderResult(step['id'], 'confirmed' if stored['status']=='sent' else 'uncertain',stored.get('receipt_ref'),stored.get('error_code'))
 
@@ -354,7 +349,6 @@ class NativeCadenceExecutor:
             require(result.get('mailbox') == MAILBOX and result.get('status') == 'sent','native_reconciliation_required')
             parent = self._parent(job,step,route)
             self._email_readback(job,receipt,parent)
-            stored = self.ledger.finish(job['effect_key'],'sent',receipt)
-            return ProviderResult(step['id'],'confirmed' if stored['status']=='sent' else 'uncertain',stored.get('receipt_ref'))
+            return ProviderResult(step['id'],'confirmed',receipt)
         except Exception:
             return ProviderResult(step['id'],'uncertain',error_code='native_reconciliation_required')

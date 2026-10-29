@@ -1,5 +1,7 @@
 """S51 named proofs: real local workflow/ledgers, fake provider ports, no network."""
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
@@ -402,6 +404,101 @@ class NativeExecutionTests(unittest.TestCase):
         self.now+=timedelta(seconds=31);self.assertTrue(self.worker().process_one())
         self.assertEqual(len(self.mail.sends),1)
         self.assertIn(self.repo.effect(job['id'])['state'],('uncertain','needs_reconciliation'))
+
+    def test_native_gmail_readback_allows_pause_and_does_not_resend(self):
+        self.setup_route('ygor');job=self.dispatch('ygor','E1')
+        entered=Event();resume=Event();original=self.mail.read
+        def blocked(ident):
+            entered.set()
+            if not resume.wait(5):raise TimeoutError('test read timed out')
+            return original(ident)
+        with patch.object(self.mail,'read',side_effect=blocked), ThreadPoolExecutor(max_workers=2) as pool:
+            worker=pool.submit(self.worker().process_one)
+            try:
+                self.assertTrue(entered.wait(5))
+                change=pool.submit(self.repo.put_state,'control','global',{'paused':True})
+                self.assertTrue(change.result(timeout=2)['paused'])
+            finally:
+                resume.set()
+            self.assertTrue(worker.result(timeout=5))
+        self.assertEqual(self.repo.effect(job['id'])['state'],'uncertain')
+        self.assertEqual(len(self.mail.sends),1)
+        self.worker().process_one()
+        self.assertEqual(len(self.mail.sends),1)
+
+    def test_native_reconciliation_retries_same_worker_after_ledger_commit(self):
+        self.setup_route('ygor');job=self.dispatch('ygor','E1');worker=self.worker()
+        clock=[100.0]
+        with patch('thunder_os.worker.time.monotonic',side_effect=lambda:clock[0]):
+            with patch.object(self.repo,'confirm_uncertain_receipt',side_effect=RuntimeError('synthetic crash after ledger commit')):
+                self.assertTrue(worker.process_one())
+            self.assertEqual(self.repo.effect(job['id'])['state'],'uncertain')
+            with self.database() as (con,_):
+                self.assertEqual(con.execute('SELECT status FROM toques').fetchone()[0],'feito')
+            self.assertEqual(len(self.mail.sends),1)
+            clock[0]+=5
+            self.assertFalse(worker.process_one())
+        self.assertEqual(self.repo.effect(job['id'])['state'],'sent')
+        self.assertEqual(len(self.mail.sends),1)
+
+    def test_native_reconciliation_bounds_transient_read_attempts(self):
+        self.setup_route('ygor');job=self.dispatch('ygor','E1');worker=self.worker()
+        clock=[100.0]
+        with patch('thunder_os.worker.time.monotonic',side_effect=lambda:clock[0]):
+            with patch.object(self.mail,'reconcile',side_effect=TimeoutError('synthetic timeout')) as read:
+                self.assertTrue(worker.process_one())
+                worker.process_one();self.assertEqual(read.call_count,1)
+                clock[0]+=5;worker.process_one()
+                clock[0]+=5;worker.process_one()
+                self.assertEqual(read.call_count,3)
+                clock[0]+=59;worker.process_one();self.assertEqual(read.call_count,3)
+            self.assertEqual(self.repo.effect(job['id'])['state'],'uncertain')
+            worker._health('ok')
+            self.assertEqual(json.loads(worker.health_path.read_text())['native_reconciliation_waiting'],1)
+            clock[0]+=1;worker.process_one()
+        self.assertEqual(self.repo.effect(job['id'])['state'],'sent')
+        worker._health('ok')
+        self.assertEqual(json.loads(worker.health_path.read_text())['native_reconciliation_waiting'],0)
+        self.assertEqual(len(self.mail.sends),1)
+
+    def test_native_retry_delay_begins_after_slow_read_finishes(self):
+        self.setup_route('ygor');self.dispatch('ygor','E1');worker=self.worker();clock=[100.0]
+        def slow_timeout(_):
+            clock[0]+=20
+            raise TimeoutError('synthetic slow read')
+        with patch('thunder_os.worker.time.monotonic',side_effect=lambda:clock[0]), \
+             patch.object(self.mail,'reconcile',side_effect=slow_timeout) as read:
+            self.assertTrue(worker.process_one())
+            worker.process_one();self.assertEqual(read.call_count,1)
+            clock[0]+=4;worker.process_one();self.assertEqual(read.call_count,1)
+            clock[0]+=1;worker.process_one();self.assertEqual(read.call_count,2)
+
+    def test_native_retry_recovers_when_initial_local_read_fails(self):
+        self.setup_route('ygor');job=self.dispatch('ygor','E1');worker=self.worker();clock=[100.0]
+        with patch('thunder_os.worker.time.monotonic',side_effect=lambda:clock[0]):
+            with patch.object(worker,'_reconcile_native_registered'):
+                self.assertTrue(worker.process_one())
+            snapshot=self.repo.effect(job['id'])
+            self.assertEqual(snapshot['state'],'uncertain')
+            with patch.object(self.repo,'get_state',side_effect=RuntimeError('synthetic local read failure')):
+                worker._reconcile_native_registered(snapshot)
+            self.assertEqual(self.repo.effect(job['id'])['state'],'uncertain')
+            clock[0]+=5
+            worker._reconcile_registered_effects()
+        self.assertEqual(self.repo.effect(job['id'])['state'],'sent')
+        self.assertEqual(len(self.mail.sends),1)
+
+    def test_reconciliation_budget_rotates_across_jobs(self):
+        self.setup_route('ygor');worker=self.worker();seen=[]
+        jobs=[{'id':str(n),'updated_at':'x','state':'uncertain','reconciliation_cursor':n,
+               'payload':{'step':{'native':{'action':'email'}}}} for n in (1,2,3)]
+        def page(*,after_rowid):return [job for job in jobs if job['reconciliation_cursor']>after_rowid]
+        with patch.object(self.repo,'reconciliation_effects',side_effect=page), \
+             patch.object(worker,'_is_native',return_value=True), \
+             patch.object(worker,'_reconcile_native_registered',side_effect=lambda job:seen.append(job['id'])):
+            worker._reconcile_registered_effects();self.assertEqual(seen,['1'])
+            worker._reconcile_registered_effects();self.assertEqual(seen,['1','2'])
+            worker._reconcile_registered_effects();self.assertEqual(seen,['1','2','3'])
 
     def test_linkedin_timeout_and_readback_mismatch_retain(self):
         self.setup_route('loa');job=self.dispatch('loa','L1');self.cs['loa'].mode='timeout'
