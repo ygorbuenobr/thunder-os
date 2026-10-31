@@ -25,10 +25,54 @@ def canonical_profile_slug(value: str) -> str:
         raise ConnectionIntakeError("connection_profile_invalid")
     slug = value
     if not (1 <= len(slug) <= 100 and all(
-            char.isalnum() or char in "._-\u2019" or unicodedata.category(char) == "Sm"
+            char.isalnum() or char in "._-\u2018\u2019" or unicodedata.category(char) == "Sm"
             for char in slug)):
         raise ConnectionIntakeError("connection_profile_invalid")
     return "".join(char.lower() if char.isascii() else char for char in slug)
+
+
+# Offset pagination over a `recentlyAdded` list can repeat one row at a page
+# boundary when the provider list shifts between two page reads (a connection is
+# accepted or removed mid-read). Observed in production on 2026-10-31: the same
+# profile, same day, last row of page N and first row of page N+1, 8.7 s apart.
+PAGE_DRIFT_TOLERANCE = 2
+
+
+class PageOrderGuard:
+    """Validate profile uniqueness and date order across contiguous offset pages.
+
+    Only a boundary repeat (same profile and provider day, within the last
+    PAGE_DRIFT_TOLERANCE rows of the previous page and the first rows of the
+    next) is skipped. Every other duplicate or order violation still blocks.
+    """
+
+    def __init__(self) -> None:
+        self._first: dict[str, tuple[int, int, int, object]] = {}
+        self._previous_day = None
+        self._page = -1
+        self._page_size = 0
+        self.tolerated = 0
+
+    def start_page(self, size: int) -> None:
+        self._page += 1
+        self._page_size = size
+
+    def accept(self, key: str, day, index: int) -> bool:
+        """Return True for a new row, False for a tolerated boundary repeat."""
+        first = self._first.get(key)
+        if first is not None:
+            page, first_index, first_size, first_day = first
+            if (page == self._page - 1 and first_day == day
+                    and first_index >= first_size - PAGE_DRIFT_TOLERANCE
+                    and index < PAGE_DRIFT_TOLERANCE):
+                self.tolerated += 1
+                return False
+            raise ConnectionIntakeError("connection_order_invalid", reason="duplicate_profile")
+        if self._previous_day is not None and day > self._previous_day:
+            raise ConnectionIntakeError("connection_order_invalid", reason="date_out_of_order")
+        self._first[key] = (self._page, index, self._page_size, day)
+        self._previous_day = day
+        return True
 
 
 MONTHS_PT = {
@@ -79,25 +123,36 @@ def _connected_at(value: Any) -> datetime:
         raise ConnectionIntakeError("connection_date_invalid") from exc
 
 
+KNOWN_FRONTIER_RUN = 20
+
+
 def collect_recent_connections(
     fetch_page: Callable[[int], Mapping[str, Any]], *, account_id: str,
     activation_at: datetime,
     max_pages: int = 20,
+    is_known: Callable[[str], bool] | None = None,
+    known_run: int = KNOWN_FRONTIER_RUN,
 ) -> list[Mapping[str, Any]]:
-    """Read the complete provider window back through the activation day.
+    """Read the provider window from the newest connection backwards.
 
-    The provider promises `recentlyAdded` order. Validate that order and its
-    pagination before allowing a cursor or any downstream work to advance.
+    Without `is_known` (baseline), read back through the activation day. With
+    `is_known`, stop after `known_run` consecutive already-persisted profiles:
+    in `recentlyAdded` order everything below that frontier was observed by an
+    earlier complete poll, so the window of new connections is complete without
+    re-reading the whole history every poll. The provider promises
+    `recentlyAdded` order; validate it before any cursor or work advances.
     """
     if (not isinstance(activation_at, datetime) or activation_at.tzinfo is None
             or type(max_pages) is not int or not 1 <= max_pages <= 20
-            or not isinstance(account_id, str) or not account_id.strip()):
+            or not isinstance(account_id, str) or not account_id.strip()
+            or (is_known is not None and not callable(is_known))
+            or type(known_run) is not int or not 1 <= known_run <= 100):
         raise ConnectionIntakeError("connection_window_invalid")
     activation_day = activation_at.astimezone(PROVIDER_CALENDAR).date()
     rows: list[Mapping[str, Any]] = []
     cursor = 0
-    previous = None
-    profiles: set[str] = set()
+    guard = PageOrderGuard()
+    known_streak = 0
     for _ in range(max_pages):
         response = fetch_page(cursor)
         if (not isinstance(response, Mapping) or response.get("success") is not True
@@ -111,19 +166,18 @@ def collect_recent_connections(
                 or response["count"] != len(batch)):
             raise ConnectionIntakeError("connection_page_invalid")
         older = False
-        for row in batch:
+        guard.start_page(len(batch))
+        for index, row in enumerate(batch):
             if not isinstance(row, Mapping):
                 raise ConnectionIntakeError("connection_row_invalid")
             key = profile_key(row.get("profileUrl"))
             day = _connected_at(row.get("connectedDate")).astimezone(PROVIDER_CALENDAR).date()
-            if key in profiles:
-                raise ConnectionIntakeError("connection_order_invalid", reason="duplicate_profile")
-            if previous is not None and day > previous:
-                raise ConnectionIntakeError("connection_order_invalid", reason="date_out_of_order")
-            profiles.add(key)
-            previous = day
+            if not guard.accept(key, day, index):
+                continue
             older |= day < activation_day
             rows.append(row)
+            if is_known is not None:
+                known_streak = known_streak + 1 if is_known(key) else 0
         end = response.get("endOfList")
         next_cursor = response.get("nextStartIndex")
         if type(end) is not bool:
@@ -134,7 +188,7 @@ def collect_recent_connections(
             return rows
         if type(next_cursor) is not int or next_cursor != cursor + len(batch) or not batch:
             raise ConnectionIntakeError("connection_cursor_invalid")
-        if older:
+        if older or (is_known is not None and known_streak >= known_run):
             return rows
         cursor = next_cursor
     raise ConnectionIntakeError("connection_window_incomplete")

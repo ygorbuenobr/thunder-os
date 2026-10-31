@@ -157,15 +157,20 @@ def record_live_poll(
         raise ConnectionIntakeError("activation_date_invalid")
     observed = observed_at.astimezone(timezone.utc).isoformat()
     activation = activation_at.astimezone(timezone.utc).isoformat()
+    kind = profile_kind(account_id)
+    # After the baseline poll, stop at the frontier of already-persisted profiles
+    # instead of re-reading the whole history since activation on every poll.
+    has_baseline = repository.get_state(LIVE_CHECKPOINT, account_id) is not None
     rows = collect_recent_connections(
         fetch_page, account_id=account_id, activation_at=activation_at, max_pages=max_pages,
+        is_known=((lambda key: repository.get_state(kind, key) is not None)
+                  if has_baseline else None),
     )
     normalized = [
         (profile_key(row["profileUrl"]), _connected_at(row["connectedDate"]).isoformat())
         for row in rows
     ]
     digest = sha256(json.dumps(normalized, separators=(",", ":")).encode("utf-8")).hexdigest()
-    kind = profile_kind(account_id)
     request_kind = research_request_kind(account_id)
 
     with repository.transaction():

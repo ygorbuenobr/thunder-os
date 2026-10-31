@@ -5,7 +5,9 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Callable, Mapping
 
-from .connection_intake import ConnectionIntakeError, PROVIDER_CALENDAR, _connected_at, profile_key
+from .connection_intake import (
+    ConnectionIntakeError, PROVIDER_CALENDAR, PageOrderGuard, _connected_at, profile_key,
+)
 from .connection_ledger import profile_kind, reclassify_pending, research_request_kind
 from .db import Repository, RepositoryConflict
 
@@ -46,7 +48,7 @@ def record_backfill_batch(
     today: date,
     account_by_profile: Mapping[str, str],
     fit_evidence_by_account: Mapping[str, str],
-    max_pages: int = 25,
+    max_pages: int = 60,
 ) -> dict[str, Any]:
     """Advance one bounded batch only after contiguous pages validate.
 
@@ -92,25 +94,21 @@ def record_backfill_batch(
     cursor = max(0, checkpoint["next_start_index"] - ANCHOR_OVERLAP) if checkpoint else 0
     anchor = checkpoint.get("anchor_profile") if checkpoint else None
     anchor_found = anchor is None
-    last_day = None
-    seen_batch: set[str] = set()
+    guard = PageOrderGuard()
     selected: list[tuple[str, str, int]] = []
     end_of_list = False
     pages = 0
     while pages < max_pages and len(selected) < DAILY_PROFILE_LIMIT - processed_today:
         rows, end_of_list, next_cursor = _page(fetch_page, cursor, account_id)
         pages += 1
+        guard.start_page(len(rows))
         for index, row in enumerate(rows):
             if not isinstance(row, Mapping):
                 raise ConnectionIntakeError("connection_row_invalid")
             key = profile_key(row.get("profileUrl"))
             day = _connected_at(row.get("connectedDate")).astimezone(PROVIDER_CALENDAR).date()
-            if key in seen_batch:
-                raise ConnectionIntakeError("connection_order_invalid", reason="duplicate_profile")
-            if last_day is not None and day > last_day:
-                raise ConnectionIntakeError("connection_order_invalid", reason="date_out_of_order")
-            seen_batch.add(key)
-            last_day = day
+            if not guard.accept(key, day, index):
+                continue
             if not anchor_found:
                 if key == anchor:
                     anchor_found = True
@@ -125,8 +123,10 @@ def record_backfill_batch(
         cursor = next_cursor
     if not anchor_found:
         raise ConnectionIntakeError("backfill_anchor_missing")
-    if not end_of_list and len(selected) < DAILY_PROFILE_LIMIT - processed_today:
-        raise ConnectionIntakeError("backfill_window_incomplete")
+    # Contiguous validated pages after the anchor are safe to commit even when the
+    # page budget ran out first: the new anchor is the last selected row. Without
+    # this, connections accepted since the checkpoint push the anchor down until
+    # the overlap scan alone exhausts the budget and the backfill never advances.
     if not selected and not end_of_list:
         raise ConnectionIntakeError("backfill_window_incomplete")
 

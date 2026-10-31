@@ -9,7 +9,7 @@ from .connectsafely_client import ConnectSafelyClient,ConnectSafelyError,require
 from .connectsafely_transport import ConnectSafelyHTTPS
 from .models import payload_hash
 
-PROFILE_ID=r'[A-Za-z0-9_.\-\u2019]{1,150}'
+PROFILE_ID=r'[A-Za-z0-9_.\-\u2018\u2019]{1,150}'
 PROFILE=re.compile(r'https://www\.linkedin\.com/in/([^/]{1,100})/?')
 POST=re.compile(r'https://www\.linkedin\.com/(?:feed/update/urn:li:activity:[0-9]{1,30}/?|posts/[A-Za-z0-9_%.-]{1,500})')
 URN=re.compile(r'urn:li:activity:[0-9]{1,30}')

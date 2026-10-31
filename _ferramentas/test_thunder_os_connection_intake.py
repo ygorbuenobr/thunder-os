@@ -159,6 +159,60 @@ class ConnectionIntakeTests(unittest.TestCase):
                 self.assertEqual("connection_order_invalid", str(caught.exception))
                 self.assertEqual(expected, caught.exception.reason)
 
+    def _paged(self, rows, page=10, shift_after=None, inserted=None):
+        state = {"shifted": False}
+
+        def fetch(cursor):
+            if shift_after is not None and cursor > shift_after:
+                state["shifted"] = True
+            current = ([inserted] + rows) if state["shifted"] else rows
+            batch = current[cursor:cursor + page]
+            end = cursor + len(batch) >= len(current)
+            return {"connections": batch, "endOfList": end,
+                    "nextStartIndex": None if end else cursor + len(batch),
+                    "success": True, "accountId": "acct-1", "sortBy": "recentlyAdded",
+                    "startIndex": cursor, "count": len(batch)}
+        return fetch
+
+    @staticmethod
+    def _person(index, day=5):
+        return {"profileUrl": f"https://linkedin.com/in/person-{index}",
+                "connectedDate": f"Conexão feita em {day} de outubro de 2026"}
+
+    def test_boundary_repeat_from_list_shift_is_skipped(self):
+        rows = [self._person(index) for index in range(25)]
+        fetch = self._paged(rows, shift_after=0, inserted=self._person(999))
+        collected = collect_recent_connections(fetch, account_id="acct-1", activation_at=NOW)
+        keys = [profile_key(row["profileUrl"]) for row in collected]
+        self.assertEqual(len(set(keys)), len(keys))
+        self.assertEqual({profile_key(row["profileUrl"]) for row in rows}, set(keys))
+
+    def test_repeat_away_from_page_boundary_still_blocks(self):
+        rows = [self._person(index) for index in range(25)]
+        rows[14] = rows[12]
+        with self.assertRaises(ConnectionIntakeError) as caught:
+            collect_recent_connections(self._paged(rows), account_id="acct-1", activation_at=NOW)
+        self.assertEqual("duplicate_profile", caught.exception.reason)
+
+    def test_known_frontier_stops_without_reading_whole_history(self):
+        rows = [self._person(index) for index in range(150)]
+        cursors = []
+        fetch = self._paged(rows)
+
+        def counting(cursor):
+            cursors.append(cursor)
+            return fetch(cursor)
+        known = {profile_key(row["profileUrl"]) for row in rows[5:]}
+        collected = collect_recent_connections(
+            counting, account_id="acct-1", activation_at=NOW,
+            is_known=lambda key: key in known, known_run=20)
+        self.assertEqual([0, 10, 20], cursors)
+        # The frontier is detected inside page 3; that page is kept whole.
+        self.assertEqual(30, len(collected))
+        with self.assertRaisesRegex(ConnectionIntakeError, "connection_window_incomplete"):
+            collect_recent_connections(self._paged(rows), account_id="acct-1",
+                                       activation_at=NOW, max_pages=3)
+
     def test_provider_account_echo_must_match(self):
         def wrong_account(cursor):
             return {"connections": [], "endOfList": True, "nextStartIndex": None,
@@ -187,6 +241,11 @@ class ConnectionIntakeTests(unittest.TestCase):
                             profile_key("https://linkedin.com/in/dangelo"))
         self.assertEqual(profile_key(profile_key("https://linkedin.com/in/d’angelo")),
                          profile_key("https://linkedin.com/in/d’angelo"))
+        # Real slugs carry either typographic apostrophe; they stay distinct keys.
+        self.assertEqual("https://www.linkedin.com/in/d‘angelo",
+                         profile_key("https://linkedin.com/in/d%E2%80%98angelo/"))
+        self.assertNotEqual(profile_key("https://linkedin.com/in/d‘angelo"),
+                            profile_key("https://linkedin.com/in/d’angelo"))
         self.assertEqual("https://www.linkedin.com/in/joão-silva",
                          profile_key("https://linkedin.com/in/jo%C3%A3o-silva/"))
         self.assertNotEqual(profile_key("https://linkedin.com/in/straße"),

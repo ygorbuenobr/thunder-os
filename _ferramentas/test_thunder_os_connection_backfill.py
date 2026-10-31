@@ -74,13 +74,72 @@ class ConnectionBackfillTests(unittest.TestCase):
         before = self.repo.get_state(BACKFILL_CHECKPOINT, ACCOUNT)
         profiles = self.repo.list_state(profile_kind(ACCOUNT))
         invalid_rows = rows[:]
-        invalid_rows[90] = invalid_rows[89]
+        # A repeat inside one page is never pagination drift; it must still block.
+        invalid_rows[95] = invalid_rows[93]
         with self.assertRaises(ConnectionIntakeError) as caught:
             record_backfill_batch(self.repo, provider(invalid_rows), account_id=ACCOUNT,
                                   today=date(2026, 10, 6), account_by_profile={}, fit_evidence_by_account={})
         self.assertEqual("duplicate_profile", caught.exception.reason)
         self.assertEqual(before, self.repo.get_state(BACKFILL_CHECKPOINT, ACCOUNT))
         self.assertEqual(profiles, self.repo.list_state(profile_kind(ACCOUNT)))
+
+    def test_boundary_repeat_from_list_shift_is_skipped_once(self):
+        rows = [connection(index) for index in range(40)]
+        state = {"shifted": False}
+
+        def drifting(cursor):
+            # After page 1 is read a new connection is accepted at the top, so the
+            # provider list moves down one position and row 9 repeats on page 2.
+            current = rows if not state["shifted"] else [connection(999)] + rows
+            if cursor == 10:
+                state["shifted"] = True
+                current = [connection(999)] + rows
+            batch = current[cursor:cursor + 10]
+            return {"success": True, "accountId": ACCOUNT, "sortBy": "recentlyAdded",
+                    "startIndex": cursor, "connections": batch, "count": len(batch),
+                    "nextStartIndex": cursor + len(batch),
+                    "endOfList": cursor + len(batch) >= len(current)}
+
+        result = record_backfill_batch(self.repo, drifting, account_id=ACCOUNT,
+                                       today=date(2026, 10, 5), account_by_profile={},
+                                       fit_evidence_by_account={})
+        profiles = sorted(row["id"] for row in self.repo.list_state(profile_kind(ACCOUNT)))
+        self.assertEqual(40, result["processed"])
+        self.assertEqual(40, len(profiles))
+        self.assertEqual(len(set(profiles)), len(profiles))
+
+    def test_boundary_repeat_with_different_day_still_blocks(self):
+        rows = [connection(index) for index in range(20)]
+        rows[10] = {**rows[9], "connectedDate": "Conexão feita em 3 de outubro de 2026"}
+        with self.assertRaises(ConnectionIntakeError) as caught:
+            record_backfill_batch(self.repo, provider(rows), account_id=ACCOUNT,
+                                  today=date(2026, 10, 5), account_by_profile={},
+                                  fit_evidence_by_account={})
+        self.assertEqual("duplicate_profile", caught.exception.reason)
+        self.assertIsNone(self.repo.get_state(BACKFILL_CHECKPOINT, ACCOUNT))
+
+    def test_page_budget_commits_contiguous_progress_after_shifted_anchor(self):
+        rows = [connection(index) for index in range(300)]
+        first = record_backfill_batch(self.repo, provider(rows), account_id=ACCOUNT,
+                                      today=date(2026, 10, 5), account_by_profile={},
+                                      fit_evidence_by_account={})
+        self.assertEqual(100, first["processed"])
+        # 150 connections accepted since the checkpoint push the anchor 150 rows down.
+        shifted = [connection(1000 + index) for index in range(150)] + rows
+        second = record_backfill_batch(self.repo, provider(shifted), account_id=ACCOUNT,
+                                       today=date(2026, 10, 6), account_by_profile={},
+                                       fit_evidence_by_account={}, max_pages=30)
+        self.assertGreater(second["processed"], 0)
+        self.assertFalse(second["complete"])
+        checkpoint = self.repo.get_state(BACKFILL_CHECKPOINT, ACCOUNT)
+        anchor = int(checkpoint["anchor_profile"].rsplit("-", 1)[1])
+        self.assertEqual(100 + second["processed"] - 1, anchor)
+        third = record_backfill_batch(self.repo, provider(shifted), account_id=ACCOUNT,
+                                      today=date(2026, 10, 7), account_by_profile={},
+                                      fit_evidence_by_account={})
+        self.assertGreater(third["processed"], 0)
+        stored = [row["id"] for row in self.repo.list_state(profile_kind(ACCOUNT))]
+        self.assertEqual(len(set(stored)), len(stored))
 
     def test_identity_and_research_limits(self):
         rows = [connection(index) for index in range(8)]
