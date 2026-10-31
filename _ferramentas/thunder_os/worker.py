@@ -439,8 +439,8 @@ class WorkerRuntime:
             marker = (job['id'], job['updated_at'], job['state'])
             for stale in [key for key in self._native_reconciliation_attempts if key[0] == job['id'] and key != marker]:
                 self._native_reconciliation_attempts.pop(stale, None)
-            self._reconciliation_cursor = job["reconciliation_cursor"]
             if self._is_native(job):
+                self._reconciliation_cursor = job["reconciliation_cursor"]
                 if self.native_executor is not None and job['state'] in {'uncertain','needs_reconciliation'}:
                     attempts, next_at = self._native_reconciliation_attempts.get(marker, (0, 0))
                     action = job['payload']['step'].get('native',{}).get('action')
@@ -451,7 +451,11 @@ class WorkerRuntime:
                             self._reconciliation_cursor = 0
                         return
             else:
+                # Advance only after the duplicate check returns. A history/database read
+                # failure propagates with the cursor still on this row, so the next cycle
+                # re-checks it before claim instead of skipping to an unchecked dispatch.
                 self._reconcile_duplicate_effect(job)
+                self._reconciliation_cursor = job["reconciliation_cursor"]
         if len(jobs) < 100:
             self._reconciliation_cursor = 0
 
