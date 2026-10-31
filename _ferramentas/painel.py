@@ -18,7 +18,8 @@ def gerar(modo="artifact", arquivo_modelo="painel_modelo.html") -> str:
         if not l: continue
         try: eventos.append(json.loads(l))
         except Exception: pass
-    eventos.sort(key=lambda e: e.get("ts",""), reverse=True)
+    eventos = [e for e in eventos if isinstance(e, dict)]
+    eventos.sort(key=lambda e: str(e.get("ts") or ""), reverse=True)
     contas = []
     for d in sorted(p for p in (raiz/"contas").glob("*") if p.is_dir()):
         if d.name.startswith("_"): continue
