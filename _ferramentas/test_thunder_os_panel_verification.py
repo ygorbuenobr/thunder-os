@@ -171,4 +171,16 @@ class PanelVerificationTests(unittest.TestCase):
         self.assertEqual(factory.call_args.kwargs['max_retries'],0)
         client.close.assert_called_once()
 
+    def test_legacy_panel_tolerates_mixed_timestamp_types_in_activity_log(self):
+        import painel
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);(root/'_log').mkdir();(root/'contas').mkdir()
+            (root/'_log'/'atividade.jsonl').write_text(
+                '{"ts":"2026-01-02T00:00:00-03:00","tipo":"pesquisa"}\n'
+                '{"ts":1,"tipo":"legacy"}\n',encoding='utf-8')
+            original=painel.raiz;painel.raiz=root
+            try: rendered=painel.gerar(modo='servidor')
+            finally: painel.raiz=original
+            self.assertIn('<title>Painel</title>',rendered)
+
 if __name__=='__main__':unittest.main()
