@@ -89,6 +89,10 @@ class ConnectionPanelTests(unittest.TestCase):
         handler.command = method
         handler.client_address = ("127.0.0.1", 1234)
         handler.headers = {"X-Authenticated-User": actor}
+        # The proxy identity is only trusted from the nginx Unix listener; that
+        # boundary is covered by test_thunder_os_confirmation_socket. Here the
+        # route behaviour is under test, so simulate the trusted peer.
+        handler.trusted_confirmation_peer = lambda: True
         if agenttrail_ingress is not None:
             handler.headers["X-Thunder-Agenttrail-Ingress"] = agenttrail_ingress
         handler.responder = lambda status, body: (status, body)

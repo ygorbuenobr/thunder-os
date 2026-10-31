@@ -18,6 +18,25 @@ from test_thunder_os_campaign_registry import config
 from test_thunder_os_cadence_contact_campaign import ContactProvider, contact
 
 
+# The proxy identity header is trusted only from the nginx Unix listener; that boundary is
+# covered by test_thunder_os_confirmation_socket and test_thunder_os_proxy_session. Route
+# tests below exercise route behaviour, so they simulate that trusted peer.
+def setUpModule():
+    from unittest.mock import patch as _patch
+    trusted = _patch.object(panel.Handler, 'trusted_confirmation_peer', return_value=True)
+    trusted.start()
+    unittest.addModuleCleanup(trusted.stop)
+    # main(['servir']) starts the Apollo/Instantly readers when the host's private enable
+    # file exists (it does on the VPS). Tests must never reach real providers, so point
+    # both enable checks at a path that cannot exist.
+    from thunder_os import apollo_campaign_reader, instantly_reader
+    for module in (apollo_campaign_reader, instantly_reader):
+        original = module.ENABLED_FILE
+        module.ENABLED_FILE = '/nonexistent/thunder-os-test/reader_disabled'
+        unittest.addModuleCleanup(setattr, module, 'ENABLED_FILE', original)
+
+
+
 class CadencePanelTests(unittest.TestCase):
     def test_hermes_query_has_nonce_scope_and_cannot_enable_actions(self):
         from thunder_os.agent_gateway import AgentGateway

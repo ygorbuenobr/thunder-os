@@ -8,7 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import Mock
+from unittest.mock import patch, Mock
 
 import painel_servidor as panel
 from thunder_os.db import RepositoryConflict
@@ -22,6 +22,12 @@ class NewJourneyHTTPTests(unittest.TestCase):
         for name in ('catalog', 'create', 'get', 'source', 'check', 'sequences', 'revise_sequence',
                      'approve_step', 'export', 'reconcile', 'qualify'):
             getattr(self.wizard, name).return_value = {'enrollment_enabled': False, 'id': 'draft-test'}
+        # The proxy identity header is trusted only from the nginx Unix listener; that boundary is
+        # covered by test_thunder_os_confirmation_socket and test_thunder_os_proxy_session. Route
+        # tests below exercise route behaviour, so they simulate that trusted peer.
+        trusted = patch.object(panel.Handler, 'trusted_confirmation_peer', return_value=True)
+        trusted.start()
+        self.addCleanup(trusted.stop)
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), panel.Handler)
         self.server.banco = SimpleNamespace()
         self.server.thunder_service = Mock()

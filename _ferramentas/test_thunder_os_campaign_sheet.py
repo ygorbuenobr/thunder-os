@@ -24,6 +24,17 @@ import test_thunder_os_operation_campaign as operation_tests
 import painel_servidor as panel
 
 
+# The proxy identity header is trusted only from the nginx Unix listener; that boundary is
+# covered by test_thunder_os_confirmation_socket and test_thunder_os_proxy_session. Route
+# tests below exercise route behaviour, so they simulate that trusted peer.
+def setUpModule():
+    from unittest.mock import patch as _patch
+    trusted = _patch.object(panel.Handler, 'trusted_confirmation_peer', return_value=True)
+    trusted.start()
+    unittest.addModuleCleanup(trusted.stop)
+
+
+
 class CampaignSheetTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

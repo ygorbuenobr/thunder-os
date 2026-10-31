@@ -23,6 +23,17 @@ from thunder_os.seqd_client import MAILBOX
 from thunder_os.service import ThunderService
 from thunder_os.today_readonly import TodayReadonly, TodayError, ReadonlyRepository
 
+
+# The proxy identity header is trusted only from the nginx Unix listener; that boundary is
+# covered by test_thunder_os_confirmation_socket and test_thunder_os_proxy_session. Route
+# tests below exercise route behaviour, so they simulate that trusted peer.
+# A plain swap (not patch.start) because TodayTests cleans up with patch.stopall.
+def setUpModule():
+    original = panel.Handler.trusted_confirmation_peer
+    panel.Handler.trusted_confirmation_peer = lambda self: True
+    unittest.addModuleCleanup(setattr, panel.Handler, 'trusted_confirmation_peer', original)
+
+
 NOW = datetime(2026, 10, 23, 15, tzinfo=timezone.utc).timestamp()
 PEER = 'commercial@example.invalid'
 
