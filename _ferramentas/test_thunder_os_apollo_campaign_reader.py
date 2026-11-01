@@ -141,6 +141,50 @@ class ReaderTests(unittest.TestCase):
         return ApolloCampaignReadOnly(lambda: 'synthetic-key', request=self.wire,
             clock=lambda: NOW, mcp_request=self.mcp, **options)
 
+    def test_large_cohort_resumes_after_deadline_and_reaches_messages(self):
+        rows = [contact('c'+str(i), scoped=i < 285) for i in range(7800)]
+        wire = Wire(contacts=rows, messages=[], contents=[])
+        elapsed = [0.0]
+        def delay(method, path, body):
+            if path.endswith('contacts/search'):
+                elapsed[0] += 3.1
+            return None
+        wire.override = delay
+        reader = ApolloCampaignReadOnly(lambda: 'fake', request=wire,
+            clock=lambda: NOW + timedelta(seconds=elapsed[0]),
+            monotonic=lambda: elapsed[0], mcp_request=FakeMCPTransport(wire))
+        first = reader.collect()
+        self.assertFalse(first['coverage']['contacts_complete'])
+        elapsed[0] += 901
+        second = reader.collect(first)
+        calls = sum(path.endswith('contacts/search') for _, path, _, _ in wire.calls)
+        self.assertEqual(calls, 78)
+        self.assertTrue(second['coverage']['contacts_complete'])
+        self.assertTrue(second['coverage']['messages_complete'])
+        self.assertEqual(len(second['leads']), 285)
+
+    def test_tampered_scan_checkpoint_restarts_and_is_not_authority(self):
+        rows = [contact('c'+str(i), scoped=i < 3) for i in range(7800)]
+        wire = Wire(contacts=rows, messages=[])
+        elapsed = [0.0]
+        def delay(method, path, body):
+            if path.endswith('contacts/search'):
+                elapsed[0] += 3.1
+            return None
+        wire.override = delay
+        reader = ApolloCampaignReadOnly(lambda: 'fake', request=wire,
+            clock=lambda: NOW + timedelta(seconds=elapsed[0]),
+            monotonic=lambda: elapsed[0], mcp_request=FakeMCPTransport(wire))
+        partial = reader.collect()
+        partial['contact_scan_checkpoint']['source_total'] = 1
+        elapsed[0] += 901
+        wire.calls.clear()
+        after = reader.collect(previous=partial)
+        pages = [body['page'] for _, path, body, _ in wire.calls if path.endswith('/contacts/search')]
+        self.assertEqual(pages[0], 1)
+        self.assertFalse(after['coverage']['complete'])
+        self.assertNotIn('cohort_cache', after)
+
     def test_native_envelope_completed_original_and_zero_provider_writes(self):
         data = self.make().collect()
         self.assertTrue(data['coverage']['complete'])
@@ -979,6 +1023,50 @@ class CacheTests(unittest.TestCase):
         self.provider.collect.return_value = ApolloCampaignReadOnly(lambda: 'fake', request=wire,
             mcp_request=FakeMCPTransport(wire), clock=lambda: NOW).collect()
         self.reader = ApolloCampaignReader(self.repo, self.provider, enable_check=lambda: True, clock=lambda: self.now)
+
+    def test_cohort_is_persisted_before_message_phase_failure(self):
+        wire = Wire(messages=[])
+        provider = ApolloCampaignReadOnly(lambda: 'fake', request=wire,
+            mcp_request=FakeMCPTransport(wire), clock=lambda: self.now)
+        reader = ApolloCampaignReader(self.repo, provider, enable_check=lambda: True, clock=lambda: self.now)
+        observed = []
+        def fail_after_persist(result):
+            observed.append(deepcopy(self.repo.put_state.call_args.args[2])
+                            if self.repo.put_state.call_args else None)
+            raise ExternalEmailError('apollo_read_unavailable')
+        provider._messages = fail_after_persist
+        reader.refresh()
+        self.assertEqual(len(observed), 1)
+        self.assertIsNotNone(observed[0])
+        self.assertTrue(observed[0]['cohort_cache']['complete'])
+        self.assertFalse(observed[0]['coverage']['complete'])
+        stored = self.repo.put_state.call_args.args[2]
+        self.assertTrue(stored['cohort_cache']['complete'])
+        self.assertFalse(stored['coverage']['complete'])
+
+    def test_two_refreshes_resume_cohort_and_reach_messages(self):
+        rows = [contact('c'+str(i), scoped=i < 285) for i in range(7800)]
+        wire = Wire(contacts=rows, messages=[], contents=[])
+        elapsed = [0.0]
+        wire.override = lambda method, path, body: (
+            elapsed.__setitem__(0, elapsed[0] + 3.1) if path.endswith('contacts/search') else None)
+        clock = lambda: NOW + timedelta(seconds=elapsed[0])
+        provider = ApolloCampaignReadOnly(lambda: 'fake', request=wire,
+            clock=clock, monotonic=lambda: elapsed[0], mcp_request=FakeMCPTransport(wire))
+        saved = {}
+        repo = Mock()
+        repo.get_state.side_effect = lambda *_: deepcopy(saved.get('value'))
+        repo.put_state.side_effect = lambda _kind, _campaign, value: saved.update(value=deepcopy(value))
+        reader = ApolloCampaignReader(repo, provider, enable_check=lambda: True, clock=clock)
+        reader.refresh()
+        self.assertFalse(saved['value']['coverage']['complete'])
+        self.assertTrue(saved['value']['contact_scan_checkpoint'])
+        elapsed[0] += 901
+        reader.refresh()
+        self.assertEqual(sum(path.endswith('contacts/search') for _, path, _, _ in wire.calls), 78)
+        self.assertTrue(saved['value']['coverage']['contacts_complete'])
+        self.assertTrue(saved['value']['coverage']['messages_complete'])
+        self.assertEqual(len(saved['value']['leads']), 285)
 
     def test_default_composition_injects_seqd_without_loading_credentials(self):
         with patch('thunder_os.apollo_campaign_reader.private_text', side_effect=AssertionError('auth access')):

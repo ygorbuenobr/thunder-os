@@ -434,10 +434,38 @@ class ApolloCampaignReadOnly:
                 return
             except (ExternalEmailError, ValueError, TypeError, KeyError):
                 pass
-        seen, members, total = set(), [], None
-        for page in range(1, self.max_pages + 1):
+        seen, members, total, first_page = set(), [], None, 1
+        scan_started = now.isoformat()
+        saved = (previous or {}).get('contact_scan_checkpoint')
+        if isinstance(saved, dict):
+            try:
+                values = {k: v for k, v in saved.items() if k != 'integrity'}
+                require(saved.get('integrity') == _digest(values)
+                        and saved.get('scope') == _scope_identity()
+                        and 0 <= (now - _date(saved['started_at'])).total_seconds() < self.cohort_ttl,
+                        'invalid_contact_checkpoint')
+                first_page, total = saved['next_page'], saved['source_total']
+                ids = saved['seen_ids']
+                require(type(first_page) is int and 2 <= first_page <= self.max_pages
+                        and type(total) is int and total >= 0 and isinstance(ids, list)
+                        and len(ids) == (first_page - 1) * 100 and len(set(ids)) == len(ids)
+                        and all(identifier(i) for i in ids) and len(ids) < total,
+                        'invalid_contact_checkpoint')
+                members = self._members(saved['members'])
+                seen = set(ids)
+                require(all(member['id'] in seen for member in members), 'invalid_contact_checkpoint')
+                scan_started = saved['started_at']
+            except (ExternalEmailError, ValueError, TypeError, KeyError):
+                seen, members, total, first_page, scan_started = set(), [], None, 1, now.isoformat()
+        last_page_duration = None
+        for page in range(first_page, self.max_pages + 1):
+            # Avoid beginning a page unlikely to finish within this collection window.
+            if last_page_duration is not None and self.ends - self.monotonic() <= last_page_duration:
+                raise ExternalEmailError('apollo_read_budget_exhausted')
+            page_started = self.monotonic()
             data = self._call('POST', '/api/v1/contacts/search', {
                 'page': page, 'per_page': 100, 'sort_by_field': 'contact_created_at', 'sort_ascending': True})
+            last_page_duration = max(0.0, self.monotonic() - page_started)
             rows, pagination = data.get('contacts'), data.get('pagination')
             require(isinstance(rows, list) and len(rows) <= 100 and isinstance(pagination, dict), 'invalid_contact_page')
             count = pagination.get('total_entries')
@@ -466,8 +494,14 @@ class ApolloCampaignReadOnly:
                 result['cohort_cache'] = {'account_id': APOLLO_TEAM, 'owner_id': OWNER,
                     'external_campaign_id': APOLLO_SEQUENCE, 'complete': True, 'source_total': total,
                     'observed_at': result['coverage']['contacts_observed_at'], 'members': deepcopy(members)}
+                result.pop('contact_scan_checkpoint', None)
                 return
             require(len(rows) == 100 and len(seen) < total, 'incomplete_contacts')
+            checkpoint = {'scope': _scope_identity(), 'started_at': scan_started,
+                          'next_page': page + 1, 'source_total': total,
+                          'seen_ids': sorted(seen), 'members': deepcopy(members)}
+            checkpoint['integrity'] = _digest(checkpoint)
+            result['contact_scan_checkpoint'] = checkpoint
         raise ExternalEmailError('apollo_contacts_page_limit')
 
     @staticmethod
@@ -884,7 +918,7 @@ class ApolloCampaignReadOnly:
             cursor = next_cursor
         result['coverage']['reasons'].append('gmail_discovery_page_limit')
 
-    def collect(self, previous=None):
+    def collect(self, previous=None, *, on_cohort=None):
         require(self.lock.acquire(blocking=False), 'apollo_reader_busy')
         try:
             if isinstance(previous, dict):
@@ -955,13 +989,18 @@ class ApolloCampaignReadOnly:
                 self.ends = min(overall_end, self.monotonic() + 240)
                 self._contacts(result, previous)
                 self.ends = overall_end
+                if on_cohort is not None:
+                    on_cohort(deepcopy(result['cohort_cache']))
                 self._messages(result)
                 result['coverage']['contents_complete'] = 'completed_content_unverified' not in result['coverage']['reasons']
                 result['observed_at'] = self.clock().isoformat()
                 result['coverage']['messages_observed_at'] = result['observed_at']
             except Exception as exc:
-                result['coverage']['reasons'].append(exc.code if isinstance(exc, ExternalEmailError)
-                                                      else 'apollo_read_unavailable')
+                reason = exc.code if isinstance(exc, ExternalEmailError) else 'apollo_read_unavailable'
+                if reason not in ('apollo_read_budget_exhausted', 'apollo_endpoint_budget_exhausted',
+                                  'apollo_rate_limited', 'apollo_read_unavailable'):
+                    result.pop('contact_scan_checkpoint', None)
+                result['coverage']['reasons'].append(reason)
             cov = result['coverage']
             cov['reasons'] = sorted(set(cov['reasons']))
             if not cov['messages_complete']:
@@ -1047,8 +1086,17 @@ class ApolloCampaignReader:
                     pass
             if previous.get('last_attempt_at') and 0 <= (now - _date(previous['last_attempt_at'])).total_seconds() < INTERVAL:
                 return
+            def persist_cohort(cache):
+                require(self.enable_check(), 'apollo_reader_disabled')
+                interim = deepcopy(previous)
+                interim['cohort_cache'] = deepcopy(cache)
+                interim['coverage'] = {**interim.get('coverage', {}), 'complete': False,
+                                       'contacts_complete': True, 'messages_complete': False}
+                interim.update(status='partial', error_code='apollo_messages_pending',
+                               last_attempt_at=now.isoformat())
+                self.repo.put_state(KIND, CAMPAIGN, interim)
             try:
-                data = self.provider.collect(previous=deepcopy(previous))
+                data = self.provider.collect(previous=deepcopy(previous), on_cohort=persist_cohort)
                 require(self.enable_check(), 'apollo_reader_disabled')
                 state = {**data, 'last_attempt_at': now.isoformat(),
                     'last_success_at': self.clock().isoformat(), 'error_code': None,
