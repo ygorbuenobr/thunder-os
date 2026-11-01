@@ -2425,7 +2425,7 @@ function journeyMetric(key,label){
     coverageLabel=coverage.complete===true?'Leitura completa':coverage.complete===false?'Leitura parcial':'Cobertura não informada';
     if(Number.isInteger(coverage.observed_count)&&coverage.observed_count>=0)coverageLabel+=' · '+coverage.observed_count.toLocaleString('pt-BR')+(coverage.observed_count===1?' pessoa observada':' pessoas observadas');
   }
-  const sources=journeyRows(metric?.source),sourceNames={gmail:'Gmail',seqd:'SEQD',instantly:'Instantly',instantly_cache:'Cache do Instantly',cadence:'Cadências HubSpot','local:hubspot_attempt':'Tentativas HubSpot','local:reply':'Respostas registradas'};
+  const sources=journeyRows(metric?.source),sourceNames={gmail:'Gmail',seqd:'SEQD',instantly:'Instantly',instantly_cache:'Cache do Instantly',apollo_cache:'Cache do Apollo',cadence:'Cadências HubSpot','local:hubspot_attempt':'Tentativas HubSpot','local:reply':'Respostas registradas'};
   const consulted=[...new Set(sources.filter(source=>typeof source==='string').map(source=>Object.hasOwn(sourceNames,source)?sourceNames[source]:'Fonte não identificada'))];
   const sourceHTML=(consulted.length?`<p class="msg" data-journey-metric-sources>Fontes consultadas: ${esc(consulted.join(' · '))}</p>`:'')+journeySources(sources.filter(source=>typeof source!=='string'));
   const number=proven?(key==='cost_per_hot'?metric.value.toLocaleString('pt-BR',{style:'currency',currency:'BRL'}):metric.value.toLocaleString('pt-BR')):'?';

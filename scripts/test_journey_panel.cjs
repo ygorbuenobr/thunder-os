@@ -313,8 +313,8 @@ const account = () => ({id: 'account:opaque/fixture', name: 'Conta sintética', 
           assert.doesNotMatch(rendered, /observed_brazil_people|observed_count|"complete"|"scope"|verified_cost_source_unavailable|partial_human_reply_coverage|unique_people_first_observed_touch_provider_receipt|person_identity_unverified|provider_receipt_unavailable|provider_classified_humans|explicit_positive_classification_bound_to_original|positive_classification_unavailable/);
         }
       }
-      const actualMetricSources = ['gmail', 'seqd', 'instantly', 'cadence', 'local:hubspot_attempt', 'local:reply'];
-      const consultedCaption = 'Fontes consultadas: Gmail · SEQD · Instantly · Cadências HubSpot · Tentativas HubSpot · Respostas registradas';
+      const actualMetricSources = ['gmail', 'seqd', 'instantly', 'apollo_cache', 'cadence', 'local:hubspot_attempt', 'local:reply'];
+      const consultedCaption = 'Fontes consultadas: Gmail · SEQD · Instantly · Cache do Apollo · Cadências HubSpot · Tentativas HubSpot · Respostas registradas';
       state.metrics.reached.source = [...actualMetricSources, source];
       state.metrics.cost_per_hot = {value: null, source: actualMetricSources, reason: 'verified_cost_source_unavailable'};
       await refresh();
