@@ -185,6 +185,50 @@ class ReaderTests(unittest.TestCase):
         self.assertFalse(after['coverage']['complete'])
         self.assertNotIn('cohort_cache', after)
 
+    def test_resume_keeps_original_scan_age_and_partial_coverage(self):
+        rows = [contact('c'+str(i), scoped=i < 3) for i in range(7800)]
+        wire = Wire(contacts=rows, messages=[])
+        elapsed = [0.0]
+        def delay(method, path, body):
+            if path.endswith('contacts/search'):
+                elapsed[0] += 3.1
+            return None
+        wire.override = delay
+        reader = ApolloCampaignReadOnly(lambda: 'fake', request=wire,
+            clock=lambda: NOW + timedelta(seconds=elapsed[0]),
+            monotonic=lambda: elapsed[0], mcp_request=FakeMCPTransport(wire))
+        first = reader.collect()
+        elapsed[0] += 901
+        second = reader.collect(first)
+        self.assertEqual(second['cohort_cache']['observed_at'], NOW.isoformat())
+        self.assertFalse(second['coverage']['complete'])
+        self.assertIn('contacts_scan_spans_refreshes', second['coverage']['reasons'])
+        third = reader.collect(second)
+        self.assertFalse(third['coverage']['complete'])
+        self.assertIn('contacts_scan_spans_refreshes', third['coverage']['reasons'])
+
+    def test_transient_resume_failure_preserves_valid_checkpoint(self):
+        rows = [contact('c'+str(i), scoped=i < 3) for i in range(7800)]
+        wire = Wire(contacts=rows, messages=[])
+        elapsed = [0.0]
+        def delay(method, path, body):
+            if path.endswith('contacts/search'):
+                elapsed[0] += 3.1
+            return None
+        wire.override = delay
+        reader = ApolloCampaignReadOnly(lambda: 'fake', request=wire,
+            clock=lambda: NOW + timedelta(seconds=elapsed[0]),
+            monotonic=lambda: elapsed[0], mcp_request=FakeMCPTransport(wire))
+        first = reader.collect()
+        elapsed[0] += 901
+        def unavailable(method, path, body):
+            if path.endswith('contacts/search'):
+                raise OSError('synthetic')
+            return None
+        wire.override = unavailable
+        second = reader.collect(first)
+        self.assertEqual(second['contact_scan_checkpoint'], first['contact_scan_checkpoint'])
+
     def test_native_envelope_completed_original_and_zero_provider_writes(self):
         data = self.make().collect()
         self.assertTrue(data['coverage']['complete'])
@@ -1040,6 +1084,7 @@ class CacheTests(unittest.TestCase):
         self.assertIsNotNone(observed[0])
         self.assertTrue(observed[0]['cohort_cache']['complete'])
         self.assertFalse(observed[0]['coverage']['complete'])
+        self.assertEqual(len(observed[0]['request_budget']['entries']['contacts_search']), 1)
         stored = self.repo.put_state.call_args.args[2]
         self.assertTrue(stored['cohort_cache']['complete'])
         self.assertFalse(stored['coverage']['complete'])

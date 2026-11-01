@@ -427,6 +427,8 @@ class ApolloCampaignReadOnly:
                 members = self._members(cached['members'])
                 result['leads'] = members
                 result['cohort_cache'] = deepcopy(cached)
+                if cached.get('spans_refreshes') is True:
+                    result['coverage']['reasons'].append('contacts_scan_spans_refreshes')
                 result['coverage'].update(contacts_complete=True, contacts_cached=True,
                     contacts_observed_at=cached['observed_at'], contacts_source_total=cached['source_total'],
                     contacts_age_seconds=(now - _date(cached['observed_at'])).total_seconds(),
@@ -455,6 +457,7 @@ class ApolloCampaignReadOnly:
                 seen = set(ids)
                 require(all(member['id'] in seen for member in members), 'invalid_contact_checkpoint')
                 scan_started = saved['started_at']
+                result['contact_scan_checkpoint'] = deepcopy(saved)
             except (ExternalEmailError, ValueError, TypeError, KeyError):
                 seen, members, total, first_page, scan_started = set(), [], None, 1, now.isoformat()
         last_page_duration = None
@@ -488,12 +491,17 @@ class ApolloCampaignReadOnly:
                     members.append(self._lead(row, matches[0]))
             result['leads'] = deepcopy(members)
             if len(seen) == total:
+                observed_at = scan_started if first_page > 1 else self.clock().isoformat()
+                if first_page > 1:
+                    result['coverage']['reasons'].append('contacts_scan_spans_refreshes')
                 result['coverage'].update(contacts_complete=True, contacts_cached=False,
-                    contacts_observed_at=self.clock().isoformat(), contacts_source_total=total,
-                    contacts_age_seconds=0, contacts_cache_ttl_seconds=self.cohort_ttl, contacts_freshness='fresh_scan')
+                    contacts_observed_at=observed_at, contacts_source_total=total,
+                    contacts_age_seconds=(self.clock() - _date(observed_at)).total_seconds(),
+                    contacts_cache_ttl_seconds=self.cohort_ttl, contacts_freshness='fresh_scan')
                 result['cohort_cache'] = {'account_id': APOLLO_TEAM, 'owner_id': OWNER,
                     'external_campaign_id': APOLLO_SEQUENCE, 'complete': True, 'source_total': total,
-                    'observed_at': result['coverage']['contacts_observed_at'], 'members': deepcopy(members)}
+                    'observed_at': observed_at, 'members': deepcopy(members),
+                    'spans_refreshes': first_page > 1}
                 result.pop('contact_scan_checkpoint', None)
                 return
             require(len(rows) == 100 and len(seen) < total, 'incomplete_contacts')
@@ -990,7 +998,7 @@ class ApolloCampaignReadOnly:
                 self._contacts(result, previous)
                 self.ends = overall_end
                 if on_cohort is not None:
-                    on_cohort(deepcopy(result['cohort_cache']))
+                    on_cohort(deepcopy(result['cohort_cache']), deepcopy(self.request_budget))
                 self._messages(result)
                 result['coverage']['contents_complete'] = 'completed_content_unverified' not in result['coverage']['reasons']
                 result['observed_at'] = self.clock().isoformat()
@@ -1086,10 +1094,12 @@ class ApolloCampaignReader:
                     pass
             if previous.get('last_attempt_at') and 0 <= (now - _date(previous['last_attempt_at'])).total_seconds() < INTERVAL:
                 return
-            def persist_cohort(cache):
+            def persist_cohort(cache, budget):
                 require(self.enable_check(), 'apollo_reader_disabled')
                 interim = deepcopy(previous)
                 interim['cohort_cache'] = deepcopy(cache)
+                interim['request_budget'] = deepcopy(budget)
+                interim.pop('contact_scan_checkpoint', None)
                 interim['coverage'] = {**interim.get('coverage', {}), 'complete': False,
                                        'contacts_complete': True, 'messages_complete': False}
                 interim.update(status='partial', error_code='apollo_messages_pending',
