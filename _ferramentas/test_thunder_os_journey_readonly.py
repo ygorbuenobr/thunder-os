@@ -103,7 +103,7 @@ class JourneyTests(unittest.TestCase):
         incoming = self.stage(result, 'resposta')['items']
         self.assertEqual([x['name'] for x in outgoing], ['Apollo A'])
         self.assertIn('Resposta sinalizada pelo Apollo; original não confirmado.', outgoing[0]['summary'])
-        self.assertEqual([x['name'] for x in incoming], ['Apollo B'])
+        self.assertEqual([x['name'] for x in incoming], ['colleague@example.invalid'])
         self.assertEqual(result['metrics']['reached']['value'], 2)
         self.assertIsNone(result['metrics']['replied']['value'])
         detail = self.adapter.detail(incoming[0]['id'], campaign='BR-APOLLO-01')
@@ -176,6 +176,46 @@ class JourneyTests(unittest.TestCase):
             source = self.adapter.detail(timeline['detail_id'], 'BR-APOLLO-01')['source_links']
             self.assertEqual([link['url'] for link in source], [original['source_url']])
         self.assertEqual(self.database(), before)
+
+    def test_forwarded_context_names_author_and_does_not_claim_pending_status(self):
+        self.apollo_context()
+        value = self.adapter.snapshot("BR-APOLLO-01")
+        item, = self.stage(value, "resposta")["items"]
+        self.assertEqual(item["name"], "fernanda@example.invalid")
+        self.assertIn("Context buyer", item["summary"])
+        self.assertIn("situação atual não confirmada", item["summary"])
+        detail = self.adapter.detail(item["id"], "BR-APOLLO-01")
+        self.assertEqual(detail["blocks"][-1]["sender"], "fernanda@example.invalid")
+        self.assertEqual(detail["blocks"][-1]["text"], "Fernanda original 26")
+        self.assertEqual(value["timeline"]["name"], "fernanda@example.invalid")
+        event = value["timeline"]["events"][-1]
+        self.assertEqual(self.adapter.detail(event["detail_id"], "BR-APOLLO-01")["title"], "fernanda@example.invalid")
+
+    def test_missing_response_author_is_not_attributed_to_enrolled_person(self):
+        _, events = self.apollo_context()
+        events[-1]["sender"] = None
+        value = self.adapter.snapshot("BR-APOLLO-01")
+        item, = self.stage(value, "resposta")["items"]
+        self.assertEqual(item["name"], "Autor não identificado")
+        self.assertIn("situação atual não confirmada", item["summary"])
+        self.assertIsNone(self.adapter.detail(item["id"], "BR-APOLLO-01")["blocks"][-1]["sender"])
+        event = value["timeline"]["events"][-1]
+        self.assertEqual(self.adapter.detail(event["detail_id"], "BR-APOLLO-01")["title"], "Autor não identificado")
+
+    def test_whitespace_response_author_is_not_attributed_to_enrolled_person(self):
+        _, events = self.apollo_context()
+        events[-1]["sender"] = "   "
+        value = self.adapter.snapshot("BR-APOLLO-01")
+        event = value["timeline"]["events"][-1]
+        self.assertEqual(self.adapter.detail(event["detail_id"], "BR-APOLLO-01")["title"], "Autor não identificado")
+
+    def test_enrolled_sender_whitespace_does_not_change_identity(self):
+        _, events = self.apollo_context()
+        events[-1].update(sender=" " + PEER + " ", event_type="reply_received", human_reply=True)
+        value = self.adapter.snapshot("BR-APOLLO-01")
+        item, = self.stage(value, "resposta")["items"]
+        self.assertEqual(item["name"], "Context buyer")
+        self.assertEqual(value["metrics"]["replied"]["coverage"]["observed_count"], 1)
 
     def test_apollo_context_last_outgoing_removes_earlier_inbound_pending(self):
         self.apollo_context(include_last=False)

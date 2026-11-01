@@ -938,7 +938,12 @@ class JourneyReadonly:
                     if _links(source_action):
                         projected['action'] = source_action
                     # A forwarding colleague is not the enrolled recipient.
-                    if not outgoing and sender and sender.lower() != address.lower():
+                    if not outgoing and (not isinstance(sender, str) or not sender.strip()):
+                        projected["name"] = "Autor não identificado"
+                        projected["person_keys"] = []
+                        projected["human_reply"] = None
+                    elif not outgoing and sender.strip().lower() != address.lower():
+                        projected["name"] = sender.strip()
                         projected['person_keys'] = [sender.lower()]
                         projected['human_reply'] = None
                     prior = next((event_aliases[key] for key in keys if key in event_aliases), None)
@@ -966,8 +971,15 @@ class JourneyReadonly:
                 incoming = [e for e in observed_events if e['direction'] == 'incoming' and not e['automatic']]
                 latest = observed_events[-1] if observed_events else None
                 pending = bool(incoming and latest and latest['direction'] == 'incoming')
+                enrolled_name = row.get("name")
+                if pending:
+                    author = latest.get("sender")
+                    if not isinstance(author, str) or not author.strip():
+                        row["name"] = "Autor não identificado"
+                    elif author.strip().lower() != address.lower():
+                        row["name"] = author.strip()
                 state = lead.get('membership_status') or (lead.get('membership') or {}).get('status') or 'desconhecido'
-                summary = ('Mensagem recebida na conversa; confira o remetente e o original.' if pending else
+                summary = (("Mensagem recebida na conversa de " + str(enrolled_name) + "; situação atual não confirmada.") if pending else
                            'Última mensagem observada enviada por você; contexto da conversa, sem novo recibo de campanha.'
                            if latest and latest['direction'] == 'outgoing' and latest['context_only'] else
                            'Apollo: ' + str(state) + '. ' +
