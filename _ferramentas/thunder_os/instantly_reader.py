@@ -131,6 +131,7 @@ class InstantlyCampaignReadOnly:
                 {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'}, 15)
             if type(status) is not int or status != 200:
                 code = ('instantly_credential_rejected' if status in (401, 403)
+                        else 'instantly_payment_required' if status == 402
                         else 'instantly_rate_limited' if status == 429 else 'instantly_http_error')
                 exc = ExternalEmailError(code)
                 exc.http_status = status if type(status) is int and 100 <= status <= 599 else None
@@ -207,7 +208,7 @@ class InstantlyReader:
             previous = self.repo.get_state(KIND, CAMPAIGN) or {}
             now = self.clock().isoformat()
             previous_attempt = previous.get('last_attempt_at')
-            interval = 3600 if previous.get('error_code') == 'instantly_credential_rejected' else INTERVAL
+            interval = 3600 if previous.get('error_code') in ('instantly_credential_rejected', 'instantly_payment_required') else INTERVAL
             if previous_attempt and (self.clock() - datetime.fromisoformat(previous_attempt)).total_seconds() < interval:
                 return
             try:
@@ -221,7 +222,7 @@ class InstantlyReader:
                 status = getattr(exc, 'http_status', None)
                 status = status if type(status) is int and 100 <= status <= 599 else None
                 state.update(last_attempt_at=now, status='error', error_code=code, http_status=status,
-                    next_attempt_at=(datetime.fromisoformat(now) + timedelta(seconds=3600 if code == 'instantly_credential_rejected' else INTERVAL)).isoformat())
+                    next_attempt_at=(datetime.fromisoformat(now) + timedelta(seconds=3600 if code in ('instantly_credential_rejected', 'instantly_payment_required') else INTERVAL)).isoformat())
             self.repo.put_state(KIND, CAMPAIGN, state)
         finally:
             self.lock.release()

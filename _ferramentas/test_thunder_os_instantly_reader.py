@@ -119,7 +119,7 @@ class ProviderTests(unittest.TestCase):
         response.read.assert_not_called()
 
     def test_http_error_records_status_without_body(self):
-        for status in (402, 500):
+        for status in (500, 503):
             provider = mod.InstantlyCampaignReadOnly(lambda: "synthetic-secret",
                 request=lambda *args, status=status: (status, b"private-provider-body"))
             with self.assertRaises(ExternalEmailError) as caught:
@@ -173,6 +173,21 @@ class CacheTests(unittest.TestCase):
         start = self.now
         self.reader.refresh()
         self.assertEqual(self.reader.snapshot()['next_attempt_at'], (start + timedelta(seconds=3600)).isoformat())
+
+    def test_payment_required_snapshot_and_hour_backoff(self):
+        calls = Mock(return_value=(402, b"private-body"))
+        self.reader.provider = mod.InstantlyCampaignReadOnly(lambda: "synthetic-secret", request=calls)
+        self.reader.refresh()
+        result = self.reader.snapshot()
+        self.assertEqual(result["error_code"], "instantly_payment_required")
+        self.assertEqual(result["http_status"], 402)
+        self.assertNotIn("private-body", json.dumps(result))
+        self.now += timedelta(seconds=3599)
+        self.reader.refresh()
+        self.assertEqual(calls.call_count, 1)
+        self.now += timedelta(seconds=1)
+        self.reader.refresh()
+        self.assertEqual(calls.call_count, 2)
 
     def test_rejected_credential_snapshot_and_hour_backoff(self):
         calls = Mock(return_value=(401, b"synthetic-secret-body"))
