@@ -194,6 +194,8 @@ def _https_request(method, path, body, headers, timeout):
     try:
         connection.request(method, path, headers=headers)
         response = connection.getresponse()
+        if response.status != 200:
+            return response.status, b''
         raw = response.read(1_000_001)
         require(len(raw) <= 1_000_000, 'response_too_large')
         return response.status, raw

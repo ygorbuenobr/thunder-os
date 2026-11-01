@@ -221,7 +221,7 @@ class InstantlyReader:
                 status = getattr(exc, 'http_status', None)
                 status = status if type(status) is int and 100 <= status <= 599 else None
                 state.update(last_attempt_at=now, status='error', error_code=code, http_status=status,
-                    next_attempt_at=(self.clock() + timedelta(seconds=3600 if code == 'instantly_credential_rejected' else INTERVAL)).isoformat())
+                    next_attempt_at=(datetime.fromisoformat(now) + timedelta(seconds=3600 if code == 'instantly_credential_rejected' else INTERVAL)).isoformat())
             self.repo.put_state(KIND, CAMPAIGN, state)
         finally:
             self.lock.release()

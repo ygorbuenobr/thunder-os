@@ -106,6 +106,18 @@ class ProviderTests(unittest.TestCase):
         self.assertTrue(result['coverage']['limit_reached'])
         self.assertEqual(len(self.calls), 11)  # 10 list reads < 20/min; no inline retry.
 
+    def test_http_transport_reports_rejection_without_reading_error_body(self):
+        from thunder_os import instantly_webhook
+        response = Mock(status=401)
+        response.read.return_value = b'x' * 1_000_001
+        connection = Mock()
+        connection.getresponse.return_value = response
+        with patch.object(instantly_webhook.http.client, 'HTTPSConnection', return_value=connection):
+            with patch.dict('os.environ', {'SSL_CERT_FILE': '', 'SSL_CERT_DIR': ''}):
+                status, body = instantly_webhook._https_request('GET', '/api/v2/workspaces/current', None, {}, 1)
+        self.assertEqual((status, body), (401, b''))
+        response.read.assert_not_called()
+
     def test_http_error_records_status_without_body(self):
         for status in (402, 500):
             provider = mod.InstantlyCampaignReadOnly(lambda: "synthetic-secret",
@@ -150,6 +162,17 @@ class CacheTests(unittest.TestCase):
         self.provider = Mock()
         self.provider.collect.return_value = provider.collect()
         self.reader = mod.InstantlyReader(self.repo, self.provider, enable_check=lambda: True, clock=lambda: self.now)
+
+    def test_backoff_deadline_matches_attempt_start(self):
+        def slow_failure():
+            self.now += timedelta(seconds=20)
+            error = ExternalEmailError('instantly_credential_rejected')
+            error.http_status = 401
+            raise error
+        self.provider.collect.side_effect = slow_failure
+        start = self.now
+        self.reader.refresh()
+        self.assertEqual(self.reader.snapshot()['next_attempt_at'], (start + timedelta(seconds=3600)).isoformat())
 
     def test_rejected_credential_snapshot_and_hour_backoff(self):
         calls = Mock(return_value=(401, b"synthetic-secret-body"))
@@ -249,6 +272,13 @@ class HTTPTests(unittest.TestCase):
                         self.assertIn(request(method, suffix)[0], (405, 501))
                 server.thunder_instantly_reader.snapshot.assert_called_once()
                 server.thunder_instantly_reader.refresh.assert_not_called()
+                server.thunder_instantly_reader.snapshot.return_value = {
+                    'status': 'error', 'enabled': True, 'error_code': 'instantly_credential_rejected',
+                    'http_status': 401, 'last_success_at': '2026-10-22T12:00:00+00:00'}
+                with patch.object(panel.Handler, 'thunder_proxy_actor', return_value='ygor'):
+                    _, summary = request('GET', path='/api/os/v1/integrations/external-email/status')
+                self.assertFalse(summary['instantly']['provider_verified'])
+                self.assertEqual(summary['instantly']['http_status'], 401)
                 for code in ('configuration_pending', 'credential_unavailable'):
                     server.thunder_instantly_reader.snapshot.return_value = {
                         'status': 'error', 'enabled': True, 'error_code': code}

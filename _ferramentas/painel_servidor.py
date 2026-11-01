@@ -1824,7 +1824,8 @@ class Handler(BaseHTTPRequestHandler):
                     'enabled':reader_state['enabled'],'status':reader_state['status'],
                     'configuration_pending':not reader_state['enabled'] or reader_state.get('error_code') in (
                         'configuration_pending','credential_unavailable'),
-                    'provider_verified':bool(reader_state.get('last_success_at')),
+                    'provider_verified':bool(reader_state.get('last_success_at')) and reader_state.get('status') in ('ok', 'partial'),
+                    'error_code':reader_state.get('error_code'), 'http_status':reader_state.get('http_status'),
                     'automatic_reader_enabled':reader_state['enabled'],
                     'reader_status':reader_state['status']}})
         membership_base = '/api/os/v1/campaign-membership/'
