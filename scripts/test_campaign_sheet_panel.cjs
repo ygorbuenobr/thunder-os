@@ -271,10 +271,12 @@ async function checkCadenceMobileOverflow() {
   assert(calls.every(call => call.length === 1), 'sheet refresh uses only default GET through apiServidor');
   console.log('PASS manual refresh + 60s active-tab GET polling; hidden/off-tab/overlap do not request again');
 
-  const cadence = {id: 'synthetic', version: 1, review_hash: 'h', status: 'approved',
+  const cadence = {id: 'synthetic', version: 1, review_hash: 'h', status: 'approved', execution_context: {platform: 'thunder_os'},
     execution_confirmation: {confirmed: true}, execution_question: 'Synthetic confirmation?',
     steps: [{channel: 'email', content: 'Preserved step', order: 1, interval_hours: 0, receipt_ref: 'receipt:kept'}]};
-  assert.match(ctx.cadenciaHTML(cadence), /data-os-approve=/, 'legacy optional fields retain existing behavior');
+  assert.doesNotMatch(ctx.cadenciaHTML({...cadence, execution_context: {}}), /data-os-approve=/, 'unknown platform must stay blocked');
+  assert.doesNotMatch(ctx.cadenciaHTML({...cadence, execution_context: undefined}), /data-os-approve=/, 'missing context must stay blocked');
+  assert.match(ctx.cadenciaHTML(cadence), /data-os-approve=/, 'internal platform retains existing behavior');
   assert.match(ctx.cadenciaHTML({...cadence, campaign_sheet_status: 'complete', campaign_sheet_label: 'Ficha completa'}), /data-os-approve=/);
   for (const [status, label] of [['incomplete', 'ficha incompleta'], ['stale', 'versão anterior']]) {
     const output = ctx.cadenciaHTML({...cadence, campaign_sheet_status: status,

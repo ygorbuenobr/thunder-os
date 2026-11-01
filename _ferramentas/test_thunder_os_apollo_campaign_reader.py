@@ -1173,6 +1173,117 @@ class CacheTests(unittest.TestCase):
         self.assertFalse(data['coverage']['complete'])
         self.assertEqual(data['leads'][0]['id'], 'contact-1')
 
+    def test_runtime_observation_reports_initial_and_cooldown_without_provider_call(self):
+        before = self.reader.snapshot()['runtime']
+        self.assertFalse(before['thread_started'])
+        self.assertFalse(before['in_progress'])
+        self.repo.get_state.return_value = {'next_attempt_at': (self.now + timedelta(seconds=300)).isoformat(), 'error_code': 'apollo_endpoint_budget_exhausted'}
+        self.reader.refresh()
+        after = self.reader.snapshot()['runtime']
+        self.assertEqual(after['phase'], 'cooldown')
+        self.assertEqual(after['cooldown_until'], (self.now + timedelta(seconds=300)).isoformat())
+        self.provider.collect.assert_not_called()
+
+    def test_runtime_observation_shows_inflight_without_exposing_provider_data(self):
+        entered, release = threading.Event(), threading.Event()
+        result = deepcopy(self.provider.collect.return_value)
+        def collect(**kwargs):
+            entered.set()
+            release.wait(2)
+            return result
+        self.provider.collect.side_effect = collect
+        thread = threading.Thread(target=self.reader.refresh)
+        thread.start()
+        try:
+            self.assertTrue(entered.wait(1))
+            runtime = self.reader.snapshot()['runtime']
+            self.assertTrue(runtime['in_progress'])
+            self.assertEqual(runtime['phase'], 'collecting')
+            self.assertIsNotNone(runtime['last_attempt_at'])
+        finally:
+            release.set()
+            thread.join(3)
+        self.assertFalse(self.reader.snapshot()['runtime']['in_progress'])
+
+    def test_runtime_observation_distinguishes_saved_cohort_from_initial_collection(self):
+        entered, release = threading.Event(), threading.Event()
+        result = deepcopy(self.provider.collect.return_value)
+        def collect(**kwargs):
+            kwargs['on_cohort']({'complete': True}, {'entries': {}})
+            entered.set()
+            release.wait(2)
+            return result
+        self.provider.collect.side_effect = collect
+        thread = threading.Thread(target=self.reader.refresh)
+        thread.start()
+        try:
+            self.assertTrue(entered.wait(1))
+            self.assertEqual(self.reader.snapshot()['runtime']['phase'], 'collecting_messages')
+        finally:
+            release.set()
+            thread.join(3)
+
+    def test_thread_exception_is_sanitized_and_visible(self):
+        entered = threading.Event()
+        def fail():
+            entered.set()
+            raise RuntimeError('SECRET https://private.invalid signed body')
+        self.reader.refresh = fail
+        self.reader.start()
+        try:
+            self.assertTrue(entered.wait(1))
+            self.reader.stop()
+            runtime = self.reader.snapshot()['runtime']
+            self.assertTrue(runtime['thread_started'])
+            self.assertEqual(runtime['last_loop_error'], 'apollo_reader_loop_error')
+            self.assertNotIn('SECRET', json.dumps(runtime))
+            self.assertNotIn('private.invalid', json.dumps(runtime))
+        finally:
+            self.reader.stop()
+
+    def test_runtime_distinguishes_normal_wait_from_provider_cooldown(self):
+        future = (self.now + timedelta(seconds=300)).isoformat()
+        self.repo.get_state.return_value = {'next_attempt_at': future, 'error_code': None}
+        self.reader.refresh()
+        self.assertEqual(self.reader.snapshot()['runtime']['phase'], 'waiting_interval')
+        self.assertIsNone(self.reader.snapshot()['runtime']['cooldown_until'])
+        self.repo.get_state.return_value = {'next_attempt_at': future, 'error_code': 'apollo_endpoint_budget_exhausted'}
+        self.reader.refresh()
+        self.assertEqual(self.reader.snapshot()['runtime']['phase'], 'cooldown')
+        self.assertEqual(self.reader.snapshot()['runtime']['cooldown_until'], future)
+        self.repo.get_state.return_value = {'last_attempt_at': self.now.isoformat()}
+        self.reader.refresh()
+        self.assertEqual(self.reader.snapshot()['runtime']['phase'], 'waiting_interval')
+        self.assertFalse(self.reader.snapshot()['runtime']['in_progress'])
+
+    def test_runtime_exposes_sanitized_collection_failure_and_thread_liveness(self):
+        self.provider.collect.side_effect = RuntimeError('SECRET signed-url')
+        self.reader.refresh()
+        runtime = self.reader.snapshot()['runtime']
+        self.assertEqual(runtime['phase'], 'error')
+        self.assertEqual(runtime['last_refresh_error'], 'apollo_refresh_error')
+        self.assertFalse(runtime['thread_alive'])
+        self.assertNotIn('SECRET', json.dumps(runtime))
+        self.assertNotIn('signed-url', json.dumps(runtime))
+
+    def test_runtime_cooldown_detects_rate_limit_among_coverage_reasons(self):
+        future = (self.now + timedelta(seconds=300)).isoformat()
+        self.repo.get_state.return_value = {'next_attempt_at': future, 'error_code': 'other',
+            'coverage': {'reasons': ['other', 'apollo_rate_limited']}}
+        self.reader.refresh()
+        self.assertEqual(self.reader.snapshot()['runtime']['phase'], 'cooldown')
+
+    def test_runtime_reports_partial_collection_without_leaking_error_text(self):
+        data = deepcopy(self.provider.collect.return_value)
+        data['coverage'] = {'complete': False, 'contacts_complete': False,
+                            'messages_complete': False, 'reasons': ['apollo_read_unavailable']}
+        self.provider.collect.return_value = data
+        self.reader.refresh()
+        runtime = self.reader.snapshot()['runtime']
+        self.assertEqual(runtime['phase'], 'partial')
+        self.assertEqual(runtime['last_refresh_error'], 'apollo_refresh_error')
+        self.assertFalse(runtime['in_progress'])
+
     def test_interval_and_nonblocking_refresh_lock(self):
         self.reader.refresh()
         self.repo.get_state.return_value = self.repo.put_state.call_args.args[2]

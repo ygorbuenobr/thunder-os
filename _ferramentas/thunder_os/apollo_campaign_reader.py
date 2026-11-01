@@ -10,6 +10,7 @@ from collections import Counter
 from copy import deepcopy
 from datetime import datetime, timezone, timedelta
 import json
+import logging
 import hashlib
 import http.client
 import os
@@ -1079,20 +1080,43 @@ class ApolloCampaignReader:
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.lock, self.stop_event = threading.Lock(), threading.Event()
         self.thread = None
+        self._runtime_lock = threading.Lock()
+        self._runtime = {'thread_started': False, 'in_progress': False, 'phase': 'idle',
+                         'last_attempt_at': None, 'cooldown_until': None, 'last_loop_error': None, 'last_refresh_error': None}
+
+    def _set_runtime(self, **changes):
+        with self._runtime_lock:
+            self._runtime.update(changes)
+
+    def _runtime_view(self):
+        with self._runtime_lock:
+            view = deepcopy(self._runtime)
+        view['thread_alive'] = self.thread is not None and self.thread.is_alive()
+        return view
 
     def refresh(self):
         if not self.enable_check() or not self.lock.acquire(blocking=False):
             return
+        self._set_runtime(in_progress=True, phase='checking', cooldown_until=None)
         try:
             previous = self.repo.get_state(KIND, CAMPAIGN) or {}
             now = self.clock()
             if previous.get('next_attempt_at'):
                 try:
                     if 0 < (_date(previous['next_attempt_at']) - now).total_seconds() <= 86400:
+                        coverage = previous.get('coverage')
+                        reasons = coverage.get('reasons', []) if isinstance(coverage, dict) else []
+                        limited = (previous.get('error_code') in ('apollo_endpoint_budget_exhausted', 'apollo_rate_limited')
+                                   or (isinstance(reasons, list) and any(
+                                       reason in ('apollo_endpoint_budget_exhausted', 'apollo_rate_limited')
+                                       for reason in reasons if isinstance(reason, str))))
+                        self._set_runtime(phase='cooldown' if limited else 'waiting_interval',
+                                          cooldown_until=previous['next_attempt_at'] if limited else None)
                         return
                 except (ValueError, TypeError):
                     pass
             if previous.get('last_attempt_at') and 0 <= (now - _date(previous['last_attempt_at'])).total_seconds() < INTERVAL:
+                self._set_runtime(phase='waiting_interval')
                 return
             def persist_cohort(cache, budget):
                 require(self.enable_check(), 'apollo_reader_disabled')
@@ -1105,6 +1129,8 @@ class ApolloCampaignReader:
                 interim.update(status='partial', error_code='apollo_messages_pending',
                                last_attempt_at=now.isoformat())
                 self.repo.put_state(KIND, CAMPAIGN, interim)
+                self._set_runtime(phase='collecting_messages')
+            self._set_runtime(phase='collecting', last_attempt_at=now.isoformat(), last_loop_error=None, last_refresh_error=None)
             try:
                 data = self.provider.collect(previous=deepcopy(previous), on_cohort=persist_cohort)
                 require(self.enable_check(), 'apollo_reader_disabled')
@@ -1137,13 +1163,19 @@ class ApolloCampaignReader:
                     error_code=exc.code if isinstance(exc, ExternalEmailError) else 'apollo_read_unavailable')
             if self.enable_check():
                 self.repo.put_state(KIND, CAMPAIGN, state)
+            outcome = state.get('status')
+            failed = outcome in ('error', 'partial')
+            self._set_runtime(phase=outcome if failed else 'idle',
+                              last_refresh_error='apollo_refresh_error' if failed else None)
         finally:
+            self._set_runtime(in_progress=False)
             self.lock.release()
 
     def snapshot(self):
         active = self.enable_check()
         state = self.repo.get_state(KIND, CAMPAIGN) if active else None
         result = {'schema_version': 1, 'read_only': True, 'enabled': active,
+            'runtime': self._runtime_view(),
             'status': 'pending' if active else 'disabled', 'last_attempt_at': None,
             'last_success_at': None, 'observed_at': None, 'poll_interval_seconds': INTERVAL,
             'campaign_id': CAMPAIGN, 'account_id': APOLLO_TEAM, 'owner_id': OWNER,
@@ -1181,9 +1213,11 @@ class ApolloCampaignReader:
                 try:
                     self.refresh()
                 except Exception:
-                    pass
+                    self._set_runtime(phase='error', last_loop_error='apollo_reader_loop_error')
+                    logging.getLogger(__name__).warning('apollo_reader_loop_error')
                 self.stop_event.wait(WAKE_INTERVAL)
         self.thread = threading.Thread(target=run, name='apollo-read-only', daemon=True)
+        self._set_runtime(thread_started=True)
         self.thread.start()
 
     def stop(self):
