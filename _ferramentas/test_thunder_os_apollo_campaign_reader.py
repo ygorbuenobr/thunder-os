@@ -163,6 +163,53 @@ class ReaderTests(unittest.TestCase):
         self.assertTrue(second['coverage']['messages_complete'])
         self.assertEqual(len(second['leads']), 285)
 
+    def test_cohort_scan_resumes_past_page_180_across_cycles(self):
+        rows = [contact('c'+str(i), scoped=i < 285) for i in range(18101)]
+        wire = Wire(contacts=rows, messages=[], contents=[])
+        elapsed = [0.0]
+        def advance(method, path, body):
+            if path.endswith('contacts/search'):
+                elapsed[0] += 2.0
+            return None
+        wire.override = advance
+        reader = ApolloCampaignReadOnly(lambda: 'fake', request=wire, max_pages=90,
+            clock=lambda: NOW + timedelta(seconds=elapsed[0]),
+            monotonic=lambda: elapsed[0], mcp_request=FakeMCPTransport(wire))
+        first = reader.collect()
+        self.assertEqual(first['contact_scan_checkpoint']['next_page'], 91)
+        self.assertFalse(first['coverage']['complete'])
+        elapsed[0] += 901
+        second = reader.collect(first)
+        self.assertEqual(second['contact_scan_checkpoint']['next_page'], 181)
+        self.assertFalse(second['coverage']['complete'])
+        elapsed[0] += 901
+        third = reader.collect(second)
+        pages = [body['page'] for _, path, body, _ in wire.calls if path.endswith('contacts/search')]
+        self.assertEqual(pages, list(range(1, 183)))
+        self.assertTrue(third['coverage']['contacts_complete'])
+        self.assertTrue(third['coverage']['messages_complete'])
+        self.assertFalse(third['coverage']['complete'])
+        self.assertIn('contacts_scan_spans_refreshes', third['coverage']['reasons'])
+        self.assertEqual(len(third['leads']), 285)
+
+    def test_provider_ceiling_holds_without_repeating_scan(self):
+        wire = Wire(contacts=[contact('c'+str(i)) for i in range(100)], messages=[])
+        def too_many(method, path, body):
+            if path.endswith('contacts/search'):
+                return 200, json.dumps({'contacts': wire.contacts,
+                    'pagination': {'page': body['page'], 'per_page': 100, 'total_entries': 50001}}).encode()
+            return None
+        wire.override = too_many
+        reader = self.make(wire)
+        first = reader.collect()
+        self.assertIn('apollo_contacts_provider_limit', first['coverage']['reasons'])
+        self.assertFalse(first['coverage']['complete'])
+        wire.calls.clear()
+        second = reader.collect(first)
+        self.assertEqual(wire.calls, [])
+        self.assertFalse(second['coverage']['complete'])
+        self.assertIn('apollo_contacts_provider_limit', second['coverage']['reasons'])
+
     def test_tampered_scan_checkpoint_restarts_and_is_not_authority(self):
         rows = [contact('c'+str(i), scoped=i < 3) for i in range(7800)]
         wire = Wire(contacts=rows, messages=[])

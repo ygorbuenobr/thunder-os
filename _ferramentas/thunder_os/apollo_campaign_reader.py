@@ -293,7 +293,7 @@ class ApolloCampaignReadOnly:
         valid = method == 'GET' and path in ('/api/v1/users/api_profile', SEQUENCE_PATH) and body is None
         if method == 'POST' and path == '/api/v1/contacts/search' and isinstance(body, dict):
             valid = (set(body) == {'page', 'per_page', 'sort_by_field', 'sort_ascending'}
-                     and type(body['page']) is int and 1 <= body['page'] <= self.max_pages
+                     and type(body['page']) is int and 1 <= body['page'] <= 500
                      and body['per_page'] == 100 and body['sort_by_field'] == 'contact_created_at'
                      and body['sort_ascending'] is True)
         if method == 'GET' and body is None:
@@ -449,7 +449,7 @@ class ApolloCampaignReadOnly:
                         'invalid_contact_checkpoint')
                 first_page, total = saved['next_page'], saved['source_total']
                 ids = saved['seen_ids']
-                require(type(first_page) is int and 2 <= first_page <= self.max_pages
+                require(type(first_page) is int and 2 <= first_page <= 500
                         and type(total) is int and total >= 0 and isinstance(ids, list)
                         and len(ids) == (first_page - 1) * 100 and len(set(ids)) == len(ids)
                         and all(identifier(i) for i in ids) and len(ids) < total,
@@ -462,7 +462,7 @@ class ApolloCampaignReadOnly:
             except (ExternalEmailError, ValueError, TypeError, KeyError):
                 seen, members, total, first_page, scan_started = set(), [], None, 1, now.isoformat()
         last_page_duration = None
-        for page in range(first_page, self.max_pages + 1):
+        for page in range(first_page, min(first_page + self.max_pages, 501)):
             # Avoid beginning a page unlikely to finish within this collection window.
             if last_page_duration is not None and self.ends - self.monotonic() <= last_page_duration:
                 raise ExternalEmailError('apollo_read_budget_exhausted')
@@ -475,6 +475,7 @@ class ApolloCampaignReadOnly:
             count = pagination.get('total_entries')
             require(type(count) is int and count >= 0 and pagination.get('page') == page
                     and pagination.get('per_page') == 100, 'invalid_contact_pagination')
+            require(count <= 50000, 'apollo_contacts_provider_limit')
             require(total is None or total == count, 'apollo_contacts_source_changed')
             total = count
             result['coverage']['contacts_pages'] = page
@@ -506,6 +507,7 @@ class ApolloCampaignReadOnly:
                 result.pop('contact_scan_checkpoint', None)
                 return
             require(len(rows) == 100 and len(seen) < total, 'incomplete_contacts')
+            require(page < 500, 'apollo_contacts_provider_limit')
             checkpoint = {'scope': _scope_identity(), 'started_at': scan_started,
                           'next_page': page + 1, 'source_total': total,
                           'seen_ids': sorted(seen), 'members': deepcopy(members)}
@@ -932,6 +934,13 @@ class ApolloCampaignReadOnly:
         try:
             if isinstance(previous, dict):
                 reasons = previous.get('coverage', {}).get('reasons', [])
+                if ('apollo_contacts_provider_limit' in reasons
+                        and all(previous.get(k) == v for k, v in _scope_identity().items())):
+                    held = deepcopy(previous)
+                    held['coverage'].update(complete=False, provider_requests=0)
+                    if isinstance(held.get('metrics'), dict):
+                        held['metrics']['complete'] = False
+                    return held
                 limited = (previous.get('error_code') in ('apollo_rate_limited', 'apollo_endpoint_budget_exhausted')
                            or any(code in reasons for code in ('apollo_rate_limited', 'apollo_endpoint_budget_exhausted')))
                 try:
@@ -1007,7 +1016,7 @@ class ApolloCampaignReadOnly:
             except Exception as exc:
                 reason = exc.code if isinstance(exc, ExternalEmailError) else 'apollo_read_unavailable'
                 if reason not in ('apollo_read_budget_exhausted', 'apollo_endpoint_budget_exhausted',
-                                  'apollo_rate_limited', 'apollo_read_unavailable'):
+                                  'apollo_rate_limited', 'apollo_read_unavailable', 'apollo_contacts_page_limit'):
                     result.pop('contact_scan_checkpoint', None)
                 result['coverage']['reasons'].append(reason)
             cov = result['coverage']
