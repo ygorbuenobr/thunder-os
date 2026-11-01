@@ -106,6 +106,25 @@ class ProviderTests(unittest.TestCase):
         self.assertTrue(result['coverage']['limit_reached'])
         self.assertEqual(len(self.calls), 11)  # 10 list reads < 20/min; no inline retry.
 
+    def test_http_error_records_status_without_body(self):
+        for status in (402, 500):
+            provider = mod.InstantlyCampaignReadOnly(lambda: "synthetic-secret",
+                request=lambda *args, status=status: (status, b"private-provider-body"))
+            with self.assertRaises(ExternalEmailError) as caught:
+                provider._get("/api/v2/workspaces/current")
+            self.assertEqual(str(caught.exception), "instantly_http_error")
+            self.assertEqual(getattr(caught.exception, "http_status", None), status)
+            self.assertNotIn("private", str(caught.exception))
+
+    def test_rejected_credential_is_explicit(self):
+        for status in (401, 403):
+            provider = mod.InstantlyCampaignReadOnly(lambda: "synthetic-secret",
+                request=lambda *args, status=status: (status, b""))
+            with self.assertRaises(ExternalEmailError) as caught:
+                provider._get("/api/v2/workspaces/current")
+            self.assertEqual(str(caught.exception), "instantly_credential_rejected")
+            self.assertEqual(getattr(caught.exception, "http_status", None), status)
+
     def test_errors_redacted_and_endpoint_allowlist(self):
         for status in (401, 403, 429, 500):
             provider = mod.InstantlyCampaignReadOnly(lambda: 'synthetic-secret',
@@ -131,6 +150,21 @@ class CacheTests(unittest.TestCase):
         self.provider = Mock()
         self.provider.collect.return_value = provider.collect()
         self.reader = mod.InstantlyReader(self.repo, self.provider, enable_check=lambda: True, clock=lambda: self.now)
+
+    def test_rejected_credential_snapshot_and_hour_backoff(self):
+        calls = Mock(return_value=(401, b"synthetic-secret-body"))
+        self.reader.provider = mod.InstantlyCampaignReadOnly(lambda: "synthetic-secret", request=calls)
+        self.reader.refresh()
+        observed = self.reader.snapshot()
+        self.assertEqual(observed["error_code"], "instantly_credential_rejected")
+        self.assertEqual(observed["http_status"], 401)
+        self.assertNotIn("synthetic-secret", json.dumps(observed))
+        self.now += timedelta(seconds=3599)
+        self.reader.refresh()
+        self.assertEqual(calls.call_count, 1)
+        self.now += timedelta(seconds=1)
+        self.reader.refresh()
+        self.assertEqual(calls.call_count, 2)
 
     def test_disabled_no_network_no_db_and_no_old_data_exposed(self):
         self.reader.enable_check = lambda: False

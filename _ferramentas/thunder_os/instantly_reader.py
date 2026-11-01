@@ -1,7 +1,7 @@
 """Bounded GET-only Instantly observation cache. No CRM or action ports."""
 from collections import Counter
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 import json
 import os
@@ -129,8 +129,12 @@ class InstantlyCampaignReadOnly:
         try:
             status, raw = self.request('GET', path, None,
                 {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'}, 15)
-            require(status != 429, 'instantly_rate_limited')
-            require(type(status) is int and status == 200, 'instantly_http_error')
+            if type(status) is not int or status != 200:
+                code = ('instantly_credential_rejected' if status in (401, 403)
+                        else 'instantly_rate_limited' if status == 429 else 'instantly_http_error')
+                exc = ExternalEmailError(code)
+                exc.http_status = status if type(status) is int and 100 <= status <= 599 else None
+                raise exc
             require(isinstance(raw, bytes) and len(raw) <= 1_000_000, 'invalid_response')
             result = json.loads(raw)
             require(isinstance(result, dict), 'invalid_response')
@@ -203,7 +207,8 @@ class InstantlyReader:
             previous = self.repo.get_state(KIND, CAMPAIGN) or {}
             now = self.clock().isoformat()
             previous_attempt = previous.get('last_attempt_at')
-            if previous_attempt and (self.clock() - datetime.fromisoformat(previous_attempt)).total_seconds() < INTERVAL:
+            interval = 3600 if previous.get('error_code') == 'instantly_credential_rejected' else INTERVAL
+            if previous_attempt and (self.clock() - datetime.fromisoformat(previous_attempt)).total_seconds() < interval:
                 return
             try:
                 data = self.provider.collect()
@@ -213,7 +218,10 @@ class InstantlyReader:
                 code = exc.code if isinstance(exc, ExternalEmailError) else 'instantly_read_unavailable'
                 # Never discard or refresh the date of the last successful collection.
                 state = {key: previous[key] for key in ('coverage', 'metrics', 'leads', 'last_success_at') if key in previous}
-                state.update(last_attempt_at=now, status='error', error_code=code)
+                status = getattr(exc, 'http_status', None)
+                status = status if type(status) is int and 100 <= status <= 599 else None
+                state.update(last_attempt_at=now, status='error', error_code=code, http_status=status,
+                    next_attempt_at=(self.clock() + timedelta(seconds=3600 if code == 'instantly_credential_rejected' else INTERVAL)).isoformat())
             self.repo.put_state(KIND, CAMPAIGN, state)
         finally:
             self.lock.release()
@@ -227,10 +235,10 @@ class InstantlyReader:
             'campaign_id': CAMPAIGN, 'external_campaign_id': INSTANTLY_CAMPAIGN,
             'account_id': INSTANTLY_WORKSPACE, 'coverage': {'complete': False,
                 'pages': 0, 'invalid_records': 0, 'limit_reached': False},
-            'metrics': None, 'leads': [], 'error_code': None,
+            'metrics': None, 'leads': [], 'error_code': None, 'http_status': None, 'next_attempt_at': None,
             'crm_write_enabled': False, 'external_actions_enabled': False}
         if state:
-            for key in ('status', 'last_attempt_at', 'last_success_at', 'coverage', 'metrics', 'leads', 'error_code'):
+            for key in ('status', 'last_attempt_at', 'last_success_at', 'coverage', 'metrics', 'leads', 'error_code', 'http_status', 'next_attempt_at'):
                 if key in state:
                     result[key] = deepcopy(state[key])
             if result['status'] in ('ok', 'partial') and result['last_success_at'] and (
