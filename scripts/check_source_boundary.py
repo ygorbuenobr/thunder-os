@@ -9,6 +9,7 @@ ALLOWED_FILES = {
     "scripts/test_apollo_campaign_panel.cjs",
     "_ferramentas/test_thunder_os_apollo_campaign_reader.py",
     "_ferramentas/test_thunder_os_apollo_hubspot_sync.py",
+    "_ferramentas/test_thunder_os_apollo_hunter_preview.py",
     "_ferramentas/test_thunder_os_manual_observation.py",
     "scripts/read_panel_resource_gates.py",
     "scripts/test_panel_resource_gates.py",

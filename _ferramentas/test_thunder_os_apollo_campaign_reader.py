@@ -192,6 +192,61 @@ class ReaderTests(unittest.TestCase):
         self.assertIn('contacts_scan_spans_refreshes', third['coverage']['reasons'])
         self.assertEqual(len(third['leads']), 285)
 
+    def test_finished_multicycle_scan_does_not_claim_atomic_membership_or_new_source_time(self):
+        rows = [contact('c'+str(i), scoped=i < 285) for i in range(18101)]
+        wire = Wire(contacts=rows, messages=[], contents=[])
+        elapsed = [0.0]
+        def advance(method, path, body):
+            if path.endswith('contacts/search'):
+                elapsed[0] += 2.0
+            return None
+        wire.override = advance
+        clock = lambda: NOW + timedelta(seconds=elapsed[0])
+        reader = ApolloCampaignReadOnly(lambda: 'fake', request=wire, max_pages=90,
+            clock=clock, monotonic=lambda: elapsed[0], mcp_request=FakeMCPTransport(wire))
+        first = reader.collect()
+        # The first contact leaves the sequence while the total stays unchanged.
+        wire.contacts[0]['contact_campaign_statuses'] = []
+        elapsed[0] += 901
+        second = reader.collect(first)
+        elapsed[0] += 901
+        finished = reader.collect(second)
+        self.assertTrue(finished['coverage']['contacts_complete'])
+        self.assertTrue(finished['coverage']['messages_complete'])
+        self.assertFalse(finished['coverage']['complete'])
+        self.assertFalse(finished['coverage']['atomic_snapshot'])
+        self.assertIn('contacts_scan_spans_refreshes', finished['coverage']['reasons'])
+        self.assertEqual(finished['coverage']['contacts_observed_at'], NOW.isoformat())
+        self.assertGreater(finished['coverage']['contacts_age_seconds'], SNAPSHOT_TTL)
+        self.assertEqual(len(finished['leads']), 285)  # stale membership cannot be ruled out
+        wire.calls.clear()
+        cached = reader.collect(finished)
+        self.assertTrue(cached['coverage']['contacts_cached'])
+        self.assertFalse(cached['coverage']['complete'])
+        self.assertEqual(cached['coverage']['contacts_observed_at'], NOW.isoformat())
+        self.assertFalse(any(path.endswith('contacts/search') for _, path, _, _ in wire.calls))
+
+    def test_each_membership_observation_keeps_its_own_time_across_cycles(self):
+        wire = Wire(contacts=[contact('c'+str(i)) for i in range(101)], messages=[])
+        elapsed = [0.0]
+        def advance(method, path, body):
+            if path.endswith('contacts/search'):
+                elapsed[0] += 2
+            return None
+        wire.override = advance
+        clock = lambda: NOW + timedelta(seconds=elapsed[0])
+        reader = ApolloCampaignReadOnly(lambda: 'fake', request=wire, max_pages=1,
+            clock=clock, monotonic=lambda: elapsed[0], mcp_request=FakeMCPTransport(wire))
+        first = reader.collect()
+        elapsed[0] += 901
+        second = reader.collect(first)
+        times = {row['id']: row.get('membership_observed_at') for row in second['leads']}
+        self.assertEqual(times['c0'], (NOW + timedelta(seconds=2)).isoformat())
+        self.assertEqual(times['c100'], (NOW + timedelta(seconds=905)).isoformat())
+        self.assertFalse(second['coverage']['complete'])
+        cached = reader.collect(second)
+        self.assertEqual({row['id']: row.get('membership_observed_at') for row in cached['leads']}, times)
+
     def test_provider_ceiling_holds_without_repeating_scan(self):
         wire = Wire(contacts=[contact('c'+str(i)) for i in range(100)], messages=[])
         def too_many(method, path, body):
@@ -1219,6 +1274,67 @@ class CacheTests(unittest.TestCase):
         self.assertTrue(data['stale'])
         self.assertFalse(data['coverage']['complete'])
         self.assertEqual(data['leads'][0]['id'], 'contact-1')
+
+    def test_snapshot_marks_old_contacts_stale_even_with_recent_messages(self):
+        self.reader.refresh()
+        state = deepcopy(self.repo.put_state.call_args.args[2])
+        state['coverage']['contacts_observed_at'] = (NOW - timedelta(seconds=SNAPSHOT_TTL + 1)).isoformat()
+        state['observed_at'] = NOW.isoformat()
+        self.repo.get_state.return_value = state
+        snapshot = self.reader.snapshot()
+        self.assertTrue(snapshot['stale'])
+        self.assertEqual(snapshot['status'], 'stale')
+        self.assertFalse(snapshot['coverage']['complete'])
+        self.assertFalse(snapshot['metrics']['complete'])
+
+    def test_snapshot_rejects_missing_or_invalid_complete_contact_timestamp(self):
+        self.reader.refresh()
+        original = deepcopy(self.repo.put_state.call_args.args[2])
+        for bad in (None, 1, {}, 'bad-date'):
+            with self.subTest(value=bad):
+                state = deepcopy(original)
+                state['coverage']['contacts_observed_at'] = bad
+                self.repo.get_state.return_value = state
+                snapshot = self.reader.snapshot()
+                self.assertTrue(snapshot['stale'])
+                self.assertFalse(snapshot['coverage']['complete'])
+        del state['coverage']['contacts_observed_at']
+        self.repo.get_state.return_value = state
+        self.assertTrue(self.reader.snapshot()['stale'])
+
+    def test_snapshot_degrades_malformed_global_timestamp_and_coverage(self):
+        self.reader.refresh()
+        original = deepcopy(self.repo.put_state.call_args.args[2])
+        for key, bad in (('observed_at', 1), ('coverage', None), ('coverage', 'invalid')):
+            with self.subTest(key=key, value=bad):
+                state = deepcopy(original)
+                state[key] = bad
+                self.repo.get_state.return_value = state
+                snapshot = self.reader.snapshot()
+                self.assertNotEqual(snapshot['status'], 'ok')
+                self.assertFalse(snapshot['coverage']['complete'])
+                self.assertFalse(snapshot['metrics']['complete'])
+        state = deepcopy(original)
+        del state['coverage']
+        self.repo.get_state.return_value = state
+        snapshot = self.reader.snapshot()
+        self.assertNotEqual(snapshot['status'], 'ok')
+        self.assertFalse(snapshot['metrics']['complete'])
+
+    def test_snapshot_degrades_old_missing_or_invalid_message_observation(self):
+        self.reader.refresh()
+        original = deepcopy(self.repo.put_state.call_args.args[2])
+        for bad in ((NOW - timedelta(seconds=SNAPSHOT_TTL + 1)).isoformat(), None, 1, {}, 'bad-date'):
+            with self.subTest(value=bad):
+                state = deepcopy(original)
+                state['coverage']['messages_observed_at'] = bad
+                self.repo.get_state.return_value = state
+                snapshot = self.reader.snapshot()
+                self.assertTrue(snapshot['stale'])
+                self.assertFalse(snapshot['coverage']['complete'])
+        del state['coverage']['messages_observed_at']
+        self.repo.get_state.return_value = state
+        self.assertTrue(self.reader.snapshot()['stale'])
 
     def test_runtime_observation_reports_initial_and_cooldown_without_provider_call(self):
         before = self.reader.snapshot()['runtime']

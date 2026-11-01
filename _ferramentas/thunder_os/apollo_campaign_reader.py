@@ -490,7 +490,9 @@ class ApolloCampaignReadOnly:
                 matches = [s for s in statuses if s.get('emailer_campaign_id') == APOLLO_SEQUENCE]
                 require(len(matches) <= 1, 'duplicate_membership')
                 if matches:
-                    members.append(self._lead(row, matches[0]))
+                    lead = self._lead(row, matches[0])
+                    lead['membership_observed_at'] = self.clock().isoformat()
+                    members.append(lead)
             result['leads'] = deepcopy(members)
             if len(seen) == total:
                 observed_at = scan_started if first_page > 1 else self.clock().isoformat()
@@ -1198,9 +1200,25 @@ class ApolloCampaignReader:
             for key in result.keys() & state.keys() - {'enabled', 'campaign_id', 'account_id', 'owner_id',
                     'external_campaign_id', 'read_only', 'crm_write_enabled', 'external_actions_enabled'}:
                 result[key] = deepcopy(state[key])
+            if not isinstance(result.get('coverage'), dict):
+                result['coverage'] = {'complete': False, 'contacts_complete': False,
+                                      'messages_complete': False}
+            if result['coverage'].get('complete') is not True:
+                if result['status'] == 'ok':
+                    result['status'] = 'partial'
+                if isinstance(result['metrics'], dict):
+                    result['metrics']['complete'] = False
             observed = result.get('observed_at')
             try:
-                result['stale'] = not observed or not 0 <= (self.clock() - _date(observed)).total_seconds() <= SNAPSHOT_TTL
+                result['stale'] = not isinstance(observed, str) or not 0 <= (self.clock() - _date(observed)).total_seconds() <= SNAPSHOT_TTL
+                for source in ('contacts', 'messages'):
+                    source_observed = result['coverage'].get(source + '_observed_at')
+                    if source_observed is not None or result['coverage'].get(source + '_complete') is True:
+                        if not isinstance(source_observed, str):
+                            result['stale'] = True
+                        else:
+                            result['stale'] = (result['stale'] or
+                                not 0 <= (self.clock() - _date(source_observed)).total_seconds() <= SNAPSHOT_TTL)
             except (ValueError, TypeError):
                 result['stale'] = True
             if result['status'] in ('partial', 'error'):
