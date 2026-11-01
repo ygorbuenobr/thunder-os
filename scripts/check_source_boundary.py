@@ -6,6 +6,12 @@ from pathlib import PurePosixPath
 
 
 ALLOWED_FILES = {
+    "scripts/daily_mission_context.py",
+    "scripts/test_daily_mission_context.py",
+    "scripts/daily_mission_prepare.py",
+    "scripts/test_daily_mission_prepare.py",
+    "scripts/daily_mission_signals.py",
+    "scripts/test_daily_mission_signals.py",
     "scripts/test_apollo_campaign_panel.cjs",
     "_ferramentas/test_thunder_os_apollo_campaign_reader.py",
     "_ferramentas/test_thunder_os_apollo_hubspot_sync.py",
