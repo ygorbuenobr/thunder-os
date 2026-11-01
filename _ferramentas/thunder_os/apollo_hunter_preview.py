@@ -170,8 +170,10 @@ def plan_snapshot(snapshot, crm_evidence):
             row = row if isinstance(row, dict) else {}
             member = row.get('membership')
             member_time = source_time(row.get('membership_observed_at'))
+            snapshot_time = source_time(snapshot.get('observed_at'))
             member_observed = (isinstance(member, dict)
-                and member.get('emailer_campaign_id') == APOLLO_SEQUENCE and member_time is not None)
+                and member.get('emailer_campaign_id') == APOLLO_SEQUENCE
+                and member_time is not None and snapshot_time is not None and member_time <= snapshot_time)
             result['rows'].append({
                 'source_id': row.get('id') if isinstance(row.get('id'), str) else None,
                 'name': row.get('name') if isinstance(row.get('name'), str) else None,
@@ -186,13 +188,32 @@ def plan_snapshot(snapshot, crm_evidence):
     except Exception:
         result.update(reason='apollo_scope_unverified', observed_leads=None, held_leads=None)
         return result
+    from .external_email_import import timestamp
+    def source_time(value):
+        try:
+            return timestamp(value) if isinstance(value, str) else None
+        except Exception:
+            return None
+    def source_row(lead):
+        member = lead.get('membership')
+        member_time = source_time(lead.get('membership_observed_at'))
+        snapshot_time = source_time(snapshot.get('observed_at'))
+        member_observed = (isinstance(member, dict) and
+            member.get('emailer_campaign_id') == APOLLO_SEQUENCE and member_time is not None
+            and snapshot_time is not None and member_time <= snapshot_time)
+        return {'source_id':lead['id'], 'action':'hold', 'reason':'company_uniqueness_unverified',
+                'membership_status':'observed' if member_observed else 'unverified',
+                'membership_observed_at':member_time, 'crm_binding':'unverified'}
     # Search results cannot prove global uniqueness during indexing delay.
     # No candidate or CRM absence is interpreted as permission to create.
-    result.update(total_leads=len(leads), observed_leads=len(leads), held_leads=len(leads),
+    result.update(enumeration_finished=coverage.get('contacts_complete'),
+                  messages_enumerated=coverage.get('messages_complete'),
+                  contacts_observed_at=source_time(coverage.get('contacts_observed_at')),
+                  messages_observed_at=source_time(coverage.get('messages_observed_at')),
+                  total_leads=len(leads), observed_leads=len(leads), held_leads=len(leads),
                   reason='company_uniqueness_unverified', snapshot_observed_at=snapshot.get('observed_at'),
                   provenance_status='unverified', atomic_snapshot=(coverage.get('atomic_snapshot') if type(coverage.get('atomic_snapshot')) is bool else None),
-                  rows=[{'source_id':lead['id'], 'action':'hold',
-                         'reason':'company_uniqueness_unverified'} for lead in leads])
+                  rows=[source_row(lead) for lead in leads])
     return result
 
 

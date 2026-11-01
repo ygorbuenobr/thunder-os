@@ -139,7 +139,7 @@ class SnapshotTests(unittest.TestCase):
     def test_partial_snapshot_lists_observations_without_authorizing_actions(self):
         from thunder_os.external_email_import import APOLLO_TEAM, APOLLO_SEQUENCE
         snap = {'campaign_id':'BR-APOLLO-01', 'account_id':APOLLO_TEAM,
-                'external_campaign_id':APOLLO_SEQUENCE, 'status':'partial', 'stale':True,
+                'external_campaign_id':APOLLO_SEQUENCE, 'status':'partial', 'stale':True, 'observed_at':'2026-10-26T12:40:00Z',
                 'coverage':{'complete':False, 'contacts_complete':True, 'messages_complete':True,
                     'atomic_snapshot':False, 'contacts_observed_at':'2026-10-26T12:00:00Z',
                     'messages_observed_at':'2026-10-26T12:40:00Z',
@@ -190,6 +190,36 @@ class SnapshotTests(unittest.TestCase):
         self.assertTrue(all(row['action']=='hold' for row in result['rows']))
         self.assertEqual(result['snapshot_observed_at'],'2026-11-01T12:00:00Z')
         self.assertEqual(result['provenance_status'],'unverified')
+
+    def test_complete_snapshot_keeps_source_and_membership_evidence(self):
+        from thunder_os.external_email_import import APOLLO_TEAM, APOLLO_SEQUENCE
+        snap={'campaign_id':'BR-APOLLO-01','account_id':APOLLO_TEAM,'external_campaign_id':APOLLO_SEQUENCE,
+              'observed_at':'2026-11-01T12:40:00Z','status':'ok','stale':False,
+              'coverage':{'complete':True,'contacts_complete':True,'messages_complete':True,'atomic_snapshot':False,
+                  'contacts_observed_at':'2026-11-01T12:00:00Z','messages_observed_at':'2026-11-01T12:40:00Z'},
+              'leads':[{'id':'a','membership':{'emailer_campaign_id':APOLLO_SEQUENCE},
+                  'membership_observed_at':'2026-11-01T12:02:00Z'}]}
+        result=plan_snapshot(snap,{})
+        self.assertTrue(result['enumeration_finished'])
+        self.assertFalse(result['atomic_snapshot'])
+        self.assertEqual(result['contacts_observed_at'],'2026-11-01T12:00:00.000Z')
+        self.assertEqual(result['messages_observed_at'],'2026-11-01T12:40:00.000Z')
+        self.assertEqual(result['rows'][0]['membership_status'],'observed')
+        self.assertEqual(result['rows'][0]['membership_observed_at'],'2026-11-01T12:02:00.000Z')
+        self.assertEqual(result['rows'][0]['action'],'hold')
+
+    def test_future_or_unanchored_membership_time_is_unverified(self):
+        from thunder_os.external_email_import import APOLLO_TEAM, APOLLO_SEQUENCE
+        base={'campaign_id':'BR-APOLLO-01','account_id':APOLLO_TEAM,'external_campaign_id':APOLLO_SEQUENCE,
+              'observed_at':'2026-11-01T12:40:00Z','status':'partial',
+              'coverage':{'complete':False}, 'leads':[{'id':'a',
+                'membership':{'emailer_campaign_id':APOLLO_SEQUENCE},
+                'membership_observed_at':'2099-11-01T12:00:00Z'}]}
+        result=plan_snapshot(base,{})
+        self.assertEqual(result['rows'][0]['membership_status'],'unverified')
+        base.pop('observed_at')
+        base['leads'][0]['membership_observed_at']='2026-11-01T12:00:00Z'
+        self.assertEqual(plan_snapshot(base,{})['rows'][0]['membership_status'],'unverified')
 
     def test_incomplete_snapshot_wrong_provider_never_exposes_counts(self):
         snap={'campaign_id':'BR-APOLLO-01','account_id':'wrong','external_campaign_id':'wrong',

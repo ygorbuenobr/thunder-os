@@ -109,6 +109,34 @@ atualizarCadencias();
    state.status='partial';state.coverage.contacts_complete=false;state.metrics={contacts:null,sent:null,reply_signals:2,human_replies:null};await refresh();
    assert.match(await page.locator('#cad-apollo-status').innerText(),/Leitura parcial/);assert.match(await page.locator('#cad-apollo-content').innerText(),/Contatos: parcial/);
    assert.equal(await page.locator('dt').filter({hasText:'Envios confirmados'}).locator('..').locator('dd').innerText(),'Não verificado');
+   state.hunter_preview={status:'held',total_leads:null,observed_leads:205,held_leads:205,reason:'apollo_incomplete',
+    enumeration_finished:true,messages_enumerated:true,atomic_snapshot:false,stale:true,
+    contacts_observed_at:'2031-03-12T10:00:00Z',messages_observed_at:'2031-03-12T12:30:00Z',
+    limitations:['contacts_scan_spans_refreshes'],rows:[{source_id:'lead-0',action:'hold',
+      membership_status:'observed',membership_observed_at:'2031-03-12T10:02:00Z',crm_binding:'unverified'}]};
+   await refresh();
+   assert.match(await page.locator('#cad-apollo-content').innerText(),/Prévia informativa.*ações retidas/s);
+   assert.match(await page.locator('#cad-apollo-content').innerText(),/Contatos observados.*Mensagens observadas/s);
+   assert.match(await page.locator('#cad-apollo-content').innerText(),/Enumeração concluída.*não representa retrato único/s);
+   assert.match(await page.locator('#cad-apollo-count').innerText(),/total na fonte: Não verificado/);
+   await leads.first().evaluate(el=>el.open=true);
+   assert.match(await leads.first().innerText(),/Vínculo observado em.*HubSpot não verificado/s);
+   state.hunter_preview={status:'held',total_leads:null,observed_leads:205,held_leads:205,rows:[]};
+   await refresh();
+   assert.match(await page.locator('#cad-apollo-content').innerText(),/Enumeração não verificada/);
+   assert.doesNotMatch(await page.locator('#cad-apollo-content').innerText(),/Enumeração concluída/);
+   state.hunter_preview={status:'held',total_leads:205,observed_leads:205,held_leads:205,
+    enumeration_finished:true,messages_enumerated:true,atomic_snapshot:false,
+    contacts_observed_at:'2031-03-12T10:00:00Z',messages_observed_at:'2031-03-12T12:30:00Z',
+    rows:[{source_id:'lead-0',action:'hold',membership_status:'observed',
+      membership_observed_at:'2031-03-12T10:02:00Z',crm_binding:'unverified'}]};
+   state.status='ok';state.coverage.complete=true;state.coverage.contacts_complete=true;state.coverage.messages_complete=true;
+   await refresh();
+   assert.match(await page.locator('#cad-apollo-content').innerText(),/Enumeração concluída.*Contatos observados.*Mensagens observadas/s);
+   await leads.first().evaluate(el=>el.open=true);
+   assert.match(await leads.first().innerText(),/Vínculo observado em.*HubSpot não verificado/s);
+   state.status='partial';state.coverage.complete=false;state.coverage.contacts_complete=false;
+   delete state.hunter_preview;
    fail=true;await refresh();assert.match(await page.locator('#cad-apollo-status').innerText(),/Cache indisponível.*dados anteriores/);assert.equal(await leads.count(),100);
    fail=false;state={enabled:true,status:'error',campaign_id:'BR-APOLLO-01',leads:[]};await refresh();assert.equal(await leads.count(),100,'reader error preserves observed snapshot');
    assert.equal(await page.locator('#cad-instantly-reader').getAttribute('aria-busy'),'false','missing Instantly cache remains recoverable');

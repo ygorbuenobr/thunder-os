@@ -80,6 +80,34 @@ class NewJourneyHTTPTests(unittest.TestCase):
         self.server.thunder_apollo_reader.snapshot.assert_called_once()
         self.wizard.export.assert_not_called()
 
+    def test_apollo_reader_exposes_only_informational_partial_preview(self):
+        from thunder_os.external_email_import import APOLLO_TEAM, APOLLO_SEQUENCE
+        state = {'enabled':True, 'status':'partial', 'campaign_id':'BR-APOLLO-01',
+            'account_id':APOLLO_TEAM, 'external_campaign_id':APOLLO_SEQUENCE,
+            'observed_at':'2026-10-26T12:40:00Z',
+            'coverage':{'complete':False, 'contacts_complete':True, 'messages_complete':True,
+                'atomic_snapshot':False, 'contacts_observed_at':'2026-10-26T12:00:00Z',
+                'messages_observed_at':'2026-10-26T12:40:00Z', 'reasons':['contacts_scan_spans_refreshes']},
+            'leads':[{'id':'a', 'name':'Pessoa A', 'membership':{'emailer_campaign_id':APOLLO_SEQUENCE},
+                'membership_observed_at':'2026-10-26T12:05:00Z'}]}
+        self.server.thunder_apollo_reader = SimpleNamespace(snapshot=Mock(return_value=state))
+        self.server.thunder_service.repository.get_state.return_value = None
+        connection = HTTPConnection('127.0.0.1', self.server.server_port, timeout=3)
+        self.addCleanup(connection.close)
+        connection.request('GET', '/api/os/v1/integrations/apollo/reader',
+                           headers={'X-Authenticated-User':'ygor'})
+        response = connection.getresponse()
+        result = json.loads(response.read())
+        self.assertEqual(response.status, 200)
+        preview = result['hunter_preview']
+        self.assertEqual(preview['status'], 'held')
+        self.assertIsNone(preview['total_leads'])
+        self.assertTrue(preview['enumeration_finished'])
+        self.assertEqual(preview['rows'][0]['membership_status'], 'observed')
+        self.assertEqual(preview['rows'][0]['action'], 'hold')
+        self.server.thunder_service.repository.put_state.assert_not_called()
+        self.wizard.export.assert_not_called()
+
     def test_prompt_and_export_preview_routes_require_exact_inputs(self):
         self.wizard.select_apollo_prompts.return_value = {'approval_mode':'apollo_prompts_v1'}
         self.wizard.export_preview.return_value = {'preview_only':True, 'external_writes':0}
