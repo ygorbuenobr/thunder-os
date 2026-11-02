@@ -4,6 +4,7 @@ from copy import deepcopy
 import base64
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -78,7 +79,8 @@ class JourneyTests(unittest.TestCase):
         self.assertEqual(self.database(), before_failure)
         def request(method, path, body, headers, timeout):
             fixture = Path(__file__).with_name('seqd_bridge') / 'snapshot-fixture.cjs'
-            raw = subprocess.run(['node',str(fixture),path],check=True,capture_output=True,timeout=5).stdout
+            env = {'PATH': os.environ.get('PATH', ''), 'SNAPSHOT_FIXTURE_MODE': 'ok'}
+            raw = subprocess.run(['node',str(fixture),path],check=True,capture_output=True,timeout=5,env=env).stdout
             return 200, raw
         client = SEQDClient(lambda: 'a'*64, request=request)
         with self.assertRaisesRegex(InboxError, 'gmail_snapshot_disabled'):

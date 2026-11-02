@@ -24,11 +24,13 @@ class IntegratedSnapshotTests(unittest.TestCase):
         self.repo = Repository(Path(self.tmp.name) / 'fixture.db')
         self.service = ThunderService(self.repo)
         self.mode = 'ok'
+        self.calls = []
         for target in ('socket.create_connection', 'socket.socket.connect', 'socket.getaddrinfo'):
             active = patch(target, side_effect=AssertionError('network forbidden'))
             active.start()
             self.addCleanup(active.stop)
         def request(method, path, body, headers, timeout):
+            self.calls.append(path)
             fixture = Path(__file__).with_name('seqd_bridge') / 'snapshot-fixture.cjs'
             env = {'PATH': os.environ.get('PATH', ''), 'SNAPSHOT_FIXTURE_MODE': self.mode}
             result = subprocess.run(['node', str(fixture), path], env=env, capture_output=True, timeout=5)
@@ -58,10 +60,18 @@ class IntegratedSnapshotTests(unittest.TestCase):
 
     def test_thread_error_does_not_write(self):
         self.mode = 'thread-error'
+        def state():
+            with closing(sqlite3.connect(self.repo.path)) as con:
+                tables = ('thunder_schema', 'thunder_work_items', 'thunder_events',
+                          'thunder_outbox', 'thunder_state', 'thunder_effect_jobs')
+                return {name: con.execute('SELECT * FROM ' + name + ' ORDER BY rowid').fetchall()
+                        for name in tables}
+        before = state()
         with self.assertRaises(InboxError):
             self.run_one()
-        self.assertEqual(self.repo.list_state('gmail_thread'), [])
-        self.assertEqual(self.repo.list_state('gmail_message'), [])
+        self.assertTrue(any(path.endswith('/abc123') for path in self.calls))
+        self.assertTrue(any(path.endswith('/def456') for path in self.calls))
+        self.assertEqual(state(), before)
 
     def test_bad_cursor_retains_checkpoint(self):
         self.mode = 'bad-cursor'

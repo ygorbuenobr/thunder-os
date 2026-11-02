@@ -7,8 +7,8 @@ const KEY='a'.repeat(64);
 const MODE=process.env.SNAPSHOT_FIXTURE_MODE||'ok';
 const provider={async session(){return {
  async verifyProfile(){return MODE==='wrong-account'?'other@example.invalid':EXPECTED.email;},
- async snapshotList({cursor}){return {messages:[{id:cursor?'bb22':'aa11',thread_id:cursor?'def456':'abc123'}],next_cursor:cursor?(MODE==='bad-cursor'?'next':null):'next'};},
- async snapshotThread(id){if(MODE==='thread-error')throw Error('fixture');const text=Buffer.from('Original synthetic message');return {id,historyId:'42',messages:[{
+ async snapshotList({cursor}){if(MODE==='thread-error')return {messages:[{id:'aa11',thread_id:'abc123'},{id:'bb22',thread_id:'def456'}],next_cursor:null};return {messages:[{id:cursor?'bb22':'aa11',thread_id:cursor?'def456':'abc123'}],next_cursor:cursor?(MODE==='bad-cursor'?'next':null):'next'};},
+ async snapshotThread(id){if(MODE==='thread-error'&&id==='def456')throw Error('fixture');const text=Buffer.from('Original synthetic message');return {id,historyId:'42',messages:[{
   id:'a'+id,threadId:id,internalDate:'1792746000000',labelIds:['INBOX'],payload:{mimeType:'text/plain',
    headers:[{name:'From',value:'buyer@example.invalid'},{name:'Subject',value:'Synthetic'}],body:{data:text.toString('base64url')}}}]};}
 };}};
