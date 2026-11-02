@@ -53,6 +53,33 @@ class ReplyControlTests(unittest.TestCase):
         self.assertEqual(external_pause_plan('apollo')['operation'],'remove_or_stop_contact_ids')
         self.assertFalse(external_pause_plan('apollo')['paused'])
 
+    def test_same_contact_in_different_accounts_stays_in_triage(self):
+        self.repo.put_state('cadence','other-profile', {**self.cadence, 'account_id':'other.invalid'})
+        result=self.control.ingest(event(),'verified_source')
+        self.assertEqual(result['status'],'triage')
+        self.assertFalse(result['reply']['identity_confirmed'])
+        self.assertEqual(self.repo.get_state('cadence','cadence-1')['status'],'approved')
+        self.assertEqual(self.repo.get_state('cadence','other-profile')['status'],'approved')
+
+    def test_cadence_without_account_stays_in_triage(self):
+        cadence={**self.cadence};cadence.pop('account_id')
+        self.repo.put_state('cadence','cadence-1',cadence)
+        result=self.control.ingest(event(),'verified_source')
+        self.assertEqual(result['status'],'triage')
+        self.assertFalse(result['reply']['identity_confirmed'])
+        self.assertEqual(self.repo.get_state('cadence','cadence-1')['status'],'approved')
+
+    def test_reply_without_matching_cadence_stays_in_triage(self):
+        from thunder_os.service import ContractError, ThunderService
+        result=self.control.ingest({**event(), 'hubspot_contact_id':'999'}, 'verified_source')
+        self.assertEqual(result['status'],'triage')
+        self.assertFalse(result['reply']['identity_confirmed'])
+        self.assertEqual(result['reply']['state'],'identity_resolution')
+        self.assertEqual(result['alerts'][0]['reason'],'identity_unresolved')
+        self.assertEqual(self.repo.get_state('cadence','cadence-1')['status'],'approved')
+        with self.assertRaisesRegex(ContractError,'reply identity unresolved'):
+            ThunderService(self.repo).classify_reply(result['reply']['id'],'positive',1.0,'Synthetic','ygor')
+
     def test_resposta_instantly_pausa_linkedin(self):
         self.control.ingest({**event('instantly'),'channel':'email'},'verified_source')
         steps=self.repo.get_state('cadence','cadence-1')['steps']
@@ -61,6 +88,68 @@ class ReplyControlTests(unittest.TestCase):
         worker.repository=self.repo
         worker.authorization_service=SimpleNamespace(global_paused=lambda:False)
         self.assertEqual(worker._final_campaign_gate({'cadence_id':'cadence-1'},{}),'approval_not_active')
+
+    def test_triage_replay_cannot_resolve_without_verified_correlation(self):
+        from thunder_os.new_journey_checks import NewJourneyChecks
+        from thunder_os.service import ContractError, ThunderService
+        self.repo.put_state('identity', 'person@company.invalid', {
+            'actor': 'ygor', 'status': 'canonical', 'canonical_person': 'person@company.invalid',
+            'canonical_account': 'company.invalid', 'records': [
+                {'person_key': 'person@company.invalid', 'hubspot_contact_id': '123',
+                 'domain': 'company.invalid', 'source': source} for source in ('hubspot', 'fixture')]})
+        checker = NewJourneyChecks(ThunderService(self.repo))
+        row = {'source_key': 'fixture', 'email': 'person@company.invalid', 'company': 'Synthetic'}
+        def refusal():
+            return next(x for x in checker([row], 'BR-FIXTURE')[0]['checks'] if x['key'] == 'refusal')
+        unresolved = event('apollo')  # Apollo cannot establish a LinkedIn sender.
+        first = self.control.ingest(unresolved, 'verified_source')
+        self.assertEqual(first['status'], 'triage')
+        self.assertFalse(first['reply']['identity_confirmed'])
+        self.assertEqual(self.repo.get_state('cadence', 'cadence-1')['status'], 'approved')
+        self.assertNotEqual(refusal()['status'], 'blocked')
+        self.assertTrue(self.control.ingest(unresolved, 'verified_source')['duplicate'])
+        with self.assertRaisesRegex(ReplyControlError, 'reply_event_conflict'):
+            self.control.ingest({**unresolved, 'content': 'Changed payload'}, 'verified_source')
+        with self.assertRaisesRegex(ContractError, 'reply identity evidence unavailable'):
+            ThunderService(self.repo).resolve_reply_identity(first['reply']['id'], {
+                'account_id': 'synthetic.invalid', 'person_key': 'hubspot:123',
+                'cadence_id': 'cadence-1', 'preceding_touch_id': 'sent'}, 'ygor')
+        self.assertEqual(self.repo.get_state('cadence', 'cadence-1')['steps'], self.cadence['steps'])
+        self.assertEqual(self.repo.get_state('reply', first['reply']['id'])['state'], 'identity_resolution')
+        self.assertTrue(self.control.ingest(unresolved, 'verified_source')['duplicate'])
+        with self.assertRaisesRegex(ContractError, 'reply identity unresolved'):
+            ThunderService(self.repo).classify_reply(first['reply']['id'], 'negative', 1.0, 'Synthetic', 'ygor')
+
+    def test_legacy_unresolved_reply_also_stays_unchanged(self):
+        from thunder_os.service import ContractError, ThunderService
+        service = ThunderService(self.repo)
+        service.record_reply({'id': 'legacy', 'channel': 'email', 'content': 'Synthetic'}, 'ygor')
+        with self.assertRaisesRegex(ContractError, 'reply identity evidence unavailable'):
+            service.resolve_reply_identity('legacy', {'account_id': 'synthetic.invalid',
+                'person_key': 'hubspot:123', 'cadence_id': 'cadence-1', 'preceding_touch_id': 'sent'}, 'ygor')
+        self.assertEqual(self.repo.get_state('cadence', 'cadence-1')['steps'], self.cadence['steps'])
+
+    def test_legacy_direct_reply_rejects_untrusted_actor_without_ledger(self):
+        from thunder_os.service import ContractError, ThunderService
+        self.repo.put_state('cadence', 'cadence-1', {**self.cadence,
+            'steps': [{'id': 'future', 'status': 'approved', 'channel': 'email',
+                       'recipient': 'person@synthetic.invalid'}]})
+        service = ThunderService(self.repo)
+        with self.assertRaisesRegex(ContractError, 'reply trusted human required'):
+            service.record_reply({'id': 'synthetic-direct', 'channel': 'email',
+                'content': 'Unproven source', 'cadence_id': 'cadence-1',
+                'account_id': 'synthetic.invalid', 'person_key': 'hubspot:123',
+                'preceding_touch_id': 'no-such-touch', 'classification': 'positive'}, 'untrusted-fixture')
+        self.assertEqual(self.repo.get_state('cadence', 'cadence-1')['status'], 'approved')
+        self.assertIsNone(self.repo.get_state('reply', 'synthetic-direct'))
+
+    def test_inbox_actors_still_create_unresolved_replies(self):
+        from thunder_os.service import ThunderService
+        service = ThunderService(self.repo)
+        for actor in ('gmail-inbox', 'connectsafely-inbox'):
+            reply = service.record_reply({'id': actor, 'channel': 'email',
+                                          'content': 'Synthetic'}, actor)
+            self.assertEqual(reply['state'], 'identity_resolution')
 
     def test_marcar_respondeu_manual(self):
         manual={**event('manual'),'channel':'phone','id':'manual-request-1',
@@ -110,6 +199,61 @@ class ReplyControlTests(unittest.TestCase):
                 value['source']={**value['source'],'provider_message_id':str(len(self.repo.list_state('reply')))}
                 self.assertEqual(self.control.ingest(value,'verified_source')['status'],'triage')
                 self.assertEqual(self.repo.get_state('cadence','cadence-1')['status'],'approved')
+
+    def test_provider_account_must_match_reply_channel(self):
+        wrong_channel = {**event('instantly'), 'channel': 'linkedin'}
+        result = self.control.ingest(wrong_channel, 'verified_source')
+        self.assertEqual(result['status'], 'triage')
+        self.assertEqual(self.repo.get_state('cadence', 'cadence-1')['status'], 'approved')
+        self.assertEqual(result['alerts'][0]['reason'], 'identity_unresolved')
+
+    def test_chattie_preserves_existing_registry_correlation(self):
+        self.registry.register({**config(), 'campaign_id':'CHATTIE', 'platform':'chattie',
+            'providers':{'linkedin':'chattie'}, 'configuration':{'flow_version':'1',
+            'provider_accounts':{'linkedin':'synthetic-account'}}}, 'ygor', 0)
+        value = {**event('chattie'), 'channel':'linkedin', 'campaign_id':'CHATTIE'}
+        self.assertEqual(self.control.ingest(value, 'verified_source')['status'], 'paused_internal')
+
+    def test_unproven_instantly_channels_do_not_correlate(self):
+        for channel in ('whatsapp', 'chattie', 'phone'):
+            with self.subTest(channel=channel):
+                value = {**event('instantly'), 'channel': channel,
+                         'source': {**event('instantly')['source'], 'provider_message_id':channel}}
+                result = self.control.ingest(value, 'verified_source')
+                self.assertEqual(result['status'], 'triage')
+                self.assertEqual(result['alerts'][0]['reason'], 'identity_unresolved')
+                self.assertEqual(self.repo.get_state('cadence','cadence-1')['status'], 'approved')
+
+    def test_hubspot_non_email_and_wrong_account_do_not_correlate(self):
+        self.registry.register({**config(), 'campaign_id':'CRM', 'platform':'apollo',
+            'providers':{'email':'apollo', 'hubspot':'hubspot'}, 'configuration':{'flow_version':'1',
+            'provider_accounts':{'email':'synthetic-account','hubspot':'crm-account'}}}, 'ygor', 0)
+        for channel, account in (('linkedin', 'crm-account'), ('email', 'wrong-account')):
+            with self.subTest(channel=channel, account=account):
+                value = {**event('hubspot'), 'channel':channel, 'campaign_id':'CRM',
+                         'source':{'provider':'hubspot','account_id':account,'provider_message_id':channel}}
+                self.assertEqual(self.control.ingest(value, 'verified_source')['status'], 'triage')
+                self.assertEqual(self.repo.get_state('cadence','cadence-1')['status'], 'approved')
+
+    def test_evidenced_provider_channel_pairs_and_account_matching(self):
+        for index, (channel, provider) in enumerate((('email','apollo'), ('email','instantly'),
+                ('email','gmail'), ('email','hubspot'), ('linkedin','connectsafely'), ('linkedin','chattie'))):
+            campaign = 'PAIR' + str(index)
+            self.registry.register({**config(), 'campaign_id':campaign, 'platform':'apollo',
+                'providers':{channel:provider}, 'configuration':{'flow_version':'1',
+                'provider_accounts':{channel:'synthetic-account'}}}, 'ygor', 0)
+            value = {**event(provider), 'channel':channel, 'campaign_id':campaign}
+            with self.subTest(channel=channel, provider=provider):
+                self.assertTrue(self.control._identity(value))
+                self.assertFalse(self.control._identity({**value, 'source':{**value['source'], 'account_id':'wrong'}}))
+
+    def test_hubspot_source_preserves_existing_registry_correlation(self):
+        self.registry.register({**config(), 'campaign_id':'CRM', 'platform':'apollo',
+            'providers':{'email':'apollo', 'hubspot':'hubspot'}, 'configuration':{'flow_version':'1',
+            'provider_accounts':{'email':'synthetic-account','hubspot':'crm-account'}}}, 'ygor', 0)
+        value = {**event('hubspot'), 'channel':'email', 'campaign_id':'CRM',
+                 'source':{'provider':'hubspot','account_id':'crm-account','provider_message_id':'crm-1'}}
+        self.assertEqual(self.control.ingest(value, 'verified_source')['status'], 'paused_internal')
 
     def test_atomic_failure_rolls_back_pause_reply_and_alert(self):
         original=self.repo.append_state

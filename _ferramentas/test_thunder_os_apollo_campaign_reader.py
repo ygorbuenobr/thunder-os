@@ -17,6 +17,23 @@ from thunder_os.apollo_campaign_reader import (ApolloCampaignReadOnly, ApolloCam
     APOLLO_SEQUENCE, APOLLO_TEAM, OWNER, CAMPAIGN, KIND, KEY_FILE, SEQUENCE_PATH, enabled, _validate_mcp, _mcp_https_request, _MCP_INITIALIZE, INTERVAL, SNAPSHOT_TTL, COHORT_TTL, _scope_identity, ENDPOINT_MINUTE_LIMIT, ENDPOINT_HOUR_LIMIT, ENDPOINT_DAY_LIMIT)
 from thunder_os.external_email_import import ExternalEmailError
 from thunder_os.seqd_client import MAILBOX, SEQDClient
+from thunder_os.db import Repository
+
+_OperationalApolloCampaignReader = ApolloCampaignReader
+def ApolloCampaignReader(repo, *args, **kwargs):
+    if not isinstance(repo, Repository):
+        reader = object.__new__(_OperationalApolloCampaignReader)
+        reader.repo = repo
+        reader.provider = (args[0] if args else None) or ApolloCampaignReadOnly(gmail=SEQDClient())
+        reader.enable_check = kwargs.get('enable_check', enabled)
+        reader.clock = kwargs.get('clock') or (lambda: datetime.now(timezone.utc))
+        reader.lock, reader.stop_event, reader.thread = threading.Lock(), threading.Event(), None
+        reader._runtime_lock = threading.Lock()
+        reader._runtime = {'thread_started': False, 'in_progress': False, 'phase': 'idle',
+                           'last_attempt_at': None, 'cooldown_until': None,
+                           'last_loop_error': None, 'last_refresh_error': None}
+        return reader
+    return _OperationalApolloCampaignReader(repo, *args, **kwargs)
 
 NOW = datetime(2026, 10, 26, 12, tzinfo=timezone.utc)
 SENT = '2026-10-26T10:00:00Z'
@@ -141,6 +158,43 @@ class ReaderTests(unittest.TestCase):
         return ApolloCampaignReadOnly(lambda: 'synthetic-key', request=self.wire,
             clock=lambda: NOW, mcp_request=self.mcp, **options)
 
+    def test_orphans_do_not_abort_pages_or_become_events(self):
+        orphan = [metadata('orphan-' + str(i), contact_id='unknown-contact') for i in range(100)]
+        wire = Wire(messages=orphan + [metadata()], contents=[content()])
+        reader = self.make(wire)
+        first = reader.collect()
+        cov = first['coverage']
+        self.assertEqual(cov['messages_pages'], 2)
+        self.assertEqual(cov['sent_messages_pages'], 2)
+        self.assertFalse(cov['complete'])
+        self.assertFalse(cov['messages_complete'])
+        self.assertIn('message_contact_outside_cohort', cov['reasons'])
+        self.assertEqual(cov['unreconciled_messages_count'], 100)
+        diagnostic = json.dumps(cov['unreconciled_messages'])
+        self.assertNotIn('unknown-contact', diagnostic)
+        self.assertNotIn('orphan-', diagnostic)
+        self.assertNotIn(LEAD, diagnostic)
+        self.assertEqual([e['provider_id'] for e in first['leads'][0]['events']], ['message-1'])
+        second = reader.collect(first)
+        self.assertEqual(second['coverage']['unreconciled_messages_count'], 100)
+        self.assertEqual([e['provider_id'] for e in second['leads'][0]['events']], ['message-1'])
+
+    def test_orphan_reconciles_only_after_identity_joins_cohort(self):
+        wire = Wire(messages=[metadata('message-2', contact_id='contact-2')],
+                    contents=[content('message-2')])
+        reader = self.make(wire)
+        first = reader.collect()
+        self.assertFalse(first['coverage']['complete'])
+        self.assertFalse(first['leads'][0]['events'])
+        wire.contacts.append(contact('contact-2'))
+        cached = reader.collect(first)
+        self.assertFalse(cached['coverage']['messages_complete'])
+        self.assertNotIn('contact-2', [lead['id'] for lead in cached['leads']])
+        reader.clock = lambda: NOW + timedelta(seconds=COHORT_TTL + 1)
+        second = reader.collect(cached)
+        self.assertTrue(second['coverage']['messages_complete'])
+        self.assertEqual(next(lead for lead in second['leads'] if lead['id'] == 'contact-2')['events'][0]['provider_id'], 'message-2')
+
     def test_large_cohort_resumes_after_deadline_and_reaches_messages(self):
         rows = [contact('c'+str(i), scoped=i < 285) for i in range(7800)]
         wire = Wire(contacts=rows, messages=[], contents=[])
@@ -162,6 +216,108 @@ class ReaderTests(unittest.TestCase):
         self.assertTrue(second['coverage']['contacts_complete'])
         self.assertTrue(second['coverage']['messages_complete'])
         self.assertEqual(len(second['leads']), 285)
+
+    def test_cohort_scan_resumes_past_page_180_across_cycles(self):
+        rows = [contact('c'+str(i), scoped=i < 285) for i in range(18101)]
+        wire = Wire(contacts=rows, messages=[], contents=[])
+        elapsed = [0.0]
+        def advance(method, path, body):
+            if path.endswith('contacts/search'):
+                elapsed[0] += 2.0
+            return None
+        wire.override = advance
+        reader = ApolloCampaignReadOnly(lambda: 'fake', request=wire, max_pages=90,
+            clock=lambda: NOW + timedelta(seconds=elapsed[0]),
+            monotonic=lambda: elapsed[0], mcp_request=FakeMCPTransport(wire))
+        first = reader.collect()
+        self.assertEqual(first['contact_scan_checkpoint']['next_page'], 91)
+        self.assertFalse(first['coverage']['complete'])
+        elapsed[0] += 901
+        second = reader.collect(first)
+        self.assertEqual(second['contact_scan_checkpoint']['next_page'], 181)
+        self.assertFalse(second['coverage']['complete'])
+        elapsed[0] += 901
+        third = reader.collect(second)
+        pages = [body['page'] for _, path, body, _ in wire.calls if path.endswith('contacts/search')]
+        self.assertEqual(pages, list(range(1, 183)))
+        self.assertTrue(third['coverage']['contacts_complete'])
+        self.assertTrue(third['coverage']['messages_complete'])
+        self.assertFalse(third['coverage']['complete'])
+        self.assertIn('contacts_scan_spans_refreshes', third['coverage']['reasons'])
+        self.assertEqual(len(third['leads']), 285)
+
+    def test_finished_multicycle_scan_does_not_claim_atomic_membership_or_new_source_time(self):
+        rows = [contact('c'+str(i), scoped=i < 285) for i in range(18101)]
+        wire = Wire(contacts=rows, messages=[], contents=[])
+        elapsed = [0.0]
+        def advance(method, path, body):
+            if path.endswith('contacts/search'):
+                elapsed[0] += 2.0
+            return None
+        wire.override = advance
+        clock = lambda: NOW + timedelta(seconds=elapsed[0])
+        reader = ApolloCampaignReadOnly(lambda: 'fake', request=wire, max_pages=90,
+            clock=clock, monotonic=lambda: elapsed[0], mcp_request=FakeMCPTransport(wire))
+        first = reader.collect()
+        # The first contact leaves the sequence while the total stays unchanged.
+        wire.contacts[0]['contact_campaign_statuses'] = []
+        elapsed[0] += 901
+        second = reader.collect(first)
+        elapsed[0] += 901
+        finished = reader.collect(second)
+        self.assertTrue(finished['coverage']['contacts_complete'])
+        self.assertTrue(finished['coverage']['messages_complete'])
+        self.assertFalse(finished['coverage']['complete'])
+        self.assertFalse(finished['coverage']['atomic_snapshot'])
+        self.assertIn('contacts_scan_spans_refreshes', finished['coverage']['reasons'])
+        self.assertEqual(finished['coverage']['contacts_observed_at'], NOW.isoformat())
+        self.assertGreater(finished['coverage']['contacts_age_seconds'], SNAPSHOT_TTL)
+        self.assertEqual(len(finished['leads']), 285)  # stale membership cannot be ruled out
+        wire.calls.clear()
+        cached = reader.collect(finished)
+        self.assertTrue(cached['coverage']['contacts_cached'])
+        self.assertFalse(cached['coverage']['complete'])
+        self.assertEqual(cached['coverage']['contacts_observed_at'], NOW.isoformat())
+        self.assertFalse(any(path.endswith('contacts/search') for _, path, _, _ in wire.calls))
+
+    def test_each_membership_observation_keeps_its_own_time_across_cycles(self):
+        wire = Wire(contacts=[contact('c'+str(i)) for i in range(101)], messages=[])
+        elapsed = [0.0]
+        def advance(method, path, body):
+            if path.endswith('contacts/search'):
+                elapsed[0] += 2
+            return None
+        wire.override = advance
+        clock = lambda: NOW + timedelta(seconds=elapsed[0])
+        reader = ApolloCampaignReadOnly(lambda: 'fake', request=wire, max_pages=1,
+            clock=clock, monotonic=lambda: elapsed[0], mcp_request=FakeMCPTransport(wire))
+        first = reader.collect()
+        elapsed[0] += 901
+        second = reader.collect(first)
+        times = {row['id']: row.get('membership_observed_at') for row in second['leads']}
+        self.assertEqual(times['c0'], (NOW + timedelta(seconds=2)).isoformat())
+        self.assertEqual(times['c100'], (NOW + timedelta(seconds=905)).isoformat())
+        self.assertFalse(second['coverage']['complete'])
+        cached = reader.collect(second)
+        self.assertEqual({row['id']: row.get('membership_observed_at') for row in cached['leads']}, times)
+
+    def test_provider_ceiling_holds_without_repeating_scan(self):
+        wire = Wire(contacts=[contact('c'+str(i)) for i in range(100)], messages=[])
+        def too_many(method, path, body):
+            if path.endswith('contacts/search'):
+                return 200, json.dumps({'contacts': wire.contacts,
+                    'pagination': {'page': body['page'], 'per_page': 100, 'total_entries': 50001}}).encode()
+            return None
+        wire.override = too_many
+        reader = self.make(wire)
+        first = reader.collect()
+        self.assertIn('apollo_contacts_provider_limit', first['coverage']['reasons'])
+        self.assertFalse(first['coverage']['complete'])
+        wire.calls.clear()
+        second = reader.collect(first)
+        self.assertEqual(wire.calls, [])
+        self.assertFalse(second['coverage']['complete'])
+        self.assertIn('apollo_contacts_provider_limit', second['coverage']['reasons'])
 
     def test_tampered_scan_checkpoint_restarts_and_is_not_authority(self):
         rows = [contact('c'+str(i), scoped=i < 3) for i in range(7800)]
@@ -1068,6 +1224,379 @@ class CacheTests(unittest.TestCase):
             mcp_request=FakeMCPTransport(wire), clock=lambda: NOW).collect()
         self.reader = ApolloCampaignReader(self.repo, self.provider, enable_check=lambda: True, clock=lambda: self.now)
 
+    def test_atomic_budget_initializes_from_legacy_snapshot(self):
+        import tempfile
+        from pathlib import Path
+        from thunder_os.db import Repository
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Repository(Path(tmp) / 'fixture.db')
+            legacy = {'version': 1, 'scope': _scope_identity(),
+                      'entries': {'contacts_search': [(NOW - timedelta(seconds=1)).isoformat()]}}
+            repo.put_state(KIND, CAMPAIGN, {'request_budget': legacy})
+            provider = ApolloCampaignReadOnly(lambda: 'fake', clock=lambda: NOW)
+            provider.request_budget = {'version': 1, 'scope': _scope_identity(), 'entries': {}}
+            provider.reserve_atomic(repo, 'contacts_search')
+            state = repo.get_state('apollo_reader_budget', CAMPAIGN)
+            self.assertEqual(state['budget']['entries']['contacts_search'],
+                             legacy['entries']['contacts_search'] + [NOW.isoformat()])
+
+    def test_offline_budget_roundtrip_is_idempotent_and_preserves_checkpoint(self):
+        import tempfile
+        from pathlib import Path
+        from thunder_os.apollo_campaign_reader import transition_budget_offline
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Repository(Path(tmp) / 'fixture.db')
+            old = {'version': 1, 'scope': _scope_identity(), 'entries': {'contacts_search': [NOW.isoformat()]}}
+            new = {'version': 1, 'scope': _scope_identity(), 'entries': {'messages_search': [NOW.isoformat()]}}
+            repo.put_state(KIND, CAMPAIGN, {'request_budget': old, 'cohort_cache': {'complete': True}})
+            repo.put_state('apollo_reader_budget', CAMPAIGN, {'budget': new})
+            with self.assertRaisesRegex(ExternalEmailError, 'apollo_writers_not_declared_stopped'):
+                transition_budget_offline(repo, writers_stopped=False, clock=lambda: NOW)
+            first = transition_budget_offline(repo, writers_stopped=True, clock=lambda: NOW)
+            second = transition_budget_offline(repo, writers_stopped=True, clock=lambda: NOW)
+            self.assertEqual(first['budget'], second['budget'])
+            self.assertEqual(first['budget']['entries'], {'contacts_search': [NOW.isoformat()], 'messages_search': [NOW.isoformat()]})
+            self.assertTrue(repo.get_state(KIND, CAMPAIGN)['cohort_cache']['complete'])
+            self.assertEqual(repo.get_state(KIND, CAMPAIGN)['request_budget'], repo.get_state('apollo_reader_budget', CAMPAIGN)['budget'])
+
+    def test_offline_transition_rolls_back_if_interrupted_before_commit(self):
+        import tempfile
+        from pathlib import Path
+        from thunder_os.apollo_campaign_reader import transition_budget_offline
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Repository(Path(tmp) / 'fixture.db')
+            old = {'version': 1, 'scope': _scope_identity(), 'entries': {}}
+            repo.put_state(KIND, CAMPAIGN, {'request_budget': old, 'cohort_cache': {'complete': True}})
+            original = repo.put_states_atomic
+            def interrupted(updates):
+                original(updates)
+                raise RuntimeError('synthetic interruption')
+            with patch.object(repo, 'put_states_atomic', side_effect=interrupted):
+                with self.assertRaisesRegex(RuntimeError, 'synthetic interruption'):
+                    transition_budget_offline(repo, writers_stopped=True, clock=lambda: NOW)
+            self.assertEqual(repo.get_state(KIND, CAMPAIGN)['request_budget'], old)
+            self.assertIsNone(repo.get_state('apollo_reader_budget', CAMPAIGN))
+
+    def test_offline_transition_retry_after_commit_is_idempotent(self):
+        import tempfile
+        from pathlib import Path
+        from thunder_os.apollo_campaign_reader import transition_budget_offline
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Repository(Path(tmp) / 'fixture.db')
+            old = {'version': 1, 'scope': _scope_identity(), 'entries': {'profile': [NOW.isoformat()]}}
+            repo.put_state(KIND, CAMPAIGN, {'request_budget': old, 'cohort_cache': {'complete': True}})
+            original = repo.get_state
+            def interrupted(kind, key):
+                if kind == KIND and getattr(repo._local, 'connection', None) is None:
+                    raise OSError('synthetic readback interruption')
+                return original(kind, key)
+            with patch.object(repo, 'get_state', side_effect=interrupted):
+                with self.assertRaisesRegex(OSError, 'synthetic readback interruption'):
+                    transition_budget_offline(repo, writers_stopped=True, clock=lambda: NOW)
+            result = transition_budget_offline(repo, writers_stopped=True, clock=lambda: NOW)
+            self.assertEqual(result['budget'], old)
+
+    def test_offline_transition_commit_succeeds_then_reports_error(self):
+        import tempfile
+        from pathlib import Path
+        from contextlib import contextmanager
+        from thunder_os.apollo_campaign_reader import transition_budget_offline
+        class CommitReportedUnknown(Repository):
+            @contextmanager
+            def transaction(self):
+                nested = getattr(self._local, 'connection', None) is not None
+                with super().transaction() as con:
+                    yield con
+                if not nested:
+                    raise OSError('synthetic error after commit')
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'fixture.db'
+            repo = Repository(path)
+            old = {'version': 1, 'scope': _scope_identity(), 'entries': {'profile': [NOW.isoformat()]}}
+            repo.put_state(KIND, CAMPAIGN, {'request_budget': old})
+            uncertain = CommitReportedUnknown(path)
+            with self.assertRaisesRegex(OSError, 'synthetic error after commit'):
+                transition_budget_offline(uncertain, writers_stopped=True, clock=lambda: NOW)
+            retry = transition_budget_offline(repo, writers_stopped=True, clock=lambda: NOW)
+            self.assertEqual(retry['budget'], old)
+            self.assertIsNotNone(repo.get_state('apollo_budget_transition_backup', retry['backup_id']))
+
+    def test_offline_transition_preserves_common_base_without_double_count(self):
+        import tempfile
+        from pathlib import Path
+        from thunder_os.apollo_campaign_reader import transition_budget_offline
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Repository(Path(tmp) / 'fixture.db')
+            old = {'version': 1, 'scope': _scope_identity(), 'entries': {'profile': [NOW.isoformat()]}}
+            repo.put_state(KIND, CAMPAIGN, {'request_budget': old})
+            transition_budget_offline(repo, writers_stopped=True, clock=lambda: NOW)
+            provider = ApolloCampaignReadOnly(lambda: 'fake', clock=lambda: NOW)
+            provider.reserve_atomic(repo, 'profile')
+            result = transition_budget_offline(repo, writers_stopped=True, clock=lambda: NOW)
+            self.assertEqual(result['budget']['entries']['profile'], [NOW.isoformat(), NOW.isoformat()])
+
+    def test_offline_transition_expiry_ambiguity_and_legacy_consumer(self):
+        import tempfile
+        from pathlib import Path
+        from thunder_os.apollo_campaign_reader import transition_budget_offline
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Repository(Path(tmp) / 'fixture.db')
+            old = {'version': 1, 'scope': _scope_identity(), 'entries': {'profile': [(NOW-timedelta(days=1)).isoformat(), NOW.isoformat()]}}
+            new = {'version': 1, 'scope': _scope_identity(), 'entries': {'profile': [NOW.isoformat()]}}
+            repo.put_state(KIND, CAMPAIGN, {'request_budget': old, 'cohort_cache': {'complete': True, 'source_total': 9}})
+            repo.put_state('apollo_reader_budget', CAMPAIGN, {'budget': new})
+            result = transition_budget_offline(repo, writers_stopped=True, clock=lambda: NOW)
+            self.assertEqual(result['budget']['entries']['profile'], [NOW.isoformat(), NOW.isoformat()])
+            legacy = ApolloCampaignReadOnly(lambda: 'fake', clock=lambda: NOW)
+            legacy._load_budget(repo.get_state(KIND, CAMPAIGN))
+            self.assertEqual(legacy.request_budget, result['budget'])
+            backup = repo.get_state('apollo_budget_transition_backup', result['backup_id'])
+            self.assertEqual(backup['originals'], {'legacy': old, 'atomic': new})
+            self.assertEqual(repo.get_state(KIND, CAMPAIGN)['cohort_cache'], {'complete': True, 'source_total': 9})
+            self.assertEqual(transition_budget_offline(repo, writers_stopped=True, clock=lambda: NOW)['budget'], result['budget'])
+            huge = {'version': 1, 'scope': _scope_identity(), 'entries': {'profile': [NOW.isoformat()]*901}}
+            repo.put_state(KIND, CAMPAIGN, {'request_budget': huge})
+            repo.put_state('apollo_reader_budget', CAMPAIGN, {'budget': huge})
+            with self.assertRaisesRegex(ExternalEmailError, 'apollo_transition_budget_ambiguous'):
+                transition_budget_offline(repo, writers_stopped=True, clock=lambda: NOW)
+            self.assertEqual(repo.get_state(KIND, CAMPAIGN)['request_budget'], huge)
+
+    def test_offline_transition_rejects_corrupted_backup_on_repeat(self):
+        import tempfile
+        from pathlib import Path
+        from thunder_os.apollo_campaign_reader import transition_budget_offline
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Repository(Path(tmp) / 'fixture.db')
+            old = {'version': 1, 'scope': _scope_identity(), 'entries': {}}
+            repo.put_state(KIND, CAMPAIGN, {'request_budget': old})
+            result = transition_budget_offline(repo, writers_stopped=True, clock=lambda: NOW)
+            repo.put_state('apollo_budget_transition_backup', result['backup_id'], {'originals': {'corrupt': True}})
+            with self.assertRaisesRegex(ExternalEmailError, 'apollo_transition_backup_conflict'):
+                transition_budget_offline(repo, writers_stopped=True, clock=lambda: NOW)
+
+    def test_offline_transition_rejects_lost_or_corrupt_backup_after_reservation(self):
+        import tempfile
+        from pathlib import Path
+        from thunder_os.apollo_campaign_reader import transition_budget_offline
+        for damage in ('missing', 'corrupt'):
+            with self.subTest(damage=damage), tempfile.TemporaryDirectory() as tmp:
+                repo = Repository(Path(tmp) / 'fixture.db')
+                old = {'version': 1, 'scope': _scope_identity(), 'entries': {}}
+                repo.put_state(KIND, CAMPAIGN, {'request_budget': old})
+                first = transition_budget_offline(repo, writers_stopped=True, clock=lambda: NOW)
+                provider = ApolloCampaignReadOnly(lambda: 'fake', clock=lambda: NOW)
+                provider.reserve_atomic(repo, 'profile')
+                with repo.transaction() as con:
+                    if damage == 'missing':
+                        con.execute('DELETE FROM thunder_state WHERE kind=? AND entity_id=?',
+                                    ('apollo_budget_transition_backup', first['backup_id']))
+                    else:
+                        repo.put_state('apollo_budget_transition_backup', first['backup_id'], {'originals': {'corrupt': True}})
+                before = repo.get_state(KIND, CAMPAIGN)
+                with self.assertRaises(ExternalEmailError):
+                    transition_budget_offline(repo, writers_stopped=True, clock=lambda: NOW)
+                self.assertEqual(repo.get_state(KIND, CAMPAIGN), before)
+
+    def test_transition_after_real_refresh_preserves_prior_backup_reference(self):
+        import tempfile
+        from pathlib import Path
+        from thunder_os.apollo_campaign_reader import transition_budget_offline
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Repository(Path(tmp) / 'fixture.db')
+            old = {'version': 1, 'scope': _scope_identity(), 'entries': {}}
+            repo.put_state(KIND, CAMPAIGN, {'request_budget': old})
+            first = transition_budget_offline(repo, writers_stopped=True, clock=lambda: NOW)
+            wire = Wire(contacts=[], messages=[])
+            provider = ApolloCampaignReadOnly(lambda: 'fake', request=wire,
+                mcp_request=FakeMCPTransport(wire), clock=lambda: NOW)
+            _OperationalApolloCampaignReader(repo, provider, enable_check=lambda: True, clock=lambda: NOW).refresh()
+            self.assertEqual(repo.get_state(KIND, CAMPAIGN).get('apollo_transition_backup_id'), first['backup_id'])
+            transition_budget_offline(repo, writers_stopped=True, clock=lambda: NOW)
+
+    def test_offline_transition_rejects_missing_or_mismatched_backup_reference(self):
+        import tempfile
+        from pathlib import Path
+        from thunder_os.apollo_campaign_reader import transition_budget_offline
+        for field in ('missing_snapshot', 'mismatched_atomic'):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as tmp:
+                repo = Repository(Path(tmp) / 'fixture.db')
+                old = {'version': 1, 'scope': _scope_identity(), 'entries': {}}
+                repo.put_state(KIND, CAMPAIGN, {'request_budget': old})
+                transition_budget_offline(repo, writers_stopped=True, clock=lambda: NOW)
+                if field == 'missing_snapshot':
+                    row = repo.get_state(KIND, CAMPAIGN)
+                    row.pop('apollo_transition_backup_id')
+                    repo.put_state(KIND, CAMPAIGN, row)
+                else:
+                    row = repo.get_state('apollo_reader_budget', CAMPAIGN)
+                    row['backup_id'] = 'wrong'
+                    repo.put_state('apollo_reader_budget', CAMPAIGN, row)
+                with self.assertRaisesRegex(ExternalEmailError, 'apollo_transition_backup_conflict'):
+                    transition_budget_offline(repo, writers_stopped=True, clock=lambda: NOW)
+
+    def test_atomic_budget_rejects_invalid_legacy_value(self):
+        import tempfile
+        from pathlib import Path
+        from thunder_os.db import Repository
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Repository(Path(tmp) / 'fixture.db')
+            repo.put_state(KIND, CAMPAIGN, {'request_budget': {}})
+            provider = ApolloCampaignReadOnly(lambda: 'fake', clock=lambda: NOW)
+            with self.assertRaisesRegex(ExternalEmailError, 'apollo_budget_cache_invalid'):
+                provider.reserve_atomic(repo, 'contacts_search')
+            self.assertIsNone(repo.get_state('apollo_reader_budget', CAMPAIGN))
+
+    def test_restart_uses_atomic_budget_over_invalid_legacy_snapshot(self):
+        import tempfile
+        from pathlib import Path
+        from thunder_os.db import Repository
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Repository(Path(tmp) / 'fixture.db')
+            budget = {'version': 1, 'scope': _scope_identity(), 'entries': {}}
+            repo.put_state('apollo_reader_budget', CAMPAIGN, {'budget': budget})
+            repo.put_state(KIND, CAMPAIGN, {'request_budget': {}})
+            wire = Wire(messages=[])
+            provider = ApolloCampaignReadOnly(lambda: 'fake', request=wire,
+                mcp_request=FakeMCPTransport(wire), clock=lambda: NOW)
+            provider._budget_repo = repo
+            data = provider.collect(previous=repo.get_state(KIND, CAMPAIGN))
+            self.assertNotIn('apollo_budget_cache_invalid', data['coverage']['reasons'])
+            self.assertTrue(data['coverage']['contacts_complete'])
+
+    def test_atomic_budget_failure_stops_before_provider_call(self):
+        from contextlib import contextmanager
+        @contextmanager
+        def broken():
+            raise OSError('synthetic storage failure')
+            yield
+        repo = Mock()
+        repo.transaction.side_effect = broken
+        transport = Mock()
+        provider = ApolloCampaignReadOnly(lambda: 'fake', request=transport, clock=lambda: NOW)
+        provider._budget_repo = repo
+        provider.ends = provider.monotonic() + 10
+        provider.calls = 0
+        provider.rate_limited = False
+        provider.endpoint_budget_exhausted = False
+        provider.request_budget = {'version': 1, 'scope': _scope_identity(), 'entries': {}}
+        with self.assertRaises(OSError):
+            provider._call('GET', '/api/v1/users/api_profile')
+        transport.assert_not_called()
+
+    def test_real_repository_rejects_unintegrated_provider(self):
+        import tempfile
+        from pathlib import Path
+        from thunder_os.db import Repository
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Repository(Path(tmp) / 'fixture.db')
+            with self.assertRaisesRegex(ExternalEmailError, 'apollo_transactional_adapter_required'):
+                ApolloCampaignReader(repo, Mock(), enable_check=lambda: True)
+
+    def test_nontransactional_repository_rejected_by_default(self):
+        with self.assertRaisesRegex(ExternalEmailError, 'apollo_transactional_repository_required'):
+            _OperationalApolloCampaignReader(Mock(), Mock(), enable_check=lambda: True)
+
+    def test_direct_default_transport_requires_durable_budget(self):
+        provider = ApolloCampaignReadOnly(lambda: 'synthetic')
+        provider.ends = provider.monotonic() + 10
+        provider.calls = 0
+        provider.rate_limited = False
+        provider.endpoint_budget_exhausted = False
+        provider.request_budget = {'version': 1, 'scope': _scope_identity(), 'entries': {}}
+        with self.assertRaisesRegex(ExternalEmailError, 'apollo_transactional_repository_required'):
+            provider._call('GET', '/api/v1/users/api_profile')
+
+    def test_direct_default_mcp_requires_durable_budget(self):
+        provider = ApolloCampaignReadOnly(lambda: 'synthetic')
+        with self.assertRaisesRegex(ExternalEmailError, 'apollo_transactional_repository_required'):
+            provider._mcp_call({}, 1)
+
+    def test_valid_mcp_call_reserves_before_fake_transport(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Repository(Path(tmp) / 'fixture.db')
+            wire = Wire()
+            fake = FakeMCPTransport(wire)
+            observed, before_mcp = [], []
+            def transport(method, path, body, headers, timeout):
+                if body['method'] == 'tools/call':
+                    budget = repo.get_state('apollo_reader_budget', CAMPAIGN)['budget']
+                    observed.append(len(budget['entries'].get('messages_search', [])))
+                return fake(method, path, body, headers, timeout)
+            provider = ApolloCampaignReadOnly(lambda: 'fake', request=wire, mcp_request=transport, clock=lambda: NOW)
+            original_mcp = provider._mcp_call
+            def mcp_call(message, expected_id):
+                if message['method'] == 'tools/call':
+                    row = repo.get_state('apollo_reader_budget', CAMPAIGN)
+                    before_mcp.append(len(row['budget']['entries'].get('messages_search', [])) if row else 0)
+                return original_mcp(message, expected_id)
+            provider._mcp_call = mcp_call
+            reader = _OperationalApolloCampaignReader(repo, provider, enable_check=lambda: True, clock=lambda: NOW)
+            reader.refresh()
+            self.assertTrue(observed)
+            self.assertEqual(observed, [count + 1 for count in before_mcp])
+
+    def test_legacy_rollback_cannot_see_new_atomic_reservation(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Repository(Path(tmp) / 'fixture.db')
+            legacy = {'version': 1, 'scope': _scope_identity(), 'entries': {}}
+            repo.put_state(KIND, CAMPAIGN, {'request_budget': legacy})
+            provider = ApolloCampaignReadOnly(lambda: 'fake', clock=lambda: NOW)
+            provider.request_budget = deepcopy(legacy)
+            provider.reserve_atomic(repo, 'contacts_search')
+            old_view = repo.get_state(KIND, CAMPAIGN)['request_budget']
+            current = repo.get_state('apollo_reader_budget', CAMPAIGN)['budget']
+            self.assertNotEqual(old_view, current)
+            self.assertEqual(current['entries']['contacts_search'], [NOW.isoformat()])
+
+    def test_atomic_commit_failure_rolls_back_before_request(self):
+        import tempfile
+        from pathlib import Path
+        from contextlib import contextmanager
+        class CommitFails(Repository):
+            @contextmanager
+            def transaction(self):
+                with super().transaction() as con:
+                    yield con
+                    raise OSError('synthetic commit failure')
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = CommitFails(Path(tmp) / 'fixture.db')
+            transport = Mock()
+            provider = ApolloCampaignReadOnly(lambda: 'fake', request=transport, clock=lambda: NOW)
+            provider._budget_repo = repo
+            provider.ends = provider.monotonic() + 10
+            provider.calls = 0
+            provider.rate_limited = False
+            provider.endpoint_budget_exhausted = False
+            with self.assertRaisesRegex(OSError, 'synthetic commit failure'):
+                provider._call('GET', '/api/v1/users/api_profile')
+            transport.assert_not_called()
+            self.assertIsNone(repo.get_state('apollo_reader_budget', CAMPAIGN))
+
+    def test_unhandled_failure_after_checkpoint_does_not_erase_cohort(self):
+        saved = {'value': {'last_success_at': '2026-10-22T15:00:00+00:00',
+                           'coverage': {'contents_complete': True, 'sent_messages_complete': True}}}
+        self.repo.get_state.side_effect = lambda *_: deepcopy(saved.get('value'))
+        self.repo.put_state.side_effect = lambda _kind, _campaign, value: saved.update(value=deepcopy(value))
+        cache = {'complete': True, 'source_total': 7800, 'contacts': []}
+        budget = {'entries': {'contacts_search': ['2026-10-23T15:00:00+00:00']}}
+        def interrupted(*, previous, on_cohort):
+            on_cohort(cache, budget)
+            raise RuntimeError('synthetic failure after checkpoint')
+        self.provider.collect.side_effect = interrupted
+        self.reader.refresh()
+        self.assertEqual(saved['value']['cohort_cache'], cache)
+        self.assertEqual(saved['value']['request_budget'], budget)
+        self.assertEqual(saved['value']['status'], 'error')
+        self.assertFalse(saved['value']['coverage']['complete'])
+        self.assertFalse(saved['value']['coverage']['messages_complete'])
+        self.assertFalse(saved['value']['coverage']['contents_complete'])
+        self.assertFalse(saved['value']['coverage']['sent_messages_complete'])
+        self.assertEqual(saved['value']['last_success_at'], '2026-10-22T15:00:00+00:00')
+
     def test_cohort_is_persisted_before_message_phase_failure(self):
         wire = Wire(messages=[])
         provider = ApolloCampaignReadOnly(lambda: 'fake', request=wire,
@@ -1172,6 +1701,178 @@ class CacheTests(unittest.TestCase):
         self.assertTrue(data['stale'])
         self.assertFalse(data['coverage']['complete'])
         self.assertEqual(data['leads'][0]['id'], 'contact-1')
+
+    def test_snapshot_marks_old_contacts_stale_even_with_recent_messages(self):
+        self.reader.refresh()
+        state = deepcopy(self.repo.put_state.call_args.args[2])
+        state['coverage']['contacts_observed_at'] = (NOW - timedelta(seconds=SNAPSHOT_TTL + 1)).isoformat()
+        state['observed_at'] = NOW.isoformat()
+        self.repo.get_state.return_value = state
+        snapshot = self.reader.snapshot()
+        self.assertTrue(snapshot['stale'])
+        self.assertEqual(snapshot['status'], 'stale')
+        self.assertFalse(snapshot['coverage']['complete'])
+        self.assertFalse(snapshot['metrics']['complete'])
+
+    def test_snapshot_rejects_missing_or_invalid_complete_contact_timestamp(self):
+        self.reader.refresh()
+        original = deepcopy(self.repo.put_state.call_args.args[2])
+        for bad in (None, 1, {}, 'bad-date'):
+            with self.subTest(value=bad):
+                state = deepcopy(original)
+                state['coverage']['contacts_observed_at'] = bad
+                self.repo.get_state.return_value = state
+                snapshot = self.reader.snapshot()
+                self.assertTrue(snapshot['stale'])
+                self.assertFalse(snapshot['coverage']['complete'])
+        del state['coverage']['contacts_observed_at']
+        self.repo.get_state.return_value = state
+        self.assertTrue(self.reader.snapshot()['stale'])
+
+    def test_snapshot_degrades_malformed_global_timestamp_and_coverage(self):
+        self.reader.refresh()
+        original = deepcopy(self.repo.put_state.call_args.args[2])
+        for key, bad in (('observed_at', 1), ('coverage', None), ('coverage', 'invalid')):
+            with self.subTest(key=key, value=bad):
+                state = deepcopy(original)
+                state[key] = bad
+                self.repo.get_state.return_value = state
+                snapshot = self.reader.snapshot()
+                self.assertNotEqual(snapshot['status'], 'ok')
+                self.assertFalse(snapshot['coverage']['complete'])
+                self.assertFalse(snapshot['metrics']['complete'])
+        state = deepcopy(original)
+        del state['coverage']
+        self.repo.get_state.return_value = state
+        snapshot = self.reader.snapshot()
+        self.assertNotEqual(snapshot['status'], 'ok')
+        self.assertFalse(snapshot['metrics']['complete'])
+
+    def test_snapshot_degrades_old_missing_or_invalid_message_observation(self):
+        self.reader.refresh()
+        original = deepcopy(self.repo.put_state.call_args.args[2])
+        for bad in ((NOW - timedelta(seconds=SNAPSHOT_TTL + 1)).isoformat(), None, 1, {}, 'bad-date'):
+            with self.subTest(value=bad):
+                state = deepcopy(original)
+                state['coverage']['messages_observed_at'] = bad
+                self.repo.get_state.return_value = state
+                snapshot = self.reader.snapshot()
+                self.assertTrue(snapshot['stale'])
+                self.assertFalse(snapshot['coverage']['complete'])
+        del state['coverage']['messages_observed_at']
+        self.repo.get_state.return_value = state
+        self.assertTrue(self.reader.snapshot()['stale'])
+
+    def test_runtime_observation_reports_initial_and_cooldown_without_provider_call(self):
+        before = self.reader.snapshot()['runtime']
+        self.assertFalse(before['thread_started'])
+        self.assertFalse(before['in_progress'])
+        self.repo.get_state.return_value = {'next_attempt_at': (self.now + timedelta(seconds=300)).isoformat(), 'error_code': 'apollo_endpoint_budget_exhausted'}
+        self.reader.refresh()
+        after = self.reader.snapshot()['runtime']
+        self.assertEqual(after['phase'], 'cooldown')
+        self.assertEqual(after['cooldown_until'], (self.now + timedelta(seconds=300)).isoformat())
+        self.provider.collect.assert_not_called()
+
+    def test_runtime_observation_shows_inflight_without_exposing_provider_data(self):
+        entered, release = threading.Event(), threading.Event()
+        result = deepcopy(self.provider.collect.return_value)
+        def collect(**kwargs):
+            entered.set()
+            release.wait(2)
+            return result
+        self.provider.collect.side_effect = collect
+        thread = threading.Thread(target=self.reader.refresh)
+        thread.start()
+        try:
+            self.assertTrue(entered.wait(1))
+            runtime = self.reader.snapshot()['runtime']
+            self.assertTrue(runtime['in_progress'])
+            self.assertEqual(runtime['phase'], 'collecting')
+            self.assertIsNotNone(runtime['last_attempt_at'])
+        finally:
+            release.set()
+            thread.join(3)
+        self.assertFalse(self.reader.snapshot()['runtime']['in_progress'])
+
+    def test_runtime_observation_distinguishes_saved_cohort_from_initial_collection(self):
+        entered, release = threading.Event(), threading.Event()
+        result = deepcopy(self.provider.collect.return_value)
+        def collect(**kwargs):
+            kwargs['on_cohort']({'complete': True}, {'entries': {}})
+            entered.set()
+            release.wait(2)
+            return result
+        self.provider.collect.side_effect = collect
+        thread = threading.Thread(target=self.reader.refresh)
+        thread.start()
+        try:
+            self.assertTrue(entered.wait(1))
+            self.assertEqual(self.reader.snapshot()['runtime']['phase'], 'collecting_messages')
+        finally:
+            release.set()
+            thread.join(3)
+
+    def test_thread_exception_is_sanitized_and_visible(self):
+        entered = threading.Event()
+        def fail():
+            entered.set()
+            raise RuntimeError('SECRET https://private.invalid signed body')
+        self.reader.refresh = fail
+        self.reader.start()
+        try:
+            self.assertTrue(entered.wait(1))
+            self.reader.stop()
+            runtime = self.reader.snapshot()['runtime']
+            self.assertTrue(runtime['thread_started'])
+            self.assertEqual(runtime['last_loop_error'], 'apollo_reader_loop_error')
+            self.assertNotIn('SECRET', json.dumps(runtime))
+            self.assertNotIn('private.invalid', json.dumps(runtime))
+        finally:
+            self.reader.stop()
+
+    def test_runtime_distinguishes_normal_wait_from_provider_cooldown(self):
+        future = (self.now + timedelta(seconds=300)).isoformat()
+        self.repo.get_state.return_value = {'next_attempt_at': future, 'error_code': None}
+        self.reader.refresh()
+        self.assertEqual(self.reader.snapshot()['runtime']['phase'], 'waiting_interval')
+        self.assertIsNone(self.reader.snapshot()['runtime']['cooldown_until'])
+        self.repo.get_state.return_value = {'next_attempt_at': future, 'error_code': 'apollo_endpoint_budget_exhausted'}
+        self.reader.refresh()
+        self.assertEqual(self.reader.snapshot()['runtime']['phase'], 'cooldown')
+        self.assertEqual(self.reader.snapshot()['runtime']['cooldown_until'], future)
+        self.repo.get_state.return_value = {'last_attempt_at': self.now.isoformat()}
+        self.reader.refresh()
+        self.assertEqual(self.reader.snapshot()['runtime']['phase'], 'waiting_interval')
+        self.assertFalse(self.reader.snapshot()['runtime']['in_progress'])
+
+    def test_runtime_exposes_sanitized_collection_failure_and_thread_liveness(self):
+        self.provider.collect.side_effect = RuntimeError('SECRET signed-url')
+        self.reader.refresh()
+        runtime = self.reader.snapshot()['runtime']
+        self.assertEqual(runtime['phase'], 'error')
+        self.assertEqual(runtime['last_refresh_error'], 'apollo_refresh_error')
+        self.assertFalse(runtime['thread_alive'])
+        self.assertNotIn('SECRET', json.dumps(runtime))
+        self.assertNotIn('signed-url', json.dumps(runtime))
+
+    def test_runtime_cooldown_detects_rate_limit_among_coverage_reasons(self):
+        future = (self.now + timedelta(seconds=300)).isoformat()
+        self.repo.get_state.return_value = {'next_attempt_at': future, 'error_code': 'other',
+            'coverage': {'reasons': ['other', 'apollo_rate_limited']}}
+        self.reader.refresh()
+        self.assertEqual(self.reader.snapshot()['runtime']['phase'], 'cooldown')
+
+    def test_runtime_reports_partial_collection_without_leaking_error_text(self):
+        data = deepcopy(self.provider.collect.return_value)
+        data['coverage'] = {'complete': False, 'contacts_complete': False,
+                            'messages_complete': False, 'reasons': ['apollo_read_unavailable']}
+        self.provider.collect.return_value = data
+        self.reader.refresh()
+        runtime = self.reader.snapshot()['runtime']
+        self.assertEqual(runtime['phase'], 'partial')
+        self.assertEqual(runtime['last_refresh_error'], 'apollo_refresh_error')
+        self.assertFalse(runtime['in_progress'])
 
     def test_interval_and_nonblocking_refresh_lock(self):
         self.reader.refresh()
@@ -1518,6 +2219,118 @@ class S47Tests(unittest.TestCase):
         self.assertEqual(INTERVAL, 900)
         self.assertEqual(SNAPSHOT_TTL, 1800)
         self.assertEqual(COHORT_TTL, 21600)
+
+
+
+from datetime import datetime,timezone
+from pathlib import Path
+import tempfile,threading,unittest
+from thunder_os.db import Repository
+NOW=datetime(2026,10,26,12,tzinfo=timezone.utc)
+class Provider(ApolloCampaignReadOnly):
+ def __init__(self,callback):
+  super().__init__(credential_loader=lambda:'fake',clock=lambda:NOW)
+  self.action=callback
+ def collect(self,previous=None,on_cohort=None):
+  self.request_budget={'version':1,'scope':_scope_identity(),'entries':{}}
+  self._reserve_endpoint('contacts_search')
+  return self.action(self,on_cohort)
+class RepoBarrier(Repository):
+ def __init__(self,repo,barrier): self.repo,self.barrier,self.once=repo,barrier,False
+ def get_state(self,*args):
+  value=self.repo.get_state(*args)
+  if args[0]==KIND and not self.once:self.once=True;self.barrier.wait(timeout=3)
+  return value
+ def transaction(self):return self.repo.transaction()
+ def put_state(self,*args):return self.repo.put_state(*args)
+ def put_states_atomic(self,*args):return self.repo.put_states_atomic(*args)
+class Cases(unittest.TestCase):
+ def setUp(self):
+  self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
+  self.repo=Repository(Path(self.tmp.name)/'test.db')
+ def test_snapshot_conflict_reports_terminal_runtime_state(self):
+  from thunder_os.db import RepositoryConflict
+  class ConflictingRepo(Repository):
+   def put_states_atomic(self, changes):
+    if any(item[0] == KIND for item in changes):
+     raise RepositoryConflict('synthetic conflict')
+    return super().put_states_atomic(changes)
+  repo=ConflictingRepo(Path(self.tmp.name)/'conflict.db')
+  def action(provider, callback):
+   callback({'complete':True,'source_total':1},provider.request_budget)
+  reader=ApolloCampaignReader(repo,Provider(action),enable_check=lambda:True,clock=lambda:NOW)
+  reader.refresh()
+  runtime=reader.snapshot()['runtime']
+  self.assertFalse(runtime['in_progress'])
+  self.assertEqual(runtime['phase'],'error')
+  self.assertEqual(runtime['last_refresh_error'],'apollo_snapshot_conflict')
+ def test_reservations_after_checkpoint(self):
+  def action(p,callback):
+   callback({'complete':True,'source_total':1},p.request_budget.copy())
+   p._reserve_endpoint('messages_search')
+   raise RuntimeError('synthetic')
+  p=Provider(action)
+  ApolloCampaignReader(self.repo,p,enable_check=lambda:True,clock=lambda:NOW).refresh()
+  state=self.repo.get_state(KIND,CAMPAIGN)
+  self.assertEqual(self.repo.get_state('apollo_reader_budget',CAMPAIGN)['budget']['entries'].get('messages_search'),[NOW.isoformat()])
+ def test_two_readers_both_read_before_first_checkpoint(self):
+  barrier=threading.Barrier(2); a_written=threading.Event();b_done=threading.Event();errors=[]
+  def first(p,callback):
+   callback({'complete':True,'source_total':1},p.request_budget);a_written.set()
+   if not b_done.wait(3):raise AssertionError('second reader timeout')
+   raise RuntimeError('first')
+  def second(p,callback):
+   if not a_written.wait(3):raise AssertionError('first reader timeout')
+   callback({'complete':True,'source_total':2},p.request_budget);raise RuntimeError('second')
+  def run(provider,done=None):
+   try:ApolloCampaignReader(RepoBarrier(self.repo,barrier),Provider(provider),enable_check=lambda:True,clock=lambda:NOW).refresh()
+   except Exception as e:errors.append(repr(e))
+   finally:
+    if done:done.set()
+  a=threading.Thread(target=run,args=(first,));b=threading.Thread(target=run,args=(second,b_done));a.start();b.start();a.join(5);b.join(5)
+  self.assertFalse(a.is_alive() or b.is_alive());self.assertEqual(errors,[])
+  self.assertEqual(self.repo.get_state(KIND,CAMPAIGN)['cohort_cache']['source_total'],1)
+
+ def test_two_processes_reserve_without_losing_same_timestamp(self):
+  import multiprocessing
+  ctx=multiprocessing.get_context('fork');start=ctx.Event()
+  def reserve(path):
+   repo=Repository(path)
+   p=ApolloCampaignReadOnly(lambda:'fake',clock=lambda:NOW)
+   p.request_budget={'version':1,'scope':_scope_identity(),'entries':{}}
+   if not start.wait(3):raise RuntimeError('barrier timeout')
+   p.reserve_atomic(repo,'contacts_search')
+  procs=[ctx.Process(target=reserve,args=(self.repo.path,)) for _ in range(2)]
+  for p in procs:p.start()
+  start.set()
+  for p in procs:p.join(5)
+  self.assertEqual([p.exitcode for p in procs],[0,0])
+  stamps=self.repo.get_state('apollo_reader_budget',CAMPAIGN)['budget']['entries']['contacts_search']
+  self.assertEqual(stamps,[NOW.isoformat(),NOW.isoformat()])
+
+ def test_two_real_collectors_share_budget_and_reject_stale_snapshot(self):
+  from thunder_os.db import RepositoryConflict
+  barrier=threading.Barrier(2); errors=[]; conflicts=[]; wires=[Wire(contacts=[],messages=[]),Wire(contacts=[],messages=[])]
+  class TrackingRepo(RepoBarrier):
+   def put_states_atomic(self,*args):
+    try:return super().put_states_atomic(*args)
+    except RepositoryConflict:
+     conflicts.append(True)
+     raise
+  def run(wire):
+   try:
+    provider=ApolloCampaignReadOnly(lambda:'fake',request=wire,mcp_request=FakeMCPTransport(wire),clock=lambda:NOW)
+    ApolloCampaignReader(TrackingRepo(self.repo,barrier),provider,enable_check=lambda:True,clock=lambda:NOW).refresh()
+   except Exception as e:errors.append(repr(e))
+  threads=[threading.Thread(target=run,args=(wire,)) for wire in wires]
+  for t in threads:t.start()
+  for t in threads:t.join(5)
+  self.assertFalse(any(t.is_alive() for t in threads));self.assertEqual(errors,[])
+  budget=self.repo.get_state('apollo_reader_budget',CAMPAIGN)['budget']['entries']
+  self.assertEqual(len(budget['profile']),2)
+  self.assertEqual(len(budget['contacts_search']),2)
+  self.assertIsNotNone(self.repo.get_state(KIND,CAMPAIGN))
+  self.assertTrue(conflicts, 'one stale snapshot write must be rejected')
 
 
 if __name__ == '__main__':

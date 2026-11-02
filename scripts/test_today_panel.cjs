@@ -222,6 +222,15 @@ const sheet = () => ({schema_version: 1, read_only: true, campaigns: [{campaign_
       state.blocks.do.items.push(item('ivan')); // same identity must not duplicate visually.
       await refresh();
       assert.match(await page.locator('#today-respond-sources').innerText(), /LinkedIn sintético · Fonte indisponível/);
+      state.blocks.respond.sources = [{id:'gmail',status:'unavailable',error_code:'gmail_snapshot_missing'}, {id:'seqd',status:'offline'}];
+      await refresh();
+      assert.match(await page.locator('#today-respond-sources').innerText(), /Snapshot Gmail ainda não disponível; conexão não verificada/);
+      assert.match(await page.locator('#today-respond-sources').innerText(), /ponte SEQD · Fonte indisponível/);
+      for (const coverage of ['concluída', 'parcial']) {
+        state.blocks.respond.sources = [{id:'gmail',status:'partial',error_code:'gmail_checkpoint_without_threads',reason:`coleta ${coverage} sem threads persistidas; atualidade não verificada`}];
+        await refresh();
+        assert.match(await page.locator('#today-respond-sources').innerText(), new RegExp(`coleta ${coverage} sem threads persistidas; atualidade não verificada`, 'i'));
+      }
       assert.doesNotMatch(await page.locator('#sec-hoje').innerText(), /internal_error_code|persisted_gmail_observation_not_live_sync|crm_history_not_authoritative/);
       assert.equal(await page.locator('#today-respond article').count(), 1);
       assert.equal(await page.locator('#today-do article').count(), 1);

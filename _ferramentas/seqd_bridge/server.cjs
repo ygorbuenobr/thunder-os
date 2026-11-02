@@ -16,10 +16,10 @@ function serverFor(bridge){
   }catch(error){res.writeHead(error instanceof BridgeError?error.status:503);res.end(JSON.stringify({mailbox:EXPECTED.email,status:'rejected',error_code:error instanceof BridgeError?error.code:'bridge_unavailable'}));}
  });
 }
-function createReadOnlyBridge(provider,credential){
- return createBridge({provider,credential,readOnly:true});
+function createReadOnlyBridge(provider,credential,snapshotEnabled=false){
+ return createBridge({provider,credential,readOnly:true,snapshotEnabled});
 }
-function createScopedBridge({readProvider,writeProvider,credential,journalDir,policyLoader,now=()=>Date.now()}){
+function createScopedBridge({readProvider,writeProvider,credential,journalDir,policyLoader,snapshotEnabled=false,now=()=>Date.now()}){
  const authority=(body,tick)=>{
   const p=policyLoader();
   const fields=['approval_ref','mailbox','to','subject','body_hash','idempotency_key','issued_at','expires_at','max_attempts'];
@@ -35,7 +35,7 @@ function createScopedBridge({readProvider,writeProvider,credential,journalDir,po
    p.to===body.to&&p.subject===body.subject&&p.body_hash===hash(body.body)&&p.idempotency_key===body.idempotency_key&&threadMatches,'scoped_policy_mismatch');
   return true;
  };
- const read=createReadOnlyBridge(readProvider,credential);
+ const read=createReadOnlyBridge(readProvider,credential,snapshotEnabled);
  const write=createBridge({provider:writeProvider,credential,journalDir,sendEnabled:true,sendAuthority:authority,now});
  return {journal:write.journal,async handle(request){
   if(request.method!=='GET')return write.handle(request);
@@ -56,14 +56,15 @@ async function main(){
  for(const method of ['log','error','warn','info','debug'])console[method]=()=>{};
  const credential=fs.readFileSync('/run/secrets/thunder_bridge','utf8').trim();
  const {createNativeProvider}=require('./native.cjs');
- const provider=await createNativeProvider({readOnly:true});
- let bridge=createReadOnlyBridge(provider,credential);
+ const snapshotEnabled=process.env.THUNDER_BRIDGE_SNAPSHOT_ENABLED==='true';
+ const provider=await createNativeProvider({readOnly:true,snapshotEnabled});
+ let bridge=createReadOnlyBridge(provider,credential,snapshotEnabled);
  if(process.env.THUNDER_BRIDGE_SCOPED_SEND==='true'){
   const journalDir=process.env.THUNDER_BRIDGE_JOURNAL_DIR;
   check(typeof journalDir==='string'&&require('node:path').isAbsolute(journalDir)&&fs.lstatSync(journalDir).isDirectory(),'scoped_journal_required',503);
   pinnedSendPolicy();
   const writeProvider=await createNativeProvider({readOnly:false});
-  bridge=createScopedBridge({readProvider:provider,writeProvider,credential,journalDir,policyLoader:pinnedSendPolicy});
+  bridge=createScopedBridge({readProvider:provider,writeProvider,credential,journalDir,policyLoader:pinnedSendPolicy,snapshotEnabled});
  }
  if(bridge.journal)await bridge.journal.ready;
  const server=serverFor(bridge);server.requestTimeout=35000;server.headersTimeout=10000;server.timeout=35000;

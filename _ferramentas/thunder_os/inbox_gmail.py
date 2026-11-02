@@ -83,7 +83,8 @@ class GmailInbox:
         profile=self._fetch('/users/me/profile',{})
         if not isinstance(profile.get('emailAddress'),str) or profile['emailAddress'].lower()!=self.mailbox:raise InboxError('gmail_account_mismatch')
         scope=payload_hash({'provider':'gmail','mailbox':self.mailbox});checkpoint=self.repo.get_state('gmail_sync',scope) or {}
-        cursor=checkpoint.get('cursor');seen={cursor} if cursor else set();threads=set()
+        cursor=checkpoint.get('cursor');seen=set(checkpoint.get('cursor_hashes',[])) if cursor else set();threads=set()
+        if cursor: seen.add(payload_hash({'cursor':cursor}))
         listed=set(checkpoint.get('listed_threads',[])) if cursor else set()
         counts={'imported':0,'duplicate':0,'changed':0}
         for _ in range(max_pages):
@@ -91,7 +92,10 @@ class GmailInbox:
             entries=page.get('messages',[]);next_cursor=page.get('nextPageToken')
             if not isinstance(entries,list) or len(entries)>100 or (next_cursor is not None and (not isinstance(next_cursor,str) or not next_cursor or len(next_cursor)>2048)):
                 raise InboxError('invalid_mail_page')
-            if next_cursor and (next_cursor in seen or not entries):raise InboxError('mail_cursor_loop')
+            if next_cursor and (payload_hash({'cursor':next_cursor}) in seen or not entries):raise InboxError('mail_cursor_loop')
+            if next_cursor:
+                seen.add(payload_hash({'cursor':next_cursor}))
+                if len(seen)>10000:raise InboxError('mail_cursor_limit')
             # All page reads/parsing happen before transaction: failure cannot advance cursor.
             batch=[]
             for entry in entries:
@@ -140,10 +144,9 @@ class GmailInbox:
                             data={k:v for k,v in prior.items() if k not in {'id','version','updated_at'}}
                             self.repo.put_state('gmail_thread',prior['id'],{**data,'complete':False})
                 checkpoint=self.repo.put_state('gmail_sync',scope,{'cursor':next_cursor,'complete':next_cursor is None,
-                    'listed_threads':sorted(listed) if next_cursor else []})
+                    'listed_threads':sorted(listed) if next_cursor else [],'cursor_hashes':sorted(seen) if next_cursor else []})
             cursor=next_cursor
             if not cursor:break
-            seen.add(cursor)
         return {**counts,'threads':len(threads),'complete':cursor is None,'external_effects_enabled':False}
 
     def draft(self,message_id,content,*,actor,expected_thread_hash,expected_version=0):
@@ -161,3 +164,10 @@ class GmailInbox:
             if (old['version'] if old else 0)!=expected_version:raise RepositoryConflict('draft_version_changed')
             return self.repo.put_state('gmail_draft',message_id,{'mailbox':self.mailbox,'reply_to':current['sender'],
                 'content':content,'thread_hash':expected_thread_hash,'status':'local_draft','send_authorized':False})
+
+
+def sync_snapshot(service, *, mailbox, get, max_pages=5, max_threads=50):
+    """Compose the existing inbox with an explicitly supplied read transport."""
+    if not callable(get):
+        raise InboxError('gmail_transport_not_configured')
+    return GmailInbox(service, mailbox=mailbox, get=get).sync(max_pages=max_pages, max_threads=max_threads)

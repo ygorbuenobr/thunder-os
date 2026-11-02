@@ -1,0 +1,16 @@
+'use strict';
+// Synthetic bridge producer for the offline Python consumer integration test.
+const {createBridge}=require('./bridge.cjs');
+const {EXPECTED}=require('./contract.cjs');
+require('node:net').Socket.prototype.connect=function(){throw Error('network forbidden');};
+const KEY='a'.repeat(64);
+const MODE=process.env.SNAPSHOT_FIXTURE_MODE||'ok';
+const provider={async session(){return {
+ async verifyProfile(){return MODE==='wrong-account'?'other@example.invalid':EXPECTED.email;},
+ async snapshotList({cursor}){if(MODE==='thread-error')return {messages:[{id:'aa11',thread_id:'abc123'},{id:'bb22',thread_id:'def456'}],next_cursor:null};return {messages:[{id:cursor?'bb22':'aa11',thread_id:cursor?'def456':'abc123'}],next_cursor:cursor?(MODE==='bad-cursor'?'next':null):'next'};},
+ async snapshotThread(id){if(MODE==='thread-error'&&id==='def456')throw Error('fixture');const text=Buffer.from('Original synthetic message');return {id,historyId:'42',messages:[{
+  id:'a'+id,threadId:id,internalDate:'1792746000000',labelIds:['INBOX'],payload:{mimeType:'text/plain',
+   headers:[{name:'From',value:'buyer@example.invalid'},{name:'Subject',value:'Synthetic'}],body:{data:text.toString('base64url')}}}]};}
+};}};
+const bridge=createBridge({provider,credential:KEY,readOnly:true,snapshotEnabled:true});
+bridge.handle({method:'GET',url:process.argv[2],authorization:'Bearer '+KEY}).then(value=>process.stdout.write(JSON.stringify(value))).catch(()=>process.exitCode=1);

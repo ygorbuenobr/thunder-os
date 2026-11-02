@@ -193,8 +193,9 @@ class JourneyImportHTTP(HubSpotHTTP):
         name_filters = [{'propertyName': key, 'operator': 'EQ', 'value': properties[key]}
                         for key in (('firstname', 'lastname') if kind == 'contacts' else ('name',))
                         if properties.get(key)]
-        for row in self._search(kind, name_filters, props):
-            rows[_record(row)['id']] = row
+        if name_filters:
+            for row in self._search(kind, name_filters, props):
+                rows[_record(row)['id']] = row
         # Both primary and secondary emails are documented searchable text.
         # Explicit additional-domain token search complements primary domain.
         query = ({'query': properties[field]} if kind == 'contacts' else
@@ -229,7 +230,8 @@ class JourneyImportHTTP(HubSpotHTTP):
             rows[record_id] = pinned
         # Exact comparison removes broad query matches, but retains name conflicts.
         return [row for row in rows.values() if properties[field] in _identities(kind, row)
-                or _name(row['properties'], kind) == _name(properties, kind) or row['id'] == record_id]
+                or bool(name_filters) and bool(_name(properties, kind))
+                and _name(row['properties'], kind) == _name(properties, kind) or row['id'] == record_id]
 
 
 class NewJourneyImport:

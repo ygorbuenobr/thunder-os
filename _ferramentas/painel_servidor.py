@@ -1778,6 +1778,8 @@ class Handler(BaseHTTPRequestHandler):
                         lead['hubspot_contact_id'] = contact_id
                         lead['hubspot_contact_url'] = 'https://app.hubspot.com/contacts/51412240/record/0-1/' + contact_id
                         lead['hubspot_binding_observed_at'] = binding.get('observed_at')
+            from thunder_os.apollo_hunter_preview import plan_snapshot
+            state['hunter_preview'] = plan_snapshot(state, {})
             return self.responder(200, state)
         if rota.path == '/api/os/v1/integrations/instantly/reader':
             if self.thunder_proxy_actor() != 'ygor':

@@ -1205,6 +1205,8 @@ class ThunderService:
                 **dict(data), "actor": actor, "state": "identity_resolution",
                 "classification_history": [], "next_action": "resolver identidade",
             })
+        if actor != 'ygor':
+            raise ContractError('reply trusted human required')
         classification = data.get("classification")
         if classification not in {"positive", "objection", "negative", "opt_out", "risk", "unrelated"}:
             raise ContractError("valid classification required")
@@ -1285,24 +1287,9 @@ class ThunderService:
         reply = self.repository.get_state("reply", reply_id)
         if not reply or reply.get("state") != "identity_resolution":
             raise ContractError("reply is not awaiting identity")
-        cadence = self.repository.get_state("cadence", str(data["cadence_id"]))
-        if not cadence:
-            raise ContractError("cadence not found")
-        sent_step_ids = {
-            effect["payload"]["step"]["id"] for effect in self.repository.effects()
-            if effect["state"] == "sent" and effect["payload"].get("cadence_id") == data["cadence_id"]
-        }
-        self.repository.put_state("cadence", str(data["cadence_id"]), {
-            **{k: v for k, v in cadence.items() if k not in {"id", "version", "updated_at"}},
-            "steps": [dict(step) if step.get("id") in sent_step_ids else {**step, "status": "skipped_reply"}
-                      for step in cadence["steps"]],
-            "status": "paused_reply", "pause_reason": "resposta recebida após resolver identidade",
-        })
-        return self.repository.put_state("reply", reply_id, {
-            **{k: v for k, v in reply.items() if k not in {"id", "version", "updated_at"}},
-            **dict(data), "actor": actor, "state": "needs_classification",
-            "next_action": "classificar resposta",
-        })
+        # No persisted trusted correlation currently binds an unresolved reply to
+        # the proposed cadence and preceding touch. Keep both unchanged.
+        raise ContractError('reply identity evidence unavailable')
 
     def request_copy(self, data: Mapping[str, Any], actor: str) -> dict[str, Any]:
         required = {"account_id", "capability_ids", "proof_ids", "final_copy"}

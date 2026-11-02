@@ -215,6 +215,8 @@ class TodayReadonly:
                     'limitations': data.get('limitations', [])}
                 if data.get('error_code'):
                     source['error_code'] = data['error_code']
+                if data.get('reason'):
+                    source['reason'] = data['reason']
                 for key in ('unclassified_count', 'pages_read', 'threads_read', 'unresolved_contacts'):
                     if key in data:
                         source[key] = data[key]
@@ -378,8 +380,15 @@ class TodayReadonly:
         with self.repo.transaction():
             drafts = {row['id']: row for row in self.repo.list_state('gmail_draft')}
             threads = self.repo.list_state('gmail_thread')
+            scope = payload_hash({'provider': 'gmail', 'mailbox': MAILBOX})
+            checkpoint = self.repo.get_state('gmail_sync', scope)
             if not any(row.get('mailbox') == MAILBOX for row in threads):
-                return {**results, 'status': 'offline', 'error_code': 'gmail_snapshot_missing', 'collected_at': None}
+                if checkpoint and type(checkpoint.get('complete')) is bool:
+                    coverage = 'concluída' if checkpoint['complete'] else 'parcial'
+                    return {**results, 'status': 'partial', 'error_code': 'gmail_checkpoint_without_threads', 'collected_at': checkpoint.get('updated_at'),
+                            'reason': f'coleta {coverage} sem threads persistidas; atualidade não verificada'}
+                return {**results, 'status': 'unavailable', 'error_code': 'gmail_snapshot_missing',
+                        'reason': 'snapshot Gmail ainda não disponível; conexão não verificada', 'collected_at': None}
             for row in threads:
                 if row.get('mailbox') != MAILBOX:
                     continue
@@ -413,6 +422,14 @@ class TodayReadonly:
                     action={'label': 'Abrir conversa', 'url': 'https://mail.google.com/mail/u/' + quote(MAILBOX, safe='') + '/#all/' + quote(raw[0]['thread_id'], safe='')})
                 for key in ('respond', 'do'):
                     results[key].extend(data.get(key, []))
+            if checkpoint and type(checkpoint.get('complete')) is bool:
+                results['limitations'].append('gmail_snapshot_inbox_only')
+                results.update(status='partial', collected_at=checkpoint.get('updated_at'),
+                    reason=('coleta concluída' if checkpoint['complete'] else 'coleta parcial')
+                    + '; histórico local, atualidade não verificada')
+            else:
+                results.update(status='partial', collected_at=None,
+                    reason='histórico local sem checkpoint válido; atualidade não verificada')
         return results
 
     def _contact_for(self, keys):

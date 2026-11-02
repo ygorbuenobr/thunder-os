@@ -1,7 +1,7 @@
 'use strict';
 const {EXPECTED,BridgeError,check,hash,business,validate,safeEqual,identifier}=require('./contract.cjs');
 const {Journal}=require('./journal.cjs');
-function createBridge({provider,credential,journalDir,sendEnabled=false,readOnly=false,sendAuthority=null,now=()=>Date.now()}){
+function createBridge({provider,credential,journalDir,sendEnabled=false,readOnly=false,snapshotEnabled=false,sendAuthority=null,now=()=>Date.now()}){
  check(typeof credential==='string'&&/^[A-Za-z0-9_-]{32,4096}$/.test(credential),'credential_unavailable',503);
  check(typeof readOnly==='boolean','read_only_config_invalid',503);
  const journal=readOnly?null:new Journal(journalDir);
@@ -20,8 +20,23 @@ function createBridge({provider,credential,journalDir,sendEnabled=false,readOnly
   async function profile(){active=provider.session?await provider.session():provider;const result=await active.verifyProfile();check(result===EXPECTED.email,'provider_account_mismatch',503);}
   const parsed=new URL(url,'http://bridge.invalid');check(parsed.origin==='http://bridge.invalid'&&!parsed.hash,'invalid_route');
   const route=parsed.pathname;
-  if(readOnly)check(url===route+parsed.search&&(route==='/v1/status'||route==='/v1/messages'||route==='/v1/contact-search'||/^\/v1\/(messages|threads)\/[a-f0-9]{1,64}$/.test(route))&&
-   (route==='/v1/messages'||route==='/v1/contact-search'||!parsed.search),'read_only_route',404);
+  const snapshotRoute=readOnly&&snapshotEnabled&&(route==='/v1/snapshot/messages'||/^\/v1\/snapshot\/threads\/[a-f0-9]{1,64}$/.test(route));
+  if(readOnly)check(url===route+parsed.search&&(route==='/v1/status'||route==='/v1/messages'||route==='/v1/contact-search'||/^\/v1\/(messages|threads)\/[a-f0-9]{1,64}$/.test(route)||snapshotRoute)&&
+   (route==='/v1/messages'||route==='/v1/contact-search'||route==='/v1/snapshot/messages'||!parsed.search),'read_only_route',404);
+  if(snapshotRoute&&route==='/v1/snapshot/messages'){
+   const keys=[...parsed.searchParams.keys()];check(keys.every(k=>k==='cursor'||k==='limit')&&new Set(keys).size===keys.length,'invalid_query');
+   const raw=parsed.searchParams.get('limit')??'10',cursor=parsed.searchParams.get('cursor');
+   check(/^(?:[1-9]|10)$/.test(raw),'invalid_limit');check(cursor===null||/^[\x21-\x7e]{1,512}$/.test(cursor),'invalid_cursor');
+   await profile();check(typeof active.snapshotList==='function','snapshot_unavailable',503);
+   const data=await active.snapshotList({limit:Number(raw),cursor});
+   check(data&&Array.isArray(data.messages)&&data.messages.length<=Number(raw)&&data.messages.every(x=>/^[a-f0-9]{1,64}$/.test(x?.id)&&/^[a-f0-9]{1,64}$/.test(x?.thread_id))&&(data.next_cursor==null||typeof data.next_cursor==='string'&&/^[\x21-\x7e]{1,512}$/.test(data.next_cursor)&&data.next_cursor!==cursor),'invalid_provider_response',503);
+   return scoped({status:'ok',messages:data.messages.map(x=>({id:x.id,threadId:x.thread_id})),nextPageToken:data.next_cursor??null,coverage:{scope:'inbox',window_days:null,listing_complete:data.next_cursor==null},receipt_eligible:false});
+  }
+  if(snapshotRoute&&route.startsWith('/v1/snapshot/threads/')){
+   const id=route.slice('/v1/snapshot/threads/'.length);await profile();check(typeof active.snapshotThread==='function','snapshot_unavailable',503);
+   const thread=await active.snapshotThread(id);check(thread?.id===id&&typeof thread.historyId==='string'&&/^\d{1,30}$/.test(thread.historyId)&&Array.isArray(thread.messages)&&thread.messages.length>0&&thread.messages.length<=100,'invalid_provider_response',503);
+   const result=scoped({status:'ok',thread,receipt_eligible:false});check(Buffer.byteLength(JSON.stringify(result))<=1000000,'context_response_too_large',503);return result;
+  }
   if(method==='GET'&&route==='/v1/status'){
    check(!parsed.search,'invalid_query');await profile();if(sendEnabled){check(typeof active.quotaStatus==='function','quota_unavailable',503);const status=await active.quotaStatus();check(status?.ready===true,'quota_unavailable',503);}
    return scoped({status:'ready',send_enabled:sendEnabled,capabilities:{exact_reply_parent:active.supportsExactReplyParent===true}});

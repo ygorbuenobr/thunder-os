@@ -98,8 +98,8 @@ connectsafely, apollo, instantly, hubspot, gmail, chattie.
 
 Para manual, source.account_id='ygor', actor='ygor' e id igual a
 source.provider_message_id ou 'manual-'+source.provider_message_id sao
-obrigatorios. Para provider, conta deve bater com binding do Registry
-para o mesmo provider; evento canonico Instantly usa `provider_id`, que a futura
+obrigatorios. Para provider, canal, provider e conta devem bater com binding do
+Registry; HubSpot pode comprovar resposta de email pelo binding HubSpot. Evento canonico Instantly usa `provider_id`, que a futura
 composicao deve mapear explicitamente para `provider_message_id`. Nenhum alias
 ou nome substitui ID. O ator textual e um contrato de codigo confiavel, nao uma
 credencial nem verificacao de autenticidade HTTP.
@@ -108,9 +108,14 @@ credencial nem verificacao de autenticidade HTTP.
 
 `ingest` retorna `{status, reply, duplicate, alerts,
 external_pause_enabled:false, external_pauses_enabled:false}`. Status:
-`paused_internal` quando encontrou cadencias internas, `reply_recorded` para
-humana confirmada sem cadencia correspondente e `triage` para identidade ou
-humanidade nao confirmadas. `ReplyControlError.code` expoe erros estaveis:
+`paused_internal` quando pausou cadencias internas correlacionadas.
+No match comum por contato, resposta humana sem cadencia correspondente, com
+conta ausente ou com multiplas contas fica em `triage`, assim como identidade ou
+humanidade nao confirmadas. No caminho Gmail com recibo e binding revalidados,
+resposta revisada como humana pode pausar a cadencia exata sem ID HubSpot e
+registra `identity_basis=verified_provider_receipt`; sem correlacao fica em triagem.
+Respostas legadas sem correlacao comprovada permanecem em triagem.
+`ReplyControlError.code` expoe erros estaveis:
 `reply_event_conflict` para replay divergente e codigos `invalid_reply_*` para
 entradas invalidas. Sem semantica HTTP propria.
 

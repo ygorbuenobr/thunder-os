@@ -1,10 +1,13 @@
 """Phase 1: isolated SQLite and read-port doubles; no network, model or writes."""
 from contextlib import closing
 from copy import deepcopy
+import base64
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import sqlite3
+import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -36,6 +39,118 @@ def receipt(provider, ident):
 
 
 class JourneyTests(unittest.TestCase):
+    def test_gmail_injected_paged_snapshot_reaches_journey_without_network(self):
+        from thunder_os.inbox_gmail import GmailInbox, sync_snapshot
+        from thunder_os.gmail_seqd_snapshot import main as snapshot_main, run_snapshot
+        from thunder_os.seqd_client import SEQDClient
+        from thunder_os.inbox_common import InboxError
+        self.today._gmail = TodayReadonly._gmail.__get__(self.today)
+        def fixture_crm():
+            self.today._crm_bindings[PEER] = {'contact_id': '700', 'campaign_id': BR}
+            return {'status': 'ok', 'respond': [], 'do': []}
+        self.today._emails = fixture_crm
+        self.repo.put_state('identity', 'fixture-identity', {'actor': 'ygor', 'status': 'canonical',
+            'canonical_account': 'example.invalid', 'canonical_person': PEER,
+            'records': [{'domain': 'example.invalid', 'person_key': PEER, 'source': source,
+                         'hubspot_contact_id': '700'} for source in ('fixture:crm', 'fixture:mailbox')]})
+        calls = []
+        def transport(path, query):
+            calls.append((path, dict(query)))
+            if path.endswith('/profile'):
+                return {'emailAddress': MAILBOX}
+            if path.endswith('/messages'):
+                return {'messages': [{'threadId': 'abc123'}], 'nextPageToken': 'page2'} if not query.get('pageToken') else {'messages': [{'threadId': 'def456'}]}
+            tid = path.rsplit('/', 1)[-1]
+            body = base64.urlsafe_b64encode(b'Original synthetic message').decode()
+            return {'id': tid, 'historyId': '42', 'messages': [{'id': 'a' + tid, 'threadId': tid,
+                'internalDate': '1792746000000', 'labelIds': ['INBOX'], 'payload': {'mimeType': 'text/plain',
+                'body': {'data': body}, 'headers': [{'name': 'From', 'value': PEER}, {'name': 'Subject', 'value': 'Synthetic'}]}}]}
+        inbox = GmailInbox(self.service, mailbox=MAILBOX, get=transport)
+        before_failure = self.database()
+        def failed_thread(path, query):
+            if path.endswith('/threads/fff999'):
+                raise OSError('synthetic thread failure')
+            result = transport(path, query)
+            if path.endswith('/messages') and not query.get('pageToken'):
+                result['messages'].append({'threadId': 'fff999'})
+            return result
+        with self.assertRaisesRegex(InboxError, 'gmail_read_failed'):
+            sync_snapshot(self.service, mailbox=MAILBOX, get=failed_thread)
+        self.assertEqual(self.database(), before_failure)
+        def request(method, path, body, headers, timeout):
+            fixture = Path(__file__).with_name('seqd_bridge') / 'snapshot-fixture.cjs'
+            env = {'PATH': os.environ.get('PATH', ''), 'SNAPSHOT_FIXTURE_MODE': 'ok'}
+            raw = subprocess.run(['node',str(fixture),path],check=True,capture_output=True,timeout=5,env=env).stdout
+            return 200, raw
+        client = SEQDClient(lambda: 'a'*64, request=request)
+        with self.assertRaisesRegex(InboxError, 'gmail_snapshot_disabled'):
+            run_snapshot(self.service, client=client)
+        first = snapshot_main(['--db',str(self.repo.path),'--max-pages','1'],
+            environ={'THUNDER_OS_GMAIL_SNAPSHOT_ENABLED':'true'}, service_factory=lambda _:self.service, client=client)
+        self.assertFalse(first['complete'])
+        partial = self.adapter.snapshot()
+        source = next(s for s in partial['sources'] if s['id'] == 'gmail')
+        self.assertEqual(source['status'], 'partial')
+        self.assertIsNotNone(source['collected_at'])
+        scope = payload_hash({'provider': 'gmail', 'mailbox': MAILBOX})
+        checkpoint = self.repo.get_state('gmail_sync', scope)
+        def failed_page(path, query):
+            if query.get('pageToken'):
+                raise OSError('synthetic provider failure')
+            return transport(path, query)
+        with self.assertRaisesRegex(InboxError, 'gmail_read_failed'):
+            GmailInbox(self.service, mailbox=MAILBOX, get=failed_page).sync()
+        self.assertEqual(self.repo.get_state('gmail_sync', scope), checkpoint)
+        second = run_snapshot(self.service, enabled=True, client=client, max_pages=5)
+        self.assertTrue(second['complete'])
+        self.assertEqual(len(self.repo.list_state('gmail_thread')), 2)
+        self.refresh()
+        snapshot = self.adapter.snapshot()
+        source = next(s for s in snapshot['sources'] if s['id'] == 'gmail')
+        self.assertEqual(source['status'], 'partial')  # persisted snapshot, not a live read
+        self.assertIsNotNone(source['collected_at'])
+        items = self.stage(snapshot, 'resposta')['items']
+        self.assertTrue(items)
+        self.assertEqual(items[0]['campaign_id'], BR)
+        detail = self.adapter.detail(items[0]['id'])
+        self.assertTrue(any(block.get('text') == 'Original synthetic message' for block in detail['blocks']))
+        before = len(self.repo.list_state('gmail_message'))
+        again = inbox.sync(max_pages=5)
+        self.assertEqual(again['duplicate'], 2)
+        self.assertEqual(len(self.repo.list_state('gmail_message')), before)
+        before_wrong = self.database()
+        wrong = GmailInbox(self.service, mailbox=MAILBOX, get=lambda p, q: {'emailAddress': 'wrong@example.invalid'})
+        with self.assertRaisesRegex(InboxError, 'gmail_account_mismatch'):
+            wrong.sync()
+        self.assertEqual(self.database(), before_wrong)
+
+    def test_gmail_cursor_cycle_across_bounded_runs_stays_partial(self):
+        from thunder_os.inbox_gmail import GmailInbox
+        from thunder_os.inbox_common import InboxError
+        def transport(path, query):
+            if path.endswith('/profile'):return {'emailAddress':MAILBOX}
+            if path.endswith('/messages'):
+                token=query.get('pageToken');return {'messages':[{'threadId':'abc123'}],
+                    'nextPageToken':{None:'A','A':'B','B':'A'}[token]}
+            body=base64.urlsafe_b64encode(b'Synthetic').decode()
+            return {'id':'abc123','historyId':'1','messages':[{'id':'abc124','threadId':'abc123',
+                'internalDate':'1792746000000','labelIds':['INBOX'],'payload':{'mimeType':'text/plain',
+                'body':{'data':body},'headers':[{'name':'From','value':PEER}]}}]}
+        inbox=GmailInbox(self.service,mailbox=MAILBOX,get=transport)
+        self.assertFalse(inbox.sync(max_pages=1)['complete'])
+        self.assertFalse(inbox.sync(max_pages=1)['complete'])
+        scope=payload_hash({'provider':'gmail','mailbox':MAILBOX})
+        checkpoint=self.repo.get_state('gmail_sync',scope)
+        with self.assertRaisesRegex(InboxError,'mail_cursor_loop'):inbox.sync(max_pages=1)
+        self.assertEqual(self.repo.get_state('gmail_sync',scope),checkpoint)
+        self.assertFalse(checkpoint['complete'])
+
+    def test_missing_gmail_snapshot_reason_reaches_journey(self):
+        self.today._gmail = TodayReadonly._gmail.__get__(self.today)
+        result = self.adapter.snapshot()
+        source = next(s for s in result['sources'] if s['id'] == 'gmail')
+        self.assertEqual(source['status'], 'unavailable')
+        self.assertIn('snapshot Gmail ainda não disponível', source['reason'])
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -103,7 +218,7 @@ class JourneyTests(unittest.TestCase):
         incoming = self.stage(result, 'resposta')['items']
         self.assertEqual([x['name'] for x in outgoing], ['Apollo A'])
         self.assertIn('Resposta sinalizada pelo Apollo; original não confirmado.', outgoing[0]['summary'])
-        self.assertEqual([x['name'] for x in incoming], ['Apollo B'])
+        self.assertEqual([x['name'] for x in incoming], ['colleague@example.invalid'])
         self.assertEqual(result['metrics']['reached']['value'], 2)
         self.assertIsNone(result['metrics']['replied']['value'])
         detail = self.adapter.detail(incoming[0]['id'], campaign='BR-APOLLO-01')
@@ -176,6 +291,46 @@ class JourneyTests(unittest.TestCase):
             source = self.adapter.detail(timeline['detail_id'], 'BR-APOLLO-01')['source_links']
             self.assertEqual([link['url'] for link in source], [original['source_url']])
         self.assertEqual(self.database(), before)
+
+    def test_forwarded_context_names_author_and_does_not_claim_pending_status(self):
+        self.apollo_context()
+        value = self.adapter.snapshot("BR-APOLLO-01")
+        item, = self.stage(value, "resposta")["items"]
+        self.assertEqual(item["name"], "fernanda@example.invalid")
+        self.assertIn("Context buyer", item["summary"])
+        self.assertIn("situação atual não confirmada", item["summary"])
+        detail = self.adapter.detail(item["id"], "BR-APOLLO-01")
+        self.assertEqual(detail["blocks"][-1]["sender"], "fernanda@example.invalid")
+        self.assertEqual(detail["blocks"][-1]["text"], "Fernanda original 26")
+        self.assertEqual(value["timeline"]["name"], "fernanda@example.invalid")
+        event = value["timeline"]["events"][-1]
+        self.assertEqual(self.adapter.detail(event["detail_id"], "BR-APOLLO-01")["title"], "fernanda@example.invalid")
+
+    def test_missing_response_author_is_not_attributed_to_enrolled_person(self):
+        _, events = self.apollo_context()
+        events[-1]["sender"] = None
+        value = self.adapter.snapshot("BR-APOLLO-01")
+        item, = self.stage(value, "resposta")["items"]
+        self.assertEqual(item["name"], "Autor não identificado")
+        self.assertIn("situação atual não confirmada", item["summary"])
+        self.assertIsNone(self.adapter.detail(item["id"], "BR-APOLLO-01")["blocks"][-1]["sender"])
+        event = value["timeline"]["events"][-1]
+        self.assertEqual(self.adapter.detail(event["detail_id"], "BR-APOLLO-01")["title"], "Autor não identificado")
+
+    def test_whitespace_response_author_is_not_attributed_to_enrolled_person(self):
+        _, events = self.apollo_context()
+        events[-1]["sender"] = "   "
+        value = self.adapter.snapshot("BR-APOLLO-01")
+        event = value["timeline"]["events"][-1]
+        self.assertEqual(self.adapter.detail(event["detail_id"], "BR-APOLLO-01")["title"], "Autor não identificado")
+
+    def test_enrolled_sender_whitespace_does_not_change_identity(self):
+        _, events = self.apollo_context()
+        events[-1].update(sender=" " + PEER + " ", event_type="reply_received", human_reply=True)
+        value = self.adapter.snapshot("BR-APOLLO-01")
+        item, = self.stage(value, "resposta")["items"]
+        self.assertEqual(item["name"], "Context buyer")
+        self.assertEqual(value["metrics"]["replied"]["coverage"]["observed_count"], 1)
 
     def test_apollo_context_last_outgoing_removes_earlier_inbound_pending(self):
         self.apollo_context(include_last=False)

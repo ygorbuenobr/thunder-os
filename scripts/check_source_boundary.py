@@ -6,9 +6,11 @@ from pathlib import PurePosixPath
 
 
 ALLOWED_FILES = {
+    "_ferramentas/test_thunder_os_gmail_seqd_snapshot.py",
     "scripts/test_apollo_campaign_panel.cjs",
     "_ferramentas/test_thunder_os_apollo_campaign_reader.py",
     "_ferramentas/test_thunder_os_apollo_hubspot_sync.py",
+    "_ferramentas/test_thunder_os_apollo_hunter_preview.py",
     "_ferramentas/test_thunder_os_manual_observation.py",
     "scripts/read_panel_resource_gates.py",
     "scripts/test_panel_resource_gates.py",
@@ -258,7 +260,7 @@ def allowed(path: str) -> bool:
     if path.startswith('_ferramentas/seqd_bridge/'):
         return PurePosixPath(path).name in {
             'bridge.cjs','native.cjs','server.cjs','contract.cjs','journal.cjs','quota.cjs',
-            'bridge.test.cjs','readonly.test.cjs','context.test.cjs','process-fixture.cjs',
+            'bridge.test.cjs','readonly.test.cjs','context.test.cjs','process-fixture.cjs','snapshot-fixture.cjs',
             'contract-vector.json','threading.test.cjs',
         } and len(parts)==3
     if path.startswith("_ferramentas/thunder_os/"):

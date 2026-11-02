@@ -93,6 +93,17 @@ test('scoped bridge pins recipient content expiry and one journal attempt across
  // Read requests still use the richer read-only path, never the mutable provider.
  assert.equal((await call(bridge,'GET','/v1/status')).send_enabled,false);
 });
+test('snapshot opt-in behaves identically with or without scoped send enabled',async t=>{
+ const {createScopedBridge,createReadOnlyBridge}=require('./server.cjs'),f=await fixture(t);
+ f.provider.snapshotList=async()=>({messages:[],next_cursor:null});
+ for(const scoped of [false,true])for(const snapshotEnabled of [false,true]){
+  const bridge=scoped?createScopedBridge({readProvider:f.provider,writeProvider:f.provider,credential:KEY,
+   journalDir:f.dir,policyLoader:()=>null,snapshotEnabled}):createReadOnlyBridge(f.provider,KEY,snapshotEnabled);
+  if(snapshotEnabled)assert.equal((await call(bridge,'GET','/v1/snapshot/messages?limit=1')).coverage.listing_complete,true);
+  else await assert.rejects(call(bridge,'GET','/v1/snapshot/messages?limit=1'),/read_only_route/);
+ }
+ assert.equal(f.sends(),0);
+});
 test('scoped authority revoked during provider read blocks before send',async t=>{
  const f=await fixture(t);let authorized=true;
  f.provider.findDuplicates=async()=>{authorized=false;return {messages:[],complete:true};};
