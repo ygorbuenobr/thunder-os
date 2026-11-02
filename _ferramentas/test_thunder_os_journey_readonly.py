@@ -40,7 +40,7 @@ def receipt(provider, ident):
 class JourneyTests(unittest.TestCase):
     def test_gmail_injected_paged_snapshot_reaches_journey_without_network(self):
         from thunder_os.inbox_gmail import GmailInbox, sync_snapshot
-        from thunder_os.gmail_seqd_snapshot import run_snapshot
+        from thunder_os.gmail_seqd_snapshot import main as snapshot_main, run_snapshot
         from thunder_os.seqd_client import SEQDClient
         from thunder_os.inbox_common import InboxError
         self.today._gmail = TodayReadonly._gmail.__get__(self.today)
@@ -83,7 +83,8 @@ class JourneyTests(unittest.TestCase):
         client = SEQDClient(lambda: 'a'*64, request=request)
         with self.assertRaisesRegex(InboxError, 'gmail_snapshot_disabled'):
             run_snapshot(self.service, client=client)
-        first = run_snapshot(self.service, enabled=True, client=client, max_pages=1)
+        first = snapshot_main(['--db',str(self.repo.path),'--max-pages','1'],
+            environ={'THUNDER_OS_GMAIL_SNAPSHOT_ENABLED':'true'}, service_factory=lambda _:self.service, client=client)
         self.assertFalse(first['complete'])
         partial = self.adapter.snapshot()
         source = next(s for s in partial['sources'] if s['id'] == 'gmail')
@@ -120,6 +121,27 @@ class JourneyTests(unittest.TestCase):
         with self.assertRaisesRegex(InboxError, 'gmail_account_mismatch'):
             wrong.sync()
         self.assertEqual(self.database(), before_wrong)
+
+    def test_gmail_cursor_cycle_across_bounded_runs_stays_partial(self):
+        from thunder_os.inbox_gmail import GmailInbox
+        from thunder_os.inbox_common import InboxError
+        def transport(path, query):
+            if path.endswith('/profile'):return {'emailAddress':MAILBOX}
+            if path.endswith('/messages'):
+                token=query.get('pageToken');return {'messages':[{'threadId':'abc123'}],
+                    'nextPageToken':{None:'A','A':'B','B':'A'}[token]}
+            body=base64.urlsafe_b64encode(b'Synthetic').decode()
+            return {'id':'abc123','historyId':'1','messages':[{'id':'abc124','threadId':'abc123',
+                'internalDate':'1792746000000','labelIds':['INBOX'],'payload':{'mimeType':'text/plain',
+                'body':{'data':body},'headers':[{'name':'From','value':PEER}]}}]}
+        inbox=GmailInbox(self.service,mailbox=MAILBOX,get=transport)
+        self.assertFalse(inbox.sync(max_pages=1)['complete'])
+        self.assertFalse(inbox.sync(max_pages=1)['complete'])
+        scope=payload_hash({'provider':'gmail','mailbox':MAILBOX})
+        checkpoint=self.repo.get_state('gmail_sync',scope)
+        with self.assertRaisesRegex(InboxError,'mail_cursor_loop'):inbox.sync(max_pages=1)
+        self.assertEqual(self.repo.get_state('gmail_sync',scope),checkpoint)
+        self.assertFalse(checkpoint['complete'])
 
     def test_missing_gmail_snapshot_reason_reaches_journey(self):
         self.today._gmail = TodayReadonly._gmail.__get__(self.today)

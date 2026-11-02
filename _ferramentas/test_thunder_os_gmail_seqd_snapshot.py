@@ -3,12 +3,17 @@ import json
 import unittest
 from unittest.mock import Mock, patch
 
-from thunder_os.gmail_seqd_snapshot import run_snapshot
+from thunder_os.gmail_seqd_snapshot import main, run_snapshot
 from thunder_os.inbox_common import InboxError
 from thunder_os.seqd_client import MAILBOX, SEQDClient, SEQDError
 
 
 class SnapshotPortTests(unittest.TestCase):
+    def test_entrypoint_defaults_off_before_database_or_service(self):
+        factory=Mock(side_effect=AssertionError('must not run'))
+        with self.assertRaisesRegex(InboxError,'gmail_snapshot_disabled'):
+            main(['--db','/nonexistent'],environ={},service_factory=factory)
+        factory.assert_not_called()
     def test_disabled_and_missing_credential_do_not_call_network(self):
         service=Mock()
         request=Mock(side_effect=AssertionError('network forbidden'))
