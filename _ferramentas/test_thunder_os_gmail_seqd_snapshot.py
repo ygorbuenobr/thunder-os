@@ -1,5 +1,7 @@
 """Offline checks for the opt-in Gmail snapshot bridge."""
 import json
+import os
+import subprocess
 from contextlib import closing
 import sqlite3
 import tempfile
@@ -10,6 +12,65 @@ from unittest.mock import Mock, patch
 from thunder_os.gmail_seqd_snapshot import main, run_snapshot
 from thunder_os.inbox_common import InboxError
 from thunder_os.seqd_client import MAILBOX, SEQDClient, SEQDError
+from thunder_os.db import Repository
+from thunder_os.models import payload_hash
+from thunder_os.service import ThunderService
+
+
+class IntegratedSnapshotTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = Repository(Path(self.tmp.name) / 'fixture.db')
+        self.service = ThunderService(self.repo)
+        self.mode = 'ok'
+        for target in ('socket.create_connection', 'socket.socket.connect', 'socket.getaddrinfo'):
+            active = patch(target, side_effect=AssertionError('network forbidden'))
+            active.start()
+            self.addCleanup(active.stop)
+        def request(method, path, body, headers, timeout):
+            fixture = Path(__file__).with_name('seqd_bridge') / 'snapshot-fixture.cjs'
+            env = {'PATH': os.environ.get('PATH', ''), 'SNAPSHOT_FIXTURE_MODE': self.mode}
+            result = subprocess.run(['node', str(fixture), path], env=env, capture_output=True, timeout=5)
+            if result.returncode:
+                raise OSError('synthetic_bridge_failure')
+            return 200, result.stdout
+        self.client = SEQDClient(lambda: 'a' * 64, request=request)
+
+    def run_one(self):
+        return run_snapshot(self.service, enabled=True, client=self.client, max_pages=1)
+
+    def test_paginate_resume_and_repeat_without_duplicate(self):
+        self.assertFalse(self.run_one()['complete'])
+        self.assertTrue(self.run_one()['complete'])
+        self.assertEqual(len(self.repo.list_state('gmail_thread')), 2)
+        self.assertEqual(len(self.repo.list_state('gmail_message')), 2)
+        self.assertFalse(self.run_one()['complete'])
+        self.assertTrue(self.run_one()['complete'])
+        self.assertEqual(len(self.repo.list_state('gmail_message')), 2)
+
+    def test_wrong_account_does_not_write(self):
+        self.mode = 'wrong-account'
+        with self.assertRaises(InboxError):
+            self.run_one()
+        self.assertEqual(self.repo.list_state('gmail_thread'), [])
+        self.assertEqual(self.repo.list_state('gmail_message'), [])
+
+    def test_thread_error_does_not_write(self):
+        self.mode = 'thread-error'
+        with self.assertRaises(InboxError):
+            self.run_one()
+        self.assertEqual(self.repo.list_state('gmail_thread'), [])
+        self.assertEqual(self.repo.list_state('gmail_message'), [])
+
+    def test_bad_cursor_retains_checkpoint(self):
+        self.mode = 'bad-cursor'
+        self.assertFalse(self.run_one()['complete'])
+        scope = payload_hash({'provider': 'gmail', 'mailbox': MAILBOX})
+        before = self.repo.get_state('gmail_sync', scope)
+        with self.assertRaises(InboxError):
+            self.run_one()
+        self.assertEqual(self.repo.get_state('gmail_sync', scope), before)
 
 
 class SnapshotPortTests(unittest.TestCase):

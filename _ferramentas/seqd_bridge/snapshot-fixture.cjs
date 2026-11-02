@@ -4,10 +4,11 @@ const {createBridge}=require('./bridge.cjs');
 const {EXPECTED}=require('./contract.cjs');
 require('node:net').Socket.prototype.connect=function(){throw Error('network forbidden');};
 const KEY='a'.repeat(64);
+const MODE=process.env.SNAPSHOT_FIXTURE_MODE||'ok';
 const provider={async session(){return {
- async verifyProfile(){return EXPECTED.email;},
- async snapshotList({cursor}){return {messages:[{id:cursor?'bb22':'aa11',thread_id:cursor?'def456':'abc123'}],next_cursor:cursor?null:'next'};},
- async snapshotThread(id){const text=Buffer.from('Original synthetic message');return {id,historyId:'42',messages:[{
+ async verifyProfile(){return MODE==='wrong-account'?'other@example.invalid':EXPECTED.email;},
+ async snapshotList({cursor}){return {messages:[{id:cursor?'bb22':'aa11',thread_id:cursor?'def456':'abc123'}],next_cursor:cursor?(MODE==='bad-cursor'?'next':null):'next'};},
+ async snapshotThread(id){if(MODE==='thread-error')throw Error('fixture');const text=Buffer.from('Original synthetic message');return {id,historyId:'42',messages:[{
   id:'a'+id,threadId:id,internalDate:'1792746000000',labelIds:['INBOX'],payload:{mimeType:'text/plain',
    headers:[{name:'From',value:'buyer@example.invalid'},{name:'Subject',value:'Synthetic'}],body:{data:text.toString('base64url')}}}]};}
 };}};
