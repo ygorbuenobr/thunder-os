@@ -161,3 +161,10 @@ class GmailInbox:
             if (old['version'] if old else 0)!=expected_version:raise RepositoryConflict('draft_version_changed')
             return self.repo.put_state('gmail_draft',message_id,{'mailbox':self.mailbox,'reply_to':current['sender'],
                 'content':content,'thread_hash':expected_thread_hash,'status':'local_draft','send_authorized':False})
+
+
+def sync_snapshot(service, *, mailbox, get, max_pages=5, max_threads=50):
+    """Compose the existing inbox with an explicitly supplied read transport."""
+    if not callable(get):
+        raise InboxError('gmail_transport_not_configured')
+    return GmailInbox(service, mailbox=mailbox, get=get).sync(max_pages=max_pages, max_threads=max_threads)

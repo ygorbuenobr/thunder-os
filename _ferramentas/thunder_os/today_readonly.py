@@ -380,9 +380,9 @@ class TodayReadonly:
         with self.repo.transaction():
             drafts = {row['id']: row for row in self.repo.list_state('gmail_draft')}
             threads = self.repo.list_state('gmail_thread')
+            scope = payload_hash({'provider': 'gmail', 'mailbox': MAILBOX})
+            checkpoint = self.repo.get_state('gmail_sync', scope)
             if not any(row.get('mailbox') == MAILBOX for row in threads):
-                scope = payload_hash({'provider': 'gmail', 'mailbox': MAILBOX})
-                checkpoint = self.repo.get_state('gmail_sync', scope)
                 if checkpoint and type(checkpoint.get('complete')) is bool:
                     coverage = 'concluída' if checkpoint['complete'] else 'parcial'
                     return {**results, 'status': 'partial', 'error_code': 'gmail_checkpoint_without_threads', 'collected_at': checkpoint.get('updated_at'),
@@ -422,6 +422,13 @@ class TodayReadonly:
                     action={'label': 'Abrir conversa', 'url': 'https://mail.google.com/mail/u/' + quote(MAILBOX, safe='') + '/#all/' + quote(raw[0]['thread_id'], safe='')})
                 for key in ('respond', 'do'):
                     results[key].extend(data.get(key, []))
+            if checkpoint and type(checkpoint.get('complete')) is bool:
+                results.update(status='partial', collected_at=checkpoint.get('updated_at'),
+                    reason=('coleta concluída' if checkpoint['complete'] else 'coleta parcial')
+                    + '; histórico local, atualidade não verificada')
+            else:
+                results.update(status='partial', collected_at=None,
+                    reason='histórico local sem checkpoint válido; atualidade não verificada')
         return results
 
     def _contact_for(self, keys):

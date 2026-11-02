@@ -101,6 +101,18 @@ class ReadPort:
 
 
 class TodayTests(unittest.TestCase):
+    def test_gmail_threads_without_valid_checkpoint_are_not_current(self):
+        self.gmail()
+        scope = payload_hash({'provider': 'gmail', 'mailbox': MAILBOX})
+        for checkpoint in (None, {'complete': 'yes'}):
+            if checkpoint is not None:
+                self.repo.put_state('gmail_sync', scope, checkpoint)
+            self.today._cache = None
+            data = next(s for s in self.today.snapshot()['blocks']['respond']['sources'] if s['id'] == 'gmail')
+            self.assertEqual(data['status'], 'partial')
+            self.assertIsNone(data['collected_at'])
+            self.assertIn('não verificada', data['reason'])
+
     def test_missing_gmail_snapshot_is_not_reported_as_provider_offline(self):
         data = self.today._gmail()
         self.assertEqual(data['status'], 'unavailable')
