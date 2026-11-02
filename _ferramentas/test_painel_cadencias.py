@@ -105,7 +105,7 @@ class CadencePanelTests(unittest.TestCase):
             registry=CampaignRegistry(repo)
             registry.register({**config(),'campaign_id':'PILOT'},'ygor',0)
             repo.put_state('cadence','one',{'hubspot_contact_id':'123','person_key':'hubspot:123',
-                'status':'approved','steps':[{'id':'next','status':'approved'}]})
+                'account_id':'synthetic.invalid','status':'approved','steps':[{'id':'next','status':'approved'}]})
             control=ReplyControl(repo,registry)
             reader=Mock()
             reader.snapshot.return_value={'ok':True,'campaigns':[{'id':'PILOT','tasks':[{'contact_ids':['123']}]}]}
