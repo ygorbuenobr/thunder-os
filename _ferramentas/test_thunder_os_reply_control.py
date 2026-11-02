@@ -61,6 +61,14 @@ class ReplyControlTests(unittest.TestCase):
         self.assertEqual(self.repo.get_state('cadence','cadence-1')['status'],'approved')
         self.assertEqual(self.repo.get_state('cadence','other-profile')['status'],'approved')
 
+    def test_cadence_without_account_stays_in_triage(self):
+        cadence={**self.cadence};cadence.pop('account_id')
+        self.repo.put_state('cadence','cadence-1',cadence)
+        result=self.control.ingest(event(),'verified_source')
+        self.assertEqual(result['status'],'triage')
+        self.assertFalse(result['reply']['identity_confirmed'])
+        self.assertEqual(self.repo.get_state('cadence','cadence-1')['status'],'approved')
+
     def test_reply_without_matching_cadence_stays_in_triage(self):
         from thunder_os.service import ContractError, ThunderService
         result=self.control.ingest({**event(), 'hubspot_contact_id':'999'}, 'verified_source')
