@@ -1177,6 +1177,7 @@ class JourneyReadonly:
             'hubspot_deals': 'Negocios HubSpot', 'apollo_cache': 'Apollo'}
         source_status = {'ok': 'leitura disponivel', 'partial': 'leitura parcial',
                          'offline': 'leitura indisponivel', 'stale': 'leitura desatualizada',
+                         'unavailable': 'dados ainda nao disponiveis',
                          'error': 'falha na leitura; observacao anterior quando disponivel'}
         log = [{'date': sources[key].get('collected_at'),
                 'message': label + ': ' + source_status.get(sources[key].get('status'), 'estado desconhecido') + '.'}

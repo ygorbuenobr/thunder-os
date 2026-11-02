@@ -36,6 +36,12 @@ def receipt(provider, ident):
 
 
 class JourneyTests(unittest.TestCase):
+    def test_missing_gmail_snapshot_reason_reaches_journey(self):
+        self.today._gmail = TodayReadonly._gmail.__get__(self.today)
+        result = self.adapter.snapshot()
+        source = next(s for s in result['sources'] if s['id'] == 'gmail')
+        self.assertEqual(source['status'], 'unavailable')
+        self.assertIn('snapshot Gmail ainda não disponível', source['reason'])
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)

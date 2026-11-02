@@ -101,6 +101,25 @@ class ReadPort:
 
 
 class TodayTests(unittest.TestCase):
+    def test_missing_gmail_snapshot_is_not_reported_as_provider_offline(self):
+        data = self.today._gmail()
+        self.assertEqual(data['status'], 'unavailable')
+        self.assertEqual(data['error_code'], 'gmail_snapshot_missing')
+        self.assertIn('snapshot Gmail ainda não disponível', data['reason'])
+        self.assertIsNone(data['collected_at'])
+        source = next(s for s in self.today.snapshot()['blocks']['respond']['sources'] if s['id'] == 'gmail')
+        self.assertEqual(source['reason'], data['reason'])
+
+    def test_empty_gmail_checkpoint_is_not_missing_snapshot(self):
+        scope=payload_hash({'provider':'gmail','mailbox':MAILBOX})
+        for complete in (True,False):
+            with self.subTest(complete=complete):
+                self.repo.put_state('gmail_sync',scope,{'complete':complete,'cursor':None if complete else 'next','listed_threads':[]})
+                data=self.today._gmail()
+                self.assertEqual(data['status'],'partial')
+                self.assertNotEqual(data.get('error_code'),'gmail_snapshot_missing')
+                self.assertIn('sem threads persistidas',data['reason'])
+                self.assertIsNotNone(data['collected_at'])
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
