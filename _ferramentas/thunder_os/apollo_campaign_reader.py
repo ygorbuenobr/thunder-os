@@ -657,6 +657,7 @@ class ApolloCampaignReadOnly:
 
     def _enumerate_messages(self, result, leads, threads, *, sent_only):
         coverage, total, seen_query = result['coverage'], None, set()
+        eligible_query, has_orphan = set(), False
         prefix = 'sent_messages' if sent_only else 'messages'
         metadata_key = 'sent_message_metadata_observed' if sent_only else 'message_metadata_observed'
         try:
@@ -673,28 +674,42 @@ class ApolloCampaignReadOnly:
                 total = count
                 coverage['sent_messages_total' if sent_only else 'messages_total_entries'] = total
                 require(len(items) == min(100, max(0, count - (page - 1) * 100)), 'incomplete_message_page')
-                page_ids = set()
+                page_ids, eligible = set(), []
                 for row in items:
                     self._scope(row)
                     require(row.get('emailer_campaign_id') == APOLLO_SEQUENCE, 'message_sequence_mismatch')
                     require('user_id' not in row or row['user_id'] == OWNER, 'apollo_owner_mismatch')
                     require(identifier(row.get('id')) and row['id'] not in seen_query
                             and row['id'] not in page_ids, 'duplicate_or_invalid_message')
-                    require(row.get('contact_id') in leads, 'message_contact_outside_cohort')
+                    require(identifier(row.get('contact_id')), 'invalid_message_contact')
                     require(row['id'] not in self.message_contacts
                             or self.message_contacts[row['id']] == row['contact_id'],
                             'message_contact_changed_between_queries')
                     page_ids.add(row['id'])
+                    if row['contact_id'] not in leads:
+                        has_orphan = True
+                        if row['id'] not in self.unreconciled_ids:
+                            self.unreconciled_ids.add(row['id'])
+                            coverage['unreconciled_messages_count'] = len(self.unreconciled_ids)
+                            diagnostics = coverage.setdefault('unreconciled_messages', [])
+                            if len(diagnostics) < 100:
+                                diagnostics.append({'message_hash': hashlib.sha256(row['id'].encode()).hexdigest(),
+                                    'phase': prefix, 'page': page, 'reason': 'message_contact_outside_cohort'})
+                            else:
+                                coverage['unreconciled_messages_truncated'] = True
+                    else:
+                        eligible.append(row)
                 seen_query.update(page_ids)
-                self.observed_ids.update(page_ids)
+                eligible_query.update(row['id'] for row in eligible)
+                self.observed_ids.update(row['id'] for row in eligible)
                 self.message_contacts.update({row['id']: row['contact_id'] for row in items})
-                for row in items:
+                for row in eligible:
                     self.current_metadata.setdefault(row['id'], row)
                 coverage.update({prefix + '_pages': page, metadata_key: len(seen_query)})
                 # Each native ID is attempted at most once per collection, even
                 # after a read failure; all-query overlap is not a second retry.
                 pending = []
-                for row in items:
+                for row in eligible:
                     if row['id'] in self.native_attempted_ids:
                         continue
                     cached = self._cached_message(row, leads[row['contact_id']])
@@ -711,17 +726,20 @@ class ApolloCampaignReadOnly:
                     self._hydrate(result, batch, leads, threads)
                 if page >= pages:
                     require(len(seen_query) == total, 'incomplete_message_page')
-                    require(seen_query <= self.hydrated_messages.keys(), 'native_messages_incomplete')
+                    require(eligible_query <= self.hydrated_messages.keys(), 'native_messages_incomplete')
                     if sent_only:
-                        require(all(self.hydrated_messages[ident] == 'email_sent' for ident in seen_query),
+                        require(all(self.hydrated_messages[ident] == 'email_sent' for ident in eligible_query),
                                 'sent_filtered_content_unverified')
-                    coverage[prefix + '_complete'] = True
+                    coverage[prefix + '_complete'] = not has_orphan
                     break
             else:
                 raise ExternalEmailError('apollo_messages_page_limit')
         except Exception as exc:
             coverage['reasons'].append(exc.code if isinstance(exc, ExternalEmailError)
                                        else 'apollo_mcp_read_unavailable')
+        finally:
+            if has_orphan:
+                coverage['reasons'].append('message_contact_outside_cohort')
 
     def _hydrate(self, result, batch, leads, threads):
         data = self._call('GET', self._native_message_path(list(batch)))
@@ -991,6 +1009,7 @@ class ApolloCampaignReadOnly:
             self.calls, self.ends = 0, self.monotonic() + self.deadline
             self.rate_limited, self.mcp_session, self.observed_ids = False, None, set()
             self.native_attempted_ids, self.hydrated_messages, self.message_contacts = set(), {}, {}
+            self.unreconciled_ids = set()
             self.gmail_rate_limited = False
             self.endpoint_budget_exhausted = False
             self.next_attempt_at, self.rate_limit_window = None, None

@@ -158,6 +158,43 @@ class ReaderTests(unittest.TestCase):
         return ApolloCampaignReadOnly(lambda: 'synthetic-key', request=self.wire,
             clock=lambda: NOW, mcp_request=self.mcp, **options)
 
+    def test_orphans_do_not_abort_pages_or_become_events(self):
+        orphan = [metadata('orphan-' + str(i), contact_id='unknown-contact') for i in range(100)]
+        wire = Wire(messages=orphan + [metadata()], contents=[content()])
+        reader = self.make(wire)
+        first = reader.collect()
+        cov = first['coverage']
+        self.assertEqual(cov['messages_pages'], 2)
+        self.assertEqual(cov['sent_messages_pages'], 2)
+        self.assertFalse(cov['complete'])
+        self.assertFalse(cov['messages_complete'])
+        self.assertIn('message_contact_outside_cohort', cov['reasons'])
+        self.assertEqual(cov['unreconciled_messages_count'], 100)
+        diagnostic = json.dumps(cov['unreconciled_messages'])
+        self.assertNotIn('unknown-contact', diagnostic)
+        self.assertNotIn('orphan-', diagnostic)
+        self.assertNotIn(LEAD, diagnostic)
+        self.assertEqual([e['provider_id'] for e in first['leads'][0]['events']], ['message-1'])
+        second = reader.collect(first)
+        self.assertEqual(second['coverage']['unreconciled_messages_count'], 100)
+        self.assertEqual([e['provider_id'] for e in second['leads'][0]['events']], ['message-1'])
+
+    def test_orphan_reconciles_only_after_identity_joins_cohort(self):
+        wire = Wire(messages=[metadata('message-2', contact_id='contact-2')],
+                    contents=[content('message-2')])
+        reader = self.make(wire)
+        first = reader.collect()
+        self.assertFalse(first['coverage']['complete'])
+        self.assertFalse(first['leads'][0]['events'])
+        wire.contacts.append(contact('contact-2'))
+        cached = reader.collect(first)
+        self.assertFalse(cached['coverage']['messages_complete'])
+        self.assertNotIn('contact-2', [lead['id'] for lead in cached['leads']])
+        reader.clock = lambda: NOW + timedelta(seconds=COHORT_TTL + 1)
+        second = reader.collect(cached)
+        self.assertTrue(second['coverage']['messages_complete'])
+        self.assertEqual(next(lead for lead in second['leads'] if lead['id'] == 'contact-2')['events'][0]['provider_id'], 'message-2')
+
     def test_large_cohort_resumes_after_deadline_and_reaches_messages(self):
         rows = [contact('c'+str(i), scoped=i < 285) for i in range(7800)]
         wire = Wire(contacts=rows, messages=[], contents=[])
