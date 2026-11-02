@@ -147,9 +147,16 @@ class ReplyControl:
         source = value['source']
         if source['provider'] == 'manual':
             return True
-        return any(provider == source['provider']
-                   and binding['provider_accounts'].get(channel) == source['account_id']
-                   for channel, provider in binding['providers'].items())
+        channel, provider = value['channel'], source['provider']
+        if (channel == 'email' and provider == 'hubspot'
+                and binding['providers'].get('hubspot') == 'hubspot'
+                and binding['provider_accounts'].get('hubspot') == source['account_id']):
+            return True
+        supported = {'email': {'apollo', 'instantly', 'gmail', 'hubspot'},
+                     'linkedin': {'connectsafely', 'chattie'}}
+        return (provider in supported.get(channel, set())
+                and binding['providers'].get(channel) == provider
+                and binding['provider_accounts'].get(channel) == source['account_id'])
 
     def _matches(self, contact):
         keys = {contact, 'hubspot:' + contact}
@@ -203,6 +210,11 @@ class ReplyControl:
             human = value['human_reply'] is True
             matches = ([correlated] if correlated is not None else
                        self._matches(value['hubspot_contact_id'])) if verified and human else []
+            if correlated is None and verified and human:
+                accounts = {row.get('account_id') for row in matches}
+                if len(accounts) != 1 or not _text(next(iter(accounts))):
+                    verified = False
+                    matches = []
             bridge = _CadenceBridge(self.repo, matches)
             incoming = {**value, 'id': ident, 'event_id': value['id'], 'actor': actor,
                         'input_hash': fingerprint, 'control_source': 'reply_control',
@@ -231,7 +243,7 @@ class ReplyControl:
                      'code': reason, 'content': value['content'], 'source': value['source'],
                      'hubspot_contact_id': value['hubspot_contact_id'], 'campaign_id': value['campaign_id'],
                      'message': 'Resposta registrada. Pausa externa nao confirmada; revisar canais.',
-                     'next_action': ('Resolver identidade antes de agir.' if not verified else
+                     'next_action': ('Resolver identidade e confirmar origem e canal antes de agir.' if not verified else
                                      'Conferir se a resposta e humana antes de pausar.' if not human else
                                      'Revisar a conversa e conferir manualmente a parada em cada ferramenta.'),
                      'external_pauses_enabled': False}
