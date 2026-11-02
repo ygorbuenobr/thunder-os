@@ -69,8 +69,8 @@ class IntegratedSnapshotTests(unittest.TestCase):
         before = state()
         with self.assertRaises(InboxError):
             self.run_one()
-        self.assertTrue(any(path.endswith('/abc123') for path in self.calls))
-        self.assertTrue(any(path.endswith('/def456') for path in self.calls))
+        threads = [path for path in self.calls if '/v1/snapshot/threads/' in path]
+        self.assertEqual(threads, ['/v1/snapshot/threads/abc123', '/v1/snapshot/threads/def456'])
         self.assertEqual(state(), before)
 
     def test_bad_cursor_retains_checkpoint(self):
