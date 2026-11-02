@@ -29,6 +29,7 @@ from .external_email_import import (APOLLO_SEQUENCE, APOLLO_TEAM, ExternalEmailE
                                     email, identifier, require, timestamp)
 from .instantly_reader import private_text
 from .seqd_client import MAILBOX, SEQDClient
+from .db import Repository, RepositoryConflict
 from email.utils import getaddresses
 
 OWNER = '6a453e9f9ca1ee001407d14e'
@@ -245,6 +246,31 @@ class ApolloCampaignReadOnly:
         self.next_attempt_at = (self.clock() + timedelta(seconds=seconds)).isoformat()
 
     def _reserve_endpoint(self, endpoint):
+        if getattr(self, '_budget_repo', None) is not None:
+            return self.reserve_atomic(self._budget_repo, endpoint)
+        return self._reserve_in_memory(endpoint)
+
+    def reserve_atomic(self, repo, endpoint):
+        require(endpoint in _ENDPOINTS, 'apollo_endpoint_blocked')
+        with repo.transaction():
+            row = repo.get_state('apollo_reader_budget', CAMPAIGN)
+            if row is None:
+                legacy = repo.get_state(KIND, CAMPAIGN) or {}
+                budget = (legacy['request_budget'] if 'request_budget' in legacy else
+                          {'version': 1, 'scope': _scope_identity(), 'entries': {}})
+            else:
+                budget = row.get('budget')
+            require(isinstance(budget, dict), 'apollo_budget_cache_invalid')
+            self._load_budget({'request_budget': budget})
+            self._reserve_in_memory(endpoint)
+            value = {'budget': deepcopy(self.request_budget)}
+            if row and row.get('transition_hash'):
+                value['transition_hash'] = row['transition_hash']
+            if row and row.get('backup_id'):
+                value['backup_id'] = row['backup_id']
+            repo.put_state('apollo_reader_budget', CAMPAIGN, value)
+
+    def _reserve_in_memory(self, endpoint):
         now = self.clock()
         entries = self.request_budget['entries'].setdefault(endpoint, [])
         entries[:] = [stamp for stamp in entries if (now - _date(stamp)).total_seconds() < 86400]
@@ -289,6 +315,9 @@ class ApolloCampaignReadOnly:
         return min(self.timeout, remaining)
 
     def _call(self, method, path, body=None):
+        if self.request is _https_request:
+            require(getattr(self, '_budget_repo', None) is not None,
+                    'apollo_transactional_repository_required')
         # Validate the entire request before credentials or transport access.
         valid = method == 'GET' and path in ('/api/v1/users/api_profile', SEQUENCE_PATH) and body is None
         if method == 'POST' and path == '/api/v1/contacts/search' and isinstance(body, dict):
@@ -343,6 +372,9 @@ class ApolloCampaignReadOnly:
             [('ids[]', ident) for ident in ids] + [('page', 1), ('per_page', 10)])
 
     def _mcp_call(self, message, expected_id):
+        if self.mcp_request is _mcp_https_request:
+            require(getattr(self, '_budget_repo', None) is not None,
+                    'apollo_transactional_repository_required')
         _validate_mcp('POST', '/mcp', message)
         remaining = self._budget()
         if message.get('method') == 'tools/call':
@@ -988,7 +1020,13 @@ class ApolloCampaignReadOnly:
                     'scope': 'literal_sequence_members_and_scoped_messages', 'atomic_snapshot': False},
                 'leads': [], 'metrics': None}
             try:
-                self._load_budget(previous)
+                budget_repo = getattr(self, '_budget_repo', None)
+                atomic_budget = budget_repo.get_state('apollo_reader_budget', CAMPAIGN) if budget_repo else None
+                if atomic_budget is not None:
+                    require(isinstance(atomic_budget.get('budget'), dict), 'apollo_budget_cache_invalid')
+                    self._load_budget({'request_budget': atomic_budget['budget']})
+                else:
+                    self._load_budget(previous)
                 profile = self._call('GET', '/api/v1/users/api_profile')
                 require(profile.get('team_id') == APOLLO_TEAM, 'apollo_team_mismatch')
                 require(identifier(profile.get('id')), 'apollo_profile_id_invalid')
@@ -1083,10 +1121,96 @@ def _retain_observations(previous, data):
     return merged, metrics
 
 
+def transition_budget_offline(repo, *, writers_stopped, clock=None):
+    """Synchronize legacy/new budgets; operator must stop every writer first.
+
+    The declaration is a precondition, not evidence that processes are stopped.
+    """
+    require(writers_stopped is True, 'apollo_writers_not_declared_stopped')
+    require(isinstance(repo, Repository), 'apollo_transactional_repository_required')
+    validator = ApolloCampaignReadOnly(credential_loader=lambda: '', clock=clock)
+    with repo.transaction():
+        snapshot = repo.get_state(KIND, CAMPAIGN)
+        atomic = repo.get_state('apollo_reader_budget', CAMPAIGN)
+        require(isinstance(snapshot, dict) and isinstance(snapshot.get('request_budget'), dict),
+                'apollo_budget_cache_invalid')
+        legacy = snapshot['request_budget']
+        current = atomic.get('budget') if atomic else None
+        require(atomic is None or isinstance(current, dict), 'apollo_budget_cache_invalid')
+        old_ref = snapshot.get('apollo_transition_backup_id')
+        atomic_ref = atomic.get('backup_id') if atomic else None
+        if old_ref is not None or atomic_ref is not None:
+            require(isinstance(old_ref, str) and old_ref == atomic_ref,
+                    'apollo_transition_backup_conflict')
+            prior = repo.get_state('apollo_budget_transition_backup', old_ref)
+            require(prior is not None, 'apollo_transition_backup_missing')
+            require(isinstance(prior.get('originals'), dict) and _digest(prior['originals']) == old_ref,
+                    'apollo_transition_backup_conflict')
+        normalized = []
+        for budget in (legacy,) if current is None else (legacy, current):
+            validator._load_budget({'request_budget': budget})
+            normalized.append(deepcopy(validator.request_budget))
+        normalized_legacy = normalized[0]
+        normalized_current = normalized[1] if current is not None else None
+        synced = (current is not None and legacy == current
+                  and snapshot.get('apollo_transition_hash') == _digest(legacy)
+                  and atomic.get('transition_hash') == _digest(current))
+        if synced:
+            merged = normalized_legacy
+        elif current is None:
+            merged = normalized_legacy
+        elif (snapshot.get('apollo_transition_hash') == _digest(legacy)
+              and atomic.get('transition_hash') == _digest(legacy)
+              and all(not (Counter(stamps) - Counter(normalized_current['entries'].get(key, [])))
+                      for key, stamps in normalized_legacy['entries'].items())):
+            merged = normalized_current
+        else:
+            merged = {'version': 1, 'scope': _scope_identity(), 'entries': {}}
+            for key in set(normalized_legacy['entries']) | set(normalized_current['entries']):
+                stamps = normalized_legacy['entries'].get(key, []) + normalized_current['entries'].get(key, [])
+                require(len(stamps) <= ENDPOINT_DAY_LIMIT, 'apollo_transition_budget_ambiguous')
+                merged['entries'][key] = sorted(stamps, key=_date)
+        marker = _digest(merged)
+        originals = {'legacy': deepcopy(legacy), 'atomic': deepcopy(current)}
+        backup_id = snapshot.get('apollo_transition_backup_id') if synced else None
+        if synced:
+            require(isinstance(backup_id, str) and atomic.get('backup_id') == backup_id,
+                    'apollo_transition_backup_conflict')
+        if backup_id is None:
+            backup_id = _digest(originals)
+            existing_backup = repo.get_state('apollo_budget_transition_backup', backup_id)
+            if existing_backup is None:
+                repo.append_state('apollo_budget_transition_backup', backup_id, {'originals': originals})
+            else:
+                require(existing_backup.get('originals') == originals, 'apollo_transition_backup_conflict')
+        else:
+            prior_backup = repo.get_state('apollo_budget_transition_backup', backup_id)
+            require(prior_backup is not None, 'apollo_transition_backup_missing')
+            require(isinstance(prior_backup.get('originals'), dict)
+                    and _digest(prior_backup['originals']) == backup_id
+                    and atomic.get('backup_id') == backup_id, 'apollo_transition_backup_conflict')
+        snapshot_value = {k: v for k, v in snapshot.items() if k not in {'id', 'version', 'updated_at'}}
+        snapshot_value.update(request_budget=deepcopy(merged), apollo_transition_hash=marker,
+                              apollo_transition_backup_id=backup_id)
+        atomic_value = {'budget': deepcopy(merged), 'transition_hash': marker, 'backup_id': backup_id}
+        repo.put_states_atomic([(KIND, CAMPAIGN, snapshot_value, snapshot['version']),
+                                ('apollo_reader_budget', CAMPAIGN, atomic_value, atomic['version'] if atomic else 0)])
+    after_snapshot = repo.get_state(KIND, CAMPAIGN)
+    after_atomic = repo.get_state('apollo_reader_budget', CAMPAIGN)
+    require(after_snapshot.get('request_budget') == merged and after_atomic.get('budget') == merged,
+            'apollo_transition_readback_mismatch')
+    return {'budget': merged, 'transition_hash': marker, 'backup_id': backup_id}
+
+
 class ApolloCampaignReader:
     """Repository cache only on snapshot(); explicit private enable check per use."""
     def __init__(self, repo, provider=None, *, enable_check=enabled, clock=None):
         self.repo, self.provider = repo, provider or ApolloCampaignReadOnly(gmail=SEQDClient())
+        require(isinstance(repo, Repository), 'apollo_transactional_repository_required')
+        if isinstance(repo, Repository):
+            require(isinstance(self.provider, ApolloCampaignReadOnly), 'apollo_transactional_adapter_required')
+        if isinstance(repo, Repository) and isinstance(self.provider, ApolloCampaignReadOnly):
+            self.provider._budget_repo = repo
         self.enable_check = enable_check
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.lock, self.stop_event = threading.Lock(), threading.Event()
@@ -1111,6 +1235,14 @@ class ApolloCampaignReader:
         self._set_runtime(in_progress=True, phase='checking', cooldown_until=None)
         try:
             previous = self.repo.get_state(KIND, CAMPAIGN) or {}
+            version = previous.get('version', 0)
+            def write_snapshot(state):
+                nonlocal version
+                if isinstance(self.repo, Repository):
+                    saved = self.repo.put_states_atomic([(KIND, CAMPAIGN, state, version)])[0]
+                    version = saved['version']
+                    return saved
+                return self.repo.put_state(KIND, CAMPAIGN, state)
             now = self.clock()
             if previous.get('next_attempt_at'):
                 try:
@@ -1129,17 +1261,21 @@ class ApolloCampaignReader:
             if previous.get('last_attempt_at') and 0 <= (now - _date(previous['last_attempt_at'])).total_seconds() < INTERVAL:
                 self._set_runtime(phase='waiting_interval')
                 return
+            checkpoint_state = None
             def persist_cohort(cache, budget):
+                nonlocal checkpoint_state
                 require(self.enable_check(), 'apollo_reader_disabled')
                 interim = deepcopy(previous)
                 interim['cohort_cache'] = deepcopy(cache)
                 interim['request_budget'] = deepcopy(budget)
                 interim.pop('contact_scan_checkpoint', None)
                 interim['coverage'] = {**interim.get('coverage', {}), 'complete': False,
-                                       'contacts_complete': True, 'messages_complete': False}
+                                       'contacts_complete': True, 'messages_complete': False,
+                                       'sent_messages_complete': False, 'contents_complete': False}
                 interim.update(status='partial', error_code='apollo_messages_pending',
                                last_attempt_at=now.isoformat())
-                self.repo.put_state(KIND, CAMPAIGN, interim)
+                write_snapshot(interim)
+                checkpoint_state = deepcopy(interim)
                 self._set_runtime(phase='collecting_messages')
             self._set_runtime(phase='collecting', last_attempt_at=now.isoformat(), last_loop_error=None, last_refresh_error=None)
             try:
@@ -1169,11 +1305,18 @@ class ApolloCampaignReader:
                             'events_observed': sum(len(lead.get('events', [])) for lead in data.get('leads', []))}
 
             except Exception as exc:
-                state = deepcopy(previous)
+                state = deepcopy(checkpoint_state if checkpoint_state is not None else previous)
                 state.update(last_attempt_at=now.isoformat(), status='error',
                     error_code=exc.code if isinstance(exc, ExternalEmailError) else 'apollo_read_unavailable')
+            for key in ('apollo_transition_hash', 'apollo_transition_backup_id'):
+                if key in previous:
+                    state[key] = deepcopy(previous[key])
             if self.enable_check():
-                self.repo.put_state(KIND, CAMPAIGN, state)
+                try:
+                    write_snapshot(state)
+                except RepositoryConflict:
+                    self._set_runtime(phase='error', last_refresh_error='apollo_snapshot_conflict')
+                    return
             outcome = state.get('status')
             failed = outcome in ('error', 'partial')
             self._set_runtime(phase=outcome if failed else 'idle',
