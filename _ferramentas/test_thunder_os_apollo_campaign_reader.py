@@ -40,6 +40,73 @@ SENT = '2026-10-26T10:00:00Z'
 LEAD = 'lead@example.invalid'
 
 
+class CohortPresentationTests(unittest.TestCase):
+    def test_snapshot_separates_observed_cohort_from_retained_history(self):
+        current = {'id': 'current', 'membership': {'emailer_campaign_id': APOLLO_SEQUENCE}, 'events': []}
+        old = {'id': 'old', 'events': []}
+        state = {'status': 'partial', 'observed_at': SENT, 'leads': [current, old],
+                 'coverage': {'complete': False, 'contacts_complete': True,
+                              'contacts_observed_at': NOW.isoformat(), 'messages_complete': False},
+                 'cohort_cache': {'complete': True, 'account_id': APOLLO_TEAM, 'owner_id': OWNER,
+                                  'external_campaign_id': APOLLO_SEQUENCE,
+                                  'observed_at': NOW.isoformat(), 'members': [current]}}
+        repo = Mock()
+        repo.get_state.return_value = state
+        snapshot = ApolloCampaignReader(repo, enable_check=lambda: True, clock=lambda: NOW).snapshot()
+        self.assertEqual(snapshot['cohort_observation']['count'], 1)
+        self.assertEqual([lead['cohort_presence'] for lead in snapshot['leads']], ['observed', 'historical'])
+        self.assertEqual(snapshot['observed_at'], SENT)
+        self.assertFalse(snapshot['coverage']['messages_complete'])
+        self.assertNotIn('cohort_presence', state['leads'][0])
+
+    def test_same_id_different_email_keeps_history_historical(self):
+        current = {'id': 'same', 'email': 'new@example.invalid',
+                   'membership': {'emailer_campaign_id': APOLLO_SEQUENCE}, 'events': []}
+        old = {'id': 'same', 'email': 'old@example.invalid', 'events': [
+            {'provider': 'apollo', 'provider_id': 'old-event', 'event_type': 'email_sent'}]}
+        repo = Mock(); repo.get_state.return_value = {'leads': [old]}
+        data = {'leads': [current], 'observed_at': NOW.isoformat(),
+                'coverage': {'complete': True, 'contacts_complete': True,
+                             'contacts_observed_at': NOW.isoformat()}, 'metrics': {},
+                'cohort_cache': {'complete': True, 'account_id': APOLLO_TEAM, 'owner_id': OWNER,
+                                 'external_campaign_id': APOLLO_SEQUENCE,
+                                 'observed_at': NOW.isoformat(), 'members': [current]}}
+        provider = Mock(); provider.collect.return_value = data
+        reader = ApolloCampaignReader(repo, provider, enable_check=lambda: True, clock=lambda: NOW)
+        reader.refresh()
+        repo.get_state.return_value = repo.put_state.call_args.args[2]
+        leads = reader.snapshot()['leads']
+        self.assertEqual([(x['email'], x['cohort_presence']) for x in leads],
+                         [('new@example.invalid', 'observed'), ('old@example.invalid', 'historical')])
+        self.assertEqual(leads[1]['events'][0]['provider_id'], 'old-event')
+
+    def test_snapshot_does_not_label_history_when_cohort_scope_or_time_invalid(self):
+        state = {'status': 'partial', 'leads': [{'id': 'old', 'events': []}],
+                 'coverage': {'contacts_complete': True, 'contacts_observed_at': NOW.isoformat()},
+                 'cohort_cache': {'complete': True, 'account_id': 'other', 'owner_id': OWNER,
+                                  'external_campaign_id': APOLLO_SEQUENCE,
+                                  'observed_at': NOW.isoformat(), 'members': []}}
+        repo = Mock(); repo.get_state.return_value = state
+        snapshot = ApolloCampaignReader(repo, enable_check=lambda: True, clock=lambda: NOW).snapshot()
+        self.assertIsNone(snapshot['cohort_observation']['count'])
+        self.assertEqual(snapshot['leads'][0]['cohort_presence'], 'unknown')
+
+    def test_rejects_invalid_membership_and_timestamp(self):
+        repo = Mock()
+        for membership, stamp in [({'emailer_campaign_id': 'wrong'}, NOW.isoformat()),
+                                  (None, NOW.isoformat()),
+                                  ({'emailer_campaign_id': APOLLO_SEQUENCE}, '2026-10-26')]:
+            with self.subTest(membership=membership, stamp=stamp):
+                member = {'id': 'lead', 'membership': membership}
+                repo.get_state.return_value = {'status': 'partial', 'leads': [member],
+                    'coverage': {'contacts_complete': True, 'contacts_observed_at': stamp},
+                    'cohort_cache': {'complete': True, 'account_id': APOLLO_TEAM, 'owner_id': OWNER,
+                        'external_campaign_id': APOLLO_SEQUENCE, 'observed_at': stamp, 'members': [member]}}
+                snap = ApolloCampaignReader(repo, enable_check=lambda: True, clock=lambda: NOW).snapshot()
+                self.assertIsNone(snap['cohort_observation']['count'])
+                self.assertEqual(snap['leads'][0]['cohort_presence'], 'unknown')
+
+
 def contact(ident='contact-1', scoped=True):
     return {'id': ident, 'team_id': APOLLO_TEAM, 'email': LEAD,
         'first_name': 'Synthetic', 'last_name': 'Person', 'organization': {'name': 'Fixture'},
@@ -1214,6 +1281,45 @@ class ReaderTests(unittest.TestCase):
 
 
 class CacheTests(unittest.TestCase):
+    def test_complete_refresh_retains_unobserved_contact_and_event(self):
+        old = {'id': 'old', 'email': LEAD, 'events': [{'provider': 'apollo', 'provider_id': 'old-event', 'event_type': 'email_sent'}]}
+        previous = {'leads': [old], 'observed_at': SENT}
+        data = {'leads': [], 'observed_at': NOW.isoformat(), 'coverage': {'complete': True}, 'metrics': {}}
+        repo = Mock(); repo.get_state.return_value = previous
+        provider = Mock(); provider.collect.return_value = data
+        ApolloCampaignReader(repo, provider, enable_check=lambda: True, clock=lambda: NOW).refresh()
+        saved = repo.put_state.call_args.args[2]
+        self.assertEqual(saved['leads'][0]['events'][0]['provider_id'], 'old-event')
+        self.assertTrue(saved['coverage']['retained_observation'])
+
+    def test_complete_historical_message_survives_incomplete_refresh(self):
+        old_event = {'provider': 'apollo', 'provider_id': 'event', 'event_type': 'reply_received',
+                     'content_complete': True, 'text': 'Complete historical message'}
+        new_event = {'provider': 'apollo', 'provider_id': 'event', 'event_type': 'scheduled',
+                     'content_complete': False, 'text': None}
+        repo = Mock(); repo.get_state.return_value = {'leads': [{'id': 'lead', 'email': LEAD,
+                                                                  'events': [old_event]}]}
+        provider = Mock(); provider.collect.return_value = {'leads': [{'id': 'lead', 'email': LEAD,
+            'events': [new_event]}], 'coverage': {'complete': True}, 'metrics': {}}
+        ApolloCampaignReader(repo, provider, enable_check=lambda: True, clock=lambda: NOW).refresh()
+        self.assertEqual(repo.put_state.call_args.args[2]['leads'][0]['events'][0], old_event)
+
+    def test_interrupted_checkpoint_uses_new_cohort_time(self):
+        saved = {'value': {'coverage': {'contacts_observed_at': SENT}, 'leads': []}}
+        repo = Mock(); repo.get_state.side_effect = lambda *_: deepcopy(saved['value'])
+        repo.put_state.side_effect = lambda _k, _c, value: saved.update(value=deepcopy(value))
+        cache = {'complete': True, 'source_total': 1, 'account_id': APOLLO_TEAM, 'owner_id': OWNER,
+                 'external_campaign_id': APOLLO_SEQUENCE, 'observed_at': NOW.isoformat(),
+                 'members': [{'id': 'new', 'membership': {'emailer_campaign_id': APOLLO_SEQUENCE}}]}
+        provider = Mock()
+        def interrupted(*, previous, on_cohort):
+            on_cohort(cache, {})
+            raise RuntimeError('interrupted')
+        provider.collect.side_effect = interrupted
+        reader = ApolloCampaignReader(repo, provider, enable_check=lambda: True, clock=lambda: NOW)
+        reader.refresh()
+        self.assertEqual(saved['value']['coverage']['contacts_observed_at'], NOW.isoformat())
+        self.assertEqual(reader.snapshot()['cohort_observation']['count'], 1)
     def setUp(self):
         self.now = NOW
         self.repo = Mock()

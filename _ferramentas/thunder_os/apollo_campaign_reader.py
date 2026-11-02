@@ -1114,10 +1114,8 @@ def _retain_observations(previous, data):
             merged.append(deepcopy(old))
             continue
         if current.get('email') != old.get('email'):
-            # Cross-identity merges cannot borrow originals. Keep prior identity
-            # visibly historical; the new mismatch stays in partial coverage.
-            current.clear()
-            current.update(deepcopy(old))
+            # Preserve both identities without attaching old events to the new one.
+            merged.append(deepcopy(old))
             continue
         events = {(e.get('provider'), e.get('provider_id')): e for e in current.get('events', [])}
         for event in old.get('events', []):
@@ -1125,7 +1123,7 @@ def _retain_observations(previous, data):
             new = events.get(key)
             if new is None:
                 current.setdefault('events', []).append(deepcopy(event))
-            elif event.get('content_complete') and event.get('event_type') == 'email_sent':
+            elif event.get('content_complete') and not new.get('content_complete'):
                 # A partial provider-status projection cannot retract prior proof.
                 new.clear()
                 new.update(deepcopy(event))
@@ -1290,7 +1288,9 @@ class ApolloCampaignReader:
                 interim.pop('contact_scan_checkpoint', None)
                 interim['coverage'] = {**interim.get('coverage', {}), 'complete': False,
                                        'contacts_complete': True, 'messages_complete': False,
-                                       'sent_messages_complete': False, 'contents_complete': False}
+                                       'sent_messages_complete': False, 'contents_complete': False,
+                                       'contacts_observed_at': cache.get('observed_at'),
+                                       'contacts_source_total': cache.get('source_total')}
                 interim.update(status='partial', error_code='apollo_messages_pending',
                                last_attempt_at=now.isoformat())
                 write_snapshot(interim)
@@ -1303,6 +1303,10 @@ class ApolloCampaignReader:
                 state = {**data, 'last_attempt_at': now.isoformat(),
                     'last_success_at': self.clock().isoformat(), 'error_code': None,
                     'status': 'ok' if data['coverage']['complete'] else 'partial'}
+                if data['coverage']['complete'] and previous.get('leads'):
+                    state['leads'], _ = _retain_observations(previous, data)
+                    state['coverage']['retained_observation'] = True
+                    state['coverage']['retained_observed_at'] = previous.get('observed_at')
                 if not data['coverage']['complete']:
                     state['error_code'] = next(iter(data['coverage'].get('reasons', [])), 'incomplete_source')
                     # Failure never renews a successful observation or cached cohort.
@@ -1357,14 +1361,41 @@ class ApolloCampaignReader:
             'coverage': {'complete': False, 'contacts_complete': False, 'messages_complete': False,
                          'sent_messages_complete': False, 'sent_messages_total': None},
             'metrics': None, 'leads': [], 'error_code': None, 'stale': False,
+            'cohort_observation': {'count': None, 'observed_at': None},
             'crm_write_enabled': False, 'external_actions_enabled': False}
         if state:
             for key in result.keys() & state.keys() - {'enabled', 'campaign_id', 'account_id', 'owner_id',
-                    'external_campaign_id', 'read_only', 'crm_write_enabled', 'external_actions_enabled'}:
+                    'external_campaign_id', 'read_only', 'crm_write_enabled', 'external_actions_enabled',
+                    'cohort_observation'}:
                 result[key] = deepcopy(state[key])
             if not isinstance(result.get('coverage'), dict):
                 result['coverage'] = {'complete': False, 'contacts_complete': False,
                                       'messages_complete': False}
+            cache = state.get('cohort_cache')
+            cohort_ids = None
+            if (isinstance(cache, dict) and cache.get('complete') is True
+                    and cache.get('account_id') == APOLLO_TEAM and cache.get('owner_id') == OWNER
+                    and cache.get('external_campaign_id') == APOLLO_SEQUENCE
+                    and result['coverage'].get('contacts_complete') is True
+                    and isinstance(cache.get('observed_at'), str)
+                    and cache['observed_at'] == result['coverage'].get('contacts_observed_at')
+                    and isinstance(cache.get('members'), list)):
+                try:
+                    timestamp = datetime.fromisoformat(cache['observed_at'].replace('Z', '+00:00'))
+                    if timestamp.tzinfo is None or 'T' not in cache['observed_at']:
+                        raise ValueError('timestamp lacks time or timezone')
+                    members = ApolloCampaignReadOnly._members(self.provider, cache['members'])
+                    ids = [member['id'] for member in members]
+                    if all(identifier(item) for item in ids) and len(set(ids)) == len(ids):
+                        cohort_ids = {(member['id'], member.get('email')) for member in members}
+                        result['cohort_observation'] = {'count': len(ids), 'observed_at': cache['observed_at']}
+                except (ExternalEmailError, KeyError, TypeError, ValueError):
+                    pass
+            if isinstance(result.get('leads'), list):
+                for lead in result['leads']:
+                    if isinstance(lead, dict):
+                        lead['cohort_presence'] = ('unknown' if cohort_ids is None else
+                                                   'observed' if (lead.get('id'), lead.get('email')) in cohort_ids else 'historical')
             if result['coverage'].get('complete') is not True:
                 if result['status'] == 'ok':
                     result['status'] = 'partial'
