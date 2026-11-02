@@ -179,6 +179,33 @@ class SEQDClient:
             query['cursor']=cursor
         return self._call('GET', '/v1/messages?'+urlencode(query))
 
+    def snapshot_page(self, cursor=None):
+        if cursor is not None and (not isinstance(cursor,str) or not re.fullmatch(r'[\x21-\x7e]{1,512}',cursor)):
+            raise SEQDError('invalid_cursor')
+        query={'limit':10}
+        if cursor is not None: query['cursor']=cursor
+        data=self._call('GET','/v1/snapshot/messages?'+urlencode(query))
+        coverage=data.get('coverage'); next_token=data.get('nextPageToken')
+        if (data.get('status')!='ok' or data.get('receipt_eligible') is not False or not isinstance(coverage,dict)
+                or coverage.get('scope')!='inbox' or coverage.get('window_days') is not None
+                or type(coverage.get('listing_complete')) is not bool or coverage['listing_complete'] != (next_token is None)
+                or not isinstance(data.get('messages'),list) or len(data['messages'])>10
+                or not all(isinstance(row,dict) and all(isinstance(row.get(key),str) and re.fullmatch(r'[a-f0-9]{1,64}',row[key]) for key in ('id','threadId')) for row in data['messages'])
+                or next_token is not None and (not isinstance(next_token,str) or not re.fullmatch(r'[\x21-\x7e]{1,512}',next_token) or next_token==cursor)):
+            raise SEQDError('invalid_snapshot_page')
+        return data
+
+    def snapshot_thread(self, identifier):
+        if not isinstance(identifier,str) or not re.fullmatch(r'[a-f0-9]{1,64}',identifier):
+            raise SEQDError('invalid_thread_identifier')
+        data=self._call('GET','/v1/snapshot/threads/'+identifier)
+        thread=data.get('thread')
+        if (data.get('status')!='ok' or data.get('receipt_eligible') is not False or not isinstance(thread,dict)
+                or thread.get('id')!=identifier or not isinstance(thread.get('historyId'),str)
+                or not re.fullmatch(r'\d{1,30}',thread['historyId']) or not isinstance(thread.get('messages'),list)):
+            raise SEQDError('invalid_snapshot_thread')
+        return thread
+
     @staticmethod
     def _id(identifier):
         if not isinstance(identifier,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,160}', identifier):

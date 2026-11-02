@@ -423,6 +423,7 @@ class TodayReadonly:
                 for key in ('respond', 'do'):
                     results[key].extend(data.get(key, []))
             if checkpoint and type(checkpoint.get('complete')) is bool:
+                results['limitations'].append('gmail_snapshot_inbox_only')
                 results.update(status='partial', collected_at=checkpoint.get('updated_at'),
                     reason=('coleta concluída' if checkpoint['complete'] else 'coleta parcial')
                     + '; histórico local, atualidade não verificada')

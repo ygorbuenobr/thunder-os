@@ -38,6 +38,32 @@ function fixture(){
 }
 const call=(bridge,url)=>bridge.handle({method:'GET',url,authorization:'Bearer '+KEY});
 
+test('snapshot routes are opt-in, validate profile and carry history without touching receipt routes',async()=>{
+ const f=fixture();
+ await assert.rejects(call(f.bridge,'/v1/snapshot/messages?limit=1'),/read_only_route/);
+ const provider={async session(){return {async verifyProfile(){return EXPECTED.email;},
+  async snapshotList({cursor}){return {messages:[{id:ID,thread_id:THREAD}],next_cursor:cursor?null:'next'};},
+  async snapshotThread(id){return {id,historyId:'42',messages:[message()]};}};}};
+ const bridge=createBridge({provider,credential:KEY,readOnly:true,snapshotEnabled:true});
+ const page=await call(bridge,'/v1/snapshot/messages?limit=1');
+ assert.equal(page.coverage.scope,'inbox');assert.equal(page.coverage.listing_complete,false);
+ assert.equal(page.messages[0].threadId,THREAD);
+ const thread=await call(bridge,'/v1/snapshot/threads/'+THREAD);
+ assert.equal(thread.thread.historyId,'42');assert.equal(thread.thread.messages[0].payload.mimeType,'text/plain');
+ await assert.rejects(call(bridge,'/v1/snapshot/messages?cursor=%00'),/invalid_cursor/);
+});
+test('enabled snapshot uses bounded inbox and original history; partial thread and wrong account fail closed',async()=>{
+ const f=fixture();const raw=conversation();raw.historyId='123';f.setData(raw);
+ const provider={async session(){return nativeSession(f.gmail,null,{readOnly:true,snapshotEnabled:true});}};
+ const bridge=createBridge({provider,credential:KEY,readOnly:true,snapshotEnabled:true});
+ const page=await call(bridge,'/v1/snapshot/messages?limit=1');
+ assert.equal(page.nextPageToken,'opaque+page/=2');assert.equal(f.calls.find(x=>x[0]==='list')[1].q,'in:inbox');
+ const thread=await call(bridge,'/v1/snapshot/threads/'+THREAD);assert.equal(thread.thread.historyId,'123');
+ raw.messages[0].payload.body.data='broken!';
+ await assert.rejects(call(bridge,'/v1/snapshot/threads/'+THREAD),/snapshot_thread_incomplete/);
+ f.setProfile('other@example.invalid');await assert.rejects(call(bridge,'/v1/snapshot/messages?limit=1'),/provider_account_mismatch/);
+});
+
 test('readonly list preserves opaque cursor and shows page coverage without quota or Journal',async()=>{
  const f=fixture(),first=await call(f.bridge,'/v1/messages?limit=1');
  assert.equal(first.mailbox,EXPECTED.email);assert.deepEqual(first.messages,[{id:ID,thread_id:THREAD}]);

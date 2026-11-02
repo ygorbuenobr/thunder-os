@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sqlite3
+import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -39,6 +40,8 @@ def receipt(provider, ident):
 class JourneyTests(unittest.TestCase):
     def test_gmail_injected_paged_snapshot_reaches_journey_without_network(self):
         from thunder_os.inbox_gmail import GmailInbox, sync_snapshot
+        from thunder_os.gmail_seqd_snapshot import run_snapshot
+        from thunder_os.seqd_client import SEQDClient
         from thunder_os.inbox_common import InboxError
         self.today._gmail = TodayReadonly._gmail.__get__(self.today)
         def fixture_crm():
@@ -73,7 +76,14 @@ class JourneyTests(unittest.TestCase):
         with self.assertRaisesRegex(InboxError, 'gmail_read_failed'):
             sync_snapshot(self.service, mailbox=MAILBOX, get=failed_thread)
         self.assertEqual(self.database(), before_failure)
-        first = sync_snapshot(self.service, mailbox=MAILBOX, get=transport, max_pages=1)
+        def request(method, path, body, headers, timeout):
+            fixture = Path(__file__).with_name('seqd_bridge') / 'snapshot-fixture.cjs'
+            raw = subprocess.run(['node',str(fixture),path],check=True,capture_output=True,timeout=5).stdout
+            return 200, raw
+        client = SEQDClient(lambda: 'a'*64, request=request)
+        with self.assertRaisesRegex(InboxError, 'gmail_snapshot_disabled'):
+            run_snapshot(self.service, client=client)
+        first = run_snapshot(self.service, enabled=True, client=client, max_pages=1)
         self.assertFalse(first['complete'])
         partial = self.adapter.snapshot()
         source = next(s for s in partial['sources'] if s['id'] == 'gmail')
@@ -88,7 +98,7 @@ class JourneyTests(unittest.TestCase):
         with self.assertRaisesRegex(InboxError, 'gmail_read_failed'):
             GmailInbox(self.service, mailbox=MAILBOX, get=failed_page).sync()
         self.assertEqual(self.repo.get_state('gmail_sync', scope), checkpoint)
-        second = inbox.sync(max_pages=5)
+        second = run_snapshot(self.service, enabled=True, client=client, max_pages=5)
         self.assertTrue(second['complete'])
         self.assertEqual(len(self.repo.list_state('gmail_thread')), 2)
         self.refresh()
