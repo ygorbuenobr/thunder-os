@@ -1,5 +1,9 @@
 """Offline checks for the opt-in Gmail snapshot bridge."""
 import json
+from contextlib import closing
+import sqlite3
+import tempfile
+from pathlib import Path
 import unittest
 from unittest.mock import Mock, patch
 
@@ -9,6 +13,18 @@ from thunder_os.seqd_client import MAILBOX, SEQDClient, SEQDError
 
 
 class SnapshotPortTests(unittest.TestCase):
+    def test_entrypoint_rejects_invalid_bounds_and_foreign_db_without_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'foreign.db'
+            with closing(sqlite3.connect(path)) as con, con: con.execute('CREATE TABLE unrelated(id INTEGER)')
+            before=path.read_bytes()
+            env={'THUNDER_OS_GMAIL_SNAPSHOT_ENABLED':'true'}
+            for args in (['--db',str(path),'--max-pages','0'],['--db',str(path)]):
+                with self.assertRaises(InboxError): main(args,environ=env)
+                self.assertEqual(path.read_bytes(),before)
+                with closing(sqlite3.connect(path)) as con:
+                    self.assertEqual(con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall(), [('unrelated',)])
+
     def test_entrypoint_defaults_off_before_database_or_service(self):
         factory=Mock(side_effect=AssertionError('must not run'))
         with self.assertRaisesRegex(InboxError,'gmail_snapshot_disabled'):
