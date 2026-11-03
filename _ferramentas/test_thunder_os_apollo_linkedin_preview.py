@@ -149,11 +149,13 @@ class PreviewTest(unittest.TestCase):
         self.assertIsNone(result['call_preview'])
 
     def test_apollo_http_profile_is_canonical_https_and_self_invite_blocked(self):
-        self.task['contact']['linkedin_url'] = 'http://linkedin.com/in/Sender/'
-        result = self.preview().read()
-        self.assertEqual(result['lead']['linkedin_url'], 'https://www.linkedin.com/in/sender/')
-        self.assertIn('self_invitation', result['blockers'])
-        self.assertIsNone(result['call_preview'])
+        for host in ('linkedin.com', 'www.linkedin.com'):
+            with self.subTest(host=host):
+                self.task['contact']['linkedin_url'] = f'http://{host}/in/Sender/'
+                result = self.preview().read()
+                self.assertEqual(result['lead']['linkedin_url'], 'https://www.linkedin.com/in/sender/')
+                self.assertIn('self_invitation', result['blockers'])
+                self.assertIsNone(result['call_preview'])
 
     def test_apollo_http_invalid_host_port_or_extra_parts_blocked(self):
         for url in ('http://linkedin.com.evil.test/in/sender/',

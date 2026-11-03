@@ -27,7 +27,8 @@ def _slug(url):
         return None
     parsed = urlsplit(url)
     if (parsed.scheme, parsed.netloc.lower()) not in (
-            ('https', 'www.linkedin.com'), ('https', 'linkedin.com'), ('http', 'linkedin.com')):
+            ('https', 'www.linkedin.com'), ('https', 'linkedin.com'),
+            ('http', 'www.linkedin.com'), ('http', 'linkedin.com')):
         return None
     if parsed.username or parsed.password or parsed.port or parsed.query or parsed.fragment:
         return None
