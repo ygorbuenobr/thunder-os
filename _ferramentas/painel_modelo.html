@@ -628,6 +628,11 @@ body:has(#new-journey:not([hidden])) #hoje-pedido{display:none}
     <p>Consulta informativa dos dados disponíveis. A missão Hermes ainda não está integrada. <a href="https://app.apollo.io/#/sequences/6ad7c2af749725001465b81d" target="_blank" rel="noopener noreferrer">Abrir sequência no Apollo</a>.</p>
     <button class="btn" type="button" id="mission-report-read">Consultar relatório</button>
     <pre id="mission-report-output" role="status" aria-live="polite" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre>
+    <label><input type="checkbox" id="mission-a-cost"> Autorizo o custo da execução do modelo para este relatório.</label>
+    <button class="btn" type="button" id="mission-a-request">Pedir relatório com Hermes</button>
+    <button class="btn" type="button" id="mission-a-check">Consultar resultado do pedido</button>
+    <button class="btn" type="button" id="mission-a-new" disabled>Novo pedido</button>
+    <pre id="mission-a-result" role="status" aria-live="polite" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre>
   </details>
   <details id="hoje-pedido" aria-labelledby="h-hoje-pedido">
     <summary id="h-hoje-pedido">Verificar com Hermes</summary>
@@ -4537,6 +4542,40 @@ $('mission-report-read').addEventListener('click',async()=>{
   try{output.textContent=missionReportText(await apiServidor('/api/os/v1/integrations/apollo/reader'));}
   catch(e){output.textContent='Relatório indisponível. Fontes e revisão não comprovadas; tente atualizar mais tarde.';}
   finally{button.disabled=false;}
+});
+
+const MISSION_A_STORAGE='thunder-mission-a-request';
+let missionATerminal=false;
+$('mission-a-request').addEventListener('click',async()=>{
+  const out=$('mission-a-result'),button=$('mission-a-request');
+  if(!$('mission-a-cost').checked){out.textContent='Confirme o custo antes de pedir a execução.';return;}
+  missionATerminal=false;$('mission-a-new').disabled=true;
+  let id;
+  try{id=sessionStorage.getItem(MISSION_A_STORAGE);if(!id){id=crypto.randomUUID();sessionStorage.setItem(MISSION_A_STORAGE,id);}}
+  catch(e){out.textContent='Não foi possível preservar o identificador do pedido. Nenhuma execução solicitada.';return;}
+  button.disabled=true;out.textContent='Registrando pedido…';
+  try{const r=await apiServidor('/api/os/v1/mission-a','POST',{request_id:id,cost_confirmed:true});out.textContent=`Pedido ${id} · ${r.status}. Consulte o resultado; não repita um pedido incerto.`;}
+  catch(e){out.textContent='Confirmação indisponível. Consulte o resultado antes de tentar novamente; o identificador foi preservado.';}
+  finally{button.disabled=false;}
+});
+$('mission-a-check').addEventListener('click',async()=>{
+  const out=$('mission-a-result');let id;
+  missionATerminal=false;$('mission-a-new').disabled=true;
+  try{id=sessionStorage.getItem(MISSION_A_STORAGE);}catch(e){}
+  if(!id){out.textContent='Nenhum pedido nesta sessão.';return;}
+  try{const r=await apiServidor('/api/os/v1/mission-a/'+encodeURIComponent(id));
+    if(sessionStorage.getItem(MISSION_A_STORAGE)!==id)return;
+    missionATerminal=['result_unreviewed','failed'].includes(r.status);
+    $('mission-a-new').disabled=!missionATerminal;
+    out.textContent=r.status==='result_unreviewed'?`Execução ${r.execution_id} · revisão não comprovada\n\n${r.output}`:`Pedido ${id} · ${r.status}. Revisão não comprovada.`;
+  }catch(e){out.textContent='Não foi possível consultar o pedido. Nenhuma nova execução foi solicitada.';}
+});
+$('mission-a-new').addEventListener('click',()=>{
+  if(!missionATerminal)return;
+  try{sessionStorage.removeItem(MISSION_A_STORAGE);}
+  catch(e){$('mission-a-result').textContent='Não foi possível preparar um novo pedido; o identificador anterior foi preservado.';return;}
+  missionATerminal=false;$('mission-a-new').disabled=true;$('mission-a-cost').checked=false;
+  $('mission-a-result').textContent='Novo pedido pronto; confirme o custo para solicitar.';
 });
 
 let sugestaoAtual=null;

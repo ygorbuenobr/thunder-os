@@ -6,6 +6,8 @@ from pathlib import PurePosixPath
 
 
 ALLOWED_FILES = {
+    "_ferramentas/test_thunder_os_mission_a_http.py",
+    "_ferramentas/test_thunder_os_mission_a.py",
     "scripts/test_mission_report_ui.cjs",
     "_ferramentas/test_thunder_os_mission_report_contract.py",
     "_ferramentas/test_thunder_os_gmail_seqd_snapshot.py",
