@@ -22,7 +22,7 @@ SAFE_CODES=frozenset({'social_attempt_invalid','social_backend_unsupported','soc
     'receipt_missing_or_ambiguous','participants_unverified','conversation_unresolved','writes_disabled','has_reply',
     'comment_parent_receipt_unavailable','reply_parent_receipt_unavailable','social_receipt_unavailable',
     'reaction_receipt_unavailable','post_identity_mismatch','post_author_unverified','parent_author_unverified','post_author_changed',
-    'history_evidence_incomplete','history_incomplete','pagination_unverified','parent_comment_unverified',
+    'history_evidence_incomplete','history_incomplete','pagination_unverified','pagination_contradictory','parent_comment_unverified',
     'reaction_identity_unverified','owner_identity_unconfigured','existing_comment','existing_reaction','tagging_unsupported',
     'legacy_lookup_incomplete','has_reply_or_suppressed','suppressed','touch_not_dispatchable','current_approval_changed','dispatch_already_authorized','dispatch_callback_not_used'})
 
@@ -265,6 +265,8 @@ class ConnectSafelyConsole:
         if (attempt.get('preview_id')!=preview['id'] or attempt.get('attempt_token')!=preview.get('attempt_token')
                 or attempt.get('plan')!=preview['plan'] or payload_hash(preview['plan'])!=preview.get('effect_key')):
             raise RepositoryConflict('attempt_changed')
+        if attempt['plan']['action']=='dm':
+            return self._reconcile_dm_attempt(preview,attempt,reconciliation_guard)
         if attempt.get('status')=='sent':return attempt
         try:
             self._identity();result=self._result(self._reconcile(attempt['plan'],attempt['attempted_at']))
@@ -288,3 +290,65 @@ class ConnectSafelyConsole:
                         attempt['canonical_ref'],step,result['receipt_ref'])
                 else:self.ledger.finish(preview['effect_key'],'sent',result['receipt_ref'])
             return self._store(preview['effect_key'],result,attempt_token=attempt['attempt_token'])
+
+    def _dm_reconciliation_current(self,preview,attempt,guard):
+        current=self.repo.get_state('connectsafely_attempt',preview['effect_key'])
+        current_preview=self.repo.get_state('connectsafely_preview',preview['id'])
+        if (not current or not current_preview or current['version']!=attempt['version']
+                or current.get('attempt_token')!=attempt['attempt_token']
+                or current_preview['version']!=preview['version']
+                or current_preview.get('attempt_token')!=attempt['attempt_token']):
+            raise RepositoryConflict('attempt_changed')
+        if guard is not None and guard() is not True:raise RepositoryConflict('attempt_changed')
+        return current
+
+    def _reconcile_dm_attempt(self,preview,attempt,guard):
+        effect=preview['effect_key']
+        step=self._canonical_step(self._step(attempt['plan'],preview['id'],1),attempt['plan'])
+        owned=(effect,attempt['canonical_touch_id'],attempt['canonical_ref'],step)
+        binding={'effect_key':effect,'preview_id':preview['id'],'attempt_token':attempt['attempt_token'],
+                 'approval_hash':attempt['approval_hash'],'attempted_at':attempt['attempted_at'],
+                 'canonical_touch_id':attempt['canonical_touch_id'],'canonical_ref':attempt['canonical_ref']}
+        observation=attempt.get('reconciliation_observation')
+        if observation is not None:
+            if (not isinstance(observation,dict) or any(observation.get(k)!=v for k,v in binding.items())
+                    or set(observation)!=set(binding)|{'result','result_hash'}):
+                raise RepositoryConflict('attempt_changed')
+            result=self._result(observation.get('result'))
+            if (result!=observation['result'] or observation['result_hash']!=payload_hash(result)
+                    or result.get('status')!='sent' or result.get('confirmation_kind')!='observed_outbound'
+                    or result.get('write_attribution_confirmed') is not False):
+                raise ConnectSafelyError('receipt_unverified')
+        if attempt.get('status')=='sent':
+            terminal=self._result(attempt)
+            if (terminal.get('status')!='sent' or attempt.get('retry_write') is not False
+                    or attempt.get('confirmation_kind')!=terminal.get('confirmation_kind')
+                    or attempt.get('write_attribution_confirmed') is not terminal.get('write_attribution_confirmed')
+                    or observation is not None and terminal!=result
+                    or observation is None and (terminal.get('confirmation_kind')!='provider_receipt'
+                        or terminal.get('write_attribution_confirmed') is not True)):
+                raise ConnectSafelyError('receipt_unverified')
+            with self.repo.transaction():
+                self._dm_reconciliation_current(preview,attempt,guard)
+                self.ledger.read_reconciled_dm(*owned,attempt.get('receipt_ref'))
+                return {**terminal,'phase':attempt['phase'],'attempt_token':attempt['attempt_token'],
+                        'attempt_version':attempt['version'],'recovery_available':False}
+        if observation is None:
+            try:
+                self._identity();result=self._result(self._reconcile(attempt['plan'],attempt['attempted_at']))
+            except Exception as exc:
+                result=self._result({'status':'uncertain','error_code':_exception_code(exc,'requires_reconciliation')})
+            if result.get('status')=='sent' and (result.get('confirmation_kind')!='observed_outbound'
+                    or result.get('write_attribution_confirmed') is not False):
+                result=self._result({'status':'uncertain','error_code':'receipt_unverified'})
+            # Commit the scoped receipt before crossing the independent canonical
+            # database boundary. A crash reuses this receipt without provider IO.
+            with self.repo.transaction():
+                current=self._dm_reconciliation_current(preview,attempt,guard)
+                if result['status']!='sent':return self._store(effect,result,attempt_token=attempt['attempt_token'])
+                observation={**binding,'result':result,'result_hash':payload_hash(result)}
+                attempt=self.repo.put_state('connectsafely_attempt',effect,{**current,'reconciliation_observation':observation})
+        with self.repo.transaction():
+            self._dm_reconciliation_current(preview,attempt,guard)
+            self.ledger.reconcile_dm(*owned,result['receipt_ref'])
+            return self._store(effect,result,attempt_token=attempt['attempt_token'])

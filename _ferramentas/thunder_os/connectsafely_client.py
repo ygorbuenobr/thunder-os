@@ -9,7 +9,7 @@ import math
 import re
 import time
 import unicodedata
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlsplit
 
 
 class ConnectSafelyError(ValueError):
@@ -339,10 +339,27 @@ class ConnectSafelyClient:
         result=select(row,MESSAGE)
         identity=cls._sender_identity(row)
         if identity is not None:result['senderProfileId']=identity
+        nested=row.get('sender')
+        if isinstance(nested,dict):
+            public=cls._sender_public_id(nested.get('profileUrl'))
+            if public is not None:result['senderPublicId']=public
         stamp=row.get('sentAt')
         require(type(stamp) in (int,float) and math.isfinite(stamp) and stamp>0,'provider_schema_invalid')
         result['sentAt']=stamp
         return result
+
+    @staticmethod
+    def _sender_public_id(value):
+        # Project a safe public identifier only; never retain an arbitrary URL.
+        if not text(value):return None
+        try:
+            parsed=urlsplit(value)
+            if (parsed.scheme!='https' or parsed.hostname not in {'linkedin.com','www.linkedin.com'}
+                    or parsed.username is not None or parsed.password is not None
+                    or parsed.port is not None or parsed.query or parsed.fragment):return None
+        except ValueError:return None
+        match=re.fullmatch(r'/in/([^/]+)/?',unquote(parsed.path))
+        return match[1] if match and public_id(match[1]) else None
 
     def conversations(self,limit=10):
         self._limit(limit);self.verify_identity()
@@ -377,7 +394,10 @@ class ConnectSafelyClient:
         require(next_cursor is None or isinstance(next_cursor,str) and re.fullmatch(r'[0-9]{1,16}',next_cursor),'pagination_unverified')
         fetching_more=data.get('fetchingMore',False)
         require(type(fetching_more) is bool,'pagination_unverified')
-        return {'account_id':self.account_id,'conversation_urn':conversation_urn,'messages':[self._message(row) for row in rows],'participants':self._participants(data),'has_more':data.get('hasMore') is True,'next_cursor':next_cursor,'fetching_more':fetching_more}
+        return {'account_id':self.account_id,'account_scope_explicit':data.get('accountId')==self.account_id,
+                'conversation_urn':conversation_urn,'messages':[self._message(row) for row in rows],
+                'participants':self._participants(data),'has_more':data.get('hasMore') is True,
+                'next_cursor':next_cursor,'fetching_more':fetching_more}
 
     def _plan(self,plan):
         keys={'account_id','account_public_id','action','recipient_public_id','recipient_profile_urn','channel','messaging_channel','content','conversation_urn'}
@@ -396,14 +416,37 @@ class ConnectSafelyClient:
         if type(stamp) not in (int,float) or not math.isfinite(stamp):return 0
         return stamp/1000 if stamp>100_000_000_000 else stamp
 
-    def _receipt(self,row,plan,attempted_at):
+    def _receipt(self,row,plan,attempted_at,*,observed_owner=None):
         require(isinstance(row,dict) and urn(row.get('messageUrn')) and row.get('isSentByOwner') is True,'receipt_unverified')
-        value=row['messageUrn'];owner=self._profile_identity(self.self_profile_id)
+        value=row['messageUrn'];owner=observed_owner or self._profile_identity(self.self_profile_id)
         modern=bool(owner and re.fullmatch(r'urn:li:msg_message:\(urn:li:fsd_profile:'+re.escape(owner)+r',[A-Za-z0-9_.=-]+\)',value))
         require(value.startswith('urn:li:messagingMessage:') or modern,'receipt_unverified')
-        require(row.get('text')==plan['content'] and self._profile_identity(self.self_profile_id) is not None and self._sender_identity(row)==self._profile_identity(self.self_profile_id),'receipt_unverified')
+        require(row.get('text')==plan['content'] and owner is not None and self._sender_identity(row)==owner,'receipt_unverified')
         require(attempted_at<=self._seconds(row.get('sentAt'))<=min(self.clock()+5,attempted_at+120),'receipt_unverified')
         return {'status':'sent','receipt_ref':'connectsafely:'+row['messageUrn'],'message_urn':row['messageUrn'],'account_id':self.account_id,'confirmation_kind':'provider_receipt','write_attribution_confirmed':True}
+
+    def _observed_owner(self,data,thread,previous):
+        """Bind aliases for this read only, without changing the configured pin."""
+        pin=self._profile_identity(self.self_profile_id)
+        require(pin is not None,'participants_unverified')
+        owned=[row for row in data['messages'] if row.get('isSentByOwner') is True]
+        if pin==self.expected_public_id:require(data['account_scope_explicit'],'participants_unverified')
+        if pin==self.expected_public_id and previous is None:
+            require(data['account_scope_explicit'] and owned,'participants_unverified')
+            ids={row.get('senderProfileId') for row in owned}
+            require(None not in ids and len(ids)==1 and all(row.get('senderPublicId')==self.expected_public_id for row in owned),'participants_unverified')
+            owner=next(iter(ids))
+            # The member namespace corroborates the account-scoped URL binding.
+            require(re.fullmatch(r'urn:li:msg_conversation:\(urn:li:fsd_profile:'+re.escape(owner)+r',[A-Za-z0-9_.=-]+\)',thread),'participants_unverified')
+        else:owner=previous or pin
+        require(previous is None or previous==owner,'participants_unverified')
+        if pin!=self.expected_public_id:require(owner==pin,'participants_unverified')
+        if thread.startswith('urn:li:msg_conversation:('):
+            require(re.fullmatch(r'urn:li:msg_conversation:\(urn:li:fsd_profile:'+re.escape(owner)+r',[A-Za-z0-9_.=-]+\)',thread),'participants_unverified')
+        require(all(row.get('senderProfileId')==owner and
+                    ('senderPublicId' not in row or row['senderPublicId']==self.expected_public_id)
+                    for row in owned),'participants_unverified')
+        return owner
 
     def send(self,plan,*,before_dispatch):
         require(callable(before_dispatch),'dispatch_authority_unavailable')
@@ -444,14 +487,23 @@ class ConnectSafelyClient:
         thread=resolved.get('conversationUrn')
         if resolved.get('hasConversation') is not True or not urn(thread):return {'status':'uncertain','error_code':'conversation_unresolved'}
         require(plan.get('conversation_urn') is None or plan['conversation_urn']==thread,'conversation_identity_mismatch')
-        owner=self._profile_identity(self.self_profile_id);recipient=self._profile_identity(plan['recipient_profile_urn'])
-        expected={owner,recipient};aliases={self.expected_public_id:owner,plan['recipient_public_id']:recipient}
+        owner=None;recipient=self._profile_identity(plan['recipient_profile_urn'])
         candidates=[];seen=set();cursor=None
         for _ in range(3):
             data=self.messages(thread,cursor=cursor)
-            # Public identifiers are bound above by accounts + exact exists lookup.
-            ids={aliases.get(r.get('profileId'),self._profile_identity(r.get('profileId'))) for r in data['participants']}
-            if None in ids or None in expected or len(data['participants'])!=2 or len(ids)!=2 or ids!=expected:
+            if (data['has_more'] and (not data['messages'] or data['next_cursor'] is None)
+                    or not data['has_more'] and (data['fetching_more'] or data['next_cursor'] is not None)):
+                return {'status':'uncertain','error_code':'pagination_contradictory'}
+            try:owner=self._observed_owner(data,thread,owner)
+            except ConnectSafelyError:return {'status':'uncertain','error_code':'participants_unverified'}
+            expected={owner,recipient};aliases={self.expected_public_id:owner,plan['recipient_public_id']:recipient}
+            if {self.expected_public_id,owner}&{plan['recipient_public_id'],recipient}:
+                return {'status':'uncertain','error_code':'participants_unverified'}
+            raw=[r.get('profileId') for r in data['participants']]
+            ids={aliases.get(value,self._profile_identity(value)) for value in raw}
+            # Deduplicate only distinct proven aliases, never identical rows.
+            if (None in ids or None in expected or len(raw)!=len(set(raw)) or len(ids)!=2 or ids!=expected
+                    or len(raw)>2 and not data['account_scope_explicit']):
                 return {'status':'uncertain','error_code':'participants_unverified'}
             for row in data['messages']:
                 identity=row.get('messageUrn')
@@ -459,7 +511,7 @@ class ConnectSafelyClient:
                 seen.add(identity)
                 if cursor is not None and self._seconds(row.get('sentAt'))*1000>=int(cursor):
                     return {'status':'uncertain','error_code':'pagination_unverified'}
-                try:candidates.append(self._receipt(row,plan,attempted_at))
+                try:candidates.append(self._receipt(row,plan,attempted_at,observed_owner=owner))
                 except ConnectSafelyError:pass
             if data['has_more'] is False:
                 if data['fetching_more'] is not False:return {'status':'uncertain','error_code':'pagination_unverified'}
