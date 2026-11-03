@@ -617,6 +617,17 @@ body:has(#new-journey:not([hidden])) #hoje-pedido{display:none}
       <p data-la-status role="status" aria-live="polite">Informe um contato para consultar.</p>
       <div data-la-blockers></div>
       <div data-la-body hidden>
+        <article class="li-auth-step" data-la-step="campaign-register"><h5>0 · Registrar campanha</h5>
+          <form data-la-campaign-draft>
+            <label for="la-campaign-id">ID da campanha</label>
+            <input id="la-campaign-id" name="campaign_id" maxlength="100" pattern="[A-Za-z0-9_-]+" required autocomplete="off" value="LI-CANARIO-LAURA-01">
+            <label for="la-campaign-sheet">Ficha no Brain (arquivo em projetos/thunder-os/)</label>
+            <input id="la-campaign-sheet" name="sheet_path" maxlength="160" required autocomplete="off" value="projetos/thunder-os/ficha-li-canario-laura-01.md">
+            <button class="btn" type="submit" data-la-campaign-draft-load>Montar registro (só leitura)</button>
+          </form>
+          <div data-la-campaign-draft-view></div>
+          <div data-la-slot></div>
+        </article>
         <article class="li-auth-step" data-la-step="delegation"><h5>1 · Delegação Hermes (kill switch)</h5><div data-la-slot></div></article>
         <article class="li-auth-step" data-la-step="agent"><h5>2 · Controle do agente</h5><div data-la-slot></div></article>
         <article class="li-auth-step" data-la-step="approval"><h5>3 · Aprovar cadência</h5>
@@ -1648,7 +1659,8 @@ ThunderDelegatedIdentity.mount($('delegated-identity-review'),{api:(...args)=>{
     const status=q('[data-la-status]'),blockerBox=q('[data-la-blockers]'),body=q('[data-la-body]');
     const draftForm=q('[data-la-draft]'),draftView=q('[data-la-draft-view]'),draftButton=q('[data-la-draft-load]');
     const slot=name=>q('[data-la-step="'+name+'"] [data-la-slot]');
-    let generation=0,busy=false,state=null,contact=null,draft=null,tasks=null,previews={},reviews={},picked={};
+    let generation=0,busy=false,state=null,contact=null,draft=null,tasks=null,previews={},reviews={},picked={},campaignDraft=null;
+    const campaignForm=q('[data-la-campaign-draft]'),campaignView=q('[data-la-campaign-draft-view]'),campaignButton=q('[data-la-campaign-draft-load]');
     const node=(tag,value,cls)=>{const el=doc.createElement(tag);if(value!==undefined&&value!==null)el.textContent=String(value);if(cls)el.className=cls;return el;};
     const message=value=>{status.textContent=value;};
     const date=value=>{const d=typeof value==='number'?new Date(value*1000):new Date(value);return Number.isNaN(d.getTime())?'Data não verificada':d.toLocaleString('pt-BR');};
@@ -1657,7 +1669,7 @@ ThunderDelegatedIdentity.mount($('delegated-identity-review'),{api:(...args)=>{
     function lock(value){
       busy=value;container.setAttribute('aria-busy',value?'true':'false');
       if(value){for(const b of container.querySelectorAll('button'))b.disabled=true;return;}
-      loadButton.disabled=false;draftButton.disabled=false;
+      loadButton.disabled=false;draftButton.disabled=false;campaignButton.disabled=false;
       // Dynamic action buttons are rebuilt from the latest readback, never re-enabled in place.
       if(state)render();
     }
@@ -1683,6 +1695,29 @@ ThunderDelegatedIdentity.mount($('delegated-identity-review'),{api:(...args)=>{
       if(!list.length){blockerBox.appendChild(node('p','Nenhum bloqueio de autorização nesta leitura. O envio ainda depende do executor ligado na VPS.'));return;}
       blockerBox.appendChild(node('p','Bloqueios nesta leitura:','li-auth-warn'));const ul=node('ul');
       for(const code of list){const li=node('li',BLOCKERS[code]||('Bloqueio: '+code));li.dataset.laBlocker=code;ul.appendChild(li);}blockerBox.appendChild(ul);
+    }
+    function renderCampaignRegister(){
+      campaignView.replaceChildren();const s=slot('campaign-register');s.replaceChildren();
+      const linkedin=(state.campaigns||[]);
+      if(!linkedin.length)s.appendChild(node('p','Nenhuma campanha com LinkedIn registrada.'));
+      for(const c of linkedin){
+        const p=node('p',c.id+' · '+(c.eligible?'elegível para esta conta':'não elegível ('+(c.reason||'motivo não informado')+')'));p.dataset.laCampaign=c.id;s.appendChild(p);
+        if(c.eligible&&Number.isInteger(c.version)){
+          const path='/api/os/v1/campaigns/'+encodeURIComponent(c.id)+'/revoke',payload={expected_version:c.version};
+          s.appendChild(exact('Revogar campanha '+c.id,'POST',path,payload));
+          s.appendChild(button('Revogar campanha '+c.id,()=>act('Revogar campanha','POST',path,payload,(_r,st)=>!(st.campaigns||[]).some(x=>x.id===c.id&&x.eligible)),{data:'campaign-revoke'}));
+        }
+      }
+      if(!campaignDraft)return;
+      const card=node('div','','nj-warning');card.dataset.laCampaignDraftCard=campaignDraft.request.config.campaign_id;
+      card.appendChild(node('h6','Registro da campanha '+campaignDraft.request.config.campaign_id+' · nada foi gravado'));
+      card.appendChild(rows([['Plataforma','thunder_os'],['Canal','LinkedIn via ConnectSafely · conta '+campaignDraft.request.config.configuration.provider_accounts.linkedin],['Ficha',campaignDraft.request.config.briefing.fields.offer.path+' · sha256 '+campaignDraft.sheet_sha256],['Versão esperada',String(campaignDraft.request.expected_version)+(campaignDraft.existing?' (atualiza o registro existente)':' (registro novo)')]]));
+      for(const sec of campaignDraft.sections){card.appendChild(node('h6',sec.label));card.appendChild(node('pre',sec.content,'li-auth-text'));}
+      card.appendChild(exact('Registrar campanha','POST','/api/os/v1/campaigns',campaignDraft.request));
+      const current=campaignDraft;
+      card.appendChild(guarded('Conferi a ficha, a conta e o pedido exato acima.','Registrar campanha',()=>{if(current!==campaignDraft)return;
+        act('Registrar campanha','POST','/api/os/v1/campaigns',current.request,(_r,st)=>(st.campaigns||[]).some(x=>x.id===current.request.config.campaign_id&&x.eligible));},'campaign-register'));
+      campaignView.appendChild(card);
     }
     function renderDelegation(){
       const s=slot('delegation');s.replaceChildren();const d=state.delegation;
@@ -1841,14 +1876,14 @@ ThunderDelegatedIdentity.mount($('delegated-identity-review'),{api:(...args)=>{
         s.appendChild(box);
       }
     }
-    function render(){if(!state)return;body.hidden=false;renderBlockers();renderDelegation();renderAgent();renderDraft();renderApprovals();renderBindings();renderCampaign();if(busy)lock(true);}
+    function render(){if(!state)return;body.hidden=false;renderBlockers();renderCampaignRegister();renderDelegation();renderAgent();renderDraft();renderApprovals();renderBindings();renderCampaign();if(busy)lock(true);}
     async function read(id,g){
       const result=await api('/api/os/v1/linkedin-authorization?contact_id='+encodeURIComponent(id));
       if(g!==generation)return;
       if(!result||result.read_only!==true||result.contact_id!==id||!Array.isArray(result.approvals)||!Array.isArray(result.tasks)||!Array.isArray(result.blockers))throw Error('Leitura inválida.');
       state=result;render();
     }
-    function reset(text){generation++;state=null;draft=null;tasks=null;previews={};reviews={};picked={};body.hidden=true;blockerBox.replaceChildren();draftView.replaceChildren();message(text);}
+    function reset(text){generation++;state=null;draft=null;tasks=null;previews={};reviews={};picked={};campaignDraft=null;body.hidden=true;blockerBox.replaceChildren();draftView.replaceChildren();message(text);}
     contactField.addEventListener('input',()=>reset('Contato alterado. Consulte antes de autorizar.'));
     contactForm.addEventListener('submit',async event=>{
       event.preventDefault();if(busy)return;const id=contactField.value.trim();
@@ -1856,6 +1891,18 @@ ThunderDelegatedIdentity.mount($('delegated-identity-review'),{api:(...args)=>{
       reset('Consultando autorizações…');contact=id;const g=generation;lock(true);
       try{await read(id,g);if(g===generation)message('Estado lido. Confira os bloqueios antes de autorizar.');}
       catch(error){if(g===generation){body.hidden=true;message('Não foi possível ler as autorizações deste contato. Nada foi alterado.');}}
+      finally{if(g===generation)lock(false);else{busy=false;loadButton.disabled=false;draftButton.disabled=false;}}
+    });
+    campaignForm.addEventListener('input',()=>{if(campaignDraft){campaignDraft=null;render();message('Campanha ou ficha alterada. Monte o registro de novo.');}});
+    campaignForm.addEventListener('submit',async event=>{
+      event.preventDefault();if(busy||!contact)return;const f=campaignForm.elements;
+      const payload={campaign_id:f.namedItem('campaign_id').value.trim(),sheet_path:f.namedItem('sheet_path').value.trim()};
+      const g=generation;lock(true);campaignDraft=null;message('Lendo a ficha no Brain, sem gravar nada…');
+      try{const result=await api('/api/os/v1/linkedin-campaign-drafts','POST',payload);if(g!==generation)return;
+        const c=result&&result.request&&result.request.config;
+        if(!result||result.read_only!==true||result.persisted!==false||!c||c.campaign_id!==payload.campaign_id||c.platform!=='thunder_os'||!c.providers||c.providers.linkedin!=='connectsafely'||!Array.isArray(result.sections))throw Error('Registro inválido.');
+        campaignDraft=result;message('Registro montado. Nada foi gravado. Confira a ficha antes de registrar.');}
+      catch(error){if(g===generation)message('Registro bloqueado: '+(error&&error.message||'erro')+' Nada foi gravado.');}
       finally{if(g===generation)lock(false);else{busy=false;loadButton.disabled=false;draftButton.disabled=false;}}
     });
     draftForm.addEventListener('input',()=>{if(draft){draft=null;draftView.replaceChildren();message('Texto ou perfil alterado. Monte a prévia de novo antes de aprovar.');}});
