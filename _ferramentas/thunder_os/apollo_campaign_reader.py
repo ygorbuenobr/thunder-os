@@ -1484,8 +1484,12 @@ class ApolloCampaignReader:
                         if not isinstance(source_observed, str):
                             result['stale'] = True
                         else:
+                            # A cohort reused from cache is valid for its own TTL by design;
+                            # only fresh scans and messages follow the snapshot TTL.
+                            limit = (COHORT_TTL if source == 'contacts'
+                                     and result['coverage'].get('contacts_cached') is True else SNAPSHOT_TTL)
                             result['stale'] = (result['stale'] or
-                                not 0 <= (self.clock() - _date(source_observed)).total_seconds() <= SNAPSHOT_TTL)
+                                not 0 <= (self.clock() - _date(source_observed)).total_seconds() <= limit)
             except (ValueError, TypeError):
                 result['stale'] = True
             if result['status'] in ('partial', 'error'):
