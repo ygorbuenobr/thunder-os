@@ -20,7 +20,7 @@ class PreviewTest(unittest.TestCase):
 
     def preview(self, *, account_status=None, **kwargs):
         return ApolloLinkedInPreview(lambda: 'test-token', team_id='team1', sequence_id='sequence1',
-            task_id='task1', account_id='account1', account_public_id='sender', owner_id='owner1',
+            task_id='task1', account_id='account1', account_public_id='sender', api_actor_id='owner1', owner_id='owner1',
             account_status_reader=account_status or (lambda: {'id': 'account1', 'publicId': 'sender',
                 'available': True}), request=self.request, **kwargs)
 
@@ -77,7 +77,7 @@ class PreviewTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             ApolloLinkedInPreview(lambda:'x', team_id='team1', sequence_id='sequence1',
                 task_id='../complete', account_id='account1', account_public_id='sender',
-                owner_id='owner1', account_status_reader=lambda:{}, request=self.request)
+                api_actor_id='owner1', owner_id='owner1', account_status_reader=lambda:{}, request=self.request)
         self.assertEqual(self.calls, [])
 
     def test_transport_refuses_effect_routes_before_network(self):
@@ -147,6 +147,53 @@ class PreviewTest(unittest.TestCase):
         result = self.preview().read()
         self.assertIn('self_invitation', result['blockers'])
         self.assertIsNone(result['call_preview'])
+
+    def test_api_actor_can_differ_from_task_owner(self):
+        preview = ApolloLinkedInPreview(lambda:'test-token', team_id='team1', sequence_id='sequence1',
+            task_id='task1', account_id='account1', account_public_id='sender',
+            api_actor_id='actor1', owner_id='owner1', account_status_reader=lambda:{},
+            request=lambda method, path, body, headers, timeout: (200, json.dumps(
+                {'user': {'id':'actor1','team_id':'team1'}} if path.endswith('api_profile')
+                else {'task':self.task}).encode()))
+        result = preview.read()
+        self.assertEqual(result['status'], 'blocked')
+        self.assertNotIn('owner_unverified', result['blockers'])
+
+    def test_wrong_task_owner_blocks_with_separate_actor(self):
+        self.task['user_id'] = 'other'
+        preview = ApolloLinkedInPreview(lambda:'test-token', team_id='team1', sequence_id='sequence1',
+            task_id='task1', account_id='account1', account_public_id='sender',
+            api_actor_id='actor1', owner_id='owner1', account_status_reader=lambda:{},
+            request=lambda method, path, body, headers, timeout: (200, json.dumps(
+                {'user': {'id':'actor1','team_id':'team1'}} if path.endswith('api_profile')
+                else {'task':self.task}).encode()))
+        result = preview.read()
+        self.assertIn('owner_unverified', result['blockers'])
+        self.assertIsNone(result['call_preview'])
+
+    def test_wrong_api_actor_is_rejected_before_task_read(self):
+        calls = []
+        def request(method, path, body, headers, timeout):
+            calls.append(path)
+            return 200, json.dumps({'user': {'id':'other','team_id':'team1'}}).encode()
+        preview = ApolloLinkedInPreview(lambda:'test-token', team_id='team1', sequence_id='sequence1',
+            task_id='task1', account_id='account1', account_public_id='sender', api_actor_id='actor1',
+            owner_id='owner1', account_status_reader=lambda:{}, request=request)
+        result = preview.read()
+        self.assertEqual(result['status'], 'unavailable')
+        self.assertEqual(calls, ['/api/v1/users/api_profile'])
+
+
+    def test_wrong_team_is_rejected_before_task_read(self):
+        calls = []
+        def request(method, path, body, headers, timeout):
+            calls.append(path)
+            return 200, json.dumps({'user': {'id': 'actor1', 'team_id': 'other'}}).encode()
+        preview = ApolloLinkedInPreview(lambda:'test-token', team_id='team1', sequence_id='sequence1',
+            task_id='task1', account_id='account1', account_public_id='sender', api_actor_id='actor1',
+            owner_id='owner1', account_status_reader=lambda:{}, request=request)
+        self.assertEqual(preview.read()['status'], 'unavailable')
+        self.assertEqual(calls, ['/api/v1/users/api_profile'])
 
 
 if __name__ == '__main__':

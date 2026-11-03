@@ -61,10 +61,10 @@ class ApolloLinkedinPreviewHttpTests(unittest.TestCase):
         self.assertIsNone(panel.configure_apollo_linkedin_preview(server, loader, {}))
         self.assertIsNone(panel.configure_apollo_linkedin_preview(server, loader, {'THUNDER_APOLLO_LI_TEAM': 'team'}))
         self.assertEqual(server.thunder_apollo_linkedin_preview_error, 'configuration_incomplete')
-        env = dict(zip(('THUNDER_APOLLO_LI_TEAM','THUNDER_APOLLO_LI_OWNER',
+        env = dict(zip(('THUNDER_APOLLO_LI_TEAM','THUNDER_APOLLO_LI_OWNER','THUNDER_APOLLO_LI_API_ACTOR',
             'THUNDER_APOLLO_LI_SEQUENCE','THUNDER_APOLLO_LI_TASK',
             'THUNDER_APOLLO_LI_ACCOUNT','THUNDER_APOLLO_LI_PUBLIC_ID'),
-            ('team','ownerid','sequence','task','acct','owner')))
+            ('team','ownerid','api_actor','sequence','task','acct','owner')))
         panel.configure_apollo_linkedin_preview(server, loader, env)
         loader.assert_not_called()
         server.thunder_connectsafely_app.provider.direct_client.account_status.assert_not_called()

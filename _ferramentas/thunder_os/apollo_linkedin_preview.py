@@ -72,9 +72,9 @@ def _json(raw):
 
 class ApolloLinkedInPreview:
     def __init__(self, credential_loader, *, team_id, sequence_id, task_id,
-                 account_id, account_public_id, owner_id, account_status_reader,
+                 account_id, account_public_id, api_actor_id, owner_id, account_status_reader,
                  request=None, timeout=8):
-        if not all(_identifier(x) for x in (team_id, sequence_id, task_id, account_id, owner_id)):
+        if not all(_identifier(x) for x in (team_id, sequence_id, task_id, account_id, api_actor_id, owner_id)):
             raise ValueError('configuration_invalid')
         if not isinstance(account_public_id, str) or not _SLUG.fullmatch(account_public_id):
             raise ValueError('configuration_invalid')
@@ -86,6 +86,7 @@ class ApolloLinkedInPreview:
         self._status = account_status_reader
         self.team_id, self.sequence_id, self.task_id = team_id, sequence_id, task_id
         self.account_id, self.account_public_id, self.owner_id = account_id, account_public_id, owner_id
+        self.api_actor_id = api_actor_id
         self.timeout = timeout
 
     def _get(self, path):
@@ -108,7 +109,7 @@ class ApolloLinkedInPreview:
             profile = self._get('/api/v1/users/api_profile')
             user = profile.get('user', profile)
             if (not isinstance(user, dict) or user.get('team_id') != self.team_id
-                    or user.get('id') != self.owner_id):
+                    or user.get('id') != self.api_actor_id):
                 raise ValueError('team_mismatch')
             data = self._get('/api/v1/tasks/' + self.task_id)
             task = data.get('task')

@@ -2800,7 +2800,7 @@ def configure_apollo_linkedin_preview(server, loader, environ=None):
     """Explicit target configuration; never calls providers at startup."""
     from thunder_os.apollo_linkedin_preview import ApolloLinkedInPreview
     env = os.environ if environ is None else environ
-    keys = ('THUNDER_APOLLO_LI_TEAM', 'THUNDER_APOLLO_LI_OWNER',
+    keys = ('THUNDER_APOLLO_LI_TEAM', 'THUNDER_APOLLO_LI_OWNER', 'THUNDER_APOLLO_LI_API_ACTOR',
             'THUNDER_APOLLO_LI_SEQUENCE', 'THUNDER_APOLLO_LI_TASK',
             'THUNDER_APOLLO_LI_ACCOUNT', 'THUNDER_APOLLO_LI_PUBLIC_ID')
     values = [env.get(key, '') for key in keys]
@@ -2813,13 +2813,13 @@ def configure_apollo_linkedin_preview(server, loader, environ=None):
         return None
     app = getattr(server, 'thunder_connectsafely_app', None)
     client = getattr(getattr(app, 'provider', None), 'direct_client', None)
-    if client is None or (client.account_id, client.expected_public_id) != (values[4], values[5]):
+    if client is None or (client.account_id, client.expected_public_id) != (values[5], values[6]):
         server.thunder_apollo_linkedin_preview_error = 'account_mismatch'
         return None
     try:
-        preview = ApolloLinkedInPreview(loader, team_id=values[0], owner_id=values[1],
-            sequence_id=values[2], task_id=values[3], account_id=values[4],
-            account_public_id=values[5], account_status_reader=client.account_status)
+        preview = ApolloLinkedInPreview(loader, team_id=values[0], owner_id=values[1], api_actor_id=values[2],
+            sequence_id=values[3], task_id=values[4], account_id=values[5],
+            account_public_id=values[6], account_status_reader=client.account_status)
     except (ValueError, TypeError):
         server.thunder_apollo_linkedin_preview_error = 'configuration_invalid'
         return None
