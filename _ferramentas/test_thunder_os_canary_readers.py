@@ -156,9 +156,22 @@ class ApolloTests(unittest.TestCase):
         self.assertFalse(result['suppressed'])
         self.assertFalse(result['no_record'])
 
-    def test_existing_contact_without_reply_observation_fails_closed(self):
+    def test_never_sequenced_contact_is_clear_but_optout_and_bounce_still_suppress(self):
+        # Owner decision 2026-11-03: no Apollo sequence means no Apollo email and no Apollo reply.
+        reader, _ = self.make([{'id': 'apollo-1', 'email': EMAIL, 'contact_campaign_statuses': []}])
+        result = reader(EMAIL)
+        self.assertEqual((False, False, True), (result['suppressed'], result['no_record'], result['complete']))
+        for extra in ({'email_unsubscribed': True}, {'email_status': 'bounced'}, {'email_status': 'unsubscribed'}):
+            with self.subTest(extra=extra):
+                reader, _ = self.make([{'id': 'apollo-1', 'email': EMAIL, 'contact_campaign_statuses': [], **extra}])
+                self.assertTrue(reader(EMAIL)['suppressed'])
+        reader, _ = self.make([{'id': 'apollo-1', 'email': EMAIL}])
+        with self.assertRaisesRegex(CanaryReadError, 'reply_unavailable'):
+            reader(EMAIL)
+
+    def test_sequenced_contact_without_reply_observation_fails_closed(self):
         reader, _ = self.make([{'id': 'apollo-1', 'email': EMAIL,
-            'contact_campaign_statuses': []}])
+            'contact_campaign_statuses': [{'status': 'paused'}]}])
         with self.assertRaisesRegex(CanaryReadError, 'reply_unavailable'):
             reader(EMAIL)
 

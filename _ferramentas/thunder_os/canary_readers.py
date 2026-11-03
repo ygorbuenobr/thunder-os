@@ -149,9 +149,12 @@ class ApolloCanaryReader:
     """Fresh contact search, never a full-campaign sweep or enrichment.
 
     No saved contact means no record in this source, scoped to the exact email.
-    A saved contact without an explicit reply observation is unknown and is
-    rejected; an empty membership list or active/paused status alone does not
-    prove a negative reply.
+    A saved contact in a sequence without an explicit reply observation is
+    unknown and is rejected; active/paused status alone does not prove a
+    negative reply. A saved contact never placed in any Apollo sequence (no
+    membership and no reply field) has received no Apollo email, so Apollo
+    holds no reply for it (owner decision, 2026-11-03); opt-out and bounce
+    still suppress, and a present but malformed reply field still fails.
     """
     def __init__(self, scope, team_id, credential_loader, *, request=None):
         from .apollo_readonly import _https_request
@@ -197,7 +200,8 @@ class ApolloCanaryReader:
         require(optout is None or type(optout) is bool, 'canary_apollo_reply_unavailable')
         row_reply = row.get('email_replied')
         require('email_replied' not in row or type(row_reply) is bool, 'canary_apollo_reply_unavailable')
-        require(bool(memberships) or type(row_reply) is bool, 'canary_apollo_reply_unavailable')
+        never_sequenced = not memberships and 'email_replied' not in row
+        require(bool(memberships) or type(row_reply) is bool or never_sequenced, 'canary_apollo_reply_unavailable')
         blocked = optout is True or row_reply is True or row.get('email_status') in ('unsubscribed', 'bounced')
         if memberships:
             for item in memberships:
