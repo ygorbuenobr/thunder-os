@@ -47,6 +47,14 @@ function fakeServer(){
       {id:'40002',subject:'LinkedIn: msg 2',body:'texto solto',status:'NOT_STARTED',due_at:'2026-11-05T12:00:00Z',marker:'cad_li_2',contract_ok:false}]}];
     if(method==='GET'&&p==='/api/os/v1/linkedin-cadence-previews'){const task=url.searchParams.get('task_id');return [200,{read_only:true,task_id:task,previews:s.previews[task]||[]}];}
     if(method!=='POST')return [404,{erro:'rota'}];
+    if(p==='/api/os/v1/linkedin-campaign-drafts'){assert.deepEqual(body,{campaign_id:'LI-CANARIO-LAURA-01',sheet_path:'projetos/thunder-os/ficha-li-canario-laura-01.md'});
+      return [200,{read_only:true,persisted:false,sheet_sha256:'b'.repeat(64),existing:false,sections:[{key:'offer',label:'Oferta',content:'Nenhuma oferta. '+attack},{key:'restrictions',label:'Restrições',content:'Uma única DM.'}],
+        request:{expected_version:0,config:{campaign_id:'LI-CANARIO-LAURA-01',platform:'thunder_os',providers:{linkedin:'connectsafely'},configuration:{flow_version:'linkedin-cadence-v1',provider_accounts:{linkedin:ACCOUNT}},briefing:{version:'1',fields:{offer:{path:'projetos/thunder-os/ficha-li-canario-laura-01.md',sha256:'b'.repeat(64),section:'offer'}}}}}}];}
+    if(p==='/api/os/v1/campaigns'){assert.equal(body.expected_version,0);s.campaigns.push({id:body.config.campaign_id,platform:'thunder_os',eligible:true,reason:null,version:1});return [200,{id:body.config.campaign_id,version:1}];}
+    const revokeCampaign=/^\/api\/os\/v1\/campaigns\/([^/]+)\/revoke$/.exec(p);
+    if(revokeCampaign){const id=decodeURIComponent(revokeCampaign[1]),c=s.campaigns.find(x=>x.id===id);assert.equal(body.expected_version,c.version);
+      // Real campaign_options skips revoked campaigns (binding() fails), so it leaves the list.
+      s.campaigns=s.campaigns.filter(x=>x.id!==id);return [200,{...c,active:false,version:c.version+1}];}
     if(p==='/api/os/v1/delegations/hermes'){assert.deepEqual(Object.keys(body).sort(),['daily_limit','enabled','scopes']);s.delegation={...body,scopes:[...new Set(body.scopes)].sort(),actor:'ygor',version:(s.delegation?.version||0)+1};return [200,s.delegation];}
     if(p==='/api/os/v1/agent/control'){assert.equal(body.expected_version,s.agent.version);s.agent={...s.agent,paused:body.action==='pause',version:s.agent.version+1};return [200,s.agent];}
     if(p==='/api/os/v1/linkedin-cadence-plan-drafts'){
@@ -81,7 +89,7 @@ function fakeServer(){
   return {handle,s};
 }
 
-const ALLOWED_POSTS = new Set(['/api/os/v1/delegations/hermes','/api/os/v1/agent/control','/api/os/v1/linkedin-cadence-plan-drafts',
+const ALLOWED_POSTS = new Set(['/api/os/v1/linkedin-campaign-drafts','/api/os/v1/campaigns','/api/os/v1/campaigns/LI-CANARIO-LAURA-01/revoke','/api/os/v1/delegations/hermes','/api/os/v1/agent/control','/api/os/v1/linkedin-cadence-plan-drafts',
   '/api/os/v1/linkedin-cadence-approvals','/api/os/v1/linkedin-cadence-approvals/revoke','/api/os/v1/linkedin-cadence-task-bindings',
   '/api/os/v1/integrations/connectsafely/campaign-review','/api/os/v1/linkedin-cadence-campaign-confirmations']);
 
@@ -116,6 +124,21 @@ const ALLOWED_POSTS = new Set(['/api/os/v1/delegations/hermes','/api/os/v1/agent
         assert.equal(await page.locator(`[data-la-blocker="${code}"]`).count(),1,code);
       assert.match(await page.locator('[data-la-state="delegation"]').innerText(),/Nunca configurada/);
       assert.equal(posts().length,0,'reading state never writes');
+
+      // 0 · Campaign registration from a Brain sheet, read-only draft first.
+      await page.click('[data-la-campaign-draft-load]'); await settle();
+      const regCard = page.locator('[data-la-campaign-draft-card]');
+      assert.match(await regCard.innerText(),/nada foi gravado[\s\S]*connectsafely|ConnectSafely/);
+      assert.match(await regCard.innerText(),/Nenhuma oferta/);
+      assert.equal(await page.evaluate(()=>window.injected),undefined);
+      const register = page.locator('[data-la-action="campaign-register"]');
+      assert(await register.isDisabled());
+      await regCard.locator('input[type="checkbox"]').check();
+      await register.click(); await settle();
+      assert.equal(lastPost().path,'/api/os/v1/campaigns');
+      assert.equal(lastPost().body.config.campaign_id,'LI-CANARIO-LAURA-01');
+      assert.match(await status(),/Registrar campanha: registrado e conferido/);
+      assert.match(await page.locator('[data-la-campaign="LI-CANARIO-LAURA-01"]').innerText(),/elegível/);
 
       // 1 · Delegation on, with the exact request visible before the click.
       await page.locator('[data-la-exact="Ligar delegação"] summary').click();
@@ -180,7 +203,7 @@ const ALLOWED_POSTS = new Set(['/api/os/v1/delegations/hermes','/api/os/v1/agent
       const preview = page.locator('[data-la-preview="prev1"]');
       assert.equal(await preview.locator('pre.li-auth-text').innerText(),TEXT1);
       assert.match(await preview.innerText(),/Identidade confere/);
-      assert.equal(await preview.locator('option').count(),2,'only eligible campaigns are offered');
+      assert.equal(await preview.locator('option').count(),3,'only eligible campaigns are offered');
       await preview.locator('select').selectOption('LI-THUNDER-OS-01');
       assert.equal(await page.locator('[data-la-preview="prev1"] select').inputValue(),'LI-THUNDER-OS-01','choice survives re-render');
       await page.locator('[data-la-preview="prev1"] [data-la-action="campaign-review"]').click(); await settle();
@@ -208,6 +231,10 @@ const ALLOWED_POSTS = new Set(['/api/os/v1/delegations/hermes','/api/os/v1/agent
       await page.click('[data-la-action="delegation-off"]'); await settle();
       assert.deepEqual(lastPost().body,{scopes:['linkedin_cadence'],daily_limit:1,enabled:false});
       assert.match(await page.locator('[data-la-state="delegation"]').innerText(),/Desligada/);
+
+      await page.locator('[data-la-action="campaign-revoke"]').last().click(); await settle();
+      assert.deepEqual(lastPost(),{method:'POST',path:'/api/os/v1/campaigns/LI-CANARIO-LAURA-01/revoke',body:{expected_version:1}});
+      assert.equal(await page.locator('[data-la-campaign="LI-CANARIO-LAURA-01"]').count(),0);
 
       // A failed write is visible and does not claim success.
       await page.route('**/api/os/v1/agent/control',route=>route.fulfill({status:409,contentType:'application/json',body:JSON.stringify({erro:'Versão desatualizada.'})}));

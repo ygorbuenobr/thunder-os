@@ -181,9 +181,59 @@ def campaign_options(registry, sender: Mapping[str, Any]) -> list[dict[str, Any]
             reason = "campaign_provider_not_connectsafely"
         elif binding["provider_accounts"].get("linkedin") != sender.get("account_id"):
             reason = "campaign_account_mismatch"
+        state = registry.repo.get_state("campaign_config", row["id"]) or {}
         options.append({"id": row["id"], "platform": row.get("platform"), "eligible": reason is None,
-                        "reason": reason})
+                        "reason": reason, "version": state.get("version")})
     return options
+
+
+def campaign_draft(body: Any, *, store, registry, sender: Mapping[str, Any]) -> dict[str, Any]:
+    """Exact `POST /api/os/v1/campaigns` body from a Brain sheet; nothing is persisted."""
+    import hashlib
+    from .campaign_registry import _config
+    from .campaign_sheet import FIELDS, _read_source, sheet_view
+    from .approvals import ApprovalError
+    require(isinstance(body, dict) and set(body) == {"campaign_id", "sheet_path"}, "campaign_draft_invalid")
+    ident, path = body["campaign_id"], body["sheet_path"]
+    require(isinstance(ident, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", ident), "campaign_id_invalid")
+    require(isinstance(path, str) and re.fullmatch(r"projetos/thunder-os/[A-Za-z0-9_-][A-Za-z0-9_.-]{0,119}\.md", path)
+            and ".." not in path, "campaign_sheet_path_invalid")
+    require(store is not None, "campaign_sheet_store_unavailable")
+    try:
+        raw, _mtime = _read_source(store, path)
+    except FileNotFoundError:
+        raise AuthorizationReadError("campaign_sheet_missing") from None
+    except (OSError, ValueError):
+        raise AuthorizationReadError("campaign_sheet_unavailable") from None
+    digest = hashlib.sha256(raw).hexdigest()
+    sheet = {"version": "1", "fields": {key: {"path": path, "sha256": digest, "section": key} for key in FIELDS}}
+    try:
+        view = sheet_view(ident, sheet, store)
+    except (ApprovalError, ValueError):
+        raise AuthorizationReadError("campaign_sheet_unavailable") from None
+    require(view["status"] == "complete", "campaign_sheet_incomplete:" + ",".join(view["missing_fields"]))
+    rules = next(row["content"] for row in view["fields"] if row["key"] == "restrictions")
+    config = {"campaign_id": ident, "campaign_version": "1", "rules_version": "1", "run_id": ident,
+              "platform": "thunder_os", "providers": {"linkedin": "connectsafely"}, "rules": rules,
+              "configuration": {"flow_version": "linkedin-cadence-v1",
+                                "provider_accounts": {"linkedin": sender["account_id"]}},
+              "briefing": sheet}
+    try:
+        _config(config)
+    except ApprovalError as exc:
+        raise AuthorizationReadError(str(exc)) from None
+    current = registry.repo.get_state("campaign_config", ident)
+    if current:
+        # Never let this screen rewrite another channel's or account's campaign.
+        previous = current.get("config") or {}
+        require(previous.get("platform") == "thunder_os"
+                and previous.get("providers") == {"linkedin": "connectsafely"}
+                and (previous.get("configuration") or {}).get("provider_accounts") == {"linkedin": sender["account_id"]}
+                and "batches" not in previous, "campaign_id_belongs_to_other_campaign")
+    return {"read_only": True, "persisted": False, "sheet_sha256": digest,
+            "request": {"config": config, "expected_version": current["version"] if current else 0},
+            "existing": bool(current), "existing_active": bool(current and current.get("active")),
+            "sections": [{"key": row["key"], "label": row["label"], "content": row["content"]} for row in view["fields"]]}
 
 
 def _public(state: Mapping[str, Any] | None, fields) -> dict[str, Any] | None:

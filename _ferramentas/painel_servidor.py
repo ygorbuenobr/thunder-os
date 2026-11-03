@@ -2453,6 +2453,16 @@ class Handler(BaseHTTPRequestHandler):
                     hubspot=self.linkedin_hubspot_reader(), repository=service.repository, clock=time.time))
             except li_auth.AuthorizationReadError as exc:
                 raise Erro('Rascunho bloqueado: ' + str(exc), 409) from None
+        if rota.path == '/api/os/v1/linkedin-campaign-drafts':
+            if actor != 'ygor':
+                raise AuthorizationError('Somente Ygor pode preparar o registro da campanha.')
+            from thunder_os import linkedin_authorization as li_auth
+            try:
+                return self.responder(200, li_auth.campaign_draft(
+                    body, store=getattr(service, 'campaign_sheet_store', None) or getattr(service, 'knowledge_store', None),
+                    registry=service.campaign_registry, sender=li_auth.configured_sender()))
+            except li_auth.AuthorizationReadError as exc:
+                raise Erro('Registro bloqueado: ' + str(exc), 409) from None
         if rota.path == '/api/os/v1/linkedin-cadence-approvals/revoke':
             if actor != 'ygor':
                 raise AuthorizationError('Somente Ygor pode revogar a aprovação.')

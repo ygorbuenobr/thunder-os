@@ -399,6 +399,20 @@ class ConnectSafelyCanaryReader:
         raise CanaryReadError('canary_conversation_incomplete')
 
 
+def _linkedin_key(value):
+    """Canonical profile key; Apollo stores LinkedIn URLs as http://www.linkedin.com/in/….
+
+    Only the scheme of a LinkedIn host is upgraded; any other host or shape fails.
+    """
+    from .connection_intake import ConnectionIntakeError, profile_key
+    if isinstance(value, str) and re.match(r'(?i)http://(?:www\.)?linkedin\.com/in/', value.strip()):
+        value = 'https://' + value.strip()[len('http://'):]
+    try:
+        return profile_key(value)
+    except ConnectionIntakeError:
+        raise CanaryReadError('canary_linkedin_url_invalid') from None
+
+
 class CanaryReaders:
     def __init__(self, scope, hubspot, linkedin, email_readers, *, clock=time.monotonic):
         self.scope, self.hubspot, self.linkedin, self.email_readers = scope, hubspot, linkedin, email_readers
@@ -439,9 +453,8 @@ class CanaryReaders:
         rows = apollo.contacts(contact.email)
         require(len(rows) == 1 and rows[0].get('id') == contact.apollo_contact_id,
                 'canary_apollo_identity_mismatch')
-        from .connection_intake import profile_key
-        origin = profile_key(rows[0].get('linkedin_url'))
-        urls = [profile_key(props[key]) for key in ('linkedin_url', 'hs_linkedin_url') if props.get(key)]
+        origin = _linkedin_key(rows[0].get('linkedin_url'))
+        urls = [_linkedin_key(props[key]) for key in ('linkedin_url', 'hs_linkedin_url') if props.get(key)]
         require(origin and urls and set(urls) == {origin}, 'canary_hubspot_apollo_url_mismatch')
         name = ' '.join(props.get(key) or '' for key in ('firstname', 'lastname')).strip()
         return {'contact': {'id': contact_id, 'linkedin_url': origin, 'name': name, 'company': props.get('company')},
