@@ -204,6 +204,12 @@ class PanelWiringTests(unittest.TestCase):
         with self.assertRaisesRegex(CadenceBlocked,'human_authority_required'):
             handler.thunder_api(urlsplit('/api/os/v1/linkedin-cadence-approvals'))
         handler.server.thunder_connectsafely_app=None;handler.thunder_actor=lambda:'ygor'
+        # Without the live console, the pinned config's identity still validates
+        # the exact package (validation only, no client); the replay is idempotent.
+        with patch.object(app.direct, 'execute', side_effect=AssertionError('provider execution forbidden')):
+            self.assertEqual((201,persisted),handler.thunder_api(urlsplit('/api/os/v1/linkedin-cadence-approvals')))
+        self.assertEqual([],self.repo.list_state('connectsafely_job'))
+        os.environ['THUNDER_OS_CONNECTSAFELY_CONFIG']=''
         with self.assertRaises(panel.Erro) as failure:
             handler.thunder_api(urlsplit('/api/os/v1/linkedin-cadence-approvals'))
         self.assertEqual(503,failure.exception.status)
@@ -264,6 +270,9 @@ class PanelWiringTests(unittest.TestCase):
                 self.assertIn('erro', invalid)
                 self.assertIsNone(self.repo.get_state('linkedin_cadence_approval','missing-required-fields'))
                 server.thunder_connectsafely_app = None
+                # A pinned config still permits validation-only approval; with
+                # neither the live console nor the config, approval is refused.
+                os.environ['THUNDER_OS_CONNECTSAFELY_CONFIG'] = ''
                 status, absent = request(approved, 'synthetic-absent-nonce')
                 self.assertEqual(503, status)
                 self.assertIn('erro', absent)

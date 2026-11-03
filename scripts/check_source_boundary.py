@@ -12,6 +12,8 @@ ALLOWED_FILES = {
     "_ferramentas/test_thunder_os_mission_report_contract.py",
     "_ferramentas/test_thunder_os_gmail_seqd_snapshot.py",
     "scripts/test_apollo_campaign_panel.cjs",
+    "scripts/test_linkedin_authorization_panel.cjs",
+    "_ferramentas/test_thunder_os_linkedin_authorization.py",
     "_ferramentas/test_thunder_os_apollo_campaign_reader.py",
     "_ferramentas/test_thunder_os_apollo_hubspot_sync.py",
     "_ferramentas/test_thunder_os_apollo_hunter_preview.py",

@@ -62,6 +62,31 @@ def _task_contract(task: Mapping[str, Any], step: Mapping[str, Any], clock) -> d
     }
 
 
+def revoke_approval(repository, approval_id: Any, expected_version: Any, actor: str) -> dict[str, Any]:
+    """Human undo for a D0 approval; every dispatch guard requires status active."""
+    if actor != "ygor":
+        raise CadenceBlocked("human_authority_required")
+    if not isinstance(approval_id, str) or not approval_id or type(expected_version) is not int:
+        raise CadenceBlocked("invalid_cadence_revocation")
+    with repository.transaction():
+        current = repository.get_state("linkedin_cadence_approval", approval_id)
+        if not current:
+            raise CadenceBlocked("approval_missing")
+        if current.get("version") != expected_version:
+            raise RepositoryConflict("stale cadence approval")
+        if current.get("status") == "revoked":
+            return current
+        # A queued or attempted effect needs this authority to reconcile its
+        # receipt; revoking it would strand the task as uncertain. Use the
+        # delegation kill switch for in-flight work instead.
+        for task in repository.list_state("linkedin_cadence_task"):
+            if (task.get("approval_id") == approval_id
+                    and task.get("status") in {"pending", "uncertain", "provider_confirmed"}):
+                raise CadenceBlocked("approval_has_task_in_flight")
+        return repository.put_state("linkedin_cadence_approval", approval_id,
+                                    {**_clean_state(current), "status": "revoked", "revoked_by": actor})
+
+
 def validate_delegated_plan(repository, authority: Mapping[str, Any], plan: Mapping[str, Any], clock) -> dict[str, Any]:
     """Recheck persisted D0 authority immediately before queue and dispatch."""
     if not isinstance(authority, Mapping) or not isinstance(authority.get("id"), str):

@@ -316,6 +316,25 @@ body[data-aba="cadencias"] .detalhes-sistema{display:none}
 #delegated-identity-review button{min-height:44px;white-space:normal;max-width:100%;justify-self:start}
 #delegated-identity-review label:has([data-di-acknowledge]){display:flex;align-items:start;gap:8px;margin-block:12px}
 #delegated-identity-review [data-di-acknowledge]{flex:none;margin-top:5px}
+.li-auth{min-width:0;max-width:100%}
+.li-auth form{display:grid;gap:8px;max-width:760px}
+.li-auth input,.li-auth textarea,.li-auth select{width:100%;box-sizing:border-box;font:inherit}
+.li-auth button{white-space:normal;max-width:100%;justify-self:start}
+.li-auth p,.li-auth li,.li-auth dd,.li-auth dt{overflow-wrap:anywhere}
+.li-auth-step{border-top:1px solid var(--line);padding-block:16px;min-width:0}
+.li-auth-step h5{font-size:15px;margin:0 0 8px}
+.li-auth h6{font-size:14px;margin:12px 0 4px}
+.li-auth pre{white-space:pre-wrap;overflow-wrap:anywhere;max-width:100%;margin:6px 0;padding:10px;background:var(--surface2);border:1px solid var(--line);border-radius:8px;font:13px/1.45 ui-monospace,Menlo,monospace}
+.li-auth .li-auth-text{font:inherit;font-size:14px}
+.li-auth .li-auth-actions{display:flex;flex-wrap:wrap;gap:8px;margin-block:8px}
+.li-auth label:has(input[type="checkbox"]){display:flex;align-items:start;gap:8px;margin-block:10px}
+.li-auth input[type="checkbox"]{width:auto;flex:none;margin-top:4px}
+.li-auth dl{display:grid;grid-template-columns:minmax(0,max-content) minmax(0,1fr);gap:4px 12px;margin:8px 0}
+.li-auth dt{font-weight:600}
+.li-auth dd{margin:0}
+.li-auth .li-auth-warn{color:var(--alerta)}
+.li-auth [data-la-blockers] ul{padding-left:18px}
+@media (max-width:640px){.li-auth dl{grid-template-columns:minmax(0,1fr)}.li-auth button{width:100%}}
 #hubspot-contact-form{display:grid;gap:8px;max-width:680px}
 #hubspot-contact-form input{width:100%;box-sizing:border-box}
 #hubspot-contact-form button{min-height:44px;justify-self:start}
@@ -586,7 +605,45 @@ body:has(#new-journey:not([hidden])) #hoje-pedido{display:none}
     </details>
   </section>
   <section class="cad-read-section"><h3>Respostas e paradas</h3><div id="cad-reply-control" role="status">Não verificado.</div></section>
-  <section class="cad-read-section"><h3>LinkedIn</h3><p id="cad-linkedin-preparation" role="status">Não verificado.</p></section>
+  <section class="cad-read-section"><h3>LinkedIn</h3><p id="cad-linkedin-preparation" role="status">Não verificado.</p>
+    <section id="cad-li-auth" class="li-auth" aria-labelledby="cad-li-auth-title">
+      <h4 id="cad-li-auth-title">Autorizar LinkedIn</h4>
+      <p class="sub">Cada botão grava uma única autorização pelo endpoint existente e mostra antes o pedido exato. Nada nesta tela envia mensagem; o envio só acontece quando o executor Hermes roda com tudo liberado.</p>
+      <form data-la-contact>
+        <label for="la-contact-id">ID do contato no HubSpot</label>
+        <input id="la-contact-id" name="contact_id" inputmode="numeric" pattern="[1-9][0-9]*" maxlength="30" required autocomplete="off">
+        <button class="btn" type="submit" data-la-load>Consultar autorizações</button>
+      </form>
+      <p data-la-status role="status" aria-live="polite">Informe um contato para consultar.</p>
+      <div data-la-blockers></div>
+      <div data-la-body hidden>
+        <article class="li-auth-step" data-la-step="delegation"><h5>1 · Delegação Hermes (kill switch)</h5><div data-la-slot></div></article>
+        <article class="li-auth-step" data-la-step="agent"><h5>2 · Controle do agente</h5><div data-la-slot></div></article>
+        <article class="li-auth-step" data-la-step="approval"><h5>3 · Aprovar cadência</h5>
+          <form data-la-draft>
+            <label for="la-profile">Perfil no LinkedIn (link ou identificador público)</label>
+            <input id="la-profile" name="profile" maxlength="2048" required autocomplete="off" placeholder="https://www.linkedin.com/in/…">
+            <label for="la-hours">Validade da aprovação (horas, 1 a 168)</label>
+            <input id="la-hours" name="valid_hours" type="number" min="1" max="168" step="1" value="48" required>
+            <label for="la-text-cad_li_0">LinkedIn: convite · até 300 caracteres (pode ficar vazio)</label>
+            <textarea id="la-text-cad_li_0" name="cad_li_0" maxlength="300" rows="3"></textarea>
+            <label for="la-text-cad_li_1">LinkedIn: msg 1</label>
+            <textarea id="la-text-cad_li_1" name="cad_li_1" maxlength="8000" rows="5" required></textarea>
+            <label for="la-text-cad_li_2">LinkedIn: msg 2</label>
+            <textarea id="la-text-cad_li_2" name="cad_li_2" maxlength="8000" rows="4" required></textarea>
+            <label for="la-text-cad_li_3">LinkedIn: msg 3</label>
+            <textarea id="la-text-cad_li_3" name="cad_li_3" maxlength="8000" rows="4" required></textarea>
+            <button class="btn" type="submit" data-la-draft-load>Montar prévia (só leitura)</button>
+          </form>
+          <div data-la-draft-view></div>
+          <div data-la-slot></div>
+        </article>
+        <article class="li-auth-step" data-la-step="binding"><h5>4 · Vincular tarefa HubSpot</h5><div data-la-slot></div></article>
+        <article class="li-auth-step" data-la-step="campaign"><h5>5 · Confirmar campanha na prévia</h5><div data-la-slot></div>
+        </article>
+      </div>
+    </section>
+  </section>
   <section class="cad-read-section"><h3>Fontes · Para aprovar</h3><div id="cad-source-list" role="status">Não verificado.</div></section>
   <section class="cad-read-section" id="cad-read-conflicts-section" hidden><h3>Conflitos de campanha</h3><div id="cad-read-conflicts"></div></section>
   <section class="cad-read-section"><h3>Hoje</h3><div id="cad-read-today"></div></section>
@@ -1565,6 +1622,263 @@ ThunderConnectSafely.mount($('connectsafely-console-form'),{api:(...args)=>{
 })(typeof globalThis!=='undefined'?globalThis:this);
 /* THUNDER_DELEGATED_IDENTITY_END */
 ThunderDelegatedIdentity.mount($('delegated-identity-review'),{api:(...args)=>{
+  if(MODO!=='servidor'||!apiServidor)return Promise.reject(new Error('Consulta indisponível.'));
+  return apiServidor(...args);
+}});
+/* THUNDER_LINKEDIN_AUTHORIZATION_BEGIN */
+/* Five human authorizations through the existing endpoints. This screen never sends. */
+(function(root){
+  'use strict';
+  const MARKERS=['cad_li_0','cad_li_1','cad_li_2','cad_li_3'];
+  const SUBJECTS={cad_li_0:'LinkedIn: convite',cad_li_1:'LinkedIn: msg 1',cad_li_2:'LinkedIn: msg 2',cad_li_3:'LinkedIn: msg 3'};
+  const BLOCKERS={
+    sender_config_unavailable:'A identidade da conta que envia não foi lida da configuração do painel.',
+    sender_config_changed:'A configuração da conta que envia mudou desde a revisão do painel.',
+    executor_identity_verifier_missing:'O executor não tem verificador de identidade para este contato (canary_readers). A tarefa ficará bloqueada antes de qualquer prévia.',
+    connectsafely_console_unavailable:'O console ConnectSafely do painel está indisponível (evidência de conta e cota expirada ou efeitos desligados). Aprovar a cadência funciona com a identidade da configuração; o executor não cria prévia e a confirmação de campanha fica bloqueada.',
+    delegation_off:'Delegação Hermes desligada: o executor recusa todas as tarefas.',
+    agent_paused:'Agente pausado: o executor recusa todas as tarefas.',
+    global_pause:'Pausa global ativa.',
+    campaign_unavailable:'Nenhuma campanha Thunder OS com LinkedIn via ConnectSafely desta conta. A confirmação de campanha ficará bloqueada.'
+  };
+  function slug(value){const m=/linkedin\.com\/in\/([^/?#]+)/i.exec(String(value||''));return m?decodeURIComponent(m[1]).toLowerCase():null;}
+  function mount(container,{api,clock=()=>Date.now()/1000}){
+    const doc=container.ownerDocument,q=s=>container.querySelector(s);
+    const contactForm=q('[data-la-contact]'),contactField=contactForm.elements.namedItem('contact_id'),loadButton=q('[data-la-load]');
+    const status=q('[data-la-status]'),blockerBox=q('[data-la-blockers]'),body=q('[data-la-body]');
+    const draftForm=q('[data-la-draft]'),draftView=q('[data-la-draft-view]'),draftButton=q('[data-la-draft-load]');
+    const slot=name=>q('[data-la-step="'+name+'"] [data-la-slot]');
+    let generation=0,busy=false,state=null,contact=null,draft=null,tasks=null,previews={},reviews={},picked={};
+    const node=(tag,value,cls)=>{const el=doc.createElement(tag);if(value!==undefined&&value!==null)el.textContent=String(value);if(cls)el.className=cls;return el;};
+    const message=value=>{status.textContent=value;};
+    const date=value=>{const d=typeof value==='number'?new Date(value*1000):new Date(value);return Number.isNaN(d.getTime())?'Data não verificada':d.toLocaleString('pt-BR');};
+    function rows(pairs){const list=node('dl');for(const [k,v] of pairs){list.appendChild(node('dt',k));list.appendChild(node('dd',v===null||v===undefined||v===''?'Não informado':v));}return list;}
+    function exact(label,method,path,payload){const d=node('details');d.dataset.laExact=label;d.appendChild(node('summary','Pedido exato · '+label));d.appendChild(node('pre',method+' '+path+(payload===undefined?'':'\n'+JSON.stringify(payload,null,2))));return d;}
+    function lock(value){
+      busy=value;container.setAttribute('aria-busy',value?'true':'false');
+      if(value){for(const b of container.querySelectorAll('button'))b.disabled=true;return;}
+      loadButton.disabled=false;draftButton.disabled=false;
+      // Dynamic action buttons are rebuilt from the latest readback, never re-enabled in place.
+      if(state)render();
+    }
+    function button(label,handler,{disabled=false,primary=false,data}={}){const b=node('button',label,'btn'+(primary?' pri':''));b.type='button';b.disabled=busy||disabled;if(data)b.dataset.laAction=data;b.addEventListener('click',()=>{if(!busy&&!b.disabled)handler();});return b;}
+    function guarded(text,label,handler,data){
+      const wrap=node('div'),choice=node('label'),check=node('input');check.type='checkbox';choice.appendChild(check);choice.appendChild(node('span',' '+text));
+      const b=button(label,handler,{disabled:true,primary:true,data});check.addEventListener('change',()=>{b.disabled=busy||!check.checked;});
+      wrap.appendChild(choice);wrap.appendChild(b);return wrap;
+    }
+    async function act(label,method,path,payload,verify){
+      if(busy||!contact)return;const g=generation;lock(true);message(label+'…');
+      try{
+        const result=await api(path,method,payload);
+        if(g!==generation)return;
+        await read(contact,g);
+        if(g!==generation)return;
+        message(verify(result,state)?label+': registrado e conferido no registro. Nada foi enviado.':label+': a leitura do registro não confirmou o resultado. Consulte novamente antes de repetir.');
+      }catch(error){if(g===generation){message(label+' não foi concluído: '+(error&&error.message||'erro')+' Nada foi enviado.');render();}}
+      finally{if(g===generation)lock(false);else{busy=false;loadButton.disabled=false;draftButton.disabled=false;}}
+    }
+    function renderBlockers(){
+      blockerBox.replaceChildren();const list=state.blockers||[];
+      if(!list.length){blockerBox.appendChild(node('p','Nenhum bloqueio de autorização nesta leitura. O envio ainda depende do executor ligado na VPS.'));return;}
+      blockerBox.appendChild(node('p','Bloqueios nesta leitura:','li-auth-warn'));const ul=node('ul');
+      for(const code of list){const li=node('li',BLOCKERS[code]||('Bloqueio: '+code));li.dataset.laBlocker=code;ul.appendChild(li);}blockerBox.appendChild(ul);
+    }
+    function renderDelegation(){
+      const s=slot('delegation');s.replaceChildren();const d=state.delegation;
+      s.appendChild(node('p',d?(d.enabled?'Ligada':'Desligada')+' · escopos: '+(d.scopes||[]).join(', ')+' · limite diário: '+d.daily_limit+' · versão '+d.version:'Nunca configurada nesta base. Sem ela o executor recusa todas as tarefas.')).dataset.laState='delegation';
+      s.appendChild(node('p','O limite diário precisa ser igual ao daily_cap do executor na VPS (hoje 1); diferente disso o executor recusa com delegation_configuration_mismatch.','sub'));
+      const label=node('label','Limite diário');const input=node('input');input.type='number';input.min='1';input.max='100';input.step='1';input.value=String(d&&d.daily_limit||1);input.id='la-daily-limit';label.htmlFor='la-daily-limit';
+      s.appendChild(label);s.appendChild(input);
+      const scopes=[...new Set([...(d&&d.scopes||[]),'linkedin_cadence'])].sort();
+      const on=()=>({scopes,daily_limit:Number(input.value),enabled:true});
+      const off={scopes:d&&d.scopes&&d.scopes.length?d.scopes:['linkedin_cadence'],daily_limit:d&&d.daily_limit||1,enabled:false};
+      const details=node('div');const draw=()=>{details.replaceChildren(exact('Ligar delegação','POST','/api/os/v1/delegations/hermes',on()),exact('Desligar delegação','POST','/api/os/v1/delegations/hermes',off));};
+      input.addEventListener('input',draw);draw();s.appendChild(details);
+      const actions=node('div',undefined,'li-auth-actions');
+      actions.appendChild(button('Ligar delegação (linkedin_cadence)',()=>{const value=on();if(!Number.isInteger(value.daily_limit)||value.daily_limit<1||value.daily_limit>100){message('Limite diário inválido.');return;}act('Ligar delegação','POST','/api/os/v1/delegations/hermes',value,(_r,st)=>st.delegation&&st.delegation.enabled===true&&st.delegation.daily_limit===value.daily_limit&&st.delegation.scopes.includes('linkedin_cadence'));},{primary:true,data:'delegation-on'}));
+      actions.appendChild(button('Desligar delegação (kill switch)',()=>act('Desligar delegação','POST','/api/os/v1/delegations/hermes',off,(_r,st)=>st.delegation&&st.delegation.enabled===false),{disabled:!d||d.enabled!==true,data:'delegation-off'}));
+      s.appendChild(actions);
+    }
+    function renderAgent(){
+      const s=slot('agent');s.replaceChildren();const a=state.agent_control||{};
+      s.appendChild(node('p',(a.paused===false?'Ativo':'Pausado')+' · habilitado: '+(a.enabled===true?'sim':'não')+' · versão '+a.version)).dataset.laState='agent';
+      s.appendChild(node('p','Este controle é global: despausar retoma todo o trabalho do agente Hermes (pesquisa, inferência e consumidor contínuo), não só o LinkedIn.','li-auth-warn'));
+      if(a.enabled!==true)s.appendChild(node('p','O agente não está habilitado neste runtime; despausar fica indisponível.','li-auth-warn'));
+      const resume={action:'resume',expected_version:a.version},pause={action:'pause',expected_version:a.version};
+      s.appendChild(exact('Despausar agente','POST','/api/os/v1/agent/control',resume));s.appendChild(exact('Pausar agente','POST','/api/os/v1/agent/control',pause));
+      const actions=node('div',undefined,'li-auth-actions');
+      actions.appendChild(button('Despausar agente',()=>act('Despausar agente','POST','/api/os/v1/agent/control',resume,(_r,st)=>st.agent_control&&st.agent_control.paused===false),{disabled:a.enabled!==true||a.paused===false,primary:true,data:'agent-resume'}));
+      actions.appendChild(button('Pausar agente',()=>act('Pausar agente','POST','/api/os/v1/agent/control',pause,(_r,st)=>st.agent_control&&st.agent_control.paused===true),{disabled:a.paused!==false,data:'agent-pause'}));
+      s.appendChild(actions);
+    }
+    function renderDraft(){
+      draftView.replaceChildren();if(!draft)return;
+      const card=node('div','', 'nj-warning');card.dataset.laDraftCard=draft.approval.id;
+      card.appendChild(node('h6','Prévia da aprovação · nada foi gravado'));
+      card.appendChild(rows([
+        ['Quem envia',draft.sender.public_id+' · '+draft.sender.profile_url+' · conta ConnectSafely '+draft.sender.account_id],
+        ['Quem recebe',(draft.recipient.label||draft.recipient.public_id)+' · '+draft.recipient.profile_url],
+        ['URN do destinatário',draft.recipient.profile_urn+' (lido agora no ConnectSafely, sem envio)'],
+        ['Contato HubSpot',draft.hubspot_contact?[draft.hubspot_contact.name,draft.hubspot_contact.company,'status de cadência: '+(draft.hubspot_contact.cad_status||'não informado')].filter(Boolean).join(' · '):'Não lido'],
+        ['Válida até',date(draft.approval.expires_at)]]));
+      const crm=draft.hubspot_contact;
+      if(!crm)card.appendChild(node('p','Contato HubSpot não lido nesta prévia'+(draft.hubspot_error?' ('+draft.hubspot_error+')':'')+'. Confira no HubSpot antes de aprovar.','li-auth-warn'));
+      else{
+        if(!['aprovado','em_cadencia'].includes(crm.cad_status))card.appendChild(node('p','O executor só roda a tarefa com o status de cadência do contato em aprovado ou em_cadencia.','li-auth-warn'));
+        if(slug(crm.linkedin_url)!==slug(draft.recipient.profile_url))card.appendChild(node('p','O perfil no HubSpot ('+(crm.linkedin_url||'vazio')+') difere do perfil consultado. Confira a pessoa antes de aprovar.','li-auth-warn'));
+      }
+      for(const step of draft.approval.steps){
+        const box=node('section');box.dataset.laDraftStep=step.marker;
+        box.appendChild(node('h6',step.subject+' · '+(step.plan.action==='invite'?'convite':'mensagem direta')));
+        box.appendChild(node('pre',step.plan.action==='invite'&&step.plan.content===''?'Convite sem mensagem.':step.plan.content,'li-auth-text'));
+        card.appendChild(box);
+      }
+      card.appendChild(exact('Aprovar cadência','POST','/api/os/v1/linkedin-cadence-approvals',draft.approval));
+      const current=draft;
+      card.appendChild(guarded('Conferi quem envia, quem recebe e os quatro textos exatos acima.','Aprovar cadência com estes textos',()=>{
+        if(current!==draft)return;
+        act('Aprovar cadência','POST','/api/os/v1/linkedin-cadence-approvals',current.approval,(_r,st)=>st.approvals.some(a=>a.id===current.approval.id&&a.status==='active'&&a.review_hash===current.approval_hash_preview));
+      },'approve'));
+      draftView.appendChild(card);
+    }
+    function renderApprovals(){
+      const s=slot('approval');s.replaceChildren();
+      if(!state.approvals.length){s.appendChild(node('p','Nenhuma aprovação de cadência para este contato.'));return;}
+      for(const a of state.approvals){
+        const item=node('details');item.dataset.laApproval=a.id;item.open=a.status==='active'&&!a.expired;
+        item.appendChild(node('summary','Aprovação '+a.id+' · '+(a.status==='active'?(a.expired?'expirada':'ativa'):a.status==='revoked'?'revogada':a.status)+' · até '+date(a.expires_at)));
+        for(const step of a.steps||[]){item.appendChild(node('p',step.subject+' · de '+step.account_public_id+' para '+step.recipient_public_id));item.appendChild(node('pre',step.action==='invite'&&step.content===''?'Convite sem mensagem.':step.content,'li-auth-text'));}
+        if(a.status==='active'){
+          const payload={approval_id:a.id,expected_version:a.version};
+          item.appendChild(node('p','Revogar impede preparo e envio de todas as tarefas vinculadas a esta aprovação e é definitivo: o vínculo da tarefa não muda, então uma nova aprovação exige uma nova tarefa no HubSpot. Com tarefa já enfileirada ou em conferência, a revogação é recusada; use o kill switch (passo 1).','sub'));
+          item.appendChild(exact('Revogar aprovação','POST','/api/os/v1/linkedin-cadence-approvals/revoke',payload));
+          item.appendChild(button('Revogar aprovação',()=>act('Revogar aprovação','POST','/api/os/v1/linkedin-cadence-approvals/revoke',payload,(_r,st)=>st.approvals.some(x=>x.id===a.id&&x.status==='revoked')),{data:'revoke'}));
+        }
+        s.appendChild(item);
+      }
+    }
+    function renderBindings(){
+      const s=slot('binding');s.replaceChildren();
+      for(const t of state.tasks){s.appendChild(node('p','Tarefa '+t.task_id+' vinculada ao passo '+t.binding.marker+' da aprovação '+t.binding.approval_id+' (versão '+t.binding.approval_version+').')).dataset.laBound=t.task_id;}
+      s.appendChild(node('p','O vínculo não pode ser editado. Para parar, desligue a delegação (passo 1, reversível) ou revogue a aprovação (passo 3, definitivo para esta tarefa).','sub'));
+      s.appendChild(button('Listar tarefas abertas no HubSpot (só leitura)',async()=>{
+        const g=generation;lock(true);message('Consultando tarefas abertas no HubSpot…');
+        try{const result=await api('/api/os/v1/linkedin-authorization/tasks?contact_id='+encodeURIComponent(contact));if(g!==generation)return;
+          if(result.read_only!==true||result.contact_id!==contact||!Array.isArray(result.tasks))throw Error('Resposta inválida.');tasks=result;message(result.tasks.length?'Tarefas abertas lidas no HubSpot. Escolha a que será vinculada.':'Nenhuma tarefa aberta de LinkedIn para este contato no HubSpot.');}
+        catch(error){if(g===generation)message('Não foi possível ler as tarefas no HubSpot. Nada foi vinculado.');}
+        finally{if(g===generation)lock(false);else{busy=false;loadButton.disabled=false;draftButton.disabled=false;}}
+      },{data:'tasks'}));
+      if(!tasks)return;
+      if(tasks.complete===false)s.appendChild(node('p','A leitura de tarefas veio incompleta. Confira no HubSpot.','li-auth-warn'));
+      const ul=node('ul');
+      for(const task of tasks.tasks){
+        const li=node('li');li.dataset.laTask=task.id;li.appendChild(node('p',task.subject+' · tarefa '+task.id+' · prazo '+date(task.due_at)));
+        const bound=state.tasks.find(t=>t.task_id===task.id);
+        if(bound){li.appendChild(node('p','Já vinculada.'));ul.appendChild(li);continue;}
+        if(!task.contract_ok){li.appendChild(node('p','O corpo da tarefa precisa ser exatamente '+(task.marker||'o marcador do passo')+'; hoje é "'+(task.body||'')+'". O executor recusaria.','li-auth-warn'));ul.appendChild(li);continue;}
+        const matches=state.approvals.filter(a=>a.status==='active'&&!a.expired&&(a.steps||[]).some(st=>st.marker===task.marker));
+        if(matches.length!==1){li.appendChild(node('p',matches.length?'Há mais de uma aprovação ativa com este passo; revogue as demais.':'Aprove a cadência (passo 3) antes de vincular.','li-auth-warn'));ul.appendChild(li);continue;}
+        const a=matches[0],payload={task_id:task.id,approval_id:a.id,approval_version:a.version,review_hash:a.review_hash,marker:task.marker};
+        const step=a.steps.find(st=>st.marker===task.marker);
+        li.appendChild(node('p','Texto que esta tarefa autoriza ('+step.subject+', para '+step.recipient_public_id+'):'));li.appendChild(node('pre',step.content||'Convite sem mensagem.','li-auth-text'));
+        li.appendChild(exact('Vincular tarefa','POST','/api/os/v1/linkedin-cadence-task-bindings',payload));
+        li.appendChild(guarded('Conferi a tarefa e o texto que ela autoriza.','Vincular tarefa '+task.id+' ao passo '+task.marker,()=>act('Vincular tarefa','POST','/api/os/v1/linkedin-cadence-task-bindings',payload,(_r,st)=>st.tasks.some(t=>t.task_id===task.id&&t.binding&&t.binding.approval_id===a.id)),'bind'));
+        ul.appendChild(li);
+      }
+      s.appendChild(ul);
+    }
+    function renderCampaign(){
+      const s=slot('campaign');s.replaceChildren();
+      if(!state.tasks.length){s.appendChild(node('p','Vincule uma tarefa (passo 4) antes. A prévia é criada pelo executor Hermes na primeira rodada, sem envio, e vale 5 minutos.'));return;}
+      const eligible=(state.campaigns||[]).filter(c=>c.eligible);
+      for(const t of state.tasks){
+        const box=node('section');box.dataset.laCampaignTask=t.task_id;box.appendChild(node('h6','Tarefa '+t.task_id+' · '+t.binding.marker));
+        if(t.campaign_confirmation)box.appendChild(node('p','Campanha confirmada na prévia '+t.campaign_confirmation.preview_id+' ('+t.campaign_confirmation.campaign_approval_id+'). Para impedir o envio: desligue a delegação (passo 1).'));
+        if(t.execution)box.appendChild(node('p','Execução: '+t.execution.status+(t.execution.receipt_ref?' · recibo '+t.execution.receipt_ref:'')+(t.execution.error_code?' · '+t.execution.error_code:'')));
+        if(t.alert)box.appendChild(node('p','Último alerta do executor: '+t.alert.error_code,'li-auth-warn'));
+        box.appendChild(button('Consultar prévias da tarefa '+t.task_id,async()=>{
+          const g=generation;lock(true);message('Consultando prévias…');
+          try{const result=await api('/api/os/v1/linkedin-cadence-previews?task_id='+encodeURIComponent(t.task_id));if(g!==generation)return;
+            if(result.read_only!==true||result.task_id!==t.task_id||!Array.isArray(result.previews))throw Error('Resposta inválida.');previews[t.task_id]=result.previews;
+            message(result.previews.length?'Prévias lidas. Confira o texto exato antes de confirmar a campanha.':'Nenhuma prévia ainda. Ela aparece depois da primeira rodada do executor.');}
+          catch(error){if(g===generation)message('Não foi possível consultar as prévias. Nada foi confirmado.');}
+          finally{if(g===generation)lock(false);else{busy=false;loadButton.disabled=false;draftButton.disabled=false;}}
+        },{data:'previews'}));
+        for(const p of previews[t.task_id]||[]){
+          const card=node('div','','nj-warning');card.dataset.laPreview=p.id;
+          const live=p.state==='review_required'&&Number.isFinite(p.expires_at)&&p.expires_at>clock();
+          card.appendChild(rows([['Prévia',p.id+' · '+(live?'aguardando confirmação':'expirada ou já usada')],['Quem envia',p.plan.account_public_id+' · conta '+p.plan.account_id],['Quem recebe',p.plan.recipient_public_id+' · '+p.plan.recipient_profile_urn],['Válida até',date(p.expires_at)]]));
+          card.appendChild(node('pre',p.plan.action==='invite'&&p.plan.content===''?'Convite sem mensagem.':p.plan.content,'li-auth-text'));
+          const identityOk=p.identity&&(p.identity.matches===true||p.identity_confirmation);
+          card.appendChild(node('p',p.identity&&p.identity.matches?'Identidade confere: URL, nome e empresa.':p.identity_confirmation?'Identidade divergente já confirmada para esta prévia.':'Identidade divergente ou não verificada: confirme a prévia '+p.id+' em "Conferir a identidade de uma tarefa" (seção LinkedIn, tarefa '+t.task_id+') antes de confirmar a campanha.',identityOk?undefined:'li-auth-warn'));
+          if(live&&identityOk&&!t.campaign_confirmation){
+            if(!eligible.length)card.appendChild(node('p',BLOCKERS.campaign_unavailable,'li-auth-warn'));
+            else{
+              const label=node('label','Campanha'),select=node('select');select.id='la-campaign-'+p.id;label.htmlFor=select.id;
+              for(const c of eligible){const o=node('option',c.id);o.value=c.id;select.appendChild(o);}
+              const chosen=reviews[p.id];select.value=chosen?chosen.campaign_id:(picked[p.id]&&eligible.some(c=>c.id===picked[p.id])?picked[p.id]:eligible[0].id);
+              card.appendChild(label);card.appendChild(select);
+              select.addEventListener('change',()=>{picked[p.id]=select.value;delete reviews[p.id];render();});
+              const reviewBody={preview_id:p.id,campaign_id:select.value};
+              card.appendChild(button('Conferir campanha (só leitura)',async()=>{
+                const g=generation;lock(true);const body={preview_id:p.id,campaign_id:select.value};
+                try{const request=await api('/api/os/v1/integrations/connectsafely/campaign-review','POST',body);if(g!==generation)return;
+                  if(!request||request.confirmed!==true||!request.context||request.context.campaign_id!==body.campaign_id)throw Error('Resposta inválida.');reviews[p.id]={campaign_id:body.campaign_id,request};message('Campanha conferida. Confira o pedido exato antes de confirmar.');}
+                catch(error){if(g===generation)message('A campanha não pôde ser conferida: '+(error&&error.message||'erro')+' Nada foi confirmado.');}
+                finally{if(g===generation)lock(false);else{busy=false;loadButton.disabled=false;draftButton.disabled=false;}}
+              },{data:'campaign-review'}));
+              card.appendChild(exact('Conferir campanha','POST','/api/os/v1/integrations/connectsafely/campaign-review',reviewBody));
+              if(chosen){
+                const payload={task_id:t.task_id,preview_id:p.id,expected_version:p.version,review_hash:p.review_hash,execution_confirmation:chosen.request};
+                card.appendChild(exact('Confirmar campanha','POST','/api/os/v1/linkedin-cadence-campaign-confirmations',payload));
+                card.appendChild(guarded('Conferi a campanha, quem envia, quem recebe e o texto exato desta prévia.','Confirmar campanha nesta prévia',()=>act('Confirmar campanha','POST','/api/os/v1/linkedin-cadence-campaign-confirmations',payload,(_r,st)=>st.tasks.some(x=>x.task_id===t.task_id&&x.campaign_confirmation&&x.campaign_confirmation.preview_id===p.id)),'campaign-confirm'));
+              }
+            }
+          }
+          box.appendChild(card);
+        }
+        s.appendChild(box);
+      }
+    }
+    function render(){if(!state)return;body.hidden=false;renderBlockers();renderDelegation();renderAgent();renderDraft();renderApprovals();renderBindings();renderCampaign();if(busy)lock(true);}
+    async function read(id,g){
+      const result=await api('/api/os/v1/linkedin-authorization?contact_id='+encodeURIComponent(id));
+      if(g!==generation)return;
+      if(!result||result.read_only!==true||result.contact_id!==id||!Array.isArray(result.approvals)||!Array.isArray(result.tasks)||!Array.isArray(result.blockers))throw Error('Leitura inválida.');
+      state=result;render();
+    }
+    function reset(text){generation++;state=null;draft=null;tasks=null;previews={};reviews={};picked={};body.hidden=true;blockerBox.replaceChildren();draftView.replaceChildren();message(text);}
+    contactField.addEventListener('input',()=>reset('Contato alterado. Consulte antes de autorizar.'));
+    contactForm.addEventListener('submit',async event=>{
+      event.preventDefault();if(busy)return;const id=contactField.value.trim();
+      if(!/^[1-9][0-9]{0,29}$/.test(id)){message('Informe o ID numérico do contato no HubSpot.');return;}
+      reset('Consultando autorizações…');contact=id;const g=generation;lock(true);
+      try{await read(id,g);if(g===generation)message('Estado lido. Confira os bloqueios antes de autorizar.');}
+      catch(error){if(g===generation){body.hidden=true;message('Não foi possível ler as autorizações deste contato. Nada foi alterado.');}}
+      finally{if(g===generation)lock(false);else{busy=false;loadButton.disabled=false;draftButton.disabled=false;}}
+    });
+    draftForm.addEventListener('input',()=>{if(draft){draft=null;draftView.replaceChildren();message('Texto ou perfil alterado. Monte a prévia de novo antes de aprovar.');}});
+    draftForm.addEventListener('submit',async event=>{
+      event.preventDefault();if(busy||!contact)return;
+      const f=draftForm.elements,texts={};for(const m of MARKERS)texts[m]=f.namedItem(m).value;
+      const payload={hubspot_contact_id:contact,profile:f.namedItem('profile').value.trim(),texts,valid_hours:Number(f.namedItem('valid_hours').value)};
+      if(!Number.isInteger(payload.valid_hours)||payload.valid_hours<1||payload.valid_hours>168){message('Validade inválida: use de 1 a 168 horas.');return;}
+      const g=generation;lock(true);draft=null;draftView.replaceChildren();message('Montando a prévia: leitura do perfil no ConnectSafely e do contato no HubSpot, sem gravar nada…');
+      try{
+        const result=await api('/api/os/v1/linkedin-cadence-plan-drafts','POST',payload);if(g!==generation)return;
+        const a=result&&result.approval;
+        if(!result||result.read_only!==true||result.persisted!==false||!a||a.hubspot_contact_id!==contact||!Array.isArray(a.steps)||a.steps.length!==4||!a.steps.every(st=>SUBJECTS[st.marker]===st.subject&&st.plan&&st.plan.content===texts[st.marker]))throw Error('Prévia inválida.');
+        draft=result;message('Prévia montada. Nada foi gravado. Confira e aprove abaixo.');
+      }catch(error){if(g===generation)message('Prévia bloqueada: '+(error&&error.message||'erro')+' Nada foi gravado.');}
+      finally{if(g===generation)lock(false);else{busy=false;loadButton.disabled=false;draftButton.disabled=false;}}
+    });
+    return {reset};
+  }
+  root.ThunderLinkedInAuthorization={mount};
+})(typeof globalThis!=='undefined'?globalThis:this);
+/* THUNDER_LINKEDIN_AUTHORIZATION_END */
+ThunderLinkedInAuthorization.mount($('cad-li-auth'),{api:(...args)=>{
   if(MODO!=='servidor'||!apiServidor)return Promise.reject(new Error('Consulta indisponível.'));
   return apiServidor(...args);
 }});
