@@ -52,7 +52,9 @@ function fakeServer(){
         request:{expected_version:0,config:{campaign_id:'LI-CANARIO-LAURA-01',platform:'thunder_os',providers:{linkedin:'connectsafely'},configuration:{flow_version:'linkedin-cadence-v1',provider_accounts:{linkedin:ACCOUNT}},briefing:{version:'1',fields:{offer:{path:'projetos/thunder-os/ficha-li-canario-laura-01.md',sha256:'b'.repeat(64),section:'offer'}}}}}}];}
     if(p==='/api/os/v1/campaigns'){assert.equal(body.expected_version,0);s.campaigns.push({id:body.config.campaign_id,platform:'thunder_os',eligible:true,reason:null,version:1});return [200,{id:body.config.campaign_id,version:1}];}
     const revokeCampaign=/^\/api\/os\/v1\/campaigns\/([^/]+)\/revoke$/.exec(p);
-    if(revokeCampaign){const c=s.campaigns.find(x=>x.id===decodeURIComponent(revokeCampaign[1]));assert.equal(body.expected_version,c.version);c.eligible=false;c.reason='campaign_inactive';c.version++;return [200,c];}
+    if(revokeCampaign){const id=decodeURIComponent(revokeCampaign[1]),c=s.campaigns.find(x=>x.id===id);assert.equal(body.expected_version,c.version);
+      // Real campaign_options skips revoked campaigns (binding() fails), so it leaves the list.
+      s.campaigns=s.campaigns.filter(x=>x.id!==id);return [200,{...c,active:false,version:c.version+1}];}
     if(p==='/api/os/v1/delegations/hermes'){assert.deepEqual(Object.keys(body).sort(),['daily_limit','enabled','scopes']);s.delegation={...body,scopes:[...new Set(body.scopes)].sort(),actor:'ygor',version:(s.delegation?.version||0)+1};return [200,s.delegation];}
     if(p==='/api/os/v1/agent/control'){assert.equal(body.expected_version,s.agent.version);s.agent={...s.agent,paused:body.action==='pause',version:s.agent.version+1};return [200,s.agent];}
     if(p==='/api/os/v1/linkedin-cadence-plan-drafts'){
@@ -232,7 +234,7 @@ const ALLOWED_POSTS = new Set(['/api/os/v1/linkedin-campaign-drafts','/api/os/v1
 
       await page.locator('[data-la-action="campaign-revoke"]').last().click(); await settle();
       assert.deepEqual(lastPost(),{method:'POST',path:'/api/os/v1/campaigns/LI-CANARIO-LAURA-01/revoke',body:{expected_version:1}});
-      assert.match(await page.locator('[data-la-campaign="LI-CANARIO-LAURA-01"]').innerText(),/não elegível/);
+      assert.equal(await page.locator('[data-la-campaign="LI-CANARIO-LAURA-01"]').count(),0);
 
       // A failed write is visible and does not claim success.
       await page.route('**/api/os/v1/agent/control',route=>route.fulfill({status:409,contentType:'application/json',body:JSON.stringify({erro:'Versão desatualizada.'})}));

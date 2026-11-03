@@ -196,7 +196,7 @@ def campaign_draft(body: Any, *, store, registry, sender: Mapping[str, Any]) -> 
     require(isinstance(body, dict) and set(body) == {"campaign_id", "sheet_path"}, "campaign_draft_invalid")
     ident, path = body["campaign_id"], body["sheet_path"]
     require(isinstance(ident, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", ident), "campaign_id_invalid")
-    require(isinstance(path, str) and re.fullmatch(r"projetos/thunder-os/[A-Za-z0-9_.-]{1,120}\.md", path)
+    require(isinstance(path, str) and re.fullmatch(r"projetos/thunder-os/[A-Za-z0-9_-][A-Za-z0-9_.-]{0,119}\.md", path)
             and ".." not in path, "campaign_sheet_path_invalid")
     require(store is not None, "campaign_sheet_store_unavailable")
     try:
@@ -207,7 +207,10 @@ def campaign_draft(body: Any, *, store, registry, sender: Mapping[str, Any]) -> 
         raise AuthorizationReadError("campaign_sheet_unavailable") from None
     digest = hashlib.sha256(raw).hexdigest()
     sheet = {"version": "1", "fields": {key: {"path": path, "sha256": digest, "section": key} for key in FIELDS}}
-    view = sheet_view(ident, sheet, store)
+    try:
+        view = sheet_view(ident, sheet, store)
+    except (ApprovalError, ValueError):
+        raise AuthorizationReadError("campaign_sheet_unavailable") from None
     require(view["status"] == "complete", "campaign_sheet_incomplete:" + ",".join(view["missing_fields"]))
     rules = next(row["content"] for row in view["fields"] if row["key"] == "restrictions")
     config = {"campaign_id": ident, "campaign_version": "1", "rules_version": "1", "run_id": ident,
@@ -220,9 +223,16 @@ def campaign_draft(body: Any, *, store, registry, sender: Mapping[str, Any]) -> 
     except ApprovalError as exc:
         raise AuthorizationReadError(str(exc)) from None
     current = registry.repo.get_state("campaign_config", ident)
+    if current:
+        # Never let this screen rewrite another channel's or account's campaign.
+        previous = current.get("config") or {}
+        require(previous.get("platform") == "thunder_os"
+                and previous.get("providers") == {"linkedin": "connectsafely"}
+                and (previous.get("configuration") or {}).get("provider_accounts") == {"linkedin": sender["account_id"]}
+                and "batches" not in previous, "campaign_id_belongs_to_other_campaign")
     return {"read_only": True, "persisted": False, "sheet_sha256": digest,
             "request": {"config": config, "expected_version": current["version"] if current else 0},
-            "existing": bool(current),
+            "existing": bool(current), "existing_active": bool(current and current.get("active")),
             "sections": [{"key": row["key"], "label": row["label"], "content": row["content"]} for row in view["fields"]]}
 
 

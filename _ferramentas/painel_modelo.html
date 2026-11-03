@@ -623,6 +623,7 @@ body:has(#new-journey:not([hidden])) #hoje-pedido{display:none}
             <input id="la-campaign-id" name="campaign_id" maxlength="100" pattern="[A-Za-z0-9_-]+" required autocomplete="off" value="LI-CANARIO-LAURA-01">
             <label for="la-campaign-sheet">Ficha no Brain (arquivo em projetos/thunder-os/)</label>
             <input id="la-campaign-sheet" name="sheet_path" maxlength="160" required autocomplete="off" value="projetos/thunder-os/ficha-li-canario-laura-01.md">
+            <p class="sub">A ficha precisa ter exatamente estes títulos: ## offer, ## icp, ## proofs, ## objective, ## restrictions, ## cta, ## language, ## country. Um ID que já pertence a uma campanha de outro canal ou conta é recusado.</p>
             <button class="btn" type="submit" data-la-campaign-draft-load>Montar registro (só leitura)</button>
           </form>
           <div data-la-campaign-draft-view></div>
@@ -1702,7 +1703,7 @@ ThunderDelegatedIdentity.mount($('delegated-identity-review'),{api:(...args)=>{
       if(!linkedin.length)s.appendChild(node('p','Nenhuma campanha com LinkedIn registrada.'));
       for(const c of linkedin){
         const p=node('p',c.id+' · '+(c.eligible?'elegível para esta conta':'não elegível ('+(c.reason||'motivo não informado')+')'));p.dataset.laCampaign=c.id;s.appendChild(p);
-        if(c.eligible&&Number.isInteger(c.version)){
+        if(c.reason!=='campaign_inactive'&&Number.isInteger(c.version)){
           const path='/api/os/v1/campaigns/'+encodeURIComponent(c.id)+'/revoke',payload={expected_version:c.version};
           s.appendChild(exact('Revogar campanha '+c.id,'POST',path,payload));
           s.appendChild(button('Revogar campanha '+c.id,()=>act('Revogar campanha','POST',path,payload,(_r,st)=>!(st.campaigns||[]).some(x=>x.id===c.id&&x.eligible)),{data:'campaign-revoke'}));
@@ -1711,7 +1712,7 @@ ThunderDelegatedIdentity.mount($('delegated-identity-review'),{api:(...args)=>{
       if(!campaignDraft)return;
       const card=node('div','','nj-warning');card.dataset.laCampaignDraftCard=campaignDraft.request.config.campaign_id;
       card.appendChild(node('h6','Registro da campanha '+campaignDraft.request.config.campaign_id+' · nada foi gravado'));
-      card.appendChild(rows([['Plataforma','thunder_os'],['Canal','LinkedIn via ConnectSafely · conta '+campaignDraft.request.config.configuration.provider_accounts.linkedin],['Ficha',campaignDraft.request.config.briefing.fields.offer.path+' · sha256 '+campaignDraft.sheet_sha256],['Versão esperada',String(campaignDraft.request.expected_version)+(campaignDraft.existing?' (atualiza o registro existente)':' (registro novo)')]]));
+      card.appendChild(rows([['Plataforma','thunder_os'],['Canal','LinkedIn via ConnectSafely · conta '+campaignDraft.request.config.configuration.provider_accounts.linkedin],['Ficha',campaignDraft.request.config.briefing.fields.offer.path+' · sha256 '+campaignDraft.sheet_sha256],['Versão esperada',String(campaignDraft.request.expected_version)+(campaignDraft.existing?(campaignDraft.existing_active?' (atualiza o registro existente desta campanha LinkedIn)':' (reativa a campanha revogada)'):' (registro novo)')]]));
       for(const sec of campaignDraft.sections){card.appendChild(node('h6',sec.label));card.appendChild(node('pre',sec.content,'li-auth-text'));}
       card.appendChild(exact('Registrar campanha','POST','/api/os/v1/campaigns',campaignDraft.request));
       const current=campaignDraft;

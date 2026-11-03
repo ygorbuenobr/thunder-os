@@ -357,6 +357,21 @@ class LinkedInAuthorizationTests(unittest.TestCase):
         again = li_auth.campaign_draft(body, store=store, registry=self.registry, sender=SENDER)
         self.assertEqual((1, True), (again['request']['expected_version'], again['existing']))
 
+    def test_campaign_draft_never_rewrites_other_campaign(self):
+        store = self.sheet_store()
+        _, sheet = make_sheet(Path(self.temp.name) / 'other')
+        for ident, providers, accounts in (('BR-APOLLO-01', {'email': 'apollo'}, {'email': 'acct'}),
+                                           ('LI-OTHER', {'linkedin': 'connectsafely'}, {'linkedin': 'b' * 24})):
+            self.registry.register({'campaign_id': ident, 'campaign_version': '1', 'rules_version': '1', 'run_id': ident,
+                'platform': 'thunder_os', 'providers': providers, 'rules': 'x', 'briefing': sheet,
+                'configuration': {'flow_version': '1', 'provider_accounts': accounts}}, 'ygor', 0)
+            with self.subTest(ident=ident), self.assertRaisesRegex(li_auth.AuthorizationReadError, 'campaign_id_belongs_to_other_campaign'):
+                li_auth.campaign_draft({'campaign_id': ident, 'sheet_path': 'projetos/thunder-os/ficha.md'},
+                                       store=store, registry=self.registry, sender=SENDER)
+        with self.assertRaisesRegex(li_auth.AuthorizationReadError, 'campaign_sheet_path_invalid'):
+            li_auth.campaign_draft({'campaign_id': 'X', 'sheet_path': 'projetos/thunder-os/.oculto.md'},
+                                   store=store, registry=self.registry, sender=SENDER)
+
     def test_campaign_draft_fails_closed(self):
         store = self.sheet_store(sections=['offer', 'icp'])
         for body, code in (
@@ -395,6 +410,7 @@ class CanaryLinkedInKeyTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertEqual(expected, _linkedin_key(value).rstrip('/'))
         for value in ('http://evil.example/in/laura', 'http://www.linkedin.com.evil.example/in/x',
+                      'http://www.linkedin.com:80/in/x', 'http://user@www.linkedin.com/in/x',
                       'ftp://www.linkedin.com/in/x', None, 'http://www.linkedin.com/company/x'):
             with self.subTest(value=value), self.assertRaisesRegex(CanaryReadError, 'canary_linkedin_url_invalid'):
                 _linkedin_key(value)
