@@ -275,9 +275,12 @@ class LinkedInTests(unittest.TestCase):
                     return 200, {'success':True, 'accountId':ACCOUNT, 'profileUrn':RECIPIENT,
                                  'hasConversation':True, 'conversationUrn':'urn:li:msg_conversation:synthetic'}
                 rows, more, cursor = queue.pop(0)
-                return 200, {'success':True, 'accountId':ACCOUNT, 'conversationUrn':'urn:li:msg_conversation:synthetic',
+                value = {'success':True, 'accountId':ACCOUNT, 'conversationUrn':'urn:li:msg_conversation:synthetic',
                     'participants':[{'profileId':OWNER}, {'profileId':RECIPIENT}], 'hasMore':more, 'fetchingMore':False,
                     'messages':rows, 'nextCursor':cursor}
+                if 'cursor' in query:
+                    value.pop('accountId')  # observed provider shape on cursor pages
+                return 200, value
             client = ConnectSafelyClient(ACCOUNT, 'owner-public', self_profile_id=OWNER, request=request)
             client.verify_identity = Mock()
             return ConnectSafelyCanaryReader(targets, client)
@@ -289,6 +292,28 @@ class LinkedInTests(unittest.TestCase):
                                                                      'senderProfileId':OWNER}], True, None)]):  # rows, no cursor
             with self.subTest(pages=len(pages)), self.assertRaisesRegex(CanaryReadError, 'incomplete'):
                 reader_for(pages)(RECIPIENT)
+
+    def test_first_page_without_account_or_cursor_page_with_other_account_fails(self):
+        reader, _contact, _calls = self.make()
+        original = reader.client.request
+        def first_without_account(method, path, query, body):
+            status, value = original(method, path, query, body)
+            if path.endswith('/messages'):
+                value = {k: v for k, v in value.items() if k != 'accountId'}
+            return status, value
+        reader.client.request = first_without_account
+        with self.assertRaisesRegex(CanaryReadError, 'incomplete'):
+            reader(RECIPIENT)
+        reader, _contact, _calls = self.make(has_more=True)
+        paged = reader.client.request
+        def other_account_on_cursor(method, path, query, body):
+            status, value = paged(method, path, query, body) if 'cursor' not in query else (200, {
+                'success':True, 'accountId':'f'*24, 'conversationUrn':'urn:li:msg_conversation:synthetic',
+                'participants':[{'profileId':OWNER}, {'profileId':RECIPIENT}], 'hasMore':False, 'messages':[]})
+            return status, value
+        reader.client.request = other_account_on_cursor
+        with self.assertRaisesRegex(CanaryReadError, 'incomplete'):
+            reader(RECIPIENT)
 
     def test_owner_member_id_alias_is_pinned_by_config_only(self):
         item = row(email='second@example.invalid', channels=['linkedin'], linkedin_public_id='second',
