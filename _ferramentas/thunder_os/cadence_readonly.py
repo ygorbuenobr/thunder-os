@@ -534,6 +534,7 @@ class _ReadSession:
             re.fullmatch(r"/crm/v3/objects/contacts/[1-9][0-9]{0,29}\?properties=hubspot_owner_id(?:&associations=deals)?", path)))
         allowed = allowed or (method == "POST" and (path in {"/crm/v3/objects/deals/search", "/crm/v3/objects/deals/batch/read", "/crm/v3/objects/tasks/search", "/crm/v3/objects/emails/search", "/crm/v3/objects/contacts/search", "/crm/v3/objects/meetings/search"} or
                   path in {"/crm/v4/associations/tasks/contacts/batch/read",
+                           "/crm/v4/associations/contacts/meetings/batch/read",
                            "/crm/v4/associations/contacts/emails/batch/read",
                            "/crm/v4/associations/emails/contacts/batch/read"} or
                   re.fullmatch(r"/crm/v3/objects/(?:contacts|" + kinds + r")/batch/read", path)))

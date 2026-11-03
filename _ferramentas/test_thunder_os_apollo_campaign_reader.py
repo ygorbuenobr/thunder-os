@@ -14,7 +14,7 @@ from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlsplit
 
 from thunder_os.apollo_campaign_reader import (ApolloCampaignReadOnly, ApolloCampaignReader,
-    APOLLO_SEQUENCE, APOLLO_TEAM, OWNER, CAMPAIGN, KIND, KEY_FILE, SEQUENCE_PATH, enabled, _validate_mcp, _mcp_https_request, _MCP_INITIALIZE, INTERVAL, SNAPSHOT_TTL, COHORT_TTL, _scope_identity, ENDPOINT_MINUTE_LIMIT, ENDPOINT_HOUR_LIMIT, ENDPOINT_DAY_LIMIT)
+    APOLLO_SEQUENCE, APOLLO_TEAM, OWNER, CAMPAIGN, KIND, _metric_coverage, _enumeration_complete, KEY_FILE, SEQUENCE_PATH, enabled, _validate_mcp, _mcp_https_request, _MCP_INITIALIZE, INTERVAL, SNAPSHOT_TTL, COHORT_TTL, _scope_identity, ENDPOINT_MINUTE_LIMIT, ENDPOINT_HOUR_LIMIT, ENDPOINT_DAY_LIMIT)
 from thunder_os.external_email_import import ExternalEmailError
 from thunder_os.seqd_client import MAILBOX, SEQDClient
 from thunder_os.db import Repository
@@ -2437,6 +2437,154 @@ class Cases(unittest.TestCase):
   self.assertEqual(len(budget['contacts_search']),2)
   self.assertIsNotNone(self.repo.get_state(KIND,CAMPAIGN))
   self.assertTrue(conflicts, 'one stale snapshot write must be rejected')
+
+
+class MetricCoverageTests(unittest.TestCase):
+    """Critério 1: each panel number carries its own coverage instead of all-or-nothing."""
+    def setUp(self):
+        self.now = NOW
+        network = patch('socket.socket', side_effect=AssertionError('network forbidden'))
+        network.start()
+        self.addCleanup(network.stop)
+
+    def provider(self, wire, **options):
+        return ApolloCampaignReadOnly(lambda: 'fake', request=wire, mcp_request=FakeMCPTransport(wire),
+                                      clock=lambda: self.now, **options)
+
+    def queue(self):
+        return Wire(messages=[metadata('m1'), metadata('m2', status='scheduled', completed_at=None),
+                              metadata('orphan', contact_id='unknown-contact')],
+                    contents=[content('m1'), content('orphan')])
+
+    def test_outside_cohort_rows_are_counted_apart_without_hiding_cohort_totals(self):
+        data = self.provider(self.queue()).collect()
+        cov, by = data['coverage'], data['metrics']['by_metric']
+        self.assertFalse(cov['complete'])
+        self.assertFalse(cov['messages_complete'])
+        self.assertTrue(cov['enumeration_complete'])
+        self.assertEqual(by['sent'], {'value': 1, 'complete': True, 'source_total': 2, 'outside_cohort': 1,
+                                      'retained_history': 0, 'reasons': []})
+        self.assertEqual(by['pending'], {'value': 1, 'complete': True, 'outside_cohort': 1})
+        self.assertEqual(by['contacts']['value'], 1)
+        self.assertTrue(by['contacts']['complete'])
+        self.assertIsNone(by['meetings']['value'])
+        self.assertFalse(by['meetings']['complete'])
+
+    def test_stopped_read_leaves_pending_unverified_and_enumeration_open(self):
+        wire = self.queue()
+        transport = FakeMCPTransport(wire)
+        def stop_unfiltered(method, path, body, headers, timeout):
+            arguments = body.get('params', {}).get('arguments', {})
+            if body['method'] == 'tools/call' and arguments.get('emailer_message_stats') != ['sent']:
+                return 429, b'{}', {'Mcp-Session-Id': 'synthetic-session'}
+        transport.override = stop_unfiltered
+        data = ApolloCampaignReadOnly(lambda: 'fake', request=wire, mcp_request=transport,
+                                      clock=lambda: self.now).collect()
+        by = data['metrics']['by_metric']
+        self.assertFalse(data['coverage']['enumeration_complete'])
+        self.assertFalse(by['sent']['complete'])
+        self.assertFalse(by['replies']['complete'])
+        self.assertIsNone(by['pending']['value'])
+        self.assertFalse(by['pending']['complete'])
+
+    def test_reply_exception_marks_only_replies_partial(self):
+        gmail = Mock(spec=['conversation'])
+        gmail.conversation.return_value = thread([gmail_message(bodies={'text': 'different literal'}),
+                                                  gmail_message('abc2', outgoing=False)])
+        wire = Wire(messages=[metadata(replied=True)])
+        data = self.provider(wire, gmail=gmail).collect()
+        by = data['metrics']['by_metric']
+        self.assertIn('gmail_outbound_original_mismatch', data['coverage']['reasons'])
+        self.assertTrue(data['coverage']['enumeration_complete'])
+        self.assertTrue(by['sent']['complete'])
+        self.assertFalse(by['replies']['complete'])
+        self.assertEqual(by['replies']['reasons'], ['gmail_outbound_original_mismatch'])
+        self.assertEqual(by['replies']['value'], 1)
+        self.assertEqual(by['replies']['human_confirmed'], 0)
+
+    def test_enumerated_read_with_exceptions_is_a_success_and_fresh_observation(self):
+        repo = Mock()
+        repo.get_state.return_value = None
+        reader = ApolloCampaignReader(repo, self.provider(Wire()), enable_check=lambda: True,
+                                      clock=lambda: self.now)
+        reader.refresh()
+        old = deepcopy(repo.put_state.call_args.args[2])
+        self.now += timedelta(seconds=INTERVAL + 1)
+        reader.provider = self.provider(self.queue())
+        repo.get_state.return_value = old
+        reader.refresh()
+        state = repo.put_state.call_args.args[2]
+        self.assertEqual(state['status'], 'partial')
+        self.assertEqual(state['last_success_at'], self.now.isoformat())
+        self.assertEqual(state['observed_at'], self.now.isoformat())
+        self.assertEqual(state['metrics']['by_metric']['pending']['value'], 1)
+        self.assertEqual(state['metrics']['by_metric']['sent']['outside_cohort'], 1)
+
+    def test_reply_read_stopped_by_budget_is_not_complete_replies(self):
+        cov = {'contacts_complete': True, 'sent_messages_enumerated': True, 'messages_enumerated': True,
+               'sent_messages_total': 0, 'sent_messages_outside_cohort': 0,
+               'reasons': ['apollo_read_budget_exhausted']}
+        by = _metric_coverage(cov, [], [])
+        self.assertFalse(_enumeration_complete(cov))
+        self.assertFalse(by['replies']['complete'])
+        self.assertFalse(by['sent']['complete'])
+        self.assertIsNone(by['pending']['value'])
+
+    def test_gmail_outage_codes_are_not_listed_exceptions(self):
+        for code in ('gmail_reply_read_unavailable', 'gmail_reply_discovery_unavailable', 'gmail_discovery_page_limit',
+                     'gmail_identity_mismatch', 'gmail_reply_mailbox_unavailable', 'gmail_rate_limited'):
+            cov = {'contacts_complete': True, 'sent_messages_enumerated': True, 'messages_enumerated': True,
+                   'reasons': [code]}
+            self.assertFalse(_enumeration_complete(cov), code)
+
+    def test_retained_history_is_reported_apart_and_sent_reconciles_with_source(self):
+        sent = lambda ident: {'event_type': 'email_sent', 'provider_id': ident}
+        current = [{'id': 'a', 'email': 'a@x.invalid', 'events': [sent('m1')]}]
+        retained = current + [{'id': 'gone', 'email': 'g@x.invalid', 'events': [sent('m0')]},
+                              {'id': 'a', 'email': 'old@x.invalid', 'events': [sent('m1')]}]
+        cov = {'contacts_complete': True, 'sent_messages_enumerated': True, 'messages_enumerated': True,
+               'sent_messages_total': 2, 'sent_messages_outside_cohort': 1, 'reasons': []}
+        by = _metric_coverage(cov, retained, current)
+        self.assertEqual((by['sent']['value'], by['sent']['retained_history']), (1, 2))
+        self.assertTrue(by['sent']['complete'])
+        cov['sent_messages_total'] = 3
+        by = _metric_coverage(cov, retained, current)
+        self.assertFalse(by['sent']['complete'])
+        self.assertEqual(by['sent']['reasons'], ['sent_count_mismatch'])
+
+    def test_snapshot_takes_meetings_from_crm_reader_only(self):
+        repo = Mock()
+        repo.get_state.return_value = None
+        reader = ApolloCampaignReader(repo, self.provider(self.queue()), enable_check=lambda: True,
+                                      clock=lambda: self.now)
+        reader.refresh()
+        stored = deepcopy(repo.put_state.call_args.args[2])
+        repo.get_state.return_value = stored
+        self.assertIsNone(reader.snapshot()['metrics']['by_metric']['meetings']['value'])
+        meetings = Mock()
+        meetings.snapshot.return_value = {'campaign_id': CAMPAIGN, 'observed_at': NOW.isoformat(), 'value': 2, 'complete': True,
+                                          'reasons': [], 'rows': [{'meeting_id': '9001'}]}
+        reader.meetings = meetings
+        block = reader.snapshot()['metrics']['by_metric']['meetings']
+        self.assertEqual((block['value'], block['complete']), (2, True))
+        reader.refresh_meetings()
+        meetings.refresh.assert_called_once_with(stored)
+
+    def test_stopped_read_keeps_previous_success_time(self):
+        repo = Mock()
+        repo.get_state.return_value = None
+        reader = ApolloCampaignReader(repo, self.provider(Wire()), enable_check=lambda: True,
+                                      clock=lambda: self.now)
+        reader.refresh()
+        old = deepcopy(repo.put_state.call_args.args[2])
+        self.now += timedelta(seconds=INTERVAL + 1)
+        wire = Wire()
+        wire.override = lambda method, path, body: (429, b'{}') if path.endswith('contacts/search') else None
+        reader.provider = self.provider(wire)
+        repo.get_state.return_value = {**old, 'cohort_cache': None}
+        reader.refresh()
+        state = repo.put_state.call_args.args[2]
+        self.assertEqual(state['last_success_at'], old['last_success_at'])
 
 
 if __name__ == '__main__':

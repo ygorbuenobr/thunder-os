@@ -731,6 +731,10 @@ class ApolloCampaignReadOnly:
                         require(all(self.hydrated_messages[ident] == 'email_sent' for ident in eligible_query),
                                 'sent_filtered_content_unverified')
                     coverage[prefix + '_complete'] = not has_orphan
+                    # Every source row was read; rows outside the cohort are
+                    # counted apart instead of hiding the cohort's own totals.
+                    coverage[prefix + '_enumerated'] = True
+                    coverage[prefix + '_outside_cohort'] = len(seen_query - eligible_query)
                     break
             else:
                 raise ExternalEmailError('apollo_messages_page_limit')
@@ -1094,14 +1098,72 @@ class ApolloCampaignReadOnly:
             for lead in result['leads']:
                 lead['events'].sort(key=lambda e: (e.get('occurred_at') or '', e['provider_id']))
             counts = Counter(e['event_type'] for lead in result['leads'] for e in lead['events'])
+            cov['enumeration_complete'] = _enumeration_complete(cov)
             result['metrics'] = {'observed_leads': len(result['leads']), 'sent_messages': counts['email_sent'],
                 'human_replies': counts['reply_received'], 'automatic_replies': counts['auto_reply_received'],
                 'unclassified_replies': counts['unclassified_reply'], 'reply_signals': counts['reply_signal'], 'third_party_replies': counts['third_party_reply'],
                 'complete': cov['complete'],
                 'membership_statuses': dict(Counter(lead.get('membership_status') or 'unknown' for lead in result['leads']))}
+            result['metrics']['by_metric'] = _metric_coverage(cov, result['leads'], result['leads'])
             return result
         finally:
             self.lock.release()
+
+
+_REPLY_EVIDENCE = {'reply_signal', 'reply_received', 'unclassified_reply', 'third_party_reply'}
+# Per-thread reply exceptions: the thread was read, its content just does not prove the reply.
+_REPLY_EXCEPTIONS = {'reply_original_unavailable', 'gmail_outbound_original_mismatch', 'gmail_thread_partial',
+                     'gmail_discovered_thread_context_only', 'gmail_reply_body_partial'}
+# Exceptions that leave every source row read; any other reason means the read stopped short.
+_LISTED_EXCEPTIONS = {'message_contact_outside_cohort', 'contacts_scan_spans_refreshes', *_REPLY_EXCEPTIONS}
+
+
+def _enumeration_complete(coverage):
+    reasons = coverage.get('reasons') or []
+    return (coverage.get('contacts_complete') is True
+            and coverage.get('sent_messages_enumerated') is True
+            and coverage.get('messages_enumerated') is True
+            and all(r in _LISTED_EXCEPTIONS for r in reasons))
+
+
+def _metric_coverage(coverage, leads, current_leads):
+    """One value and one coverage flag per panel metric.
+
+    Values count the current cohort observation only; events kept from retained
+    history (leads that left the sequence, older identities) are reported apart
+    so a sent message is never counted both as cohort and as outside it.
+    Meetings live in the CRM, so this reader never asserts a value for them.
+    """
+    reasons = [r for r in coverage.get('reasons') or [] if isinstance(r, str)]
+    current = Counter(e.get('event_type') for lead in current_leads for e in lead.get('events', []))
+    current_ids = {(lead.get('id'), lead.get('email')) for lead in current_leads}
+    retained = [lead for lead in leads if (lead.get('id'), lead.get('email')) not in current_ids]
+    history = Counter(e.get('event_type') for lead in retained for e in lead.get('events', []))
+    reply_reasons = sorted(set(reasons) & _REPLY_EXCEPTIONS)
+    enumerated = _enumeration_complete(coverage)
+    contacts_done = coverage.get('contacts_complete') is True
+    total, outside = coverage.get('sent_messages_total'), coverage.get('sent_messages_outside_cohort')
+    sent_reconciled = (type(total) is int and type(outside) is int
+                       and current['email_sent'] + outside == total)
+    return {
+        'contacts': {'value': len(current_leads) if contacts_done else None, 'complete': contacts_done,
+                     'spans_refreshes': 'contacts_scan_spans_refreshes' in reasons},
+        'sent': {'value': current['email_sent'], 'complete': enumerated and sent_reconciled,
+                 'source_total': total, 'outside_cohort': outside,
+                 'retained_history': history['email_sent'],
+                 'reasons': [] if sent_reconciled or not enumerated else ['sent_count_mismatch']},
+        'pending': {'value': current['scheduled'] if enumerated else None, 'complete': enumerated,
+                    'outside_cohort': coverage.get('messages_outside_cohort')},
+        'replies': {'value': sum(any(e.get('event_type') in _REPLY_EVIDENCE for e in lead.get('events', []))
+                                 for lead in current_leads),
+                    'complete': enumerated and not reply_reasons, 'reasons': reply_reasons,
+                    'human_confirmed': current['reply_received'], 'signals': current['reply_signal'],
+                    'third_party': current['third_party_reply'], 'unclassified': current['unclassified_reply'],
+                    'automatic': current['auto_reply_received'],
+                    'retained_history': sum(any(e.get('event_type') in _REPLY_EVIDENCE for e in lead.get('events', []))
+                                            for lead in retained)},
+        'meetings': {'value': None, 'complete': False, 'reasons': ['meetings_read_in_crm']},
+    }
 
 
 def _retain_observations(previous, data):
@@ -1221,8 +1283,9 @@ def transition_budget_offline(repo, *, writers_stopped, clock=None):
 
 class ApolloCampaignReader:
     """Repository cache only on snapshot(); explicit private enable check per use."""
-    def __init__(self, repo, provider=None, *, enable_check=enabled, clock=None):
+    def __init__(self, repo, provider=None, *, enable_check=enabled, clock=None, meetings=None):
         self.repo, self.provider = repo, provider or ApolloCampaignReadOnly(gmail=SEQDClient())
+        self.meetings = meetings
         require(isinstance(repo, Repository), 'apollo_transactional_repository_required')
         if isinstance(repo, Repository):
             require(isinstance(self.provider, ApolloCampaignReadOnly), 'apollo_transactional_adapter_required')
@@ -1307,18 +1370,21 @@ class ApolloCampaignReader:
                     state['leads'], _ = _retain_observations(previous, data)
                     state['coverage']['retained_observation'] = True
                     state['coverage']['retained_observed_at'] = previous.get('observed_at')
+                enumerated = _enumeration_complete(data['coverage'])
                 if not data['coverage']['complete']:
                     state['error_code'] = next(iter(data['coverage'].get('reasons', [])), 'incomplete_source')
-                    # Failure never renews a successful observation or cached cohort.
-                    state['last_success_at'] = previous.get('last_success_at')
+                    # Failure never renews a successful observation or cached cohort;
+                    # a full enumeration with listed exceptions is a successful read.
+                    if not enumerated:
+                        state['last_success_at'] = previous.get('last_success_at')
                     if previous.get('message_cache'):
                         state['message_cache'] = {**deepcopy(previous['message_cache']), **state.get('message_cache', {})}
                     if 'cohort_cache' not in state and previous.get('cohort_cache'):
                         state['cohort_cache'] = deepcopy(previous['cohort_cache'])
                     if previous.get('leads'):
                         state['leads'], state['metrics'] = _retain_observations(previous, data)
-                        source_fresh = (data['coverage'].get('contacts_complete') is True
-                                        and data['coverage'].get('messages_complete') is True)
+                        source_fresh = enumerated or (data['coverage'].get('contacts_complete') is True
+                                                      and data['coverage'].get('messages_complete') is True)
                         state['observed_at'] = data.get('observed_at') if source_fresh else previous.get('observed_at')
                         state['status'] = 'partial' if any(lead.get('events') for lead in data.get('leads', [])) else 'error'
                         state['coverage']['retained_observation'] = True
@@ -1326,6 +1392,9 @@ class ApolloCampaignReader:
                         state['partial_observation'] = {'observed_at': data.get('observed_at'),
                             'leads_observed': len(data.get('leads', [])),
                             'events_observed': sum(len(lead.get('events', [])) for lead in data.get('leads', []))}
+                if isinstance(state.get('metrics'), dict):
+                    state['metrics']['by_metric'] = _metric_coverage(
+                        state['coverage'], state.get('leads', []), data.get('leads', []))
 
             except Exception as exc:
                 state = deepcopy(checkpoint_state if checkpoint_state is not None else previous)
@@ -1396,6 +1465,11 @@ class ApolloCampaignReader:
                     if isinstance(lead, dict):
                         lead['cohort_presence'] = ('unknown' if cohort_ids is None else
                                                    'observed' if (lead.get('id'), lead.get('email')) in cohort_ids else 'historical')
+            meetings = getattr(self, 'meetings', None)
+            by_metric = result['metrics'].get('by_metric') if isinstance(result.get('metrics'), dict) else None
+            if meetings is not None and isinstance(by_metric, dict):
+                from thunder_os.apollo_meetings import metric
+                by_metric['meetings'] = metric(meetings.snapshot(), self.clock())
             if result['coverage'].get('complete') is not True:
                 if result['status'] == 'ok':
                     result['status'] = 'partial'
@@ -1435,10 +1509,20 @@ class ApolloCampaignReader:
                 except Exception:
                     self._set_runtime(phase='error', last_loop_error='apollo_reader_loop_error')
                     logging.getLogger(__name__).warning('apollo_reader_loop_error')
+                self.refresh_meetings()
                 self.stop_event.wait(WAKE_INTERVAL)
         self.thread = threading.Thread(target=run, name='apollo-read-only', daemon=True)
         self._set_runtime(thread_started=True)
         self.thread.start()
+
+    def refresh_meetings(self):
+        meetings = getattr(self, 'meetings', None)
+        if meetings is None or not self.enable_check():
+            return
+        try:
+            meetings.refresh(self.repo.get_state(KIND, CAMPAIGN))
+        except Exception:
+            logging.getLogger(__name__).warning('apollo_meetings_loop_error')
 
     def stop(self):
         self.stop_event.set()
