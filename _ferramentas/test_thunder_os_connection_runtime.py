@@ -57,6 +57,24 @@ class ConnectionRuntimeTests(unittest.TestCase):
             code = main()
         return code, stdout.getvalue(), stderr.getvalue()
 
+    def test_provider_transport_logs_safe_original_category(self):
+        from thunder_os.connection_runtime import _provider
+        from thunder_os.connectsafely_transport import ConnectSafelyHTTPS
+        def factory(*args, **kwargs):
+            raise TimeoutError("secret-value https://private.example token=secret-value")
+        transport = ConnectSafelyHTTPS(ACCOUNT, lambda: "synthetic-token-only",
+                                        connection_factory=factory)
+        config = {"api_credential_file": "/unused", "account_id": ACCOUNT,
+                  "account_public_id": "fixture"}
+        with (mock.patch("thunder_os.connection_runtime.ConnectSafelyHTTPS", return_value=transport),
+              self.assertLogs("thunder_os", level="WARNING") as logs):
+            with self.assertRaisesRegex(ConnectionProviderError, "^provider_outcome_unknown$"):
+                _provider(config)._get("/linkedin/accounts", {"q": ACCOUNT})
+        output = "\n".join(logs.output)
+        self.assertIn("connection_transport_outcome_unknown category=timeout", output)
+        for secret in ("secret-value", "private.example", ACCOUNT, "synthetic-token-only"):
+            self.assertNotIn(secret, output)
+
     def test_main_projects_live_success_and_incomplete_error(self):
         success_cursors = []
         today = datetime.now(timezone.utc).astimezone(ZoneInfo("America/Sao_Paulo")).date()

@@ -5,11 +5,14 @@ loader are explicit boundaries; tests inject both and make zero network calls.
 """
 import http.client
 import json
+import logging
 import os
 import re
 import ssl
 from urllib.parse import urlencode, quote, unquote
 from .connectsafely_client import ConnectSafelyError, require, urn
+
+logger = logging.getLogger(__name__)
 
 HOST='api.connectsafely.ai'
 MAX_RESPONSE=1_000_000
@@ -107,7 +110,14 @@ class ConnectSafelyHTTPS:
         except ConnectSafelyError as exc:
             allowed={'credential_unavailable','request_too_large','provider_schema_invalid','response_too_large'}
             raise ConnectSafelyError(str(exc) if str(exc) in allowed else 'provider_outcome_unknown') from None
-        except Exception:
+        except Exception as exc:
+            if method == 'GET' and path in ('/linkedin/accounts', '/linkedin/connections', '/linkedin/profile'):
+                # Only fixed categories; exception text and request data are private.
+                category = ('timeout' if isinstance(exc, TimeoutError) else
+                            'tls' if isinstance(exc, ssl.SSLError) else
+                            'connection' if isinstance(exc, ConnectionError) else
+                            'os_error' if isinstance(exc, OSError) else 'other')
+                logger.warning('connection_transport_outcome_unknown category=%s', category)
             raise ConnectSafelyError('provider_outcome_unknown') from None
         finally:
             if connection:
