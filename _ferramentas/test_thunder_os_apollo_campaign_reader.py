@@ -2570,6 +2570,30 @@ class MetricCoverageTests(unittest.TestCase):
         reader.refresh_meetings()
         meetings.refresh.assert_called_once_with(stored)
 
+    def test_cached_cohort_follows_its_own_ttl_not_the_snapshot_ttl(self):
+        repo = Mock()
+        fresh = NOW.isoformat()
+        cohort = (NOW - timedelta(hours=3)).isoformat()
+        base = {'status': 'partial', 'observed_at': fresh, 'leads': [], 'metrics': {},
+                'coverage': {'complete': False, 'contacts_complete': True, 'contacts_cached': True,
+                             'contacts_observed_at': cohort, 'messages_complete': False,
+                             'messages_observed_at': fresh}}
+        repo.get_state.return_value = deepcopy(base)
+        reader = ApolloCampaignReader(repo, self.provider(Wire()), enable_check=lambda: True, clock=lambda: NOW)
+        self.assertFalse(reader.snapshot()['stale'])
+        expired = deepcopy(base)
+        expired['coverage']['contacts_observed_at'] = (NOW - timedelta(seconds=COHORT_TTL + 1)).isoformat()
+        repo.get_state.return_value = expired
+        self.assertTrue(reader.snapshot()['stale'])
+        scanned = deepcopy(base)
+        scanned['coverage']['contacts_cached'] = False
+        repo.get_state.return_value = scanned
+        self.assertTrue(reader.snapshot()['stale'], 'a fresh scan keeps the snapshot TTL')
+        old_messages = deepcopy(base)
+        old_messages['coverage']['messages_observed_at'] = (NOW - timedelta(seconds=SNAPSHOT_TTL + 1)).isoformat()
+        repo.get_state.return_value = old_messages
+        self.assertTrue(reader.snapshot()['stale'])
+
     def test_stopped_read_keeps_previous_success_time(self):
         repo = Mock()
         repo.get_state.return_value = None
