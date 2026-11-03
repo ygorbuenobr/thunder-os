@@ -1443,6 +1443,14 @@ class Handler(BaseHTTPRequestHandler):
                 raise Erro('Credencial própria do Hermes ausente ou inválida', 401)
         return actor
 
+    def linkedin_hubspot_reader(self):
+        """Search/GET-only HubSpot reader for the LinkedIn authorization screen."""
+        reader = getattr(self.server, 'thunder_linkedin_hubspot_reader', None)
+        if reader is None and os.environ.get('THUNDER_OS_HUBSPOT_READ_ENABLED', '').lower() == 'true':
+            from thunder_os.linkedin_authorization import HubSpotCadenceReader
+            reader = HubSpotCadenceReader(systemd_hubspot_credential)
+        return reader
+
     def agenttrail_ingress_actor(self):
         actor = self.thunder_proxy_actor()
         try:
@@ -1936,6 +1944,33 @@ class Handler(BaseHTTPRequestHandler):
                 if len(previews) >= 50:
                     break
             return self.responder(200, {'read_only': True, 'task_id': task_id, 'previews': previews})
+        if self.command == 'GET' and rota.path in {'/api/os/v1/linkedin-authorization',
+                                                   '/api/os/v1/linkedin-authorization/tasks'}:
+            if self.thunder_proxy_actor() != 'ygor':
+                raise AuthorizationError('Somente Ygor pode consultar estas autorizações.')
+            query = parse_qs(rota.query, keep_blank_values=True)
+            if (set(query) != {'contact_id'} or len(query['contact_id']) != 1
+                    or not re.fullmatch(r'[1-9][0-9]{0,29}', query['contact_id'][0])):
+                raise Erro('Informe o ID exato do contato no HubSpot.')
+            from thunder_os import linkedin_authorization as li_auth
+            contact = query['contact_id'][0]
+            if rota.path.endswith('/tasks'):
+                reader = self.linkedin_hubspot_reader()
+                if reader is None:
+                    raise Erro('Leitura de tarefas do HubSpot indisponível.', 503)
+                try:
+                    return self.responder(200, reader.open_tasks(contact))
+                except li_auth.AuthorizationReadError:
+                    raise Erro('Não foi possível consultar as tarefas no HubSpot.', 503) from None
+            sender, sender_error = None, None
+            try:
+                sender = li_auth.configured_sender()
+            except li_auth.AuthorizationReadError as exc:
+                sender_error = str(exc)
+            return self.responder(200, li_auth.authorization_state(
+                service.repository, contact=contact, sender=sender, sender_error=sender_error,
+                app=getattr(self.server, 'thunder_connectsafely_app', None),
+                campaigns=li_auth.campaign_options(service.campaign_registry, sender or {}), clock=time.time))
         if rota.query:
             raise Erro('Rota Thunder OS inválida', 405)
         if self.command == 'GET' and rota.path == '/api/os/v1/panel-capabilities':
@@ -2407,10 +2442,35 @@ class Handler(BaseHTTPRequestHandler):
             return self.responder(201, service.authorize_capabilities(body, actor))
         if rota.path == '/api/os/v1/delegations/hermes':
             return self.responder(200, service.configure_hermes_delegation(body, actor))
+        if rota.path == '/api/os/v1/linkedin-cadence-plan-drafts':
+            if actor != 'ygor':
+                raise AuthorizationError('Somente Ygor pode preparar esta aprovação.')
+            from thunder_os import linkedin_authorization as li_auth
+            try:
+                return self.responder(200, li_auth.draft_approval(
+                    body, sender=li_auth.configured_sender(),
+                    resolver=getattr(self.server, 'thunder_connectsafely_read_resolver', None),
+                    hubspot=self.linkedin_hubspot_reader(), repository=service.repository, clock=time.time))
+            except li_auth.AuthorizationReadError as exc:
+                raise Erro('Rascunho bloqueado: ' + str(exc), 409) from None
+        if rota.path == '/api/os/v1/linkedin-cadence-approvals/revoke':
+            if actor != 'ygor':
+                raise AuthorizationError('Somente Ygor pode revogar a aprovação.')
+            if not isinstance(body, dict) or set(body) != {'approval_id', 'expected_version'}:
+                raise Erro('Revogação de aprovação inválida')
+            from thunder_os.hermes_linkedin_cadence import revoke_approval
+            return self.responder(200, revoke_approval(service.repository, body['approval_id'],
+                                                       body['expected_version'], actor))
         if rota.path == '/api/os/v1/linkedin-cadence-approvals':
             app = getattr(self.server, 'thunder_connectsafely_app', None)
             if app is None or app.direct is None:
-                raise Erro('ConnectSafely não configurado', 503)
+                # Approval records copy authority only; the executor's own console
+                # revalidates identity, evidence and quota before any preview/send.
+                from thunder_os import linkedin_authorization as li_auth
+                try:
+                    app = li_auth.validation_application(service.repository, li_auth.configured_sender())
+                except li_auth.AuthorizationReadError:
+                    raise Erro('ConnectSafely não configurado', 503) from None
             from thunder_os.hermes_linkedin_cadence import HermesLinkedInCadence
             result = HermesLinkedInCadence(service.repository, None, app).approve(body, actor)
             return self.responder(201, result)
