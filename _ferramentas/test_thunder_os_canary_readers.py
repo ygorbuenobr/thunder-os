@@ -265,6 +265,31 @@ class LinkedInTests(unittest.TestCase):
         client.verify_identity = Mock()
         return ConnectSafelyCanaryReader(targets, client), targets.contact(CONTACT), calls
 
+    def test_owner_member_id_alias_is_pinned_by_config_only(self):
+        item = row(email='second@example.invalid', channels=['linkedin'], linkedin_public_id='second',
+            linkedin_profile_urn=RECIPIENT, apollo_contact_id='apollo-second')
+        def reader_for(config_extra):
+            targets = CanaryScope({'version': 1, 'contacts': [item], **config_extra}, owner_public_id='owner-public')
+            def request(method, path, query, body):
+                if '/exists/' in path:
+                    return 200, {'success':True, 'accountId':ACCOUNT, 'profileUrn':RECIPIENT,
+                                 'hasConversation':True, 'conversationUrn':'urn:li:msg_conversation:synthetic'}
+                # Owner pinned by vanity; provider reports the sender by member ID.
+                return 200, {'success':True, 'accountId':ACCOUNT, 'conversationUrn':'urn:li:msg_conversation:synthetic',
+                    'participants':[{'profileId':'owner-public'}, {'profileId':'second'}, {'profileId':'recipient'}],
+                    'hasMore':False, 'messages':[{'messageUrn':'urn:li:message:1', 'isSentByOwner':True,
+                    'senderProfileId':'ownerMember123'}]}
+            client = ConnectSafelyClient(ACCOUNT, 'owner-public', self_profile_id='owner-public', request=request)
+            client.verify_identity = Mock()
+            return ConnectSafelyCanaryReader(targets, client)
+        with self.assertRaisesRegex(CanaryReadError, 'canary_sender_unverified'):
+            reader_for({})(RECIPIENT)
+        result = reader_for({'owner_profile_urn': 'urn:li:fsd_profile:ownerMember123'})(RECIPIENT)
+        self.assertEqual((False, False), (result['suppressed'], result['no_record']))
+        for bad in ('ownerMember123', RECIPIENT, 'urn:li:fsd_profile:bad id'):
+            with self.subTest(bad=bad), self.assertRaisesRegex(CanaryReadError, 'canary_config_invalid'):
+                CanaryScope({'version': 1, 'contacts': [item], 'owner_profile_urn': bad}, owner_public_id='owner-public')
+
     def test_profile_is_explicitly_fresh_and_scoped_to_second_profile(self):
         reader, contact, calls = self.make()
         result = reader.profile(contact, {'account_id':ACCOUNT, 'recipient_public_id':'second',
