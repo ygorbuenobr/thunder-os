@@ -52,8 +52,15 @@ class CRM:
                     for address in wanted for ident in self.contacts.get(address, [])]
             result = {'results': rows, 'total': len(rows)}
         elif path == '/crm/v4/associations/contacts/meetings/batch/read':
-            result = {'status': 'COMPLETE', 'results': [{'from': {'id': item['id']},
-                'to': [{'toObjectId': m} for m in self.links.get(item['id'], [])]} for item in body['inputs']]}
+            # Real HubSpot shape: contacts without meetings come back as per-input errors.
+            linked = [item['id'] for item in body['inputs'] if self.links.get(item['id'])]
+            empty = [item['id'] for item in body['inputs'] if not self.links.get(item['id'])]
+            result = {'status': 'COMPLETE', 'results': [{'from': {'id': ident},
+                'to': [{'toObjectId': m} for m in self.links[ident]]} for ident in linked],
+                'numErrors': len(empty), 'errors': [{'status': 'error', 'category': 'OBJECT_NOT_FOUND',
+                    'subCategory': 'crm.associations.NO_ASSOCIATIONS_FOUND',
+                    'message': 'No meeting_event is associated with contact ' + ident + '.',
+                    'context': {'fromObjectId': [ident]}} for ident in empty]}
         elif path == '/crm/v3/objects/meetings/batch/read':
             if self.fail_meetings:
                 return 500, b'{}'
@@ -151,26 +158,31 @@ class MeetingsTests(unittest.TestCase):
         self.assertEqual(state['observed_at'], first['observed_at'])
         self.assertFalse(state['complete'])
 
-    def test_association_paging_and_missing_batch_record_are_partial(self):
+    def test_association_with_further_page_is_partial(self):
         original = self.crm.__call__
         def paged(method, path, body, headers, timeout):
+            status, raw = original(method, path, body, headers, timeout)
             if path == '/crm/v4/associations/contacts/meetings/batch/read':
-                status, raw = original(method, path, body, headers, timeout)
                 data = json.loads(raw)
-                for row in data['results']:
-                    if row['from']['id'] == '101' and 'after' not in body['inputs'][0]:
-                        row['paging'] = {'next': {'after': 'c1'}}
-                if any(item.get('after') == 'c1' for item in body['inputs']):
-                    data = {'status': 'COMPLETE', 'results': [{'from': {'id': '101'}, 'to': [{'toObjectId': '9005'}]}]}
-                return status, json.dumps(data).encode()
-            if path == '/crm/v3/objects/meetings/batch/read':
-                body = {**body, 'inputs': [i for i in body['inputs'] if i['id'] != '9005']}
-            return original(method, path, body, headers, timeout)
+                data['results'][0]['paging'] = {'next': {'after': 'c1'}}
+                raw = json.dumps(data).encode()
+            return status, raw
         self.reader.adapter.request = paged
         state = self.reader.refresh(self.apollo)
         self.assertFalse(state['complete'])
-        self.assertIn('meetings_crm_read_partial', state['reasons'])
+        self.assertIn('contact_meetings:page_limit', state['coverage']['limitations'])
+
+    def test_missing_meeting_record_is_partial(self):
+        original = self.crm.__call__
+        def missing(method, path, body, headers, timeout):
+            if path == '/crm/v3/objects/meetings/batch/read':
+                body = {**body, 'inputs': [i for i in body['inputs'] if i['id'] != '9004']}
+            return original(method, path, body, headers, timeout)
+        self.reader.adapter.request = missing
+        state = self.reader.refresh(self.apollo)
+        self.assertFalse(state['complete'])
         self.assertIn('meetings_batch_records_missing', state['coverage']['limitations'])
+        self.assertIn('meetings_crm_read_partial', state['reasons'])
 
     def test_unparseable_creation_date_is_listed_and_not_complete(self):
         self.crm.meetings['9001'] = meeting('9001', 'not-a-date')
@@ -193,6 +205,29 @@ class MeetingsTests(unittest.TestCase):
         self.assertFalse(late['complete'])
         self.assertIn('meetings_stale', late['reasons'])
         self.assertIsNone(metric({**state, 'campaign_id': 'OTHER'}, NOW)['value'])
+
+    def test_contacts_without_meetings_are_a_complete_zero(self):
+        self.crm.links = {}
+        state = self.reader.refresh(self.apollo)
+        self.assertEqual(state['value'], 0)
+        self.assertTrue(state['complete'])
+        self.assertEqual(state['coverage']['sources']['contact_meetings']['records'], 3)
+
+    def test_other_association_error_stays_partial(self):
+        original = self.crm.__call__
+        def failing(method, path, body, headers, timeout):
+            status, raw = original(method, path, body, headers, timeout)
+            if path == '/crm/v4/associations/contacts/meetings/batch/read':
+                data = json.loads(raw)
+                data['errors'] = [{'status': 'error', 'category': 'RATE_LIMITS', 'subCategory': 'other',
+                                   'context': {'fromObjectId': ['103']}}]
+                data['results'] = [r for r in data['results'] if r['from']['id'] != '103']
+                raw = json.dumps(data).encode()
+            return status, raw
+        self.reader.adapter.request = failing
+        state = self.reader.refresh(self.apollo)
+        self.assertFalse(state['complete'])
+        self.assertEqual(state['error_code'], 'meeting_associations_partial')
 
     def test_metric_block_without_observation_is_unverified(self):
         block = metric(None)

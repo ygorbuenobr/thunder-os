@@ -33,6 +33,52 @@ def _date(value):
     return parsed if parsed.tzinfo is not None else None
 
 
+NO_ASSOCIATIONS = 'crm.associations.NO_ASSOCIATIONS_FOUND'
+
+
+def contact_meetings(session, contact_ids, coverage):
+    """V4 batch read contacts -> meetings.
+
+    HubSpot answers a contact without meetings with a per-input error
+    NO_ASSOCIATIONS_FOUND; that is a resolved empty list, not a partial read.
+    Any other error, a missing input or a further page keeps the read partial.
+    """
+    links, resolved = {}, set()
+    for start in range(0, len(contact_ids), 100):
+        chunk = contact_ids[start:start + 100]
+        result = session.call('POST', '/crm/v4/associations/contacts/meetings/batch/read',
+                              {'inputs': [{'id': ident} for ident in chunk]})
+        rows, errors = result.get('results'), result.get('errors') or []
+        if not isinstance(rows, list) or not isinstance(errors, list):
+            raise CadenceReadonlyError('provider_invalid_batch')
+        for row in rows:
+            ident = str((row.get('from') or {}).get('id')) if isinstance(row, dict) else None
+            if ident not in chunk or not isinstance(row.get('to'), list):
+                raise CadenceReadonlyError('provider_invalid_association')
+            links[ident] = [str(link['toObjectId']) for link in row['to']
+                            if isinstance(link, dict) and link.get('toObjectId') is not None]
+            if (row.get('paging') or {}).get('next'):
+                _partial(coverage, 'contact_meetings:page_limit')
+            else:
+                resolved.add(ident)
+        for error in errors:
+            context = error.get('context') if isinstance(error, dict) else None
+            ids = (context or {}).get('fromObjectId') or (context or {}).get('ids') or []
+            if error.get('subCategory') == NO_ASSOCIATIONS and isinstance(ids, list):
+                for ident in map(str, ids):
+                    if ident in chunk:
+                        links.setdefault(ident, [])
+                        resolved.add(ident)
+            else:
+                _partial(coverage, 'contact_meetings:batch_error')
+    if resolved != set(contact_ids):
+        _partial(coverage, 'contact_meetings:batch_records_missing')
+    coverage['sources']['contact_meetings'] = {'complete': resolved == set(contact_ids)
+        and not any(r.startswith('contact_meetings:') for r in coverage['limitations']),
+        'requested': len(contact_ids), 'records': len(resolved)}
+    return links
+
+
 def first_sends(leads):
     """Exact lowercase email -> earliest confirmed Apollo send for that lead."""
     sends = {}
@@ -120,8 +166,7 @@ class ApolloMeetingsReader:
             for address in ambiguous:
                 contacts_by_email.pop(address)
             contact_ids = sorted({c for ids in contacts_by_email.values() for c in ids})
-            associations, _ = session.object_contacts('contacts', contact_ids, coverage,
-                                                     target='meetings', source='contact_meetings')
+            associations = contact_meetings(session, contact_ids, coverage)
             if not coverage['sources'].get('contact_meetings', {}).get('complete'):
                 raise CadenceReadonlyError('meeting_associations_partial')
             meeting_ids = sorted({m for ids in associations.values() for m in ids})
