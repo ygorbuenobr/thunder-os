@@ -259,6 +259,26 @@ class ConnectionProviderTests(unittest.TestCase):
             self.provider(timed_out).fetch_page(0)
         self.assertEqual("provider_timeout", str(caught.exception))
 
+    def test_unknown_http_status_is_logged_without_response_data(self):
+        def transport(*args, **kwargs):
+            return 503, b"secret-value"
+        with self.assertLogs("thunder_os.connection_provider", level="WARNING") as logs:
+            with self.assertRaisesRegex(ConnectionProviderError, "provider_outcome_unknown"):
+                self.provider(transport)._get("/private", {"token": "secret-value"})
+        self.assertIn("http_status=503", logs.output[0])
+        self.assertNotIn("secret-value", str(logs.output))
+        self.assertNotIn("/private", str(logs.output))
+
+    def test_unknown_transport_exception_logs_only_safe_type(self):
+        def transport(*args, **kwargs):
+            raise OSError("secret-value")
+        with self.assertLogs("thunder_os.connection_provider", level="WARNING") as logs:
+            with self.assertRaisesRegex(ConnectionProviderError, "provider_outcome_unknown"):
+                self.provider(transport)._get("/private", {"token": "secret-value"})
+        self.assertIn("exception_type=OSError", logs.output[0])
+        self.assertNotIn("secret-value", str(logs.output))
+        self.assertNotIn("/private", str(logs.output))
+
     def test_response_size_and_duplicate_keys_fail_closed(self):
         class BadTransport:
             def __init__(self, raw):

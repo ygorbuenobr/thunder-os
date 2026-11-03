@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import logging
 import re
 from typing import Callable, Mapping
 
@@ -16,6 +17,8 @@ from .connection_intake import (
     ConnectionIntakeError, PROVIDER_CALENDAR, _connected_at, canonical_profile_slug, profile_key,
 )
 
+
+logger = logging.getLogger(__name__)
 
 MAX_RESPONSE_BYTES = 1_000_000
 PAGE_LIMIT = 10
@@ -86,13 +89,22 @@ class ConnectionProvider:
                                          timeout=self.timeout_seconds)
         except TimeoutError:
             raise ConnectionProviderError("provider_timeout") from None
-        except Exception:
+        except Exception as exc:
+            # Never log exception text, traceback, request path or credentials.
+            known_types = {"ConnectSafelyError", "ConnectionError", "OSError",
+                           "ValueError", "TypeError"}
+            kind = type(exc).__name__
+            logger.warning("connection_provider_outcome_unknown exception_type=%s",
+                           kind if kind in known_types else "other")
             raise ConnectionProviderError("provider_outcome_unknown") from None
         _require(type(status) is int, "provider_schema_invalid")
         if status != 200:
             code = {401: "provider_unauthorized", 403: "provider_forbidden",
                     429: "provider_rate_limited", 502: "provider_unavailable"}.get(
                         status, "provider_outcome_unknown")
+            if code == "provider_outcome_unknown":
+                logger.warning("connection_provider_outcome_unknown http_status=%s",
+                               status if 100 <= status <= 599 else "invalid")
             raise ConnectionProviderError(code)
         _require(type(raw) is bytes and len(raw) <= MAX_RESPONSE_BYTES,
                  "response_too_large" if type(raw) is bytes else "provider_schema_invalid")
