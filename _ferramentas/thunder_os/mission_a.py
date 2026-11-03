@@ -18,9 +18,31 @@ class MissionAError(ValueError): pass
 class NativeScheduler:
     """Calls existing Hermes scheduler in its own process and explicit profile."""
     def ensure_model_policy(self):
-        # Hermes has no per-job supported delegate model override. Fail closed
-        # until both parent and delegate can be pinned without changing global config.
-        raise MissionAError('terra_delegation_unverified')
+        # The Hermes interpreter reads only selected profile fields; no secrets
+        # or provider calls are returned to this process.
+        code = """import json,sys,yaml
+try:
+ c=yaml.safe_load(open(sys.argv[1],encoding='utf-8'))
+ m=c.get('model',{}); d=c.get('delegation',{})
+ print(json.dumps({'executor_model':m.get('default'),'executor_provider':m.get('provider'),
+  'delegate_model':d.get('model'),'delegate_provider':d.get('provider'),
+  'fallback_model':c.get('fallback_model'),'fallback_providers':c.get('fallback_providers'),
+  'delegate_fallback_providers':d.get('fallback_providers')}))
+except Exception:
+ sys.exit(1)
+"""
+        env={'PATH':'/usr/bin:/bin','HOME':'/root','HERMES_HOME':PROFILE,'PYTHONDONTWRITEBYTECODE':'1'}
+        try:
+            p=subprocess.run([HERMES+'/.venv/bin/python','-c',code,PROFILE+'/config.yaml'],
+                             text=True,capture_output=True,cwd=HERMES,env=env,timeout=15,check=True)
+            result=json.loads(p.stdout)
+            expected={'executor_model':'gpt-6.1-terra','executor_provider':'openai-codex',
+                      'delegate_model':'gpt-6.1-terra','delegate_provider':'openai-codex',
+                      'fallback_model':[],'fallback_providers':[],'delegate_fallback_providers':[]}
+            if result != expected: raise ValueError('model policy mismatch')
+        except Exception:
+            raise MissionAError('terra_delegation_unverified') from None
+        return {k:result[k] for k in ('executor_model','executor_provider','delegate_model','delegate_provider')}
 
     def _call(self, code, payload):
         self.ensure_model_policy()
@@ -81,20 +103,21 @@ class MissionA:
     def request(self,request_id,confirmed):
         if not isinstance(request_id,str) or not REQUEST_ID.fullmatch(request_id) or confirmed is not True:
             raise MissionAError('explicit request and cost confirmation required')
-        self.scheduler.ensure_model_policy()
-        try: self.repo.append_state(KIND,request_id,{'status':'creating'})
+        policy=self.scheduler.ensure_model_policy()
+        try: self.repo.append_state(KIND,request_id,{'status':'creating','model_preflight':policy})
         except RepositoryConflict: return self.repo.get_state(KIND,request_id)
         try:
             context=self.source()
             if not isinstance(context,dict) or context.get('campaign_id')!='BR-APOLLO-01': raise MissionAError('source unavailable')
             job_id=self.scheduler.create_paused(request_id,context)
             if not JOB_ID.fullmatch(job_id): raise MissionAError('invalid job')
-            self.repo.put_state(KIND,request_id,{'status':'starting','job_id':job_id})
+            self.repo.put_state(KIND,request_id,{'status':'starting','job_id':job_id,'model_preflight':policy})
+            policy=self.scheduler.ensure_model_policy()
             self.scheduler.resume(job_id)
-            return self.repo.put_state(KIND,request_id,{'status':'scheduled','job_id':job_id})
+            return self.repo.put_state(KIND,request_id,{'status':'scheduled','job_id':job_id,'model_preflight':policy})
         except Exception:
             state=self.repo.get_state(KIND,request_id) or {}
-            payload={'status':'uncertain'}
+            payload={'status':'uncertain','model_preflight':state.get('model_preflight',policy)}
             if JOB_ID.fullmatch(state.get('job_id','')): payload['job_id']=state['job_id']
             return self.repo.put_state(KIND,request_id,payload)
     def result(self,request_id):
@@ -109,7 +132,7 @@ class MissionA:
         execution_id=runs[0]['id']
         if state.get('execution_id') not in (None,execution_id): return {**state,'status':'ambiguous'}
         if not state.get('execution_id'):
-            self.repo.put_state(KIND,request_id,{'status':'scheduled','job_id':state['job_id'],'execution_id':execution_id})
+            self.repo.put_state(KIND,request_id,{'status':'scheduled','job_id':state['job_id'],'execution_id':execution_id,'model_preflight':state.get('model_preflight')})
         return {**state,'status':'result_unreviewed','execution_id':execution_id,'output':outputs[0], 'review':'unverified'}
 
 

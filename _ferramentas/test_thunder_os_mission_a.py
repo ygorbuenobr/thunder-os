@@ -11,7 +11,7 @@ from thunder_os.mission_a import MissionA, MissionAError
 
 class Port:
     def __init__(self): self.created=[]; self.resumed=[]; self.records={}
-    def ensure_model_policy(self): pass
+    def ensure_model_policy(self): return {'executor_model':'gpt-6.1-terra','executor_provider':'openai-codex','delegate_model':'gpt-6.1-terra','delegate_provider':'openai-codex'}
     def create_paused(self, request_id, context):
         self.created.append((request_id,context)); return 'abc123def456'
     def resume(self, job_id): self.resumed.append(job_id)
@@ -26,7 +26,7 @@ class MissionATests(unittest.TestCase):
         with self.assertRaises(MissionAError): self.app.request('fixture-1', False)
         self.assertEqual(len(self.port.created),0)
         a=self.app.request('fixture-1',True); b=self.app.request('fixture-1',True)
-        self.assertEqual(a['job_id'],b['job_id']); self.assertEqual(len(self.port.created),1)
+        self.assertEqual(a['model_preflight']['delegate_model'],'gpt-6.1-terra'); self.assertEqual(a['job_id'],b['job_id']); self.assertEqual(len(self.port.created),1)
         self.assertEqual(self.port.resumed,['abc123def456'])
         self.assertEqual(self.port.created[0][1]['hubspot']['status'],'unverified')
     def test_concurrent_duplicate_creates_only_one_job(self):
@@ -69,20 +69,31 @@ class MissionATests(unittest.TestCase):
             self.assertIn('["delegation","no_mcp"]',args[0][2]); self.assertEqual(kw['env']['HERMES_HOME'],PROFILE)
             self.assertNotIn('shell',kw); self.assertEqual(len(run.mock_calls),1)
 
-    def test_native_scheduler_blocks_before_reading_or_creating_when_delegate_model_unverified(self):
+    def test_model_preflight_accepts_only_terra_and_never_reuses_result(self):
         from thunder_os.mission_a import NativeScheduler
-        source = unittest.mock.Mock(return_value={'campaign_id': 'BR-APOLLO-01'})
-        app = MissionA(self.repo, NativeScheduler(), source)
+        valid={'executor_model':'gpt-6.1-terra','executor_provider':'openai-codex',
+               'delegate_model':'gpt-6.1-terra','delegate_provider':'openai-codex',
+               'fallback_model':[], 'fallback_providers':[], 'delegate_fallback_providers':[]}
         with patch('thunder_os.mission_a.subprocess.run') as run:
-            with self.assertRaisesRegex(MissionAError, 'terra_delegation_unverified'):
-                app.request('fixture-model', True)
-            with self.assertRaisesRegex(MissionAError, 'terra_delegation_unverified'):
-                NativeScheduler().create_paused('fixture-model', {})
-            with self.assertRaisesRegex(MissionAError, 'terra_delegation_unverified'):
-                NativeScheduler().resume('abc123def456')
-            run.assert_not_called()
+            run.return_value=SimpleNamespace(stdout=__import__('json').dumps(valid))
+            self.assertEqual(NativeScheduler().ensure_model_policy()['delegate_model'],'gpt-6.1-terra')
+            for key,value in [('executor_model','gpt-6-luna'),('delegate_model','gpt-6-sol'),
+                              ('delegate_model','gpt-6-astra'),('executor_model',None),
+                              ('delegate_provider',None),('fallback_providers',['fallback']),('delegate_fallback_providers',None)]:
+                run.return_value=SimpleNamespace(stdout=__import__('json').dumps({**valid,key:value}))
+                with self.subTest(key=key,value=value), self.assertRaisesRegex(MissionAError,'terra_delegation_unverified'):
+                    NativeScheduler().ensure_model_policy()
+            self.assertEqual(run.call_count,8)
+
+    def test_model_preflight_rejects_before_source_or_job(self):
+        from thunder_os.mission_a import NativeScheduler
+        source=unittest.mock.Mock(return_value={'campaign_id':'BR-APOLLO-01'})
+        app=MissionA(self.repo,NativeScheduler(),source)
+        with patch('thunder_os.mission_a.subprocess.run', return_value=SimpleNamespace(stdout='{}')):
+            with self.assertRaisesRegex(MissionAError,'terra_delegation_unverified'):
+                app.request('fixture-model',True)
         source.assert_not_called()
-        self.assertIsNone(self.repo.get_state('mission_a_request', 'fixture-model'))
+        self.assertIsNone(self.repo.get_state('mission_a_request','fixture-model'))
 
     def test_native_inspect_reads_only_requested_job_directory(self):
         from thunder_os.mission_a import NativeScheduler
