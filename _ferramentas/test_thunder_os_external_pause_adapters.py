@@ -185,7 +185,7 @@ class ApolloReplyPauseCompositionTests(unittest.TestCase):
             'recipient_bindings': {'source-1': {'contact_id': 'contact-1', 'email': EMAIL, 'lookup_complete': True}}}
         self.repo.put_state('journey_draft', 'journey-1', draft)
         self.repo.put_state('cadence', 'cadence-1', {'hubspot_contact_id': '123', 'person_key': 'hubspot:123',
-            'status': 'active', 'steps': [{'id': 'E2', 'status': 'approved'}]})
+            'account_id': 'registered.invalid', 'status': 'active', 'steps': [{'id': 'E2', 'status': 'approved'}]})
         result = ReplyControl(self.repo, self.registry).ingest({
             'id': 'manual-reply-1', 'channel': 'phone', 'content': 'Synthetic human reply',
             'received_at': '2026-10-25T12:00:00+00:00', 'hubspot_contact_id': '123',
