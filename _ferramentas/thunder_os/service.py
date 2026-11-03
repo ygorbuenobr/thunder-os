@@ -37,6 +37,24 @@ class ThunderService:
         "provider_rejected", "email_rejected", "hubspot_rejected", "channel_not_configured",
     }
 
+    def apollo_linkedin_store_ready(self):
+        return self.repository.apollo_linkedin_store_ready()
+
+    def reserve_apollo_linkedin(self, company, task_id, action_type, account_id):
+        return self.repository.reserve_apollo_linkedin(company, task_id, action_type, account_id)
+
+    def finish_apollo_linkedin(self, company, task_id, action_type, state, reason=None):
+        return self.repository.finish_apollo_linkedin(company, task_id, action_type, state, reason)
+
+    def list_apollo_linkedin_reservations(self):
+        return self.repository.list_apollo_linkedin_reservations()
+
+    def list_apollo_linkedin_account_locks(self):
+        return self.repository.list_apollo_linkedin_account_locks()
+
+    def apollo_linkedin_account_lock(self, account_id):
+        return self.repository.apollo_linkedin_account_lock(account_id)
+
     def __init__(self, repository: Repository, ledger: TouchLedger | None = None, hubspot: Any = None, *,
                  knowledge_store: KnowledgeStore | None = None, approved_catalog: Mapping[str, Any] | None = None, campaign_context_loader=None,
                  effect_readers: Mapping[str, Any] | None = None,

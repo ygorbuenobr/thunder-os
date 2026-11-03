@@ -42,3 +42,17 @@ Complete T1, then T2. Both are confined to fake providers and focused validation
 ## Phase Execution Map
 
 Phase 1: T1 → T2
+
+### T3: Apollo LinkedIn sem envio (em andamento)
+
+Objetivo: reservas no banco oficial, lock por conta, leitura de tarefas, roteamento explícito, dry-run com releitura e atenção no painel. Nenhum envio ou escrita no Apollo é autorizado nesta rodada.
+
+| Superfície | Prova | Estado |
+| --- | --- | --- |
+| Reserva e lock oficiais | `test_thunder_os_apollo_linkedin_storage` | Banco oficial por caminho canônico; testes isolados, concorrência e banco incorreto |
+| Roteamento explícito e conta indisponível | `test_thunder_os_apollo_linkedin_reader` | Associação explícita; sem troca de conta |
+| Leitura paginada | `test_thunder_os_apollo_linkedin_reader` | POST exato tasks/search; cobertura desconhecida se incompleta |
+| Executor sem envio e releitura | `test_thunder_os_apollo_linkedin_executor` | Dry-run sem dispatch, sem consumir reserva |
+| Atenção no painel | `test_thunder_os_apollo_linkedin_attention_http`, `test_thunder_os_apollo_linkedin_executor` | Rota GET, reservas, locks e bloqueios; integração fake |
+| Limite do repositório | `python3 scripts/check_source_boundary.py` | Verificar após mudanças |
+| Revisão independente | diff completo e testes | Não aprovado: credencial não vinculada ao cliente; GET grava lock transitório |
