@@ -1723,6 +1723,15 @@ class Handler(BaseHTTPRequestHandler):
         if rota.path in {'/api/os/v1/hermes/change-route','/api/os/v1/hermes/send'}:
             if self.thunder_proxy_actor() != 'ygor':raise Erro('Somente Ygor pode solicitar ações.',403)
             raise Erro('Ações e envios estão desligados nesta rodada.',503)
+        mission = re.fullmatch(r'/api/os/v1/mission-a/([A-Za-z0-9_-]{1,100})', rota.path)
+        if mission and self.command == 'GET':
+            if self.thunder_proxy_actor() != 'ygor': raise Erro('Somente Ygor pode consultar o relatório.',403)
+            if rota.query: raise Erro('Consulta inválida.',405)
+            adapter = getattr(self.server, 'thunder_mission_a', None)
+            if adapter is None: raise Erro('Missão indisponível.',503)
+            from thunder_os.mission_a import MissionAError
+            try: return self.responder(200, adapter.result(mission.group(1)))
+            except MissionAError: raise Erro('Pedido não encontrado.',404) from None
         if rota.path == '/api/os/v1/campaign-sources':
             if self.thunder_proxy_actor() != 'ygor':
                 raise Erro('Somente Ygor pode consultar fontes.',403)
@@ -2043,6 +2052,15 @@ class Handler(BaseHTTPRequestHandler):
             raise Erro('Rota Thunder OS inválida', 405)
         actor = self.thunder_actor()
         body = self.corpo()
+        if rota.path == '/api/os/v1/mission-a':
+            if actor != 'ygor' or rota.query: raise Erro('Pedido não autorizado.',403)
+            if set(body) != {'request_id','cost_confirmed'} or body['cost_confirmed'] is not True:
+                raise Erro('Confirme o custo da execução e informe o identificador.')
+            adapter = getattr(self.server, 'thunder_mission_a', None)
+            if adapter is None: raise Erro('Missão indisponível.',503)
+            from thunder_os.mission_a import MissionAError
+            try: return self.responder(202, adapter.request(body['request_id'],True))
+            except MissionAError: raise Erro('Pedido inválido.') from None
         if rota.path.startswith('/api/os/v1/integrations/codex-assisted/'):
             if actor != 'ygor' or rota.query or not isinstance(body, dict):
                 raise Erro('Integração assistida não autorizada.', 403)
@@ -2871,6 +2889,10 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
             from thunder_os.company_qualification import CompanyQualification
             servidor.thunder_company_qualification = CompanyQualification(
                 servidor.thunder_new_journey, servidor.thunder_hubspot_console)
+            from thunder_os.mission_a import MissionA, NativeScheduler, cached_sources
+            servidor.thunder_mission_a = (MissionA(repository, NativeScheduler(),
+                lambda: cached_sources(servidor.thunder_apollo_reader, repository))
+                if runtime is None else None)
             servidor.thunder_origin = os.environ.get(
                 'THUNDER_OS_ORIGIN', 'https://painel.r3xdigital.tech')
             if runtime is not None:servidor.thunder_origin = runtime['public_origin']
