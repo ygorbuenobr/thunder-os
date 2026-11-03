@@ -153,10 +153,26 @@ def _business_window(cfg, now):
     return local.weekday() in hours["weekdays"] and hours["start"] <= local.strftime("%H:%M") < hours["end"]
 
 
-def build(cfg):
-    try: installed_revision=_absolute(cfg["source_revision_file"]).read_text().strip()
+def installed_revision(path):
+    """Release source SHA from a plain REVISION file or the bundle manifest.
+
+    Immutable releases carry thunder-os-manifest.json (source_sha), not REVISION.
+    """
+    target=_absolute(path)
+    try: raw=target.read_text()
     except OSError as exc: raise ValueError("source_revision_unavailable") from exc
-    if installed_revision != cfg["source_revision"]:
+    if target.name != "thunder-os-manifest.json":
+        return raw.strip()
+    try: value=json.loads(raw).get("source_sha")
+    except (ValueError, AttributeError) as exc: raise ValueError("source_revision_unavailable") from exc
+    if not isinstance(value,str) or not value:
+        raise ValueError("source_revision_unavailable")
+    return value
+
+
+def build(cfg):
+    installed=installed_revision(cfg["source_revision_file"])
+    if installed != cfg["source_revision"]:
         raise ValueError("source_revision_mismatch")
     repository=ExistingRepository(_absolute(cfg["repository"])); repository.migrate()
     delegation=repository.get_state("delegation","hermes")
