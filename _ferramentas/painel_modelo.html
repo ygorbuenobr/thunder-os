@@ -201,6 +201,13 @@ body[data-aba="cadencias"] .detalhes-sistema{display:none}
 .cad-instantly-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(125px,1fr));gap:12px 20px;margin:16px 0}
 .cad-instantly-metrics dt{font-size:12px;color:var(--muted)}
 .cad-instantly-metrics dd{margin:0;font-size:20px;font-weight:650;font-variant-numeric:tabular-nums}
+.cad-apollo-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:12px;margin:12px 0}
+.cad-apollo-tiles div{background:var(--surface2);border:1px solid var(--line);border-radius:10px;padding:12px}
+.cad-apollo-tiles b{display:block;font-size:26px;font-weight:700;font-variant-numeric:tabular-nums}
+.cad-apollo-tiles span{font-size:13px;color:var(--muted)}
+.cad-apollo-partial{font-size:13px;color:var(--muted);margin-left:4px;cursor:help;text-decoration:underline dotted}
+.cad-apollo-alert{margin:8px 0;color:var(--alerta)}
+.cad-apollo-box{margin:10px 0}.cad-apollo-box>summary{cursor:pointer;font-weight:600;padding:6px 0}
 .cad-instantly summary{cursor:pointer;min-height:44px;padding:10px 0;scroll-margin-top:90px}
 .cad-instantly details{border-bottom:1px solid var(--line)}
 .cad-instantly-search{display:grid;gap:4px;max-width:420px;margin:12px 0}
@@ -570,11 +577,13 @@ body:has(#new-journey:not([hidden])) #hoje-pedido{display:none}
     <header class="cad-read-head"><h3 id="cad-apollo-title">Apollo · BR-APOLLO-01</h3><button class="btn" type="button" id="cad-apollo-refresh">Atualizar Apollo</button></header>
     <p class="sub">Apollo → Thunder OS → HubSpot · sequência existente · somente leitura</p>
     <p id="cad-apollo-status" role="status" aria-live="polite">Aguardando leitura do cache.</p>
-    <div class="cad-instantly-search" id="cad-apollo-search-field" hidden><label for="cad-apollo-search">Buscar por nome, empresa ou e-mail</label><input id="cad-apollo-search" type="search" maxlength="320" autocomplete="off" aria-controls="cad-apollo-leads"></div>
     <div id="cad-apollo-content"></div>
+    <details class="cad-apollo-box" id="cad-apollo-leads-box" open><summary id="cad-apollo-leads-summary">Leads</summary>
+    <div class="cad-instantly-search" id="cad-apollo-search-field" hidden><label for="cad-apollo-search">Buscar por nome, empresa ou e-mail</label><input id="cad-apollo-search" type="search" maxlength="320" autocomplete="off" aria-controls="cad-apollo-leads"></div>
     <p id="cad-apollo-count" role="status" aria-live="polite"></p>
     <div id="cad-apollo-leads"></div>
     <nav class="cad-apollo-pages" id="cad-apollo-pages" aria-label="Páginas de leads Apollo" hidden><button class="btn" id="cad-apollo-prev" type="button">Anterior</button><span id="cad-apollo-page"></span><button class="btn" id="cad-apollo-next" type="button">Próxima</button></nav>
+    </details>
   </section>
   <section class="cad-read-section"><h3>Respostas e paradas</h3><div id="cad-reply-control" role="status">Não verificado.</div></section>
   <section class="cad-read-section"><h3>LinkedIn</h3><p id="cad-linkedin-preparation" role="status">Não verificado.</p></section>
@@ -3594,7 +3603,7 @@ async function carregarInstantlyReader(){
   finally{cadInstantlyLoading=false;$('cad-instantly-reader').setAttribute('aria-busy','false');}
 }
 // S46: cache-only Apollo execution reader. No provider or CRM mutations.
-let cadApolloView=null,cadApolloLastGood=null,cadApolloLoading=false,cadApolloTransportError=false,cadApolloPage=0;
+let cadApolloView=null,cadApolloLastGood=null,cadApolloLoading=false,cadApolloTransportError=false,cadApolloPage=0,cadApolloDetailsOpen=false,cadApolloCompactShown=false;
 const cadApolloPageSize=100;
 function cadApolloNumber(value){return Number.isInteger(value)&&value>=0?String(value):'Não verificado';}
 function cadApolloLink(value,kind,id){
@@ -3619,6 +3628,17 @@ function apolloMeetingRows(metric){
   const rows=Array.isArray(metric.rows)?metric.rows.filter(row=>row&&typeof row==='object').slice(0,10):[];
   const outcomes={SCHEDULED:'agendada',COMPLETED:'realizada',NO_SHOW:'não compareceu',RESCHEDULED:'remarcada'};
   return rows.length?`<ul class="sub">${rows.map(row=>`<li>${esc(row.title||'Reunião sem título')} · ${esc(cadReadDate(row.starts_at))} · ${esc(outcomes[row.outcome]||'resultado não informado')} · ${esc(row.lead_email||'')} ${cadApolloSource('meeting',String(row.meeting_id??''),row.source_url,'Abrir reunião no HubSpot')}</li>`).join('')}</ul>`:'';
+}
+function apolloSummary(by,state,transportError){
+  const item=metric=>metric&&typeof metric==='object'?metric:{};
+  const count=value=>Number.isInteger(value)&&value>=0?value:null;
+  const why={sent:'Envios confirmados não fecharam com o total do Apollo nesta leitura (a sequência pode estar disparando).',pending:'Fila ainda não lida por inteiro.',replies:'Algumas conversas do Gmail não comprovam a resposta; veja Detalhes.',meetings:'Leitura de reuniões no HubSpot incompleta ou desatualizada.',contacts:'Lista de contatos ainda não lida por inteiro.'};
+  const tiles=[['contacts','leads'],['sent','enviados'],['pending','na fila'],['replies','respostas'],['meetings','reuniões']];
+  const alerts=[];
+  const missing=count(item(by.meetings).leads_without_crm_contact);
+  if(missing)alerts.push(`${missing} leads não estão no HubSpot: reuniões e respostas deles não aparecem no CRM.`);
+  if(transportError||['stale','error'].includes(state?.status))alerts.push('Leitura do Apollo desatualizada ou com falha; veja Detalhes.');
+  return `<div class="cad-apollo-tiles">${tiles.map(([key,label])=>{const metric=item(by[key]);return `<div data-apollo-tile="${key}"><b>${cadApolloNumber(metric.value)}${metric.complete===true?'':`<abbr class="cad-apollo-partial" title="${esc(why[key])}">parcial</abbr>`}</b><span>${esc(label)}</span></div>`;}).join('')}</div>${alerts.map(text=>`<p class="cad-apollo-alert" role="note">⚠ ${esc(text)}</p>`).join('')}`;
 }
 function apolloMetricBlock(by,enumerated){
   const reasonLabels={message_contact_outside_cohort:'envios a contatos que já não estão na sequência (contados à parte)',contacts_scan_spans_refreshes:'lista de contatos lida em mais de um ciclo; inscrições podem ter mudado no meio',gmail_outbound_original_mismatch:'original no Gmail difere do texto registrado no Apollo',gmail_thread_partial:'conversa do Gmail lida de forma incompleta',gmail_discovered_thread_context_only:'conversa do Gmail encontrada só como contexto',gmail_reply_body_partial:'corpo da resposta incompleto no Gmail',reply_original_unavailable:'sinal de resposta sem o original disponível',meetings_read_in_crm:'leitura de reuniões no HubSpot ainda não disponível',meetings_contacts_without_crm_match:'leads sem contato correspondente no HubSpot',meetings_contacts_ambiguous_in_crm:'leads com mais de um contato no HubSpot',meetings_crm_read_partial:'leitura do HubSpot incompleta nesta rodada',meetings_stale:'leitura de reuniões desatualizada',meetings_created_at_unparseable:'reunião sem data de criação legível no HubSpot',sent_count_mismatch:'envios da sequência não fecham com o total informado pelo Apollo'};
@@ -3655,7 +3675,8 @@ function renderApolloReader(state,transportError=false){
   const sourceMinutes=Number.isInteger(state?.poll_interval_seconds)&&state.poll_interval_seconds>=60?Math.ceil(state.poll_interval_seconds/60):null;
   const sourceSchedule=sourceMinutes?'Consulta à fonte Apollo a cada '+sourceMinutes+' min; ':'Periodicidade da fonte ainda não informada; ';
   const cooldown=limited?(state?.error_code==='apollo_endpoint_budget_exhausted'?'Orçamento de consultas deste leitor atingido':'Limite de consultas do Apollo atingido')+(state?.rate_limit_window==='day'?' nesta janela diária':state?.rate_limit_window==='hour'?' nesta janela horária':'')+'. '+(state?.next_attempt_at?'Nova tentativa não antes de '+cadReadDate(state.next_attempt_at)+'. ':'Aguardando liberação da fonte. '):'';
-  $('cad-apollo-status').textContent=cooldown+readStatus+'. Último sucesso: '+(snapshot?.last_success_at?cadReadDate(snapshot.last_success_at):'não verificado')+'. Última tentativa: '+(state?.last_attempt_at?cadReadDate(state.last_attempt_at):'não verificada')+'. '+(snapshot?.observed_at?'Dados observados em '+cadReadDate(snapshot.observed_at)+'. ':'')+sourceSchedule+'tela consulta o cache a cada 60 s. Atualizar Apollo consulta somente o cache, sem forçar a fonte.';
+  const statusText=cooldown+readStatus+'. Último sucesso: '+(snapshot?.last_success_at?cadReadDate(snapshot.last_success_at):'não verificado')+'. Última tentativa: '+(state?.last_attempt_at?cadReadDate(state.last_attempt_at):'não verificada')+'. '+(snapshot?.observed_at?'Dados observados em '+cadReadDate(snapshot.observed_at)+'. ':'')+sourceSchedule+'tela consulta o cache a cada 60 s. Atualizar Apollo consulta somente o cache, sem forçar a fonte.';
+  $('cad-apollo-status').textContent=statusText;
   $('cad-apollo-search-field').hidden=!snapshot;
   if(!snapshot){
     $('cad-apollo-content').innerHTML='<p>Sem dados observados disponíveis. '+(disabled?'O leitor está desligado.':'Use Atualizar Apollo para consultar novamente o cache.')+'</p><p>Métricas e conciliação HubSpot não verificadas.</p>';
@@ -3694,7 +3715,20 @@ function renderApolloReader(state,transportError=false){
     previewNode.innerHTML=`<h4>Prévia informativa · ações retidas</h4><p>${esc(enumeration+consistency)}. Total de inscritos: ${cadApolloNumber(preview.total_leads)}. Vínculos e ações no HubSpot dependem de conferência.</p><p>Contatos observados: ${esc(time(preview.contacts_observed_at))} · Mensagens observadas: ${esc(time(preview.messages_observed_at))}.</p><p class="sub">Fonte: cache do leitor Apollo. Informações ausentes não comprovam ausência; uma observação não garante vínculo atual.</p>`;
     $('cad-apollo-content').append(previewNode);
   }
+  const leadBox=$('cad-apollo-leads-box');
+  if(byMetric){
+    // Daily view: five numbers and actionable alerts; everything else behind "Detalhes da leitura".
+    const full=$('cad-apollo-content').innerHTML;
+    $('cad-apollo-content').innerHTML=apolloSummary(byMetric,state,transportError)+`<details class="cad-apollo-box" id="cad-apollo-details"${cadApolloDetailsOpen?' open':''}><summary>Detalhes da leitura</summary><p class="sub">${esc(statusText)}</p>${full}</details>`;
+    $('cad-apollo-details').addEventListener('toggle',event=>{cadApolloDetailsOpen=event.target.open;});
+    const healthy=!transportError&&['ok','partial'].includes(state?.status)&&!limited&&snapshot.last_success_at;
+    $('cad-apollo-status').textContent=healthy?'Atualizado '+cadReadDate(snapshot.last_success_at)+' ✓':statusText;
+    if(!cadApolloCompactShown){leadBox.open=false;cadApolloCompactShown=true;}
+  }else{leadBox.open=true;cadApolloCompactShown=false;}
   const leads=snapshot.leads.filter(lead=>lead&&typeof lead==='object'&&!Array.isArray(lead));
+  const inSequence=byMetric&&Number.isInteger(byMetric.contacts?.value)?byMetric.contacts.value:null;
+  $('cad-apollo-leads-summary').textContent=!byMetric?'Leads':inSequence!=null&&leads.length>inSequence
+    ?`Ver os ${inSequence} leads (+${leads.length-inSequence} do histórico)`:`Ver os ${leads.length} leads`;
   const query=$('cad-apollo-search').value.trim().toLocaleLowerCase('pt-BR');
   const matches=leads.filter(lead=>[lead.email,lead.name,lead.company].some(value=>String(value??'').toLocaleLowerCase('pt-BR').includes(query)));
   const pages=Math.max(1,Math.ceil(matches.length/cadApolloPageSize));
