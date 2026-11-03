@@ -1768,6 +1768,18 @@ class Handler(BaseHTTPRequestHandler):
                 raise Erro('Controle de respostas indisponível.', 503)
             return self.responder(200, control.snapshot())
         external_email_base = '/api/os/v1/integrations/external-email'
+        if rota.path == '/api/os/v1/integrations/apollo/linkedin-preview':
+            if self.thunder_proxy_actor() != 'ygor':
+                raise Erro('Somente Ygor pode consultar integrações.', 403)
+            if self.command != 'GET' or rota.query:
+                raise Erro('Prévia permite apenas consulta.', 405)
+            preview = getattr(self.server, 'thunder_apollo_linkedin_preview', None)
+            if preview is None:
+                return self.responder(200, {'status': 'unavailable', 'execution_enabled': False,
+                    'dry_run': True, 'task': None, 'account': None, 'lead': None,
+                    'action': None, 'text': {'value': None, 'verified': False},
+                    'blockers': [getattr(self.server, 'thunder_apollo_linkedin_preview_error', 'configuration_missing')], 'call_preview': None})
+            return self.responder(200, preview.read())
         if rota.path == '/api/os/v1/integrations/apollo/reader':
             if self.thunder_proxy_actor() != 'ygor':
                 raise Erro('Somente Ygor pode consultar integrações.', 403)
@@ -2784,6 +2796,37 @@ def configure_connectsafely_server(server, repository, factory=None):
     return composition
 
 
+def configure_apollo_linkedin_preview(server, loader, environ=None):
+    """Explicit target configuration; never calls providers at startup."""
+    from thunder_os.apollo_linkedin_preview import ApolloLinkedInPreview
+    env = os.environ if environ is None else environ
+    keys = ('THUNDER_APOLLO_LI_TEAM', 'THUNDER_APOLLO_LI_OWNER',
+            'THUNDER_APOLLO_LI_SEQUENCE', 'THUNDER_APOLLO_LI_TASK',
+            'THUNDER_APOLLO_LI_ACCOUNT', 'THUNDER_APOLLO_LI_PUBLIC_ID')
+    values = [env.get(key, '') for key in keys]
+    server.thunder_apollo_linkedin_preview = None
+    server.thunder_apollo_linkedin_preview_error = 'configuration_missing'
+    if not any(values):
+        return None
+    if not all(values):
+        server.thunder_apollo_linkedin_preview_error = 'configuration_incomplete'
+        return None
+    app = getattr(server, 'thunder_connectsafely_app', None)
+    client = getattr(getattr(app, 'provider', None), 'direct_client', None)
+    if client is None or (client.account_id, client.expected_public_id) != (values[4], values[5]):
+        server.thunder_apollo_linkedin_preview_error = 'account_mismatch'
+        return None
+    try:
+        preview = ApolloLinkedInPreview(loader, team_id=values[0], owner_id=values[1],
+            sequence_id=values[2], task_id=values[3], account_id=values[4],
+            account_public_id=values[5], account_status_reader=client.account_status)
+    except (ValueError, TypeError):
+        server.thunder_apollo_linkedin_preview_error = 'configuration_invalid'
+        return None
+    server.thunder_apollo_linkedin_preview = preview
+    return preview
+
+
 def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
     args = sys.argv[1:] if args is None else args
     try:
@@ -2927,6 +2970,9 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
             from thunder_os.apollo_prospect_readonly import ApolloProspectReadonly
             from thunder_os.apollo_sequence_readonly import ApolloSequenceReadonly
             from thunder_os.instantly_reader import private_text
+            if runtime is None:
+                configure_apollo_linkedin_preview(servidor,
+                    lambda: private_text('/root/.config/thunder/credentials/apollo_api_key.txt'))
             from thunder_os.commercial_account import CommercialAccountReadonly
             from thunder_os.new_journey import NewJourney
             from thunder_os.new_journey_checks import NewJourneyChecks

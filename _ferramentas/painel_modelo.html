@@ -732,6 +732,12 @@ body:has(#new-journey:not([hidden])) #hoje-pedido{display:none}
 
 <main id="sec-sistema" data-painel="sistema" hidden>
   <header class="cad-read-head"><h2>Sistema</h2><button class="btn" id="system-read-refresh" type="button">Atualizar leituras</button></header>
+  <section class="cad-read-section" id="apollo-linkedin-preview" aria-labelledby="apollo-linkedin-title" aria-busy="false">
+    <header class="cad-read-head"><h3 id="apollo-linkedin-title">Apollo + LinkedIn · prévia</h3><button class="btn" type="button" id="apollo-linkedin-refresh">Consultar tarefa</button></header>
+    <p class="sub">Prévia sem execução: esta consulta não envia convite ou mensagem e não conclui tarefas. O estado do executor é verificado separadamente.</p>
+    <p id="apollo-linkedin-status" role="status" aria-live="polite">Aguardando consulta.</p>
+    <div id="apollo-linkedin-content"></div>
+  </section>
   <div id="system-campaign-tools"></div>
   <details id="today-archive"><summary>Arquivo legado · <span id="today-archive-count">aguardando consulta</span></summary><div id="today-archive-items"><p class="vazio">Carregando arquivo…</p></div></details>
   <section class="grupo-dia" id="hoje-thunder-os" aria-labelledby="h-hoje-thunder-os">
@@ -4132,6 +4138,29 @@ $('cad-apollo-refresh').addEventListener('click',carregarApolloReader);
 $('cad-apollo-search').addEventListener('input',()=>{cadApolloPage=0;renderApolloReader(cadApolloView,cadApolloTransportError);});
 for(const [id,delta] of [['cad-apollo-prev',-1],['cad-apollo-next',1]])$(id).addEventListener('click',()=>{cadApolloPage+=delta;renderApolloReader(cadApolloView,cadApolloTransportError);});
 
+// Apollo task preview: read-only projection. No provider action is available here.
+let apolloLinkedinPreviewLoading=false,apolloLinkedinPreviewStarted=false;
+async function carregarApolloLinkedinPreview(){
+  if(apolloLinkedinPreviewLoading||!apiServidor)return;
+  apolloLinkedinPreviewStarted=true;apolloLinkedinPreviewLoading=true;
+  const section=$('apollo-linkedin-preview'),status=$('apollo-linkedin-status'),content=$('apollo-linkedin-content'),button=$('apollo-linkedin-refresh');
+  section.setAttribute('aria-busy','true');button.disabled=true;status.textContent='Consultando tarefa no Apollo…';content.replaceChildren();
+  try{
+    const result=await apiServidor('/api/os/v1/integrations/apollo/linkedin-preview');
+    if(!result||result.execution_enabled!==false||result.dry_run!==true||!['blocked','ready_for_review','unavailable'].includes(result.status)||!Array.isArray(result.blockers))throw new Error('invalid_preview');
+    if(result.status==='unavailable'){status.textContent='Prévia indisponível. Tente consultar novamente.';return;}
+    if(!result.task||!result.account||!result.lead||!result.text||!['invite','message',null].includes(result.action))throw new Error('invalid_preview');
+    status.textContent=result.status==='blocked'?'Bloqueada · não está pronta para executar.':'Prévia disponível para revisão · não autoriza envio.';
+    const entries=[['Conta LinkedIn',result.account.verified===true?(result.account.public_id||result.account.id||'Não identificada'):'Não verificada'],['Lead',result.lead.name||'Nome não disponível'],['Perfil LinkedIn',result.lead.linkedin_url||'Não disponível'],['Ação',result.action==='invite'?'Convite de conexão':result.action==='message'?'Mensagem':'Não identificada'],['Texto',result.text.verified===true?(result.text.value===''?'Convite sem mensagem':typeof result.text.value==='string'?result.text.value:'Não disponível'):'Não verificado'],['Tarefa Apollo',result.task.status||'Não verificada']];
+    const list=document.createElement('dl');
+    for(const [label,value] of entries){const term=document.createElement('dt'),description=document.createElement('dd');term.textContent=label;description.textContent=value;list.append(term,description);}
+    content.append(list);
+    if(result.blockers.length){const heading=document.createElement('p');heading.textContent='Bloqueios: '+result.blockers.map(code=>({'self_invite':'O remetente e o destinatário são o mesmo perfil.','self_invitation':'O remetente e o destinatário são o mesmo perfil.','self_message':'O remetente e o destinatário são o mesmo perfil.','account_unverified':'Conta LinkedIn não verificada.','text_unverified':'Texto não verificado.','task_not_open':'Tarefa não está aberta.','unsupported_action':'Esta ação ainda não é suportada.','owner_unverified':'Responsável pela tarefa não verificado.','profile_unverified':'Perfil do destinatário não verificado.','recipient_urn_unverified':'Identidade do destinatário não verificada no LinkedIn.','approval_unverified':'Aprovação da campanha não verificada.','reply_coverage_unverified':'Cobertura de respostas não verificada.'}[code]||'Informação necessária não verificada.')).join(' ');content.append(heading);}
+  }catch(error){status.textContent='Não foi possível consultar a tarefa. Tente novamente.';}
+  finally{apolloLinkedinPreviewLoading=false;section.setAttribute('aria-busy','false');button.disabled=false;}
+}
+$('apollo-linkedin-refresh').addEventListener('click',carregarApolloLinkedinPreview);
+
 async function atualizarCadencias(){
   if(cadReadLoading||!apiServidor)return;
   cadReadLoading=true;$('cad-read-refresh').disabled=true;$('system-read-refresh').disabled=true;
@@ -4248,6 +4277,7 @@ function mostrarAba(aba,{registrar=true}={}){
   $('sec-sistema').hidden=aba!=='sistema';
   if(aba==='sistema'){
     atualizarAgenttrail();
+    if(!apolloLinkedinPreviewStarted)carregarApolloLinkedinPreview();
     if(typeof carregarThunderOS==='function')carregarThunderOS();
   }
   if((aba==='hoje'||aba==='sistema')&&typeof carregarHoje==='function')carregarHoje();

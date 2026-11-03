@@ -6,6 +6,9 @@ from pathlib import PurePosixPath
 
 
 ALLOWED_FILES = {
+    "_ferramentas/test_thunder_os_apollo_linkedin_preview.py",
+    "_ferramentas/test_thunder_os_apollo_linkedin_preview_http.py",
+    "scripts/test_apollo_linkedin_preview_panel.cjs",
     ".specs/features/apollo-linkedin/spec.md",
     ".specs/features/apollo-linkedin/design.md",
     ".specs/features/apollo-linkedin/tasks.md",
