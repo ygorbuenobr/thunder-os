@@ -76,6 +76,13 @@ def revoke_approval(repository, approval_id: Any, expected_version: Any, actor: 
             raise RepositoryConflict("stale cadence approval")
         if current.get("status") == "revoked":
             return current
+        # A queued or attempted effect needs this authority to reconcile its
+        # receipt; revoking it would strand the task as uncertain. Use the
+        # delegation kill switch for in-flight work instead.
+        for task in repository.list_state("linkedin_cadence_task"):
+            if (task.get("approval_id") == approval_id
+                    and task.get("status") in {"pending", "uncertain", "provider_confirmed"}):
+                raise CadenceBlocked("approval_has_task_in_flight")
         return repository.put_state("linkedin_cadence_approval", approval_id,
                                     {**_clean_state(current), "status": "revoked", "revoked_by": actor})
 

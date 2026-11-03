@@ -27,7 +27,7 @@ ThunderLinkedInAuthorization.mount($('cad-li-auth'),{api:apiServidor});
 function fakeServer(){
   const now = () => Date.now()/1000;
   const s = {delegation:null, agent:{enabled:true,paused:true,version:14}, approvals:[], bindings:[], confirmations:{},
-             previews:{}, campaigns:[{id:'LI-THUNDER-OS-01',platform:'thunder_os',eligible:true,reason:null},
+             previews:{}, campaigns:[{id:'LI-THUNDER-OS-00',platform:'thunder_os',eligible:true,reason:null},{id:'LI-THUNDER-OS-01',platform:'thunder_os',eligible:true,reason:null},
                                     {id:'MX27-CDMX',platform:'codex_local',eligible:false,reason:'campaign_platform_not_thunder_os'}]};
   const blockers = () => [
     ...(s.delegation&&s.delegation.enabled?[]:['delegation_off']),
@@ -180,8 +180,11 @@ const ALLOWED_POSTS = new Set(['/api/os/v1/delegations/hermes','/api/os/v1/agent
       const preview = page.locator('[data-la-preview="prev1"]');
       assert.equal(await preview.locator('pre.li-auth-text').innerText(),TEXT1);
       assert.match(await preview.innerText(),/Identidade confere/);
-      assert.equal(await preview.locator('option').count(),1,'only eligible campaigns are offered');
-      await preview.locator('[data-la-action="campaign-review"]').click(); await settle();
+      assert.equal(await preview.locator('option').count(),2,'only eligible campaigns are offered');
+      await preview.locator('select').selectOption('LI-THUNDER-OS-01');
+      assert.equal(await page.locator('[data-la-preview="prev1"] select').inputValue(),'LI-THUNDER-OS-01','choice survives re-render');
+      await page.locator('[data-la-preview="prev1"] [data-la-action="campaign-review"]').click(); await settle();
+      assert.equal(await page.locator('[data-la-preview="prev1"] select').inputValue(),'LI-THUNDER-OS-01');
       assert.equal(lastPost().path,'/api/os/v1/integrations/connectsafely/campaign-review');
       const confirm = page.locator('[data-la-preview="prev1"] [data-la-action="campaign-confirm"]');
       assert(await confirm.isDisabled());
@@ -190,6 +193,7 @@ const ALLOWED_POSTS = new Set(['/api/os/v1/delegations/hermes','/api/os/v1/agent
       assert.equal(lastPost().path,'/api/os/v1/linkedin-cadence-campaign-confirmations');
       assert.equal(lastPost().body.task_id,'40001');
       assert.match(await page.locator('[data-la-campaign-task="40001"]').innerText(),/Campanha confirmada na prévia prev1/);
+      assert.match(await page.locator('[data-la-step="agent"]').innerText(),/controle é global/);
 
       await page.screenshot({path:path.join(output,`autorizar-linkedin-${width}.png`),fullPage:true});
       const overflow = await page.evaluate(()=>document.documentElement.scrollWidth-window.innerWidth);

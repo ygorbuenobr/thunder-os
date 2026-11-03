@@ -1635,7 +1635,7 @@ ThunderDelegatedIdentity.mount($('delegated-identity-review'),{api:(...args)=>{
     sender_config_unavailable:'A identidade da conta que envia não foi lida da configuração do painel.',
     sender_config_changed:'A configuração da conta que envia mudou desde a revisão do painel.',
     executor_identity_verifier_missing:'O executor não tem verificador de identidade para este contato (canary_readers). A tarefa ficará bloqueada antes de qualquer prévia.',
-    connectsafely_console_unavailable:'O console ConnectSafely do painel está indisponível (evidência de conta e cota expirada ou efeitos desligados). Aprovar a cadência funciona; prévia e confirmação de campanha não.',
+    connectsafely_console_unavailable:'O console ConnectSafely do painel está indisponível (evidência de conta e cota expirada ou efeitos desligados). Aprovar a cadência funciona com a identidade da configuração; o executor não cria prévia e a confirmação de campanha fica bloqueada.',
     delegation_off:'Delegação Hermes desligada: o executor recusa todas as tarefas.',
     agent_paused:'Agente pausado: o executor recusa todas as tarefas.',
     global_pause:'Pausa global ativa.',
@@ -1648,7 +1648,7 @@ ThunderDelegatedIdentity.mount($('delegated-identity-review'),{api:(...args)=>{
     const status=q('[data-la-status]'),blockerBox=q('[data-la-blockers]'),body=q('[data-la-body]');
     const draftForm=q('[data-la-draft]'),draftView=q('[data-la-draft-view]'),draftButton=q('[data-la-draft-load]');
     const slot=name=>q('[data-la-step="'+name+'"] [data-la-slot]');
-    let generation=0,busy=false,state=null,contact=null,draft=null,tasks=null,previews={},reviews={};
+    let generation=0,busy=false,state=null,contact=null,draft=null,tasks=null,previews={},reviews={},picked={};
     const node=(tag,value,cls)=>{const el=doc.createElement(tag);if(value!==undefined&&value!==null)el.textContent=String(value);if(cls)el.className=cls;return el;};
     const message=value=>{status.textContent=value;};
     const date=value=>{const d=typeof value==='number'?new Date(value*1000):new Date(value);return Number.isNaN(d.getTime())?'Data não verificada':d.toLocaleString('pt-BR');};
@@ -1703,6 +1703,7 @@ ThunderDelegatedIdentity.mount($('delegated-identity-review'),{api:(...args)=>{
     function renderAgent(){
       const s=slot('agent');s.replaceChildren();const a=state.agent_control||{};
       s.appendChild(node('p',(a.paused===false?'Ativo':'Pausado')+' · habilitado: '+(a.enabled===true?'sim':'não')+' · versão '+a.version)).dataset.laState='agent';
+      s.appendChild(node('p','Este controle é global: despausar retoma todo o trabalho do agente Hermes (pesquisa, inferência e consumidor contínuo), não só o LinkedIn.','li-auth-warn'));
       if(a.enabled!==true)s.appendChild(node('p','O agente não está habilitado neste runtime; despausar fica indisponível.','li-auth-warn'));
       const resume={action:'resume',expected_version:a.version},pause={action:'pause',expected_version:a.version};
       s.appendChild(exact('Despausar agente','POST','/api/os/v1/agent/control',resume));s.appendChild(exact('Pausar agente','POST','/api/os/v1/agent/control',pause));
@@ -1750,7 +1751,7 @@ ThunderDelegatedIdentity.mount($('delegated-identity-review'),{api:(...args)=>{
         for(const step of a.steps||[]){item.appendChild(node('p',step.subject+' · de '+step.account_public_id+' para '+step.recipient_public_id));item.appendChild(node('pre',step.action==='invite'&&step.content===''?'Convite sem mensagem.':step.content,'li-auth-text'));}
         if(a.status==='active'){
           const payload={approval_id:a.id,expected_version:a.version};
-          item.appendChild(node('p','Revogar impede preparo e envio de todas as tarefas vinculadas a esta aprovação.','sub'));
+          item.appendChild(node('p','Revogar impede preparo e envio de todas as tarefas vinculadas a esta aprovação e é definitivo: o vínculo da tarefa não muda, então uma nova aprovação exige uma nova tarefa no HubSpot. Com tarefa já enfileirada ou em conferência, a revogação é recusada; use o kill switch (passo 1).','sub'));
           item.appendChild(exact('Revogar aprovação','POST','/api/os/v1/linkedin-cadence-approvals/revoke',payload));
           item.appendChild(button('Revogar aprovação',()=>act('Revogar aprovação','POST','/api/os/v1/linkedin-cadence-approvals/revoke',payload,(_r,st)=>st.approvals.some(x=>x.id===a.id&&x.status==='revoked')),{data:'revoke'}));
         }
@@ -1760,7 +1761,7 @@ ThunderDelegatedIdentity.mount($('delegated-identity-review'),{api:(...args)=>{
     function renderBindings(){
       const s=slot('binding');s.replaceChildren();
       for(const t of state.tasks){s.appendChild(node('p','Tarefa '+t.task_id+' vinculada ao passo '+t.binding.marker+' da aprovação '+t.binding.approval_id+' (versão '+t.binding.approval_version+').')).dataset.laBound=t.task_id;}
-      s.appendChild(node('p','O vínculo não pode ser editado. Para desfazer o efeito, revogue a aprovação (passo 3) ou desligue a delegação (passo 1).','sub'));
+      s.appendChild(node('p','O vínculo não pode ser editado. Para parar, desligue a delegação (passo 1, reversível) ou revogue a aprovação (passo 3, definitivo para esta tarefa).','sub'));
       s.appendChild(button('Listar tarefas abertas no HubSpot (só leitura)',async()=>{
         const g=generation;lock(true);message('Consultando tarefas abertas no HubSpot…');
         try{const result=await api('/api/os/v1/linkedin-authorization/tasks?contact_id='+encodeURIComponent(contact));if(g!==generation)return;
@@ -1793,7 +1794,7 @@ ThunderDelegatedIdentity.mount($('delegated-identity-review'),{api:(...args)=>{
       const eligible=(state.campaigns||[]).filter(c=>c.eligible);
       for(const t of state.tasks){
         const box=node('section');box.dataset.laCampaignTask=t.task_id;box.appendChild(node('h6','Tarefa '+t.task_id+' · '+t.binding.marker));
-        if(t.campaign_confirmation)box.appendChild(node('p','Campanha confirmada na prévia '+t.campaign_confirmation.preview_id+' ('+t.campaign_confirmation.campaign_approval_id+'). Para impedir o envio: desligue a delegação (passo 1) ou revogue a aprovação (passo 3).'));
+        if(t.campaign_confirmation)box.appendChild(node('p','Campanha confirmada na prévia '+t.campaign_confirmation.preview_id+' ('+t.campaign_confirmation.campaign_approval_id+'). Para impedir o envio: desligue a delegação (passo 1).'));
         if(t.execution)box.appendChild(node('p','Execução: '+t.execution.status+(t.execution.receipt_ref?' · recibo '+t.execution.receipt_ref:'')+(t.execution.error_code?' · '+t.execution.error_code:'')));
         if(t.alert)box.appendChild(node('p','Último alerta do executor: '+t.alert.error_code,'li-auth-warn'));
         box.appendChild(button('Consultar prévias da tarefa '+t.task_id,async()=>{
@@ -1816,9 +1817,9 @@ ThunderDelegatedIdentity.mount($('delegated-identity-review'),{api:(...args)=>{
             else{
               const label=node('label','Campanha'),select=node('select');select.id='la-campaign-'+p.id;label.htmlFor=select.id;
               for(const c of eligible){const o=node('option',c.id);o.value=c.id;select.appendChild(o);}
-              const chosen=reviews[p.id];if(chosen)select.value=chosen.campaign_id;
+              const chosen=reviews[p.id];select.value=chosen?chosen.campaign_id:(picked[p.id]&&eligible.some(c=>c.id===picked[p.id])?picked[p.id]:eligible[0].id);
               card.appendChild(label);card.appendChild(select);
-              select.addEventListener('change',()=>{delete reviews[p.id];render();});
+              select.addEventListener('change',()=>{picked[p.id]=select.value;delete reviews[p.id];render();});
               const reviewBody={preview_id:p.id,campaign_id:select.value};
               card.appendChild(button('Conferir campanha (só leitura)',async()=>{
                 const g=generation;lock(true);const body={preview_id:p.id,campaign_id:select.value};
@@ -1847,7 +1848,7 @@ ThunderDelegatedIdentity.mount($('delegated-identity-review'),{api:(...args)=>{
       if(!result||result.read_only!==true||result.contact_id!==id||!Array.isArray(result.approvals)||!Array.isArray(result.tasks)||!Array.isArray(result.blockers))throw Error('Leitura inválida.');
       state=result;render();
     }
-    function reset(text){generation++;state=null;draft=null;tasks=null;previews={};reviews={};body.hidden=true;blockerBox.replaceChildren();draftView.replaceChildren();message(text);}
+    function reset(text){generation++;state=null;draft=null;tasks=null;previews={};reviews={};picked={};body.hidden=true;blockerBox.replaceChildren();draftView.replaceChildren();message(text);}
     contactField.addEventListener('input',()=>reset('Contato alterado. Consulte antes de autorizar.'));
     contactForm.addEventListener('submit',async event=>{
       event.preventDefault();if(busy)return;const id=contactField.value.trim();

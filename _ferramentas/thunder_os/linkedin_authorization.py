@@ -53,8 +53,13 @@ def configured_sender(environ=os.environ) -> dict[str, Any]:
         raise AuthorizationReadError("sender_config_unavailable") from None
     require(cfg["_digest"] == digest, "sender_config_changed")
     live = cfg.get("live")
-    require(isinstance(live, dict) and isinstance(live.get("account_id"), str)
-            and isinstance(live.get("public_id"), str), "sender_config_unavailable")
+    # Same admission as connectsafely_live.build_panel_composition.
+    require(cfg.get("mode") == "live" and cfg.get("factory") == "builtin-connectsafely-v1"
+            and isinstance(live, dict) and type(live.get("social_enabled")) is bool
+            and isinstance(live.get("execution_scope"), str)
+            and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", live["execution_scope"])
+            and isinstance(live.get("account_id"), str) and isinstance(live.get("public_id"), str),
+            "sender_config_unavailable")
     canary = live.get("canary_readers") if isinstance(live.get("canary_readers"), dict) else {}
     verified = sorted(str(row.get("hubspot_contact_id")) for row in canary.get("contacts", [])
                       if isinstance(row, dict) and "linkedin" in (row.get("channels") or []))
@@ -166,7 +171,9 @@ def campaign_options(registry, sender: Mapping[str, Any]) -> list[dict[str, Any]
         if binding["providers"].get("linkedin") is None:
             continue
         reason = None
-        if not row.get("active"):
+        if not sender.get("account_id"):
+            reason = "sender_unavailable"
+        elif not row.get("active"):
             reason = "campaign_inactive"
         elif row.get("platform") != "thunder_os":
             reason = "campaign_platform_not_thunder_os"
@@ -275,6 +282,7 @@ def draft_approval(body: Any, *, sender: Mapping[str, Any], resolver, hubspot, r
     target = resolved.get("target") or {}
     require(target.get("account_id") == sender["account_id"]
             and target.get("account_public_id") == sender["public_id"], "sender_identity_mismatch")
+    require(str(target.get("recipient_public_id", "")).lower() != sender["public_id"].lower(), "recipient_is_sender")
     console = validation_console(repository, sender)
     steps = []
     for marker, (subject, action) in sorted(STEP_CONTRACT.items()):

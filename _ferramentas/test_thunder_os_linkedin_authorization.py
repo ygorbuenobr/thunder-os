@@ -279,6 +279,55 @@ class LinkedInAuthorizationTests(unittest.TestCase):
         self.assertEqual('campaign_account_mismatch', options['other-account']['reason'])
 
 
+    def test_revoke_refused_while_task_in_flight(self):
+        from thunder_os.hermes_linkedin_cadence import revoke_approval, HermesLinkedInCadence
+        approved = HermesLinkedInCadence(self.repo, None, li_auth.validation_application(self.repo, SENDER)).approve(
+            self.draft()['approval'], 'ygor')
+        for status in ('pending', 'uncertain', 'provider_confirmed'):
+            self.repo.put_state('linkedin_cadence_task', '999', {'status': status, 'approval_id': approved['id']})
+            with self.subTest(status=status), self.assertRaisesRegex(CadenceBlocked, 'approval_has_task_in_flight'):
+                revoke_approval(self.repo, approved['id'], approved['version'], 'ygor')
+        self.assertEqual('active', self.repo.get_state('linkedin_cadence_approval', approved['id'])['status'])
+        self.repo.put_state('linkedin_cadence_task', '999', {'status': 'completed', 'approval_id': approved['id']})
+        self.assertEqual('revoked', revoke_approval(self.repo, approved['id'], approved['version'], 'ygor')['status'])
+        with self.assertRaises(Exception):
+            HermesLinkedInCadence(self.repo, None, li_auth.validation_application(self.repo, SENDER)).approve(
+                {k: v for k, v in self.draft()['approval'].items() if k != 'id'} | {'id': approved['id']}, 'ygor')
+
+    def test_configured_sender_requires_panel_live_admission(self):
+        live = {'account_id': ACCOUNT, 'public_id': 'fixture-owner', 'social_enabled': False,
+                'execution_scope': 'scope-1', 'canary_readers': {'contacts': [
+                    {'hubspot_contact_id': '258958235509', 'channels': ['linkedin']}]}}
+        base = {'version': 1, 'mode': 'live', 'factory': 'builtin-connectsafely-v1', 'execution_enabled': True,
+                'repository': str(Path(self.temp.name) / 'state.sqlite'), 'live': live}
+        import hashlib
+        def sender(cfg):
+            path = Path(self.temp.name) / 'cfg.json'
+            raw = json.dumps(cfg).encode(); path.write_bytes(raw)
+            return li_auth.configured_sender({'THUNDER_OS_CONNECTSAFELY_CONFIG': str(path),
+                                              'THUNDER_OS_CONNECTSAFELY_CONFIG_SHA256': hashlib.sha256(raw).hexdigest()})
+        result = sender(base)
+        self.assertEqual(('fixture-owner', ['258958235509']), (result['public_id'], result['identity_verifier_contacts']))
+        for change in ({'mode': 'synthetic'}, {'mode': 'disabled'}, {'factory': 'other'},
+                       {'live': {**live, 'execution_scope': ''}}, {'live': {**live, 'social_enabled': 'no'}}):
+            with self.subTest(change=change), self.assertRaisesRegex(li_auth.AuthorizationReadError, 'sender_config_unavailable'):
+                sender({**base, **change})
+        path = Path(self.temp.name) / 'cfg.json'
+        with self.assertRaisesRegex(li_auth.AuthorizationReadError, 'sender_config_changed'):
+            li_auth.configured_sender({'THUNDER_OS_CONNECTSAFELY_CONFIG': str(path),
+                                       'THUNDER_OS_CONNECTSAFELY_CONFIG_SHA256': '0' * 64})
+
+    def test_draft_refuses_sender_as_recipient_and_campaigns_need_sender(self):
+        with self.assertRaisesRegex(li_auth.AuthorizationReadError, 'recipient_is_sender'):
+            self.draft(resolver=resolver(recipient_public_id='Fixture-Owner'))
+        store, sheet = make_sheet(Path(self.temp.name) / 'sheet2')
+        self.registry.register({'campaign_id': 'no-account', 'campaign_version': '1', 'rules_version': '1',
+            'run_id': 'r', 'platform': 'thunder_os', 'providers': {'linkedin': 'connectsafely'}, 'rules': 'x',
+            'briefing': sheet, 'configuration': {'flow_version': '1', 'provider_accounts': {'linkedin': ACCOUNT}}}, 'ygor', 0)
+        self.assertEqual([('no-account', False, 'sender_unavailable')],
+                         [(o['id'], o['eligible'], o['reason']) for o in li_auth.campaign_options(self.registry, {})])
+
+
 class HubSpotCadenceReaderTests(unittest.TestCase):
     def reader(self, responses, calls):
         def request(method, path, body, headers, timeout):
