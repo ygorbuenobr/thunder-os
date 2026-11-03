@@ -44,11 +44,16 @@ class MissionATests(unittest.TestCase):
         from thunder_os.mission_a import cached_sources
         from thunder_os.external_email_import import APOLLO_TEAM, APOLLO_SEQUENCE
         snapshot={'campaign_id':'BR-APOLLO-01','account_id':APOLLO_TEAM,'external_campaign_id':APOLLO_SEQUENCE,
-                  'status':'partial','observed_at':'2026-11-03T01:00:00Z',
+                  'status':'partial','enabled':True,'observed_at':'2026-11-03T01:00:00Z',
+                  'cohort_observation':{'count':8,'observed_at':'2026-11-02T12:00:00Z'},
                   'coverage':{'complete':False,'contacts_observed_at':'2026-11-02T12:00:00Z','atomic_snapshot':False},
                   'leads':[{'id':'fixture'}]}
         result=cached_sources(SimpleNamespace(snapshot=lambda:snapshot),self.repo)
-        self.assertEqual(result['apollo']['observed_contacts'],1)
+        self.assertEqual(result['apollo']['observed_contacts'],8)
+        self.assertEqual(result['apollo']['contacts_observed_at'],'2026-11-02T12:00:00Z')
+        self.assertEqual(result['apollo']['cache_records_including_historical'],1)
+        snapshot['cohort_observation']={'count':None,'observed_at':None}
+        self.assertIsNone(cached_sources(SimpleNamespace(snapshot=lambda:snapshot),self.repo)['apollo']['observed_contacts'])
         self.assertIsNone(result['apollo']['total_contacts'])
         self.assertEqual(result['hubspot']['status'],'unverified')
         self.assertFalse(result['apollo']['atomic_snapshot'])

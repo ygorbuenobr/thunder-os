@@ -631,6 +631,7 @@ body:has(#new-journey:not([hidden])) #hoje-pedido{display:none}
     <label><input type="checkbox" id="mission-a-cost"> Autorizo o custo da execução do modelo para este relatório.</label>
     <button class="btn" type="button" id="mission-a-request">Pedir relatório com Hermes</button>
     <button class="btn" type="button" id="mission-a-check">Consultar resultado do pedido</button>
+    <button class="btn" type="button" id="mission-a-new" disabled>Novo pedido</button>
     <pre id="mission-a-result" role="status" aria-live="polite" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre>
   </details>
   <details id="hoje-pedido" aria-labelledby="h-hoje-pedido">
@@ -4544,9 +4545,11 @@ $('mission-report-read').addEventListener('click',async()=>{
 });
 
 const MISSION_A_STORAGE='thunder-mission-a-request';
+let missionATerminal=false;
 $('mission-a-request').addEventListener('click',async()=>{
   const out=$('mission-a-result'),button=$('mission-a-request');
   if(!$('mission-a-cost').checked){out.textContent='Confirme o custo antes de pedir a execução.';return;}
+  missionATerminal=false;$('mission-a-new').disabled=true;
   let id;
   try{id=sessionStorage.getItem(MISSION_A_STORAGE);if(!id){id=crypto.randomUUID();sessionStorage.setItem(MISSION_A_STORAGE,id);}}
   catch(e){out.textContent='Não foi possível preservar o identificador do pedido. Nenhuma execução solicitada.';return;}
@@ -4557,11 +4560,22 @@ $('mission-a-request').addEventListener('click',async()=>{
 });
 $('mission-a-check').addEventListener('click',async()=>{
   const out=$('mission-a-result');let id;
+  missionATerminal=false;$('mission-a-new').disabled=true;
   try{id=sessionStorage.getItem(MISSION_A_STORAGE);}catch(e){}
   if(!id){out.textContent='Nenhum pedido nesta sessão.';return;}
   try{const r=await apiServidor('/api/os/v1/mission-a/'+encodeURIComponent(id));
+    if(sessionStorage.getItem(MISSION_A_STORAGE)!==id)return;
+    missionATerminal=['result_unreviewed','failed'].includes(r.status);
+    $('mission-a-new').disabled=!missionATerminal;
     out.textContent=r.status==='result_unreviewed'?`Execução ${r.execution_id} · revisão não comprovada\n\n${r.output}`:`Pedido ${id} · ${r.status}. Revisão não comprovada.`;
   }catch(e){out.textContent='Não foi possível consultar o pedido. Nenhuma nova execução foi solicitada.';}
+});
+$('mission-a-new').addEventListener('click',()=>{
+  if(!missionATerminal)return;
+  try{sessionStorage.removeItem(MISSION_A_STORAGE);}
+  catch(e){$('mission-a-result').textContent='Não foi possível preparar um novo pedido; o identificador anterior foi preservado.';return;}
+  missionATerminal=false;$('mission-a-new').disabled=true;$('mission-a-cost').checked=false;
+  $('mission-a-result').textContent='Novo pedido pronto; confirme o custo para solicitar.';
 });
 
 let sugestaoAtual=null;

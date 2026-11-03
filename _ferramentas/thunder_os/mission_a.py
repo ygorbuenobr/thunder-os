@@ -115,17 +115,22 @@ def cached_sources(reader,repo):
     preview=plan_snapshot(snapshot,{})
     coverage=snapshot.get('coverage') if isinstance(snapshot.get('coverage'),dict) else {}
     sync=repo.get_state('apollo_hubspot_sync','BR-APOLLO-01') or {}
+    cohort=snapshot.get('cohort_observation') if isinstance(snapshot.get('cohort_observation'),dict) else {}
     def safe_time(x):
         return x if isinstance(x,str) and re.fullmatch(r'\d{4}-\d\d-\d\dT[0-9:.+-]+Z?',x) else None
     def safe_count(x): return x if type(x) is int and 0<=x<=10000000 else None
+    cohort_time=safe_time(cohort.get('observed_at')) if snapshot.get('enabled') is True else None
+    cohort_count=safe_count(cohort.get('count')) if cohort_time else None
     return {'campaign_id':'BR-APOLLO-01',
             'apollo':{'source':'cache do leitor Apollo','url':'https://app.apollo.io/#/sequences/6ad7c2af749725001465b81d','observed_at':safe_time(snapshot.get('observed_at')),
-                      'contacts_observed_at':safe_time(coverage.get('contacts_observed_at')),
+                      'contacts_observed_at':cohort_time if cohort_count is not None else None,
+                      'contacts_scan_observed_at':safe_time(coverage.get('contacts_observed_at')),
                       'messages_observed_at':safe_time(coverage.get('messages_observed_at')),
                       'complete':coverage.get('complete') is True,
                       'stale':snapshot.get('stale') if type(snapshot.get('stale')) is bool else None,
                       'atomic_snapshot':coverage.get('atomic_snapshot') if type(coverage.get('atomic_snapshot')) is bool else None,
-                      'observed_contacts':safe_count(preview.get('observed_leads')) if coverage.get('contacts_observed_at') else None,
+                      'observed_contacts':cohort_count,
+                      'cache_records_including_historical':safe_count(preview.get('observed_leads')),
                       'total_contacts':safe_count(preview.get('total_leads')) if coverage.get('complete') is True else None},
             'hubspot':{'source':'estado de conciliação armazenado','status':'unverified',
                        'contacts_existing':safe_count(sync.get('contacts_existing')),
