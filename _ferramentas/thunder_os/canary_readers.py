@@ -70,7 +70,14 @@ class CanaryContact:
 class CanaryScope:
     def __init__(self, config, *, owner_public_id):
         require(isinstance(config, dict) and config.get('version') == 1, 'canary_config_invalid')
-        require(set(config) <= {'version', 'contacts', 'hubspot', 'apollo', 'instantly'}, 'canary_config_invalid')
+        require(set(config) <= {'version', 'contacts', 'hubspot', 'apollo', 'instantly', 'owner_profile_urn'},
+                'canary_config_invalid')
+        # Optional pinned member URN of the owner. The provider reports message
+        # senders by member ID even when the owner is pinned by vanity slug.
+        self.owner_profile_urn = config.get('owner_profile_urn')
+        require(self.owner_profile_urn is None or (isinstance(self.owner_profile_urn, str)
+                and re.fullmatch(r'urn:li:fsd_profile:[A-Za-z0-9_-]{1,200}', self.owner_profile_urn)),
+                'canary_config_invalid')
         rows = config.get('contacts')
         require(isinstance(rows, list) and 1 <= len(rows) <= 2, 'canary_config_invalid')
         self.by_id, self.by_email, self.by_profile = {}, {}, {}
@@ -100,6 +107,7 @@ class CanaryScope:
             self.by_id[ident] = self.by_email[address] = contact
             if urn:
                 self.by_profile[urn] = contact
+        require(self.owner_profile_urn not in self.by_profile, 'canary_config_invalid')
 
     def contact(self, contact_id):
         require(contact_id in self.by_id, 'contact_outside_canary')
@@ -373,6 +381,10 @@ class ConnectSafelyCanaryReader:
                 and data.get('fetchingMore', False) is False, 'canary_conversation_incomplete')
             participants = data.get('participants')
             aliases = {self.client.expected_public_id: owner, contact.linkedin_public_id: recipient}
+            pinned_owner = self.client._profile_identity(self.scope.owner_profile_urn) if self.scope.owner_profile_urn else None
+            if pinned_owner:
+                require(pinned_owner != recipient, 'canary_conversation_mismatch')
+                aliases[pinned_owner] = owner
             # The provider can emit both vanity slug and bare profile ID for
             # the same participant. Resolve only these already pinned aliases;
             # every row must still belong to exactly the two principals.
