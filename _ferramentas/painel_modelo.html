@@ -623,6 +623,12 @@ body:has(#new-journey:not([hidden])) #hoje-pedido{display:none}
   <section class="today-block" aria-labelledby="today-respond-title"><h2 id="today-respond-title">RESPONDER <span class="qt" id="today-respond-count"></span></h2><div id="today-respond-sources"></div><div id="today-respond" aria-busy="true"><p class="vazio">Carregando respostas…</p></div></section>
   <section class="today-block" aria-labelledby="today-do-title"><h2 id="today-do-title">FAZER <span class="qt" id="today-do-count"></span></h2><div id="today-do-sources"></div><div id="today-do" aria-busy="true"><p class="vazio">Carregando tarefas…</p></div></section>
   <section class="today-block" aria-labelledby="today-approve-title"><h2 id="today-approve-title">APROVAR <span class="qt" id="today-approve-count"></span></h2><div id="today-approve-sources"></div><div id="today-approve" aria-busy="true"><p class="vazio">Carregando revisões…</p></div></section>
+  <details id="mission-report-panel">
+    <summary>Relatório Apollo → HubSpot</summary>
+    <p>Consulta informativa dos dados disponíveis. A missão Hermes ainda não está integrada. <a href="https://app.apollo.io/#/sequences/6ad7c2af749725001465b81d" target="_blank" rel="noopener noreferrer">Abrir sequência no Apollo</a>.</p>
+    <button class="btn" type="button" id="mission-report-read">Consultar relatório</button>
+    <pre id="mission-report-output" role="status" aria-live="polite" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre>
+  </details>
   <details id="hoje-pedido" aria-labelledby="h-hoje-pedido">
     <summary id="h-hoje-pedido">Verificar com Hermes</summary>
     <form class="pedido-dia" id="os-pedido">
@@ -4508,6 +4514,29 @@ $('os-pedido').addEventListener('submit', async ev => {
     await carregarThunderOS();
   }catch(e){mensagem.textContent='Não foi possível confirmar o registro. Seu texto foi preservado; tente novamente para consultar ou registrar o mesmo pedido sem duplicar.';mensagem.className='msg erro';}
   finally{botao.disabled=false;}
+});
+
+/* MISSION_REPORT_FORMAT_BEGIN */
+function missionReportText(snapshot){
+  if(!snapshot || snapshot.campaign_id !== 'BR-APOLLO-01') throw new Error('Campanha não verificada.');
+  const coverage=snapshot.coverage && typeof snapshot.coverage==='object'?snapshot.coverage:{};
+  const preview=snapshot.hunter_preview && typeof snapshot.hunter_preview==='object'?snapshot.hunter_preview:{};
+  const crm=snapshot.crm_sync && typeof snapshot.crm_sync==='object'?snapshot.crm_sync:{};
+  const number=n=>Number.isSafeInteger(n)&&n>=0?String(n):'não informado';
+  const time=value=>typeof value==='string'&&value.length<=80?value:'não informado';
+  const freshness=coverage.retained_observation===true?'Dados retidos de observação anterior.':snapshot.stale===true?'Cache sinalizado como desatualizado.':'Atualidade do cache não comprovada por esta consulta.';
+  const observed=snapshot.enabled===true&&typeof coverage.contacts_observed_at==='string'&&coverage.contacts_observed_at?number(preview.observed_leads):'não informado';
+  const total=snapshot.status==='ok'&&snapshot.stale===false&&coverage.complete===true?number(preview.total_leads):'não comprovado';
+  const known=x=>x===true?'concluída':x===false?'parcial':'não verificada';
+  return `Campanha BR-APOLLO-01\nFonte Apollo: cache do leitor; observação geral ${time(snapshot.observed_at)}.\nContatos observados em: ${time(coverage.contacts_observed_at)}; mensagens observadas em: ${time(coverage.messages_observed_at)}. ${freshness}\nContatos observados: ${observed}. Total de inscritos: ${total}.\nCobertura de contatos: ${known(coverage.contacts_complete)}; mensagens: ${known(coverage.messages_complete)}. Dados podem não ser um retrato único.\nFonte HubSpot: estado de conciliação armazenado no painel; leitura atual não verificada. Contatos existentes informados anteriormente: ${number(crm.contacts_existing)}. Vínculos atuais não verificados.\nDelegação e revisão não comprovadas. Nenhuma missão Hermes foi iniciada por esta consulta.`;
+}
+/* MISSION_REPORT_FORMAT_END */
+$('mission-report-read').addEventListener('click',async()=>{
+  const button=$('mission-report-read'),output=$('mission-report-output');
+  button.disabled=true;output.textContent='Consultando cache do Apollo…';
+  try{output.textContent=missionReportText(await apiServidor('/api/os/v1/integrations/apollo/reader'));}
+  catch(e){output.textContent='Relatório indisponível. Fontes e revisão não comprovadas; tente atualizar mais tarde.';}
+  finally{button.disabled=false;}
 });
 
 let sugestaoAtual=null;
