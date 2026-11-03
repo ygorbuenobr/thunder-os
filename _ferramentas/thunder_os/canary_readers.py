@@ -404,10 +404,13 @@ class ConnectSafelyCanaryReader:
                 require(sender in {owner, recipient}
                     and row['isSentByOwner'] == (sender == owner), 'canary_sender_unverified')
                 blocked = blocked or sender == recipient
-            if data['hasMore'] is False:
+            next_cursor = data.get('nextCursor')
+            # Observed provider tail: after a cursor, an empty page with no next
+            # cursor still reports hasMore=true. An empty page hides no message.
+            exhausted = cursor is not None and not rows and next_cursor is None
+            if data['hasMore'] is False or exhausted:
                 return {'target': urn, 'complete': True, 'suppressed': blocked, 'no_record': not seen,
                         'coverage': 'exact_profile_conversation'}
-            next_cursor = data.get('nextCursor')
             require(isinstance(next_cursor, str) and re.fullmatch(r'[0-9]{1,16}', next_cursor)
                 and (cursor is None or int(next_cursor) < int(cursor)) and rows,
                 'canary_conversation_incomplete')
