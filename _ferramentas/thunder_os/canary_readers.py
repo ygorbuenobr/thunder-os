@@ -376,7 +376,9 @@ class ConnectSafelyCanaryReader:
             if cursor:
                 query['cursor'] = cursor
             data = self.client._call('GET', '/linkedin/conversations/' + quote(thread, safe='') + '/messages', query)
-            require(data.get('success') is True and data.get('accountId') == self.client.account_id
+            # Observed: cursor pages omit accountId; when present it must match.
+            account = data.get('accountId', self.client.account_id if cursor else None)
+            require(data.get('success') is True and account == self.client.account_id
                 and data.get('conversationUrn') == thread and type(data.get('hasMore')) is bool
                 and data.get('fetchingMore', False) is False, 'canary_conversation_incomplete')
             participants = data.get('participants')
