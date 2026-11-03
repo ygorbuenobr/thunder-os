@@ -4555,7 +4555,7 @@ $('mission-a-request').addEventListener('click',async()=>{
   catch(e){out.textContent='Não foi possível preservar o identificador do pedido. Nenhuma execução solicitada.';return;}
   button.disabled=true;out.textContent='Registrando pedido…';
   try{const r=await apiServidor('/api/os/v1/mission-a','POST',{request_id:id,cost_confirmed:true});out.textContent=`Pedido ${id} · ${r.status}. Consulte o resultado; não repita um pedido incerto.`;}
-  catch(e){out.textContent='Confirmação indisponível. Consulte o resultado antes de tentar novamente; o identificador foi preservado.';}
+  catch(e){out.textContent=e.status===503 && /GPT-6\.1 Terra/.test(e.message)?e.message:'Confirmação indisponível. Consulte o resultado antes de tentar novamente; o identificador foi preservado.';}
   finally{button.disabled=false;}
 });
 $('mission-a-check').addEventListener('click',async()=>{
