@@ -39,4 +39,15 @@ class MissionAHTTPTests(unittest.TestCase):
         self.assertEqual(self.call(path+'/fixture-1')[1]['status'],'pending')
         self.assertEqual(self.call(path+'/fixture-1',actor='codex')[0],403)
 
+    def test_unverified_delegate_model_returns_clear_503_without_job(self):
+        from thunder_os.mission_a import MissionA, NativeScheduler
+        repo = Mock(); source = Mock()
+        self.server.thunder_mission_a = MissionA(repo, NativeScheduler(), source)
+        with patch('thunder_os.mission_a.subprocess.run') as run:
+            status, body = self.call('/api/os/v1/mission-a', 'POST',
+                {'request_id':'fixture-block','cost_confirmed':True}, nonce=True)
+        self.assertEqual(status, 503)
+        self.assertIn('GPT-6.1 Terra', body['erro'])
+        run.assert_not_called(); source.assert_not_called(); repo.append_state.assert_not_called()
+
 if __name__=='__main__': unittest.main()

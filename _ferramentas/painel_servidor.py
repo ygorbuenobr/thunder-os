@@ -2060,7 +2060,10 @@ class Handler(BaseHTTPRequestHandler):
             if adapter is None: raise Erro('Missão indisponível.',503)
             from thunder_os.mission_a import MissionAError
             try: return self.responder(202, adapter.request(body['request_id'],True))
-            except MissionAError: raise Erro('Pedido inválido.') from None
+            except MissionAError as error:
+                if str(error) == 'terra_delegation_unverified':
+                    raise Erro('Execução bloqueada: GPT-6.1 Terra não está garantido nos subagentes.', 503) from None
+                raise Erro('Pedido inválido.') from None
         if rota.path.startswith('/api/os/v1/integrations/codex-assisted/'):
             if actor != 'ygor' or rota.query or not isinstance(body, dict):
                 raise Erro('Integração assistida não autorizada.', 403)

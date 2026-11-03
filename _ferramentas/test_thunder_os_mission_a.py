@@ -11,6 +11,7 @@ from thunder_os.mission_a import MissionA, MissionAError
 
 class Port:
     def __init__(self): self.created=[]; self.resumed=[]; self.records={}
+    def ensure_model_policy(self): pass
     def create_paused(self, request_id, context):
         self.created.append((request_id,context)); return 'abc123def456'
     def resume(self, job_id): self.resumed.append(job_id)
@@ -61,12 +62,27 @@ class MissionATests(unittest.TestCase):
 
     def test_native_port_uses_restricted_profile_and_paused_one_shot(self):
         from thunder_os.mission_a import NativeScheduler, PROFILE
-        with patch('thunder_os.mission_a.subprocess.run',return_value=SimpleNamespace(stdout='{ "id":"abc123def456" }')) as run:
+        with patch.object(NativeScheduler,'ensure_model_policy'), patch('thunder_os.mission_a.subprocess.run',return_value=SimpleNamespace(stdout='{ "id":"abc123def456" }')) as run:
             self.assertEqual(NativeScheduler().create_paused('fixture-4',{'safe':'fixture'}),'abc123def456')
             args,kw=run.call_args
-            self.assertIn('paused=True',args[0][2]); self.assertIn('repeat=1',args[0][2])
+            self.assertIn('paused=True',args[0][2]); self.assertIn('repeat=1',args[0][2]); self.assertIn('model="gpt-6.1-terra",provider="openai-codex"',args[0][2])
             self.assertIn('["delegation","no_mcp"]',args[0][2]); self.assertEqual(kw['env']['HERMES_HOME'],PROFILE)
             self.assertNotIn('shell',kw); self.assertEqual(len(run.mock_calls),1)
+
+    def test_native_scheduler_blocks_before_reading_or_creating_when_delegate_model_unverified(self):
+        from thunder_os.mission_a import NativeScheduler
+        source = unittest.mock.Mock(return_value={'campaign_id': 'BR-APOLLO-01'})
+        app = MissionA(self.repo, NativeScheduler(), source)
+        with patch('thunder_os.mission_a.subprocess.run') as run:
+            with self.assertRaisesRegex(MissionAError, 'terra_delegation_unverified'):
+                app.request('fixture-model', True)
+            with self.assertRaisesRegex(MissionAError, 'terra_delegation_unverified'):
+                NativeScheduler().create_paused('fixture-model', {})
+            with self.assertRaisesRegex(MissionAError, 'terra_delegation_unverified'):
+                NativeScheduler().resume('abc123def456')
+            run.assert_not_called()
+        source.assert_not_called()
+        self.assertIsNone(self.repo.get_state('mission_a_request', 'fixture-model'))
 
     def test_native_inspect_reads_only_requested_job_directory(self):
         from thunder_os.mission_a import NativeScheduler
