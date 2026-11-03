@@ -192,6 +192,7 @@ ALLOWED_TESTS = {
     "test_thunder_os_agenttrail_observer.py",
     "test_thunder_os_connectsafely_quarantine_resolution.py",
     "test_thunder_os_connectsafely_unicode.py",
+    "test_thunder_os_connectsafely_dm_reconciliation.py",
     "test_thunder_os_connectsafely_panel_wiring.py",
     "test_thunder_os_text_budget.py",
     "test_thunder_os_models.py",

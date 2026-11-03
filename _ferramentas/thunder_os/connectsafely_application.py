@@ -3,6 +3,7 @@
 Composition is explicit. No environment, credentials, migrations, network probes
 or provider selection happen here. Simulations are always labelled as such.
 """
+import math
 import re
 import time
 from datetime import datetime, timezone
@@ -542,6 +543,8 @@ class ConnectSafelyApplication:
         self._check_mode(preview)
         if preview['plan']['action']=='invite':
             return self._reconcile_invitation_job(preview, body, actor)
+        if preview['plan']['action']=='dm':
+            return self._reconcile_dm_job(preview, body, actor)
         result = self._console(preview['plan']['action']).reconcile(body, actor=actor)
         return {**result, 'simulation':self.simulation}
 
@@ -562,8 +565,92 @@ class ConnectSafelyApplication:
         self._delegated_reconciliation_authorized(jobs[0], preview)
         if preview['plan']['action']=='invite':
             return self._reconcile_invitation_job(preview, body, 'hermes (delegado)')
+        if preview['plan']['action']=='dm':
+            return self._reconcile_dm_job(preview, body, 'hermes (delegado)')
         result = self._console(preview['plan']['action']).reconcile(body, actor='ygor')
         return {**result, 'simulation':self.simulation}
+
+    def _reconcile_dm_job(self,preview,body,actor):
+        from .approvals import _step_hash
+        jobs=[j for j in self.repo.list_state('connectsafely_job') if j.get('preview_id')==preview['id']]
+        if len(jobs)!=1:raise ConnectSafelyError('job_authority_invalid')
+        job=jobs[0];review=job.get('review',{})
+        approval=self.repo.get_state('connectsafely_queue_approval',job['id'])
+        attempt=self.repo.get_state('connectsafely_attempt',preview.get('effect_key',''))
+        origin=self.repo.get_state('connectsafely_preview_origin',preview['id'])
+        console=self._console('dm')
+        delegated=actor=='hermes (delegado)'
+        if actor not in {'ygor','hermes (delegado)'}:raise ConnectSafelyError('job_authority_invalid')
+        times=[approval.get(k) for k in ('approved_at','expires_at')] if approval else []
+        if (job.get('state') not in {'needs_reconciliation','done'} or not job.get('dispatch_started')
+                or job.get('actor')!=actor or job.get('simulation') is not self.simulation
+                or not approval or approval.get('actor')!='ygor' or approval.get('review')!=review
+                or approval.get('simulation') is not self.simulation
+                or job.get('execution_scope')!=self.execution_scope or approval.get('execution_scope')!=self.execution_scope
+                or not attempt or attempt.get('preview_id')!=preview['id']
+                or not attempt.get('canonical_owned') or attempt.get('phase')!='dispatch_started'
+                or attempt.get('status') not in {'uncertain','sent'}
+                or not attempt.get('attempt_token') or attempt.get('attempt_token')!=preview.get('attempt_token')
+                or attempt.get('attempt_token')!=job.get('result',{}).get('attempt_token')
+                or attempt.get('plan')!=preview['plan'] or payload_hash(preview['plan'])!=preview.get('effect_key')
+                or review.get('preview_id')!=preview['id'] or type(review.get('expected_version')) is not int
+                or review['expected_version']<1 or review.get('review_hash')!=preview['review_hash']
+                or review['review_hash']!=payload_hash({'plan':preview['plan'],'version':review['expected_version']})
+                or not all(type(t) in (int,float) and math.isfinite(t) for t in times)
+                or type(attempt.get('attempted_at')) not in (int,float) or not math.isfinite(attempt['attempted_at'])
+                or not times[0]<=attempt['attempted_at']<times[1]
+                or attempt.get('approval_hash')!=_step_hash(console._step(preview['plan'],preview['id'],review['expected_version']))):
+            raise ConnectSafelyError('job_authority_invalid')
+        if delegated:
+            if (not origin or origin.get('executor')!=actor
+                    or origin.get('delegated_authority')!=job.get('delegated_authority')):
+                raise ConnectSafelyError('job_authority_invalid')
+            self._delegated_reconciliation_authorized(job,preview)
+        def reconciliation_guard():
+            current=self.repo.get_state('connectsafely_job',job['id'])
+            current_preview=self.repo.get_state('connectsafely_preview',preview['id'])
+            matching=[j for j in self.repo.list_state('connectsafely_job') if j.get('preview_id')==preview['id']]
+            if (len(matching)!=1 or current!=job or self.repo.get_state('connectsafely_queue_approval',job['id'])!=approval
+                    or current_preview!=preview
+                    or self.repo.get_state('connectsafely_preview_origin',preview['id'])!=origin):
+                raise RepositoryConflict('attempt_changed')
+            if delegated:self._delegated_reconciliation_authorized(current,current_preview)
+            return True
+        # The console journals scoped observations before any canonical commit,
+        # then resumes the same receipt after a crash without new provider reads.
+        result=console.reconcile(body,actor='ygor',reconciliation_guard=reconciliation_guard)
+        with self.repo.transaction():
+            reconciliation_guard()
+            current_attempt=self.repo.get_state('connectsafely_attempt',preview['effect_key'])
+            if (not current_attempt or current_attempt.get('attempt_token')!=attempt['attempt_token']
+                    or result.get('attempt_token')!=attempt['attempt_token']
+                    or current_attempt['version']!=result.get('attempt_version',result.get('version'))):
+                raise RepositoryConflict('attempt_changed')
+            if result.get('status')=='sent':
+                if (current_attempt.get('status')!='sent' or current_attempt.get('receipt_ref')!=result.get('receipt_ref')
+                        or current_attempt.get('confirmation_kind')!=result.get('confirmation_kind')
+                        or current_attempt.get('write_attribution_confirmed') is not result.get('write_attribution_confirmed')):
+                    raise RepositoryConflict('attempt_changed')
+                step=console._canonical_step(console._step(preview['plan'],preview['id'],1),preview['plan'])
+                console.ledger.read_reconciled_dm(preview['effect_key'],current_attempt['canonical_touch_id'],
+                    current_attempt['canonical_ref'],step,result['receipt_ref'])
+            if job['state']=='done':
+                if (result.get('status')!='sent' or job.get('result',{}).get('status')!='sent'
+                        or job['result'].get('retry_write') is not False
+                        or job['result'].get('receipt_ref')!=result.get('receipt_ref')
+                        or job['result'].get('confirmation_kind')!=result.get('confirmation_kind')
+                        or job['result'].get('write_attribution_confirmed') is not result.get('write_attribution_confirmed')):
+                    raise RepositoryConflict('attempt_changed')
+                return {**job['result'],'simulation':self.simulation}
+            if result.get('status')=='sent':
+                audit_id=payload_hash({'job_id':job['id'],'attempt_token':attempt['attempt_token']})
+                self.repo.append_state('connectsafely_reconciliation',audit_id,{
+                    'job_id':job['id'],'preview_id':preview['id'],'effect_key':preview['effect_key'],
+                    'attempt_token':attempt['attempt_token'],'approval_hash':attempt['approval_hash'],
+                    'actor':actor,'at':self.clock(),'result':result})
+            self.repo.put_state('connectsafely_job',job['id'],{
+                **job,'state':'done' if result.get('status')=='sent' else 'needs_reconciliation','result':result})
+        return {**result,'simulation':self.simulation}
 
     def _reconcile_invitation_job(self, preview, body, actor):
         from .approvals import _step_hash

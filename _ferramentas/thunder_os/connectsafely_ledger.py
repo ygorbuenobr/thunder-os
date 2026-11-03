@@ -1,4 +1,5 @@
 """Explicitly injected canonical LinkedIn ledger. No migration or credentials."""
+import re
 from .touch_ledger import TouchLedger,TouchBlocked,STATUS_FROM_DB,toques
 from .models import payload_hash
 
@@ -71,6 +72,46 @@ class ConnectSafelyLedger(TouchLedger):
                         (receipt_ref,row[0],expected_ref,row[2],channel,action,person,target,effect))
             if cur.rowcount!=1:raise TouchBlocked('reservation_not_safely_reusable')
             return {'id':str(row[0]),'status':'sent','receipt_ref':receipt_ref}
+
+    def _owned_dm(self,cur,mark,effect,touch_id,expected_ref,step,receipt_ref):
+        if (step.get('action')!='dm' or not isinstance(receipt_ref,str)
+                or not re.fullmatch(r'connectsafely:urn:li:(?:messagingMessage:[A-Za-z0-9_:(),.=-]+|msg_message:\(urn:li:fsd_profile:[A-Za-z0-9_.-]+,[A-Za-z0-9_.=-]+\))',receipt_ref)):
+            raise TouchBlocked('receipt_unverified')
+        channel,action,person,target=self._scope(step,effect)
+        cur.execute('SELECT t.id,t.ref,t.status,t.provider_id FROM thunder_effect_touches e JOIN toques t ON t.id=e.touch_id WHERE e.effect_key='+mark+
+                    ' AND t.canal='+mark+' AND t.acao='+mark+' AND t.pessoa_chave='+mark+' AND t.alvo='+mark,
+                    (effect,channel,action,person,target))
+        row=cur.fetchone()
+        if (not row or str(row[0])!=str(touch_id) or row[1]!=expected_ref
+                or row[2] not in {'reservado','incerto','feito'}):
+            raise TouchBlocked('reservation_not_safely_reusable')
+        if row[3] is not None and row[3]!=receipt_ref:raise TouchBlocked('receipt_unverified')
+        return row
+
+    def read_reconciled_dm(self,effect,touch_id,expected_ref,step,receipt_ref):
+        """Read back the exact owned terminal receipt, never infer from status."""
+        with self._banco() as (con,mark):
+            row=self._owned_dm(con.cursor(),mark,effect,touch_id,expected_ref,step,receipt_ref)
+            if row[2]!='feito' or row[3]!=receipt_ref:raise TouchBlocked('receipt_unverified')
+            return {'id':str(row[0]),'status':'sent','receipt_ref':row[3]}
+
+    def reconcile_dm(self,effect,touch_id,expected_ref,step,receipt_ref):
+        """Idempotent CAS on an exact owned DM; preserve conflicting receipts."""
+        channel,action,person,target=self._scope(step,effect)
+        with self._banco() as (con,mark):
+            self._lock(con,mark,channel,person);cur=con.cursor()
+            row=self._owned_dm(cur,mark,effect,touch_id,expected_ref,step,receipt_ref)
+            if row[2]=='feito':
+                if row[3]!=receipt_ref:raise TouchBlocked('receipt_unverified')
+                return {'id':str(row[0]),'status':'sent','receipt_ref':row[3]}
+            if row[3] is not None:raise TouchBlocked('receipt_unverified')
+            cur.execute("UPDATE toques SET status='feito',provider_id="+mark+",detalhe=NULL,atualizado_em=CURRENT_TIMESTAMP WHERE id="+mark+
+                        ' AND ref='+mark+' AND status='+mark+' AND provider_id IS NULL AND canal='+mark+
+                        ' AND acao='+mark+' AND pessoa_chave='+mark+' AND alvo='+mark+
+                        ' AND id=(SELECT touch_id FROM thunder_effect_touches WHERE effect_key='+mark+')',
+                        (receipt_ref,row[0],expected_ref,row[2],channel,action,person,target,effect))
+            if cur.rowcount!=1:raise TouchBlocked('reservation_not_safely_reusable')
+        return self.read_reconciled_dm(effect,touch_id,expected_ref,step,receipt_ref)
 
     def check_not_dispatched(self,effect,touch_id,expected_ref,step):
         """Read ownership only. The workflow journal supplies zero-dispatch proof."""
