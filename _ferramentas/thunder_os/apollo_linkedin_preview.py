@@ -15,7 +15,7 @@ import ssl
 from urllib.parse import urlsplit
 
 _ID = re.compile(r'[A-Za-z0-9_-]{1,128}\Z')
-_SLUG = re.compile(r'[A-Za-z0-9_%.-]{1,160}\Z')
+_SLUG = re.compile(r'[A-Za-z0-9_.-]{1,160}\Z')
 
 
 def _identifier(value):
@@ -26,7 +26,8 @@ def _slug(url):
     if not isinstance(url, str) or len(url) > 500:
         return None
     parsed = urlsplit(url)
-    if parsed.scheme != 'https' or parsed.hostname not in ('www.linkedin.com', 'linkedin.com'):
+    if (parsed.scheme, parsed.netloc.lower()) not in (
+            ('https', 'www.linkedin.com'), ('https', 'linkedin.com'), ('http', 'linkedin.com')):
         return None
     if parsed.username or parsed.password or parsed.port or parsed.query or parsed.fragment:
         return None
@@ -125,8 +126,9 @@ class ApolloLinkedInPreview:
                               'sequence_id': self.sequence_id,
                               'step_position': None}
             name = contact.get('name')
+            profile_slug = _slug(contact.get('linkedin_url'))
             result['lead'] = {'id': contact['id'], 'name': name if isinstance(name, str) and len(name) <= 300 else None,
-                              'linkedin_url': contact.get('linkedin_url') if _slug(contact.get('linkedin_url')) else None}
+                              'linkedin_url': 'https://www.linkedin.com/in/' + profile_slug + '/' if profile_slug else None}
             result['action'] = {'linkedin_step_connect': 'invite', 'linkedin_step_message': 'message'}.get(task.get('type'))
             blockers = result['blockers']
             if task.get('status') != 'scheduled': blockers.append('task_not_open')

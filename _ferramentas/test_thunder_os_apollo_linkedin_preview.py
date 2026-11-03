@@ -148,6 +148,34 @@ class PreviewTest(unittest.TestCase):
         self.assertIn('self_invitation', result['blockers'])
         self.assertIsNone(result['call_preview'])
 
+    def test_apollo_http_profile_is_canonical_https_and_self_invite_blocked(self):
+        self.task['contact']['linkedin_url'] = 'http://linkedin.com/in/Sender/'
+        result = self.preview().read()
+        self.assertEqual(result['lead']['linkedin_url'], 'https://www.linkedin.com/in/sender/')
+        self.assertIn('self_invitation', result['blockers'])
+        self.assertIsNone(result['call_preview'])
+
+    def test_apollo_http_invalid_host_port_or_extra_parts_blocked(self):
+        for url in ('http://linkedin.com.evil.test/in/sender/',
+                    'http://linkedin.com:80/in/sender/',
+                    'http://user@linkedin.com/in/sender/',
+                    'http://linkedin.com/in/sender/?x=1',
+                    'http://linkedin.com/in/sender/#fragment'):
+            with self.subTest(url=url):
+                self.task['contact']['linkedin_url'] = url
+                result = self.preview().read()
+                self.assertIsNone(result['lead']['linkedin_url'])
+                self.assertIn('profile_unverified', result['blockers'])
+                self.assertIsNone(result['call_preview'])
+
+    def test_percent_encoded_self_slug_is_rejected_without_preview(self):
+        self.task['contact']['linkedin_url'] = 'http://linkedin.com/in/%73ender/'
+        result = self.preview().read()
+        self.assertEqual(result['status'], 'blocked')
+        self.assertIsNone(result['lead']['linkedin_url'])
+        self.assertIn('profile_unverified', result['blockers'])
+        self.assertIsNone(result['call_preview'])
+
     def test_api_actor_can_differ_from_task_owner(self):
         preview = ApolloLinkedInPreview(lambda:'test-token', team_id='team1', sequence_id='sequence1',
             task_id='task1', account_id='account1', account_public_id='sender',
