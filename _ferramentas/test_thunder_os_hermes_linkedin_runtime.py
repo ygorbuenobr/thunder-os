@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 
 from thunder_os.db import Repository
 from thunder_os.hermes_linkedin_cadence import HermesLinkedInCadence, STEP_CONTRACT
-from thunder_os.hermes_linkedin_runtime import SyntheticCadenceApp, SyntheticTasks, load_config, main, run_once
+from thunder_os.hermes_linkedin_runtime import SyntheticCadenceApp, SyntheticTasks, build, installed_revision, load_config, main, run_once
 
 
 STAMP = datetime(2026, 10, 19, 15, 0, tzinfo=timezone.utc).timestamp()
@@ -141,6 +141,18 @@ class RuntimeTests(unittest.TestCase):
             run_once(cfg)
         self.assertEqual([unittest.mock.call("task-1", preview_id="preview-1", campaign_approval_id="approval-1"),
                           unittest.mock.call("task-2")], runner.run_task.call_args_list)
+
+    def test_revision_comes_from_release_manifest(self):
+        manifest=self.root/"thunder-os-manifest.json"
+        manifest.write_text(json.dumps({"schema_version":1,"source_sha":"fixture-revision","files":{}}))
+        self.assertEqual("fixture-revision",installed_revision(str(manifest)))
+        manifest.write_text(json.dumps({"schema_version":1,"source_sha":"other"}))
+        cfg=load_config(self.path);cfg["source_revision_file"]=str(manifest)
+        with self.assertRaisesRegex(ValueError,"source_revision_mismatch"):build(cfg)
+        for broken in ('{"schema_version":1}','not json','{"source_sha":""}'):
+            manifest.write_text(broken)
+            with self.assertRaisesRegex(ValueError,"source_revision_unavailable"):installed_revision(str(manifest))
+        with self.assertRaisesRegex(ValueError,"source_revision_unavailable"):installed_revision(str(self.root/"missing.json"))
 
     def test_runtime_binds_revision_and_spaces_multiple_tasks(self):
         cfg=load_config(self.path)
