@@ -732,6 +732,11 @@ body:has(#new-journey:not([hidden])) #hoje-pedido{display:none}
 
 <main id="sec-sistema" data-painel="sistema" hidden>
   <header class="cad-read-head"><h2>Sistema</h2><button class="btn" id="system-read-refresh" type="button">Atualizar leituras</button></header>
+  <section class="cad-read-section" id="apollo-linkedin-attention" aria-labelledby="apollo-linkedin-attention-title" aria-busy="false">
+    <header class="cad-read-head"><h3 id="apollo-linkedin-attention-title">Precisa de atenção · Apollo + LinkedIn</h3><button class="btn" type="button" id="apollo-linkedin-attention-refresh">Atualizar</button></header>
+    <p id="apollo-linkedin-attention-status" role="status" aria-live="polite">Aguardando consulta.</p>
+    <div id="apollo-linkedin-attention-items"></div>
+  </section>
   <section class="cad-read-section" id="apollo-linkedin-preview" aria-labelledby="apollo-linkedin-title" aria-busy="false">
     <header class="cad-read-head"><h3 id="apollo-linkedin-title">Apollo + LinkedIn · prévia</h3><button class="btn" type="button" id="apollo-linkedin-refresh">Consultar tarefa</button></header>
     <p class="sub">Prévia sem execução: esta consulta não envia convite ou mensagem e não conclui tarefas. O estado do executor é verificado separadamente.</p>
@@ -4139,6 +4144,28 @@ $('cad-apollo-search').addEventListener('input',()=>{cadApolloPage=0;renderApoll
 for(const [id,delta] of [['cad-apollo-prev',-1],['cad-apollo-next',1]])$(id).addEventListener('click',()=>{cadApolloPage+=delta;renderApolloReader(cadApolloView,cadApolloTransportError);});
 
 // Apollo task preview: read-only projection. No provider action is available here.
+let apolloLinkedinAttentionLoading=false,apolloLinkedinAttentionStarted=false;
+async function carregarApolloLinkedinAttention(){
+  if(apolloLinkedinAttentionLoading||!apiServidor)return;
+  apolloLinkedinAttentionStarted=true;apolloLinkedinAttentionLoading=true;
+  const section=$('apollo-linkedin-attention'),status=$('apollo-linkedin-attention-status'),items=$('apollo-linkedin-attention-items'),button=$('apollo-linkedin-attention-refresh');
+  section.setAttribute('aria-busy','true');button.disabled=true;status.textContent='Consultando pendências…';items.replaceChildren();
+  try{
+    const result=await apiServidor('/api/os/v1/integrations/apollo/linkedin-attention');
+    if(!result||!['ok','partial','unavailable'].includes(result.status)||!Array.isArray(result.items))throw new Error('invalid_attention');
+    if(result.status==='unavailable'){status.textContent=result.reason==='official_store_unavailable'?'Banco oficial indisponível ou não identificado; a cobertura não foi verificada.':'Pendências indisponíveis; a cobertura não foi verificada.';return;}
+    status.textContent=result.status==='partial'?'Consulta incompleta; podem existir outras pendências.':result.items.length?'Pendências para revisão.':'Nenhuma pendência encontrada nesta consulta.';
+    for(const item of result.items){
+      const card=document.createElement('article'),title=document.createElement('h4'),reason=document.createElement('p'),age=document.createElement('p'),next=document.createElement('p');
+      title.textContent='Tarefa '+(item.task_id||'não identificada');reason.textContent='Motivo: '+(item.reason||'Não informado');
+      const instant=Date.parse(item.stopped_at),minutes=Math.floor((Date.now()-instant)/60000);
+      age.textContent=(item.age_basis==='first_observed'?'Observada há pelo menos: ':'Parada há: ')+(Number.isFinite(minutes)&&minutes>=0?(minutes<60?minutes+' min':minutes<1440?Math.floor(minutes/60)+' h':Math.floor(minutes/1440)+' dias'):'tempo não verificado');
+      next.textContent='Próxima ação segura: '+(item.next_action||'Revisar as informações antes de agir.');card.append(title,reason,age,next);items.append(card);
+    }
+  }catch(error){status.textContent='Não foi possível consultar as pendências; a cobertura não foi verificada.';}
+  finally{apolloLinkedinAttentionLoading=false;section.setAttribute('aria-busy','false');button.disabled=false;}
+}
+$('apollo-linkedin-attention-refresh').addEventListener('click',carregarApolloLinkedinAttention);
 let apolloLinkedinPreviewLoading=false,apolloLinkedinPreviewStarted=false;
 async function carregarApolloLinkedinPreview(){
   if(apolloLinkedinPreviewLoading||!apiServidor)return;
@@ -4278,6 +4305,7 @@ function mostrarAba(aba,{registrar=true}={}){
   if(aba==='sistema'){
     atualizarAgenttrail();
     if(!apolloLinkedinPreviewStarted)carregarApolloLinkedinPreview();
+    if(!apolloLinkedinAttentionStarted)carregarApolloLinkedinAttention();
     if(typeof carregarThunderOS==='function')carregarThunderOS();
   }
   if((aba==='hoje'||aba==='sistema')&&typeof carregarHoje==='function')carregarHoje();

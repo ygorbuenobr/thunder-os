@@ -15,6 +15,9 @@ from uuid import uuid4
 from .models import WorkItem, as_payload, parse_work_item, payload_hash
 
 
+OFFICIAL_PANEL_DB = Path('/root/.hermes/profiles/ygor-personal/painel-dados/painel.db')
+
+
 class RepositoryConflict(RuntimeError):
     pass
 
@@ -89,6 +92,109 @@ class Repository:
                 );
                 """
             )
+
+        # T3 schema is provisioned only in the canonical panel database.
+        if Path(self.path).is_absolute() and Path(self.path).resolve() == OFFICIAL_PANEL_DB.resolve():
+            with self._connect() as con:
+                con.executescript("""
+                CREATE TABLE IF NOT EXISTS apollo_linkedin_reservations (
+                    company TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    action_type TEXT NOT NULL,
+                    account_id TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK(state IN ('reserved','confirmed','rejected','uncertain')),
+                    reason TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(company, task_id, action_type)
+                );
+                CREATE TABLE IF NOT EXISTS apollo_linkedin_account_locks (
+                    account_id TEXT PRIMARY KEY,
+                    owner TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                """)
+
+    def apollo_linkedin_store_ready(self):
+        """Require an existing, accessible installation DB with both migrated tables."""
+        path = Path(self.path)
+        if (self.path == ':memory:' or not path.is_absolute() or not path.is_file()
+                or path.resolve() != OFFICIAL_PANEL_DB.resolve()):
+            raise RepositoryConflict('official Apollo LinkedIn store unavailable')
+        try:
+            with self._connect() as con:
+                tables = {row[0] for row in con.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+                    "('apollo_linkedin_reservations','apollo_linkedin_account_locks')")}
+                if len(tables) != 2:
+                    raise RepositoryConflict('official Apollo LinkedIn store not migrated')
+                con.execute('SELECT 1 FROM apollo_linkedin_reservations LIMIT 1').fetchone()
+                con.execute('SELECT 1 FROM apollo_linkedin_account_locks LIMIT 1').fetchone()
+        except sqlite3.Error as exc:
+            raise RepositoryConflict('official Apollo LinkedIn store unavailable') from exc
+        return True
+
+    def reserve_apollo_linkedin(self, company, task_id, action_type, account_id):
+        for value in (company, task_id, action_type, account_id):
+            if not isinstance(value, str) or not value.strip() or value != value.strip():
+                raise ValueError('invalid Apollo LinkedIn reservation identity')
+        if action_type not in {'linkedin_step_connect', 'linkedin_step_message'}:
+            raise ValueError('unsupported Apollo LinkedIn action')
+        self.apollo_linkedin_store_ready()
+        now = datetime.now(timezone.utc).isoformat()
+        with self.transaction() as con:
+            try:
+                con.execute('INSERT INTO apollo_linkedin_reservations VALUES (?,?,?,?,?,?,?,?)',
+                            (company, task_id, action_type, account_id, 'reserved', None, now, now))
+            except sqlite3.IntegrityError as exc:
+                raise RepositoryConflict('Apollo LinkedIn task already reserved') from exc
+        return {'company': company, 'task_id': task_id, 'action_type': action_type,
+                'account_id': account_id, 'state': 'reserved', 'reason': None,
+                'created_at': now, 'updated_at': now}
+
+    def finish_apollo_linkedin(self, company, task_id, action_type, state, reason=None):
+        if state not in {'confirmed', 'rejected', 'uncertain'}:
+            raise ValueError('invalid Apollo LinkedIn terminal state')
+        self.apollo_linkedin_store_ready()
+        with self.transaction() as con:
+            changed = con.execute(
+                "UPDATE apollo_linkedin_reservations SET state=?,reason=?,updated_at=? "
+                "WHERE company=? AND task_id=? AND action_type=? AND state='reserved'",
+                (state, reason, datetime.now(timezone.utc).isoformat(), company, task_id, action_type)).rowcount
+            if changed != 1:
+                raise RepositoryConflict('Apollo LinkedIn reservation is not reserved')
+
+    def list_apollo_linkedin_reservations(self):
+        self.apollo_linkedin_store_ready()
+        with self._connect() as con:
+            return [dict(row) for row in con.execute('SELECT * FROM apollo_linkedin_reservations ORDER BY created_at')]
+
+    def list_apollo_linkedin_account_locks(self):
+        self.apollo_linkedin_store_ready()
+        with self._connect() as con:
+            return [dict(row) for row in con.execute(
+                'SELECT account_id, created_at FROM apollo_linkedin_account_locks ORDER BY created_at')]
+
+    @contextmanager
+    def apollo_linkedin_account_lock(self, account_id):
+        if not isinstance(account_id, str) or not account_id.strip() or account_id != account_id.strip():
+            raise ValueError('invalid LinkedIn account')
+        self.apollo_linkedin_store_ready()
+        owner = uuid4().hex
+        with self.transaction() as con:
+            try:
+                con.execute('INSERT INTO apollo_linkedin_account_locks VALUES (?,?,?)',
+                            (account_id, owner, datetime.now(timezone.utc).isoformat()))
+            except sqlite3.IntegrityError as exc:
+                raise RepositoryConflict('LinkedIn account locked') from exc
+        try:
+            yield
+        finally:
+            with self.transaction() as con:
+                changed = con.execute('DELETE FROM apollo_linkedin_account_locks WHERE account_id=? AND owner=?',
+                                      (account_id, owner)).rowcount
+                if changed != 1:
+                    raise RepositoryConflict('LinkedIn account lock lost')
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
