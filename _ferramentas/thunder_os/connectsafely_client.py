@@ -491,6 +491,13 @@ class ConnectSafelyClient:
         candidates=[];seen=set();cursor=None
         for _ in range(3):
             data=self.messages(thread,cursor=cursor)
+            if (cursor is not None and data['has_more'] and not data['messages']
+                    and data['next_cursor'] is None and data['fetching_more'] is False):
+                # Observed provider tail (03/11/2026): after a cursor, an empty page
+                # with no next cursor (and no accountId) still says hasMore=true.
+                # It attributes no message, so the history ends here.
+                if len(candidates)!=1:return {'status':'uncertain','error_code':'receipt_missing_or_ambiguous'}
+                return {**candidates[0],'write_attribution_confirmed':False,'confirmation_kind':'observed_outbound'}
             if (data['has_more'] and (not data['messages'] or data['next_cursor'] is None)
                     or not data['has_more'] and (data['fetching_more'] or data['next_cursor'] is not None)):
                 return {'status':'uncertain','error_code':'pagination_contradictory'}

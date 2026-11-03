@@ -114,6 +114,30 @@ class ClientTests(unittest.TestCase):
         self.more=True;self.assertEqual(self.client.reconcile(PLAN,NOW)['status'],'uncertain')
         self.more=False;self.participants=[{'profileId':OWNER},{'profileId':'wrong'}]
         self.assertEqual(self.client.reconcile(PLAN,NOW)['status'],'uncertain')
+    def test_reconcile_empty_tail_page_after_cursor_ends_history(self):
+        pages=[]
+        def request(method,path,query,body):
+            if path.endswith('/messages'):
+                self.calls.append((method,path,query,body))
+                if 'cursor' not in query:
+                    return 200,dict(success=True,accountId=ACCOUNT,messages=[self.message],participants=self.participants,
+                                    hasMore=True,nextCursor=str(NOW*1000),fetchingMore=False)
+                return 200,pages.pop(0)
+            return self.request(method,path,query,body)
+        self.client.request=request
+        tail=dict(success=True,messages=[],participants=self.participants+[{'profileId':'fixture-person'}],hasMore=True,fetchingMore=False)
+        pages.append(dict(tail))
+        result=self.client.reconcile(PLAN,NOW)
+        self.assertEqual(('sent','observed_outbound',False),(result['status'],result['confirmation_kind'],result['write_attribution_confirmed']))
+        self.assertTrue(all(c[0]=='GET' for c in self.calls))
+        for changed in ({'fetchingMore':True},{'nextCursor':'1'},{'messages':[dict(self.message,messageUrn='urn:li:messagingMessage:TWO')]}):
+            pages.append({**tail,**changed})
+            with self.subTest(changed=list(changed)):
+                self.assertEqual('uncertain',self.client.reconcile(PLAN,NOW)['status'])
+            pages.clear()
+        pages.append(dict(tail));self.message['text']='different'
+        self.assertEqual('receipt_missing_or_ambiguous',self.client.reconcile(PLAN,NOW)['error_code'])
+
     def test_reconcile_late_copy_outside_attempt_window_not_attributed(self):
         self.client.clock=lambda:NOW+3600
         self.message['sentAt']=(NOW+3600)*1000
