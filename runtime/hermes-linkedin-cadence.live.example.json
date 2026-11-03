@@ -22,6 +22,7 @@
     "token_env": "HUBSPOT_ACCESS_TOKEN"
   },
   "connectsafely_config": "/etc/thunder-os/direct-runtime-20261006.json",
+  "campaign_sheet_root": "/root/.hermes/profiles/ygor-personal/brain",
   "connectsafely_identity": {
     "account_id": "6abe5fc087213e2040fb9b1b",
     "public_id": "ygorbuenobr"

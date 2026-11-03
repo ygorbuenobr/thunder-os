@@ -1703,7 +1703,8 @@ ThunderDelegatedIdentity.mount($('delegated-identity-review'),{api:(...args)=>{
       if(!linkedin.length)s.appendChild(node('p','Nenhuma campanha com LinkedIn registrada.'));
       for(const c of linkedin){
         const p=node('p',c.id+' · '+(c.eligible?'elegível para esta conta':'não elegível ('+(c.reason||'motivo não informado')+')'));p.dataset.laCampaign=c.id;s.appendChild(p);
-        if(c.reason!=='campaign_inactive'&&Number.isInteger(c.version)){
+        // Only the canary's own campaign kind is revocable here; never other channels' campaigns.
+        if(c.eligible&&Number.isInteger(c.version)){
           const path='/api/os/v1/campaigns/'+encodeURIComponent(c.id)+'/revoke',payload={expected_version:c.version};
           s.appendChild(exact('Revogar campanha '+c.id,'POST',path,payload));
           s.appendChild(button('Revogar campanha '+c.id,()=>act('Revogar campanha','POST',path,payload,(_r,st)=>!(st.campaigns||[]).some(x=>x.id===c.id&&x.eligible)),{data:'campaign-revoke'}));

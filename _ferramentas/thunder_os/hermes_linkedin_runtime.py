@@ -53,10 +53,12 @@ def load_config(path):
     allowed = {"version", "mode", "execution_enabled", "repository", "source_revision", "poll_minutes",
                "max_tasks_per_run", "timezone", "business_hours", "daily_cap", "kill_switch",
                "action_spacing_seconds", "source_revision_file", "hubspot", "connectsafely_config",
-               "connectsafely_identity", "synthetic"}
+               "connectsafely_identity", "synthetic", "campaign_sheet_root"}
     if set(cfg) - allowed or type(cfg.get("execution_enabled")) is not bool:
         raise ValueError("runtime_config_invalid")
     _absolute(cfg.get("repository")); _absolute(cfg.get("source_revision_file"))
+    if "campaign_sheet_root" in cfg:
+        _absolute(cfg["campaign_sheet_root"])
     if not isinstance(cfg.get("source_revision"), str) or not cfg["source_revision"]:
         raise ValueError("runtime_config_invalid")
     if type(cfg.get("poll_minutes")) is not int or not 5 <= cfg["poll_minutes"] <= 60:
@@ -193,6 +195,11 @@ def build(cfg):
             raise ValueError("connectsafely_identity_mismatch")
         hub=cfg["hubspot"];tasks=HubSpotTasks(hub["portal_id"],hub["owner_id"],hub["token_env"],
             cadence_for_task=lambda task_id: task_cadence_binding(repository, task_id))
+        if "campaign_sheet_root" in cfg and app.direct is not None:
+            # Same Brain store the panel attaches: the campaign gate must read the
+            # pinned sheet, otherwise enqueue fails closed with campaign_sheet_incomplete.
+            from .knowledge import KnowledgeStore
+            app.direct.campaign_sheet_store = KnowledgeStore(_absolute(cfg["campaign_sheet_root"]))
         readers = getattr(app, 'canary_readers', None)
         return HermesLinkedInCadence(repository,tasks,app,
             identity_verifier=readers.identity if readers is not None else None),tasks,datetime.now(timezone.utc).timestamp()

@@ -12,6 +12,9 @@ const css = between('<style>','</style>')+'</style>';
 const markup = between('    <section id="cad-li-auth"','\n  <section class="cad-read-section"><h3>Fontes');
 const screen = between('/* THUNDER_LINKEDIN_AUTHORIZATION_BEGIN */','/* THUNDER_LINKEDIN_AUTHORIZATION_END */');
 assert(!screen.includes('innerHTML'), 'screen must build DOM with textContent only');
+// iniciarAbas() moves the LinkedIn section (and this screen) to the Sistema tab.
+assert.match(source,/for\(const id of \[[^\]]*'cad-linkedin-preparation'[^\]]*\]\)\{\s*const section=\$\(id\)\?\.closest\('\.cad-read-section'\);if\(section\)\$\('system-campaign-tools'\)\.append\(section\);/);
+assert.match(between('<p id="cad-linkedin-preparation"','<section class="cad-read-section"><h3>Fontes'),/id="cad-li-auth"/, 'screen lives in the relocated LinkedIn section (Sistema tab)');
 assert(!/conversations\/send|\/execute|\/connect'/.test(screen), 'screen must not reference send routes');
 const attack = '<img src=x onerror="window.injected=true">';
 const TEXT1 = 'Oi Laura, aqui é o Ygor. Este é o teste do Thunder OS que combinamos.\n\nPode ignorar. '+attack;
@@ -28,7 +31,7 @@ function fakeServer(){
   const now = () => Date.now()/1000;
   const s = {delegation:null, agent:{enabled:true,paused:true,version:14}, approvals:[], bindings:[], confirmations:{},
              previews:{}, campaigns:[{id:'LI-THUNDER-OS-00',platform:'thunder_os',eligible:true,reason:null},{id:'LI-THUNDER-OS-01',platform:'thunder_os',eligible:true,reason:null},
-                                    {id:'MX27-CDMX',platform:'codex_local',eligible:false,reason:'campaign_platform_not_thunder_os'}]};
+                                    {id:'MX27-CDMX',platform:'codex_local',eligible:false,reason:'campaign_platform_not_thunder_os',version:3}]};
   const blockers = () => [
     ...(s.delegation&&s.delegation.enabled?[]:['delegation_off']),
     ...(s.agent.paused?['agent_paused']:[]),'executor_identity_verifier_missing'];
@@ -232,6 +235,8 @@ const ALLOWED_POSTS = new Set(['/api/os/v1/linkedin-campaign-drafts','/api/os/v1
       assert.deepEqual(lastPost().body,{scopes:['linkedin_cadence'],daily_limit:1,enabled:false});
       assert.match(await page.locator('[data-la-state="delegation"]').innerText(),/Desligada/);
 
+      assert.equal(await page.locator('[data-la-campaign="MX27-CDMX"] + details + button[data-la-action="campaign-revoke"]').count(),0,'no revoke for other channels');
+      assert.equal(await page.locator('[data-la-action="campaign-revoke"]').count(),1,'only the canary campaign is revocable');
       await page.locator('[data-la-action="campaign-revoke"]').last().click(); await settle();
       assert.deepEqual(lastPost(),{method:'POST',path:'/api/os/v1/campaigns/LI-CANARIO-LAURA-01/revoke',body:{expected_version:1}});
       assert.equal(await page.locator('[data-la-campaign="LI-CANARIO-LAURA-01"]').count(),0);
