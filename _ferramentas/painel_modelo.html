@@ -4523,10 +4523,12 @@ function missionReportText(snapshot){
   const preview=snapshot.hunter_preview && typeof snapshot.hunter_preview==='object'?snapshot.hunter_preview:{};
   const crm=snapshot.crm_sync && typeof snapshot.crm_sync==='object'?snapshot.crm_sync:{};
   const number=n=>Number.isSafeInteger(n)&&n>=0?String(n):'não informado';
-  const time=typeof snapshot.observed_at==='string'&&snapshot.observed_at.length<=80?snapshot.observed_at:'não informado';
+  const time=value=>typeof value==='string'&&value.length<=80?value:'não informado';
+  const freshness=coverage.retained_observation===true?'Dados retidos de observação anterior.':snapshot.stale===true?'Cache sinalizado como desatualizado.':'Atualidade do cache não comprovada por esta consulta.';
+  const observed=snapshot.enabled===true&&typeof coverage.contacts_observed_at==='string'&&coverage.contacts_observed_at?number(preview.observed_leads):'não informado';
   const total=snapshot.status==='ok'&&snapshot.stale===false&&coverage.complete===true?number(preview.total_leads):'não comprovado';
   const known=x=>x===true?'concluída':x===false?'parcial':'não verificada';
-  return `Campanha BR-APOLLO-01\nFonte Apollo: cache do leitor; observação ${time}.\nContatos observados: ${number(preview.observed_leads)}. Total de inscritos: ${total}.\nCobertura de contatos: ${known(coverage.contacts_complete)}; mensagens: ${known(coverage.messages_complete)}. Dados podem não ser um retrato único.\nFonte HubSpot: estado de conciliação armazenado no painel; leitura atual não verificada. Contatos existentes informados anteriormente: ${number(crm.contacts_existing)}. Vínculos atuais não verificados.\nDelegação e revisão não comprovadas. Nenhuma missão Hermes foi iniciada por esta consulta.`;
+  return `Campanha BR-APOLLO-01\nFonte Apollo: cache do leitor; observação geral ${time(snapshot.observed_at)}.\nContatos observados em: ${time(coverage.contacts_observed_at)}; mensagens observadas em: ${time(coverage.messages_observed_at)}. ${freshness}\nContatos observados: ${observed}. Total de inscritos: ${total}.\nCobertura de contatos: ${known(coverage.contacts_complete)}; mensagens: ${known(coverage.messages_complete)}. Dados podem não ser um retrato único.\nFonte HubSpot: estado de conciliação armazenado no painel; leitura atual não verificada. Contatos existentes informados anteriormente: ${number(crm.contacts_existing)}. Vínculos atuais não verificados.\nDelegação e revisão não comprovadas. Nenhuma missão Hermes foi iniciada por esta consulta.`;
 }
 /* MISSION_REPORT_FORMAT_END */
 $('mission-report-read').addEventListener('click',async()=>{

@@ -7,15 +7,18 @@ const match = html.match(/\/\* MISSION_REPORT_FORMAT_BEGIN \*\/([\s\S]*?)\/\* MI
 assert.ok(match, 'panel report formatter exists');
 const box = {};
 vm.runInNewContext(match[1] + '\nthis.format = missionReportText;', box);
-const out = box.format({campaign_id:'BR-APOLLO-01', observed_at:'2026-11-03T01:00:00Z',
-  coverage:{complete:false, contacts_complete:false, messages_complete:true},
+const out = box.format({enabled:true, campaign_id:'BR-APOLLO-01', observed_at:'2026-11-03T01:00:00Z',
+  coverage:{complete:false, contacts_complete:false, messages_complete:true, retained_observation:true, contacts_observed_at:'2026-10-27T12:00:00Z', messages_observed_at:'2026-11-03T00:59:00Z'},
   hunter_preview:{observed_leads:278, total_leads:null}, crm_sync:{status:'configuration_pending'}});
 assert.match(out, /278/);
 assert.match(out, /Total de inscritos: não comprovado/);
 assert.match(out, /HubSpot.*não verificada/i);
 assert.match(out, /revisão não comprovada/i);
-assert.match(out, /2026-11-03T01:00:00Z/);
+assert.match(out, /2026-10-27T12:00:00Z/);
+assert.match(out, /2026-11-03T00:59:00Z/);
+assert.match(out, /Dados retidos de observação anterior/);
 assert.match(box.format({campaign_id:'BR-APOLLO-01', status:'partial', coverage:{complete:true}, hunter_preview:{total_leads:999}}), /Total de inscritos: não comprovado/);
+assert.match(box.format({enabled:false,campaign_id:'BR-APOLLO-01',hunter_preview:{observed_leads:0}}), /Contatos observados: não informado/);
 assert.throws(() => box.format({campaign_id:'other'}));
 assert.match(box.format({campaign_id:'BR-APOLLO-01'}), /não informado/i);
 assert.ok(html.includes("apiServidor('/api/os/v1/integrations/apollo/reader')"));
