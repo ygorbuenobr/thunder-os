@@ -2844,7 +2844,12 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
             servidor.thunder_account_cadence_readonly = AccountCadenceReadonly(
                 RAIZ, repo=servidor.thunder_today_readonly.repo)
             from thunder_os.apollo_campaign_reader import ApolloCampaignReader
-            servidor.thunder_apollo_reader = ApolloCampaignReader(repository) if runtime is None else None
+            apollo_meetings = None
+            if crm_read and runtime is None:
+                from thunder_os.apollo_meetings import ApolloMeetingsReader
+                apollo_meetings = ApolloMeetingsReader(repository, HubSpotReadonlyAdapter(systemd_hubspot_credential,
+                    max_pages=20, max_requests=40, budget_seconds=30))
+            servidor.thunder_apollo_reader = ApolloCampaignReader(repository, meetings=apollo_meetings) if runtime is None else None
             servidor.thunder_journey_readonly = JourneyReadonly(servidor.thunder_today_readonly,
                 cadence_reader=getattr(servidor, 'thunder_cadence_readonly', None),
                 accounts=servidor.thunder_account_cadence_readonly,
