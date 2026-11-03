@@ -122,6 +122,28 @@ class RuntimeTests(unittest.TestCase):
                 tasks.assert_not_called()
         self.assertEqual([], self.repo.list_state('connectsafely_job'))
 
+    def test_live_runtime_attaches_campaign_sheet_store_to_direct_console(self):
+        from thunder_os.hermes_linkedin_runtime import build
+        from thunder_os.knowledge import KnowledgeStore
+        configured = {'account_id':'fixture-account', 'public_id':'fixture-owner'}
+        root = Path(self.temp.name) / 'brain'; root.mkdir()
+        base = {**self.config, 'mode':'live', 'connectsafely_config':str(self.path),
+                'connectsafely_identity':configured,
+                'hubspot':{'portal_id':'51412240', 'owner_id':'92901049', 'token_env':'HUBSPOT_ACCESS_TOKEN'}}
+        for cfg, expected in (({**base, 'campaign_sheet_root': str(root)}, True), (base, False)):
+            direct = SimpleNamespace(campaign_sheet_store=None)
+            def compose(_cfg, repository):
+                return SimpleNamespace(application=SimpleNamespace(
+                    provider=SimpleNamespace(account_id='fixture-account', expected_public_id='fixture-owner'),
+                    direct=direct, repo=repository, delegated_task_guard=None))
+            with self.subTest(expected=expected), \
+                 patch.dict(os.environ, {'THUNDER_EXTERNAL_EFFECTS_ENABLED':'true'}, clear=True), \
+                 patch('thunder_os.hermes_linkedin_runtime.load_cs_config', return_value={'live':configured}), \
+                 patch('thunder_os.hermes_linkedin_runtime.build_connectsafely', side_effect=compose), \
+                 patch('thunder_os.hermes_linkedin_runtime.HubSpotTasks'):
+                build(cfg)
+            self.assertEqual(expected, isinstance(direct.campaign_sheet_store, KnowledgeStore))
+
     def test_synthetic_runtime_without_identity_source_fails_closed(self):
         output=io.StringIO()
         with patch('socket.create_connection', side_effect=AssertionError('network forbidden')), redirect_stdout(output):
