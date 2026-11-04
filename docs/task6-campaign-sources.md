@@ -1,5 +1,7 @@
 # Campaign Sources: Read And Prepare Only
 
+> **Errata de produto — 04/11/2026:** os prazos históricos de 30 dias para vagas e 45/60 dias do catálogo descritos abaixo não são a política vigente de validade de sinais. A decisão A13 na [visão do Thunder OS](thunder-os-contexto-completo-entire.md#decisões-de-produto-registradas-em-04112026) estabelece: vaga aberta 60 dias, cargo novo 90, investimento ou expansão 120, anúncio ativo 30 e notícia 60. O corte de engajamento de 14 dias abaixo é uma regra histórica específica, não substitui A13. O texto e os testes históricos não comprovam a implementação da nova regra.
+
 Task 6 reuses `normalize_signal` / canonical catalog parsing and
 `connection_intake.profile_key`. The 30-day task-specific job cutoff is stricter
 than the shared catalog's 45/60 days; the catalog itself is not rewritten.

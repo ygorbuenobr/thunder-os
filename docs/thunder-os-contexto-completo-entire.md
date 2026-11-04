@@ -853,3 +853,18 @@ Separado em duas interfaces para garantir que o painel nunca tenha poder de escr
 6. **[VALIDAR — Contrato e Comportamento de `toques.py`]:** Quais são os parâmetros exatos, garantias de idempotência e expectativas de transação do módulo `toques.py` externo, fixado por hash no contrato do repositório para que o registro de evidências do Thunder OS alimente o ledger sem quebrar contratos existentes?
 7. **[VALIDAR — Parâmetros do Primeiro Teste Real com Ygor]:** Qual será a frase exata de autorização definida por Ygor, qual a conexão já escolhida, sujeita às autorizações necessárias, para receber a mensagem de teste, qual o texto exato do teste e qual o ID da tarefa correspondente no Apollo?
 
+
+## Decisões pendentes do Ygor — auditoria de 04/11/2026
+
+Estas perguntas complementam as decisões já fechadas; não reabrem A1–A14. Nenhuma alternativa abaixo foi aprovada por este registro.
+
+1. **Texto do convite:** quando a tarefa do Apollo não trouxer o texto, ele deverá vir de um passo consultável no Apollo, ser criado no Thunder OS a partir do contexto da campanha, ser cadastrado no Thunder OS, ou combinar essas opções?
+2. **Identidade do painel (T3):** o painel deve deixar de rodar como root para permitir isolamento do broker de leitura, ou outra fronteira comprovada deve ser adotada? A escolha exige prova de isolamento; uma chave apenas de leitura ainda não foi comprovada.
+3. **Feriados BR/MX:** aplicar a união dos calendários ou o calendário do país do lead? Qual fonte de feriados será adotada?
+4. **Saúde dos canais (A14):** qual janela e amostra mínima usar para o limite de bounce de 2%? Qual queda de aceite no LinkedIn deve disparar redução de ritmo e qual redução aplicar?
+5. **Alertas (A9):** qual serviço enviará os alertas por e-mail, inclusive se a caixa de prospecção estiver indisponível?
+6. **Distribuição LinkedIn:** qual regra usar entre as contas selecionadas quando a campanha optar pela distribuição automática?
+7. **Contatos por empresa:** qual intervalo ou condição separa o início da abordagem dos até três contatos da mesma empresa?
+8. **IA e custo (A8):** qual backend e autenticação usar em produção para cada capacidade, e em que unidade monetária contabilizar limites e custos?
+
+As respostas exigem posterior tradução em contratos e testes; este documento não altera serviços nem autoriza envios.

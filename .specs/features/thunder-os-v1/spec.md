@@ -111,7 +111,7 @@ A aba Cadências deve mostrar a união das campanhas cadastradas e das identific
 **Acceptance Criteria**:
 
 1. WHEN uma conta entra no Thunder OS THEN the system SHALL consolidar identidade empresarial, setor, porte disponível, modelo de negócio, localização, presença digital e fontes consultadas.
-2. WHEN há fatos públicos observados nos últimos 90 dias THEN the system SHALL tratá-los como recentes e registrar o momento da empresa com evento, data observada, URL, recência e explicação de por que o fato pode ser comercialmente relevante; a partir do 91º dia o fato fica vencido.
+2. **Histórico, superado por A13 em 04/11/2026:** a regra anterior tratava todos os fatos observados nos últimos 90 dias como recentes e os vencia no 91º dia. Conforme [decisões vigentes](../../../docs/thunder-os-contexto-completo-entire.md), a validade é por tipo: vaga aberta 60 dias, cargo novo 90, investimento ou expansão 120, anúncio ativo 30 e notícia 60. Registrar evento, data observada, URL, recência e relevância; a regra para categorias não listadas ainda requer definição. A implementação e os testes por categoria ainda precisam ser validados.
 3. WHEN um sinal admite mais de uma interpretação THEN the system SHALL registrar a hipótese de oportunidade e pelo menos uma hipótese alternativa que não pressuponha intenção de compra.
 4. WHEN avalia aderência THEN the system SHALL comparar a conta com o ICP vigente da Thunder Mustard e separar `fit`, `momento`, `qualidade dos dados` e `risco` em vez de condensá-los em uma certeza única.
 5. WHEN formula uma oportunidade THEN the system SHALL relacionar o problema possível a uma capacidade documentada da Thunder Mustard, indicando a fonte interna vigente usada nessa relação.
@@ -274,7 +274,7 @@ A aba Cadências deve mostrar a união das campanhas cadastradas e das identific
 | --- | --- | --- | --- |
 | TOS-01 | Começar o dia | Validation | 5/5 PASS no contrato local; produção não executada |
 | TOS-02 | Contexto de conta e pessoa | Re-validation | Correção e testes produtor→consumidor prontos; verificação independente pendente |
-| TOS-03 | Pesquisa e oportunidade ABM | Re-validation | Regra de 90 dias e rascunho incompleto governado prontos; verificação independente pendente |
+| TOS-03 | Pesquisa e oportunidade ABM | Re-validation | Histórico: regra única de 90 dias e rascunho incompleto governado; regra única superada por A13, implementação por categoria e verificação independente pendentes |
 | TOS-04 | Pedidos aos agentes | Validation | 5/5 PASS |
 | TOS-05 | Revisão e autorização | Re-validation | Delegação autenticada e limitada pronta; verificação independente pendente |
 | TOS-06 | Cadência multitoque | Re-validation | Readback de toque devido pronto; verificação independente pendente |

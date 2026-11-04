@@ -73,6 +73,8 @@ resposta natural do agente ou do resultado por um usuario nao foi avaliada.
 
 ## Alcance dos testes
 
+> **Errata de produto — 04/11/2026, cenário 017:** o resultado histórico abaixo continua sendo evidência do comportamento então testado, mas não define o contrato vigente de versões. Segundo A7 da [visão do Thunder OS](thunder-os-contexto-completo-entire.md#decisões-de-produto-registradas-em-04112026), uma nova versão vale por padrão apenas para leads que ainda não começaram; os demais seguem na versão original, salvo a opção do gestor de aplicar a todos, com impacto mostrado antes da aprovação. Será necessário vincular cada matrícula a uma versão imutável e preservar os envios confirmados. Isso não autoriza alterar payload ou hash de uma ação já aprovada: divergência de integridade ainda deve bloquear. O novo contrato ainda não foi implementado nem validado por este teste.
+
 | Cenario | Enforcement real observado | Relacao com dataset |
 | --- | --- | --- |
 | Aprovacao exata | Texto/alvo/hash corretos; fila sem efeito; worker envia uma vez; recibo e ledger persistidos | 005/008, parcial: readback e observador |

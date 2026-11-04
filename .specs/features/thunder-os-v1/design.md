@@ -45,6 +45,8 @@ flowchart TD
 
 ## Authority Map
 
+> **Errata de 04/11/2026 — reserva:** a linha histórica que atribui a reserva a PostgreSQL e as referências a essa autoridade nesta seção não fecham a escolha para Apollo + LinkedIn. Conforme R08 em [decisões vigentes](../../../docs/thunder-os-contexto-completo-entire.md), há um único armazenamento oficial por instalação, com reserva atômica antes da execução. A escolha técnica permanece pendente entre (1) SQLite oficial do Thunder OS, aproveitando `apollo_linkedin_reservations` e sua chave composta em `db.py`, ou (2) PostgreSQL de `toques.py`, aproveitando `TouchLedger` e seus contratos de reserva/reconciliação. Recomendação para T3: avaliar primeiro SQLite oficial já utilizado pela implementação desta fatia, evitando dois responsáveis pela mesma reserva; verificar integração com o ledger de toques, concorrência e consistência entre fluxos antes de decidir. O código existente não prova que outros executores consultem essa reserva nem autoriza armazenamento independente ou sincronização por projeção como segunda autoridade. A escolha ainda precisa de validação e decisão técnica; não é migração nem mudança implementada.
+
 | Information | Authority | Readers | Writers | Projection / mirror |
 | --- | --- | --- | --- | --- |
 | Oferta, ICP, provas, estilo e catálogo de sinais | arquivos validados em `thunder/`, `eu/` e `conhecimento/` | research, copy, UI | humanos/agentes conforme `REGRAS.md` | snapshot com hash no artefato de pesquisa |
@@ -298,6 +300,10 @@ correlation_id, causation_id?, occurred_at
 Append-only. Sensitive payload bodies are referenced by hash/ref, not duplicated in events.
 
 ## State and Timing Rules
+
+> **Errata de 04/11/2026:** a regra histórica abaixo que calcula o vencimento a partir da conclusão anterior está superada para atraso comum pela decisão 33 e A2 das [decisões vigentes](../../../docs/thunder-os-contexto-completo-entire.md): manter o cronograma original das próximas etapas, seguir a ordem, no máximo um toque por lead por dia e pelo menos um dia útil entre toques. Atraso não autoriza rajada; pausas por ausência seguem sua regra específica. Requer implementação e testes próprios, não comprovados por este texto.
+>
+> **Versão da campanha — A7:** a invalidação histórica dos hashes futuros abaixo não deve ser interpretada como derrubar a fila de todos quando se cria uma versão: por padrão, ela vale apenas para leads que ainda não começaram; os demais permanecem na versão original. O gestor pode escolher aplicar a todos, visualizando impacto antes da aprovação. Para isso, o contrato precisa vincular cada matrícula a uma versão imutável da campanha; nada já enviado ou confirmado é alterado. Detalhes e decisões em [fonte principal](../../../docs/thunder-os-contexto-completo-entire.md). Contrato ainda não implementado por esta errata.
 
 - All business time uses `America/Sao_Paulo`; storage timestamps are timezone-aware UTC.
 - A cadence step becomes due from the confirmed completion time of its dependency, not from queue time.

@@ -1,5 +1,7 @@
 # LinkedIn Preparation, Execution Off
 
+> **Errata de produto — 04/11/2026:** a política `weekly_invite_limit: null` e a conclusão histórica de que 200 nunca seria aplicado foram superadas por A1 e pela decisão 37 em [visão do Thunder OS](thunder-os-contexto-completo-entire.md#decisões-de-produto-registradas-em-04112026). A referência é **200 convites por semana por perfil**, configurável por conta, respeitando o menor valor entre o configurado e a quota efetiva do provedor. A quota efetiva precisa de validação; não se presume que 200 seja permitido. Os exemplos, comportamentos e testes abaixo descrevem a implementação histórica e precisam ser adequados antes de afirmar conformidade; esta errata não altera o código nem libera execução.
+
 ## Bounded policy update (2026-10-21)
 
 Source: the delegated user decision, on Mac/Darwin as `ygorbueno`, checkout
@@ -132,6 +134,8 @@ CampaignRegistry: timezone, send_hour, weekly_invite_limit and holidays. The
 existing configuration hash includes it, so a revision invalidates the previous
 batch confirmation without another approval type. Existing configurations remain
 valid and are not rewritten. No production campaign receives invented values.
+
+**Errata de produto — 04/11/2026:** a invalidação generalizada de lotes por revisão descrita acima é comportamento histórico, superado por A7 da [visão do Thunder OS](thunder-os-contexto-completo-entire.md#decisões-de-produto-registradas-em-04112026): por padrão, matrículas já iniciadas permanecem vinculadas à versão original; uma nova versão vale para leads que ainda não começaram, salvo opção do gestor de aplicar a todos após ver o impacto e aprovar. A matrícula precisa registrar uma versão imutável; alterações não autorizadas ao payload de uma ação continuam bloqueadas. Contrato futuro, não implementação comprovada.
 
 `LinkedInPreparation.prepare` reads that Registry policy, proposes the next local
 business slot and holds an invite at the configured weekly total. Quota input

@@ -76,3 +76,13 @@ Mapeamento de código e documentação local em 04/11/2026. Nenhuma API externa,
 4. Fechar B8 e B10: autorização, exceções e cobertura no painel; runtime, backup restaurável e rollback comprovados.
 5. Preparar B11 e obter autorização específica antes do primeiro envio real; confirmar separadamente fornecedor e Apollo.
 6. Evoluir B4 e B7 para cadência nativa e pesquisa por cliente; avaliar B9 apenas se houver fluxo auxiliar que justifique.
+
+## Riscos de desenho confirmados (auditoria 04/11)
+
+- **B1 — tarefa Apollo:** a leitura registrada da tarefa gerada por sequência não trouxe proprietário nem template do convite; a conta padrão da campanha é a decisão existente, mas a origem do texto ainda depende de definição e comprovação. Não completar campos por inferência. Evidência: `.specs/features/apollo-linkedin/design.md`, Risks & Concerns.
+- **B2/B10 — identidade dos serviços:** units presentes em `runtime/systemd/` declaram `User=root`; a auditoria registrou que o painel ativo também executava como root. Permissões Unix comuns não isolam a credencial do broker de um painel privilegiado. A prova em staging com UIDs separados e dados falsos não demonstra isolamento do serviço real; conferir a identidade efetiva antes de qualquer ativação.
+- **B6 — lock e rede:** `.specs/features/thunder-os-v1/campaign-execution-confirmation.md` documenta chamada síncrona ao provedor dentro de `BEGIN IMMEDIATE`; lentidão pode bloquear outros escritores SQLite. Revisar a solução com transações curtas, exclusão por conta e reconciliação de envio incerto, preservando a proteção contra alterações concorrentes. Não foi implementada aqui.
+- **B6/B10 — caminho do armazenamento:** `runtime/hermes-linkedin-cadence.example.json` aponta para `/var/lib/thunder-os/painel.db`, enquanto `runtime/hermes-linkedin-cadence.live.example.json` e `runtime/systemd/thunder-os-agent-hermes-ro.conf` apontam para `/root/.hermes/profiles/ygor-personal/painel-dados/painel.db`. São modelos distintos, não prova do caminho efetivo; revalidar a configuração de cada processo e garantir um único armazenamento oficial por instalação antes de operar. A decisão entre SQLite e PostgreSQL está pendente na seção Authority Map da spec V1.
+- **B8/B10 — identidade de usuário:** verificações `actor != 'ygor'` em `_ferramentas/painel_servidor.py` restringem fluxos ao usuário fixo e não atendem, por si, aos papéis configuráveis e isolamento multiempresa de A11. Avaliar autorização e segregação por empresa antes de ampliar uso.
+
+Esta seção registra riscos e evidências, não prova correção, implantação ou autorização de ação externa.

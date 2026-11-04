@@ -25,6 +25,8 @@ After this change, a bounded Hermes runner can execute exactly one due HubSpot L
 
 ## Assumptions
 
+> **Errata de 04/11/2026 — aprovação:** o requisito histórico de confirmação por tarefa e de preview exato individual neste plano foi superado por R05 e decisão 34 das [decisões vigentes](../../../docs/thunder-os-contexto-completo-entire.md): uma aprovação por versão da campanha abrange suas ações, textos e regras. Confirmação individual permanece para o canário do primeiro envio real (R15) e divergência de identidade. Regras e exceções precisam ser traduzidas e verificadas no código; este aviso não autoriza envio.
+
 | Assumption | Chosen default | Rationale | Confirmed? |
 | --- | --- | --- | --- |
 | Authority | Ygor approves an exact contact-scoped package at D0, plus the exact task preview/campaign confirmation; identity divergence requires a separate observation-bound decision. | D0 alone no longer grants dispatch authority; the canary still requires a new explicit exact-text approval. | y |
@@ -61,6 +63,8 @@ After this change, a bounded Hermes runner can execute exactly one due HubSpot L
 9. WHEN the same confirmed task is observed again THEN no second provider write or daily-cap consumption SHALL occur.
 
 ### S4: Bounded runtime configuration (P1)
+
+> **Errata de 04/11/2026 — espaçamento:** o intervalo histórico de 30–90 segundos mencionado no critério 11 está superado pela decisão 35 em [decisões vigentes](../../../docs/thunder-os-contexto-completo-entire.md): intervalo configurável de 40–90 segundos entre ações. O texto antigo permanece como registro, sem alegar que o runtime já aplica a regra nova.
 
 **Acceptance Criteria**
 
