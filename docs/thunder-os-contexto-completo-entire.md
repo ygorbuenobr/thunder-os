@@ -303,3 +303,486 @@ Leia este documento como contexto e confronte-o com o repositório e os contrato
 - Mapa de sistemas e fronteiras: `thunder-gtm/SISTEMA.md`.
 
 Essas referências são caminhos locais do ambiente do Ygor. Quem receber somente este documento não terá acesso automático ao código ou aos arquivos mencionados; a avaliação de implementação precisará do repositório ou de um recorte sanitizado.
+
+---
+
+## 18. Complemento de produto e arquitetura elaborado pelo Gemini 4 Argon
+
+Em 03/11/2026, o Gemini 4 Argon elaborou o complemento abaixo em uma consulta específica, a partir de um recorte do contexto. Ele descreve a visão final em maior detalhe, inclusive listas e sequências nativas, respostas, CRM, contas, multiempresa, contratos e critérios de aceite. É **material proposto**, não validação independente do código, das APIs ou da vontade de Ygor em cada detalhe. As decisões documentadas nas seções anteriores prevalecem sobre sugestões conflitantes.
+
+**Ressalvas de leitura:**
+
+- Papéis, recursos de inbox, regras de importação, obrigatoriedades, hashes, tabelas, estados, mecanismo de lock e fases citados abaixo são propostas, não decisões já aprovadas nem funcionalidades comprovadas. Uma sessão ativa em um provedor pode não ser verificável por uma API de saúde; confirmar antes.
+- O desenho conceitual não exige criar as tabelas sugeridas: conferir e reutilizar `db.py`, `approvals.py`, `cadence.py`, `touch_ledger.py` e os jobs existentes antes de propor alterações de schema. A existência de código de cadência não comprova operação integrada real.
+- A exigência da frase para o primeiro envio é uma autorização operacional específica, não uma exigência para armazenar um hash de senha ou criar uma trava permanente no banco. Testes automatizados devem usar fixtures isoladas, jamais executar ou alterar a tarefa real de teste.
+- A escolha de Python, SQLite e HTML/JS descreve a stack existente e a recomendação inicial; não é imposição definitiva de Ygor para todo o produto. `toques.py` é dependência externa fixada por hash, não arquivo que este repositório deva copiar ou alterar.
+- O conflito entre responsável Apollo e conta padrão, origem do texto, momento de conclusão de convite e ações manuais sobre resultado incerto dependem de decisão de produto. Uma leitura parcial sem texto não prova que toda API Apollo não disponibiliza conteúdo.
+- Um lock com expiração não pode, sozinho, garantir exclusão mútua durante uma chamada demorada; implementação precisa impedir concorrência após perda de lease e tratar envio em andamento como potencialmente incerto. Não criar tabela ou fila apenas por estar sugerida abaixo.
+- Aceite do provedor ou fila não prova entrega à pessoa; disponibilidade de recibos, parada no Apollo e respostas são hipóteses a validar. Não se pode garantir pausa de canal externo até confirmação do fornecedor.
+- A fixture de autoconvite permanece intacta; qualquer teste com outra pessoa e qualquer envio real dependem das autorizações específicas pertinentes.
+
+### Resposta completa do Gemini
+
+# Especificação de Produto e Arquitetura — Thunder OS (Visão Completa)
+
+> **Status do documento:** Proposta técnica e funcional em construção para revisão de Ygor. As decisões já estabelecidas pelo dono do produto estão preservadas integralmente; extensões arquiteturais para os modos nativos e fases futuras estão explicitamente marcadas como propostas pendentes de validação e aprovação.
+
+---
+
+## 1. Jornada Integral do Produto Final
+
+O Thunder OS opera sob o princípio de **Isolamento por Empresa (Workspace)** e **Unicidade de Orquestração por Matrícula**: cada lead matriculado em uma campanha tem exatamente um dono de cadência (`ORCHESTRATOR_APOLLO` ou `ORCHESTRATOR_NATIVE`), nunca ambos simultaneamente para a mesma matrícula.
+
+### 1.1 Papéis e Fronteiras de Acesso
+
+| Papel | Escopo de Visibilidade | Responsabilidades Principais | Restrições Explícitas |
+|---|---|---|---|
+| **Administrador da Empresa** | Workspace da sua empresa (configurações globais, conexões, usuários, auditoria). | Cadastrar e autenticar contas de LinkedIn, caixas de e-mail, conexões Apollo e CRM; atribuir papéis; gerenciar limites de segurança da empresa. | Não vê segredos em texto claro após salvos; em ambiente multiempresa, não acessa outros workspaces. |
+| **Gestor de Campanha** | Campanhas, listas, templates, relatórios e caixa de exceções da empresa. | Importar listas; definir deduplicação; criar campanhas (modo Apollo ou Nativo); vincular conta padrão por canal; configurar regras e textos; **aprovar a versão da campanha**. | Não lê credenciais brutas; alterações em regras/textos/contas de campanha ativa invalidam a aprovação vigente. |
+| **Operador Comercial (SDR/BDR)** | Painel de operação, prévias, caixa de respostas unificada, fila de exceções e relatórios da empresa. | Acompanhar tarefas elegíveis e bloqueadas; inspecionar prévias (somente leitura); tratar respostas recebidas; resolver exceções manuais (ex.: resultado incerto ou falha de reconciliação). | Não aprova campanhas; consultas no painel nunca disparam envios nem alteram estado externo. |
+| **Cliente / Empresa Externa (B2B)** | Workspace estritamente isolado (`workspace_id` obrigatório em todas as camadas). | Operar seus próprios administradores, gestores e operadores sobre suas próprias contas, listas e CRMs. | Zero compartilhamento de contas de canal, leads, locks ou credenciais com o workspace da Thunder ou de terceiros. |
+
+---
+
+### 1.2 Passo a Passo da Jornada End-to-End
+
+#### Etapa A — Onboarding da Empresa e Conexão de Contas (Administrador)
+1. **Configuração do Workspace:** O Admin acessa o workspace da empresa. Todos os registros criados recebem `workspace_id`.
+2. **Conexão de Provedores e Contas de Canal:**
+   - **LinkedIn (via ConnectSafely):** O Admin cadastra $N$ contas de LinkedIn da empresa. Cada conta recebe um identificador interno, rótulo comercial (ex.: *" Executivo A"*, *"SDR B"*) e vínculo com a credencial/sessão no ConnectSafely [VALIDAR mecanismo de vínculo de conta no ConnectSafely].
+   - **E-mail:** Na fase Apollo-orquestrada, as caixas são geridas no Apollo, mas registradas no Thunder OS para rastreio de identidade. Na fase Nativa, o Admin conecta $M$ caixas de e-mail via provedor SMTP/API [VALIDAR provedor de e-mail nativo].
+   - **Apollo:** O Admin registra a conexão de API do Apollo da empresa e executa o teste de conectividade e escopo de leitura/escrita.
+   - **CRM (Adaptável):** O Admin conecta a instância de CRM da empresa (ex.: HubSpot) e define o mapeamento de campos e a política de escrita (somente leitura, criar se não existir, atualizar etapas).
+3. **Verificação Real de Disponibilidade:** O sistema não assume que uma conta cadastrada está pronta. O Admin aciona um *Health Check* somente leitura por provedor; a conta só passa para `CONNECTED_READY` mediante comprovação da API externa.
+
+#### Etapa B — Fonte de Leads, Importação, Listas e Deduplicação (Gestor)
+1. **Ingestão de Leads:**
+   - **Via Apollo (Modo Apollo):** Os leads são descobertos e sincronizados a partir das pessoas matriculadas nas sequências do Apollo vinculadas ao Thunder OS.
+   - **Via Importação/CRM (Modo Nativo):** O Gestor importa arquivos CSV, sincroniza filtros do CRM conectado ou seleciona listas internas existentes no Thunder OS.
+2. **Normalização e Deduplicação no Workspace:**
+   - Ao entrar no workspace, cada contato passa pelo motor de identidade do Thunder OS.
+   - Chaves de desambiguação avaliadas dentro do `workspace_id`: `apollo_person_id` / `apollo_contact_id`, URL canônica/URN de perfil do LinkedIn, endereço de e-mail normalizado e `crm_record_id`.
+   - **Colisão ou Ambiguidade:** Se dois registros existentes apontarem para canais conflitantes do mesmo indivíduo (ex.: mesmo LinkedIn associado a dois e-mails distintos de empresas diferentes), o lead é marcado como `IDENTITY_CONFLICT` e bloqueado para envios automáticos até resolução pelo Gestor/Operador.
+   - **Guarda de Autoconvite:** O sistema compara os identificadores do lead (URL do LinkedIn, e-mail) com o cadastro de todas as contas remetentes da empresa. Se coincidir com o próprio remetente, aplica bloqueio permanente de segurança (`SELF_CONTACT_BLOCKED`).
+
+#### Etapa C — Criação, Configuração e Aprovação de Campanha (Gestor)
+1. **Escolha do Modo de Orquestração (Imutável por Campanha):**
+   - **Modo 1 — `APOLLO_ORCHESTRATED`:** O Gestor seleciona uma `apollo_sequence_id` existente. O Apollo é o dono absoluto do relógio da cadência e do envio de e-mails. O Thunder OS atua exclusivamente como executor e reconciliador das tarefas manuais de LinkedIn geradas por essa sequência.
+   - **Modo 2 — `THUNDER_NATIVE`:** O Gestor seleciona uma Lista do Thunder OS e desenha a árvore de passos (Passos de LinkedIn via ConnectSafely, Passos de E-mail via provedor nativo, esperas temporais e condições) diretamente no Thunder OS. O Apollo não participa desta campanha.
+2. **Definição de Contas Padrão e Regras:**
+   - O Gestor define a **conta padrão de LinkedIn** (obrigatória) e, em campanhas nativas, a **conta padrão de e-mail** da campanha.
+   - Se a origem (ex.: tarefa Apollo) não especificar de forma inequívoca qual conta de LinkedIn deve atuar, o Thunder OS usa a conta padrão da campanha. Se a conta especificada ou padrão estiver inválida/desconectada, o sistema **bloqueia a tarefa** — nunca troca silenciosamente para outra conta da empresa.
+   - O Gestor define os textos/templates (ou regras de uso do texto vindo da tarefa Apollo), janelas de horário permitidas e a política de conclusão no Apollo (declarando explicitamente se concluir a tarefa avança o lead para o próximo passo da sequência Apollo).
+3. **Aprovação de Versão da Campanha:**
+   - O Gestor revisa o resumo completo (modo, sequência/lista, conta padrão, textos, passos, impacto no Apollo/CRM) e aprova a **Versão $V$ da Campanha**.
+   - É gerado um registro imutável `campaign_version` com hash criptográfico dos parâmetros críticos.
+   - A aprovação vale para toda a operação daquela versão (sem necessidade de aprovar lead a lead). Se o Gestor editar conta padrão, texto, sequência vinculada ou regra de conclusão, uma nova versão em rascunho é aberta e a execução exige nova aprovação.
+   - **Regra do Primeiro Envio Real:** Enquanto a trava global de primeiro envio estiver ativa na instalação, nenhuma campanha realiza chamadas reais de envio ao ConnectSafely sem a frase de autorização específica de Ygor registrada no sistema.
+
+#### Etapa D — Execução por Canal e Reconciliação (Sistema + Operador)
+1. **Leitura e Triagem (Modo Apollo) ou Agendamento (Modo Nativo):**
+   - **No Modo Apollo:** O coletor lê periodicamente as tarefas abertas do Apollo [VALIDAR paginação e filtros da API de tarefas do Apollo], cruza com a campanha aprovada, valida empresa, organização, sequência, lead, tipo de ação (ex.: convite, mensagem) e conta.
+   - **No Modo Nativo:** O agendador interno avalia matrículas ativas cujo `next_step_due_at <= agora` e gera o item de trabalho interno.
+   - Se faltar qualquer vínculo obrigatório, a tarefa fica visível no painel como `BLOCKED` com o motivo explícito (ex.: `MISSING_LINKEDIN_URL`, `UNMAPPED_SEQUENCE`, `CAMPAIGN_NOT_APPROVED`, `PRIOR_REPLY_DETECTED`).
+2. **Prévia Somente Leitura (Operador/Gestor):**
+   - No painel, o Operador visualiza a fila completa: quem é o lead, qual a conta remetente exata, qual a ação, qual o texto resolvido, qual a versão da campanha e eventuais bloqueios.
+   - A prévia é 100% livre de efeitos colaterais (não cria reserva, não adquire lock, não chama API de envio do ConnectSafely, não altera Apollo).
+3. **Ciclo de Execução Segura (Executor com Lock por Conta):**
+   - Para cada conta de LinkedIn, existe no máximo **um executor ativo por vez**, garantido por lock entre processos no banco oficial da instalação. Se o banco oficial não estiver acessível ou o lock não puder ser adquirido, o executor falha fechado (aborta e registra alerta visível).
+   - **Passo 1 (Reserva Atômica):** Antes de qualquer chamada externa de envio, o executor grava de forma durável e atômica a reserva da ação usando a chave única:
+     - No modo Apollo: `(workspace_id, apollo_task_id, action_type)`
+     - No modo Nativo: generalização compatível que se reduz exatamente à chave acima quando a origem é Apollo (detalhada na Seção 3.1).
+   - **Passo 2 (Releitura Just-in-Time na Origem):** Imediatamente antes do disparo, o executor relê a tarefa específica no Apollo (ou a matrícula no banco nativo), revalida se a tarefa continua aberta, se a versão da campanha segue aprovada, se a conta continua saudável e se não surgiu resposta ou pausa do lead nos canais monitorados.
+   - **Passo 3 (Chamada ao Provedor de Canal):** O executor solicita a ação ao ConnectSafely (ou provedor de e-mail nativo).
+   - **Passo 4 (Tratamento Estrito do Resultado):**
+     - **Confirmado com Recibo:** Grava evidência e timestamp. No modo Apollo, chama a API do Apollo para concluir a tarefa (somente se as regras aprovadas permitirem e não houver resposta detectada durante o envio). Se o Apollo falhar ao concluir, o estado vai para `PROVIDER_CONFIRMED_ORIGIN_PENDING` — a reconciliação tentará novamente **apenas o fechamento no Apollo**, jamais repetindo o envio no LinkedIn.
+     - **Falha Definitiva Comprovada (antes do envio efetivo):** Registra erro e motivo; não conclui no Apollo.
+     - **Resultado Incerto (Timeout, queda de conexão, HTTP 5xx sem confirmação de estado):** A ação vai imediatamente para `UNCERTAIN_NEEDS_REVIEW` na Caixa de Exceções. **Proibido retry automático.** Nenhuma tarefa é concluída no Apollo até decisão/verificação manual ou reconciliação de leitura segura no provedor.
+
+#### Etapa E — Caixa de Respostas Unificada e Interrupção Multicanal (Sistema + Operador)
+1. **Detecção de Resposta:**
+   - O monitor de respostas consulta periodicamente (ou recebe webhooks, quando suportado) eventos de resposta do LinkedIn (via ConnectSafely), de e-mail (via Apollo no modo Apollo ou provedor de e-mail no modo Nativo) e atualizações de estágio no CRM [VALIDAR endpoints e janelas de detecção em cada provedor].
+   - Cada leitura registra o instante e a **cobertura observada** (ex.: últimas $X$ horas ou página $Y$), sem presumir que ausência em leitura parcial significa ausência de resposta.
+2. **Pausa Automática Cross-Channel (Stop-on-Reply):**
+   - Ao detectar uma resposta de um lead em qualquer canal:
+     1. O Thunder OS marca imediatamente a matrícula local como `PAUSED_BY_REPLY`, bloqueando qualquer reserva ou execução futura de LinkedIn ou e-mail no próprio OS.
+     2. Solicita a pausa/finalização da sequência no Apollo (se modo Apollo) [VALIDAR endpoint do Apollo que pausa matrícula/sequência e confirma leitura de volta].
+     3. Somente quando o Apollo confirmar a pausa, o indicador de interrupção passa de `LOCAL_BLOCKED_EXTERNAL_PENDING` para `FULLY_PAUSED_CONFIRMED`.
+   - **Resposta Detectada Durante o Envio:** Se uma resposta for identificada enquanto uma chamada ao ConnectSafely já estava em trânsito, o Thunder OS registra o resultado real que retornar do ConnectSafely (sem fingir cancelamento retroativo), **impede a conclusão automática da tarefa no Apollo** para não destravar o próximo passo indevidamente e alerta o Operador.
+3. **Operação na Caixa Unificada:**
+   - O Operador vê o histórico consolidado de toques realizados (integrado ao ledger de contatos) e as respostas recebidas, identificando por qual conta de LinkedIn ou caixa de e-mail a conversa ocorre, podendo classificar o sentimento/intenção e acionar o envio ao CRM.
+
+#### Etapa F — Sincronização com CRM e Relatórios de Cobertura (Gestor + Operador)
+1. **CRM Adaptável:**
+   - Eventos confirmados (convite enviado, mensagem entregue, e-mail enviado, resposta recebida, reunião agendada) são traduzidos pelo adaptador do CRM configurado pela empresa (ex.: HubSpot), respeitando rigorosamente a política de escrita aprovada. Leituras de verificação no CRM nunca criam ou alteram registros.
+2. **Relatórios com Distinção entre Coorte Observada e Histórico Preservado:**
+   - O painel apresenta funis por campanha, versão, conta de canal e período: tarefas lidas, elegíveis, bloqueadas (agrupadas por motivo), enviadas com confirmação, em exceção incerta, pendentes de reconciliação no Apollo, respostas detectadas e pausas confirmadas.
+   - Toda métrica vinda de leitura externa exibe **data/hora da coleta, fonte e percentual/escopo de cobertura**. Se uma leitura paginada do Apollo trouxer apenas parte da lista, os leads ausentes nessa janela permanecem no "Histórico Preservado" e não são contabilizados como removidos.
+
+---
+
+## 2. Capacidades do Produto por Módulo e Casos-Limite
+
+### Módulo 1: Gestão de Workspaces, Contas de Canal e Credenciais
+* **Capacidades:**
+  * Cadastro multi-conta (N contas de LinkedIn, M caixas de e-mail) por empresa.
+  * Isolamento de credenciais fora do banco de negócio e fora do repositório Git (referência por `secret_ref`).
+  * Verificação ativa de saúde e sessão (`Health Check`) por provedor antes de liberar conta para campanhas.
+  *Separação estrita de clientes HTTP: cliente somente leitura para o Painel Web; cliente de execução restrito ao processo Executor.
+
+| Caso-Limite | Comportamento Esperado do Sistema |
+|---|---|
+| **Sessão do LinkedIn expira no ConnectSafely no meio de uma campanha ativa** | Na releitura pré-execução ou no retorno do provedor, a conta transita para `DISCONNECTED_OR_EXPIRED`. O executor aborta as próximas ações dessa conta, **não troca para outra conta da empresa**, mantém as tarefas como `BLOCKED_ACCOUNT_UNAVAILABLE` e emite alerta para o Admin. |
+| **Tentativa de usar endpoint de prévia do painel para disparar ação** | Impossível por construção: o processo do painel instancia apenas adaptadores de leitura (sem métodos ou credenciais de mutação/envio). |
+| **Múltiplos processos tentam iniciar execução para a mesma conta de LinkedIn** | O segundo processo falha ao tentar adquirir o lock exclusivo da conta no banco oficial, registra log de contenção e encerra o ciclo sem tocar nas tarefas daquela conta. |
+
+### Módulo 2: Identidade de Leads, Listas e Deduplicação
+* **Capacidades:**
+  * Registro unificado de lead por empresa com múltiplos identificadores externos (`apollo_id`, `linkedin_url/urn`, `email`, `crm_id`).
+  * Importação de listas (CSV/CRM) para campanhas nativas e ingestão vinculada para campanhas Apollo.
+  * Detecção de colisão de identidade e guarda anti-autoconvite.
+  * Consulta e registro junto ao ledger externo de toques (`toques.py` / PostgreSQL externo), preservando seu contrato atual.
+
+| Caso-Limite | Comportamento Esperado do Sistema |
+|---|---|
+| **Lead possui tarefa de LinkedIn no Apollo, mas o perfil LinkedIn está ausente ou malformado** | A tarefa é lida, registrada no Thunder OS e marcada como `BLOCKED_MISSING_CHANNEL_ADDRESS`. Não é enviada ao ConnectSafely nem concluída no Apollo. |
+| **Dois leads diferentes no Apollo apontam para a mesma URL de LinkedIn dentro da mesma empresa** | O sistema detecta colisão de chave de canal no workspace, marca ambos com `BLOCKED_IDENTITY_COLLISION` e exige desambiguação humana antes de permitir qualquer toque. |
+| **Tarefa de teste onde o lead é o próprio dono da conta de LinkedIn remetente (autoconvite)** | Bloqueio determinístico (`BLOCKED_SELF_INVITE`). A tarefa no Apollo permanece intacta (não é executada nem concluída). |
+
+### Módulo 3: Gestão de Campanhas, Versões e Aprovação
+* **Capacidades:**
+  * Suporte aos dois modos de campanha: `APOLLO_ORCHESTRATED` e `THUNDER_NATIVE`.
+  * Atribuição de conta padrão de LinkedIn (e de e-mail no modo nativo) no nível da campanha.
+  * Versionamento imutável de campanha (`DRAFT` $\rightarrow$ `APPROVED` $\rightarrow$ `SUPERSEDED` / `PAUSED`).
+  * Trava global de primeiro envio real exigindo frase exata de autorização de Ygor.
+
+| Caso-Limite | Comportamento Esperado do Sistema |
+|---|---|
+| **Tarefa do Apollo vem atribuída a um usuário sem conta de LinkedIn mapeada, ou vem sem conta especificada** | Se a tarefa não especificar conta de canal, aplica-se a **conta padrão da campanha**. Se a tarefa especificar explicitamente um proprietário/conta que diverge da política da campanha ou não possui conta válida conectada, o sistema **bloqueia a tarefa** (`BLOCKED_ACCOUNT_MISMATCH`) e explica no painel — jamais faz fallback silencioso para outra conta. |
+| **Gestor altera o template de mensagem ou a conta padrão de uma campanha que já está rodando** | A edição gera uma versão `v+1` em `DRAFT` e revoga a elegibilidade de execução automática até que a versão `v+1` seja explicitamente aprovada. Ações já reservadas sob a versão `v` que ainda não iniciaram chamada externa são revalidadas contra a política de revogação e bloqueadas se a versão `v` foi invalidada. |
+| **Lead tenta ser matriculado em uma campanha Nativa enquanto já possui matrícula ativa para a mesma jornada no Apollo** | O motor de matrícula verifica unicidade de cadência ativa por lead/objetivo e rejeita a dupla orquestração (`BLOCKED_DUPLICATE_ORCHESTRATOR`), garantindo que o Apollo e o Thunder OS nunca disputem o mesmo lead em paralelo. |
+
+### Módulo 4: Orquestração, Reserva Atômica, Execução e Reconciliação
+* **Capacidades:**
+  * Coleta paginada e auditável de tarefas Apollo; agendador próprio para passos de cadência nativa.
+  * Reserva atômica durável no SQLite oficial antes de qualquer efeito externo.
+  * Releitura *Just-in-Time* (JIT) do estado da tarefa na origem antes da chamada ao ConnectSafely.
+  * Máquina de estados separando confirmação do provedor de canal (ConnectSafely) e confirmação da origem da cadência (Apollo).
+
+| Caso-Limite | Comportamento Esperado do Sistema |
+|---|---|
+| **Operador conclui ou deleta a tarefa manualmente dentro do Apollo segundos antes do Thunder OS executar** | Na releitura JIT (Requisito R10), o executor consulta a tarefa específica no Apollo, detecta que não está mais aberta/disponível, cancela a reserva local (`CANCELLED_CLOSED_AT_ORIGIN`) e **não chama o ConnectSafely**. |
+| **ConnectSafely confirma o envio do convite/mensagem, mas a API do Apollo retorna erro 500/timeout ao tentar concluir a tarefa** | O estado da ação é gravado como `PROVIDER_CONFIRMED_ORIGIN_PENDING`. O job de reconciliação tentará novamente **apenas a conclusão no Apollo**. A chave única `(workspace_id, apollo_task_id, action_type)` impede que o LinkedIn seja acionado uma segunda vez. |
+| **Chamada ao ConnectSafely sofre timeout de rede e não sabemos se a mensagem foi enviada no LinkedIn** | A ação transita para `UNCERTAIN_NEEDS_REVIEW`. O retry automático é **estritamente bloqueado**. A tarefa no Apollo não é concluída. O caso vai para a Caixa de Exceções para verificação de estado (via consulta de leitura no ConnectSafely/LinkedIn, se disponível [VALIDAR], ou decisão manual do Operador). |
+| **Dois processos ou duas instalações tentam apontar para arquivos SQLite diferentes** | O bootstrap do sistema verifica o identificador e o lock do armazenamento oficial único da instalação. Sem o armazenamento oficial validado, o executor se recusa a iniciar (`FAIL_CLOSED`). |
+
+### Módulo 5: Caixa de Respostas Unificada e Pausa Multicanal
+* **Capacidades:**
+  * Ingestão de eventos de resposta com carimbo de data/hora, fonte e metadados de cobertura.
+  * Bloqueio imediato de novos passos locais quando há resposta conhecida.
+  * Orquestração de pausa no provedor externo (Apollo) com confirmação de leitura de volta.
+
+| Caso-Limite | Comportamento Esperado do Sistema |
+|---|---|
+| **Lead responde ao e-mail no Apollo 1 minuto antes de uma tarefa de LinkedIn ser executada** | Na releitura JIT antes do envio, o verificador detecta a resposta registrada/lida, aborta o envio de LinkedIn (`BLOCKED_BY_PRIOR_REPLY`) e solicita/confirma a pausa da cadência. |
+| **Lead responde exatamente enquanto a requisição HTTP para o ConnectSafely já está em execução** | O sistema não finge que cancelou uma mensagem que já saiu pela rede. Ele registra o recibo real do ConnectSafely, marca a matrícula como `REPLY_DURING_EXECUTION`, **não conclui a tarefa no Apollo** (evitando que o Apollo dispare o próximo passo da sequência) e cria um item prioritário de reconciliação para o Operador. |
+| **Resposta detectada no LinkedIn, mas a API do Apollo falha ao tentar pausar a sequência de e-mails** | O bloqueio local é aplicado imediatamente (nenhuma ação de LinkedIn sairá pelo Thunder OS). O status da interrupção fica como `PAUSE_PENDING_APOLLO` com alerta crítico no painel e retentativa de pausa no Apollo até confirmação. |
+
+### Módulo 6: CRM Adaptável e Relatórios de Cobertura
+* **Capacidades:**
+  * Interface plugável de CRM (iniciando com adaptador HubSpot) desacoplada do núcleo do domínio.
+  * Fila assíncrona de sincronização de atividades para o CRM (falha no CRM nunca trava nem reverte a reserva/evidência da ação de prospecção).
+  * Painel analítico separando **Coorte Observada na Leitura Atual** vs. **Histórico Preservado no Banco**.
+
+| Caso-Limite | Comportamento Esperado do Sistema |
+|---|---|
+| **API de leitura do Apollo retorna apenas as primeiras $N$ páginas devido a limite de rate-limit ou paginação** | O relatório registra a leitura como `PARTIAL_COVERAGE`, exibe a data e o percentual/página lida, e mantém os leads não vistos nessa coleta em `HISTORICAL_PRESERVED` (nunca infere que foram deletados ou concluídos). |
+| **Contato existe duplicado dentro do CRM do cliente (ex.: dois registros no HubSpot com mesmo e-mail)** | O adaptador de CRM detecta ambiguidade na leitura pré-escrita, não sobrescreve arbitrariamente nenhum dos dois registros e registra uma pendência de vínculo de CRM (`CRM_AMBIGUOUS_MATCH`), sem afetar o controle de segurança da cadência. |
+
+---
+
+## 3. Modelo de Dados e Máquinas de Estado
+
+### 3.1 Entidades, Campos-Chave, Unicidades e Relações
+
+> **Nota sobre a Chave Única de Reserva (Preservação da Decisão de Ygor):**
+> Para atender simultaneamente à decisão inegociável de Ygor — chave única `(workspace_id, apollo_task_id, action_type)` — e permitir cadências nativas no futuro sem duas tabelas incompatíveis, todo passo nativo gera um identificador determinístico no campo `origin_task_id`, enquanto passos do Apollo gravam o próprio `apollo_task_id` tanto em `apollo_task_id` quanto em `origin_task_id`.
+> - **Restrição SQLite 1 (Modo Apollo):** `UNIQUE (workspace_id, apollo_task_id, action_type) WHERE apollo_task_id IS NOT NULL`
+> - **Restrição SQLite 2 (Geral/Nativo):** `UNIQUE (workspace_id, origin_type, origin_task_id, action_type)`
+> Quando a origem é Apollo (`origin_type = 'APOLLO'`), a restrição reduz-se **exatamente** a `(workspace_id, apollo_task_id, action_type)`.
+
+| Entidade (Tabela Conceitual) | Campos-Chave Principais | Restrições de Unicidade (`UNIQUE`) | Relações e Observações |
+|---|---|---|---|
+| `workspaces` | `id` (PK), `slug`, `name`, `status`, `first_live_send_authorized_at`, `first_live_send_phrase_hash`, `created_at` | `UNIQUE(slug)` | Fronteira raiz de isolamento multiempresa. |
+| `users` & `workspace_memberships` | `user_id`, `workspace_id`, `role` (`ADMIN`, `MANAGER`, `OPERATOR`), `status` | `UNIQUE(workspace_id, user_id)` | Autorização validada no servidor por requisição. |
+| `provider_connections` | `id` (PK), `workspace_id` (FK), `provider_type` (`APOLLO`, `CONNECTSAFELY`, `EMAIL_PROVIDER`, `CRM_HUBSPOT`), `external_org_id`, `secret_ref`, `status`, `last_verified_at` | `UNIQUE(workspace_id, provider_type, external_org_id)` | Credenciais brutas ficam no cofre/env apontado por `secret_ref`, nunca na tabela. |
+| `channel_accounts` | `id` (PK), `workspace_id` (FK), `provider_connection_id` (FK), `channel_type` (`LINKEDIN`, `EMAIL`), `external_account_id`, `display_name`, `owner_identity_url`, `owner_email`, `health_status`, `last_health_check_at` | `UNIQUE(workspace_id, channel_type, external_account_id)` | `owner_identity_url` e `owner_email` alimentam a trava contra autoconvite. |
+| `account_execution_locks` | `channel_account_id` (PK/FK), `workspace_id` (FK), `holder_process_id`, `holder_host`, `acquired_at`, `lease_expires_at`, `heartbeat_at` | `PRIMARY KEY(channel_account_id)` | Garante no máximo 1 executor ativo por conta entre processos. |
+| `campaigns` | `id` (PK), `workspace_id` (FK), `name`, `orchestration_mode` (`APOLLO_ORCHESTRATED`, `THUNDER_NATIVE`), `apollo_sequence_id` (nullable), `default_linkedin_account_id` (FK), `default_email_account_id` (FK nullable), `current_approved_version_id` (FK nullable), `status` | `UNIQUE(workspace_id, apollo_sequence_id) WHERE apollo_sequence_id IS NOT NULL` | Conta padrão pertence à campanha. Modo de orquestração é imutável após criação. |
+| `campaign_versions` | `id` (PK), `campaign_id` (FK), `workspace_id` (FK), `version_number`, `status` (`DRAFT`, `APPROVED`, `SUPERSEDED`, `REVOKED`), `default_linkedin_account_id`, `rules_json`, `steps_or_templates_json`, `allow_apollo_task_completion` (bool), `config_hash`, `approved_by_user_id`, `approved_at` | `UNIQUE(campaign_id, version_number)` | Fotografia imutável da aprovação. Qualquer mudança relevante exige `version_number + 1`. |
+| `leads` | `id` (PK), `workspace_id` (FK), `apollo_person_id`, `linkedin_canonical_url`, `linkedin_urn`, `primary_email`, `crm_contact_id`, `identity_status` (`VALID`, `CONFLICT`, `SELF_BLOCKED`), `conflict_reason` | Índices únicos parciais por workspace quando não houver conflito; duplicatas geram flag `CONFLICT`. | Armazena a pessoa dentro do workspace; preserva histórico entre campanhas. |
+| `lead_lists` & `lead_list_items` | `list_id` (PK), `workspace_id` (FK), `name`, `source_type` (`CSV`, `CRM`, `MANUAL`); itens com `lead_id` | `UNIQUE(workspace_id, list_id, lead_id)` | Usado para alimentar campanhas `THUNDER_NATIVE`. |
+| `enrollments` (Matrículas) | `id` (PK), `workspace_id` (FK), `campaign_id` (FK), `lead_id` (FK), `orchestrator_owner` (`APOLLO`, `THUNDER`), `external_enrollment_id`, `state`, `current_step_order`, `next_step_due_at`, `last_seen_in_source_at`, `source_observation_cohort_id` | `UNIQUE(workspace_id, campaign_id, lead_id)` | Garante que a matrícula tem um único dono de cadência e separa coorte observada do histórico. |
+| `external_tasks` | `id` (PK), `workspace_id` (FK), `campaign_id` (FK), `enrollment_id` (FK), `apollo_task_id`, `apollo_sequence_id`, `lead_id` (FK), `task_type`, `raw_status`, `assigned_external_user_id`, `known_text`, `first_seen_at`, `last_seen_at`, `last_revalidated_at`, `eligibility_status`, `block_reason_code` | `UNIQUE(workspace_id, apollo_task_id)` | Espelho auditável da tarefa lida do Apollo e seu diagnóstico de elegibilidade/bloqueio. |
+| `action_reservations` | `id` (PK), `workspace_id` (FK), `campaign_id` (FK), `campaign_version_id` (FK), `enrollment_id` (FK), `origin_type` (`APOLLO`, `NATIVE`), `apollo_task_id` (nullable), `origin_task_id`, `action_type` (`LI_INVITE`, `LI_MESSAGE`, `LI_VIEW`, `EMAIL_SEND`), `channel_account_id` (FK), `state`, `reserved_at`, `updated_at` | `UNIQUE(workspace_id, apollo_task_id, action_type)` e `UNIQUE(workspace_id, origin_type, origin_task_id, action_type)` | **Tabela crítica de idempotência.** Criada em transação atômica antes do envio. |
+| `action_attempts` (Evidências) | `id` (PK), `reservation_id` (FK), `workspace_id` (FK), `attempt_number`, `provider_type`, `started_at`, `finished_at`, `outcome` (`CONFIRMED`, `FAILED_BEFORE_SEND`, `UNCERTAIN`), `provider_receipt_id`, `http_status`, `sanitized_response_summary` | `UNIQUE(reservation_id, attempt_number)` | Sem segredos. Registra recibo real; HTTP de dry-run ou prévia nunca entra aqui. |
+| `reply_events` & `pause_Propagations` | `id` (PK), `workspace_id` (FK), `lead_id` (FK), `enrollment_id` (FK), `channel_type`, `source_provider`, `detected_at`, `message_Occurred_at`, `observation_coverage_meta`, `pause_state` (`LOCAL_PAUSED_ONLY`, `EXTERNAL_PAUSE_CONFIRMED`, `EXTERNAL_PAUSE_FAILED`) | `UNIQUE(workspace_id, source_provider, external_event_id)` | Controla a interrupção cross-channel e a confirmação de pausa no Apollo. |
+| `exceptions_queue` & `audit_logs` | `id` (PK), `workspace_id` (FK), `entity_type`, `entity_id`, `reason_code`, `status` (`OPEN`, `RESOLVED_SENT`, `RESOLVED_NOT_SENT`, `DISMISSED`), `resolved_by_user_id`, `resolution_notes`, `created_at` | `INDEX(workspace_id, status, reason_code)` | Trilha de auditoria imutável e fila operacional de casos incertos/reconciliação. |
+
+---
+
+### 3.2 Máquinas de Estado
+
+#### A. Máquina de Estado da Matrícula (`enrollments.state`)
+```
+[DISCOVERED / IMPORTED]
+   │
+   ├──(Falha de vínculo, colisão de identidade ou autoconvite)──► [BLOCKED_INVALID_IDENTITY]
+   │
+   ▼ (Vínculos válidos + Campanha Aprovada)
+[ACTIVE_ELIGIBLE] ◄──────────────────────────────────────────────┐
+   │                                                             │
+   ├──(Resposta detectada antes/fora de envio)──► [PAUSED_BY_REPLY_LOCAL]
+   │                                                    │        │
+   │     (Se modo Nativo ou após Apollo confirmar pausa)▼        │
+   │                                         [PAUSED_BY_REPLY_CONFIRMED]
+   │                                                             │
+   ├──(Resposta detectada durante envio em vôo)─► [PAUSED_REPLY_DURING_SEND_REVIEW]
+   │                                                             │
+   ├──(Ação da matrícula entrou em estado incerto)► [HOLD_ACTION_UNCERTAIN] ──(Resolvido manualmente)─┘
+   │
+   ├──(Todos os passos concluídos / fim na origem)► [COMPLETED]
+   │
+   └──(Removido manualmente / opt-out / bounce)──► [TERMINATED_OPT_OUT]
+```
+
+#### B. Máquina de Estado da Ação / Reserva (`action_reservations.state`)
+Esta máquina garante que falhas no Apollo não reenviem LinkedIn e que resultados incertos parem imediatamente:
+
+```
+(Leitura/Agendamento identifica tarefa elegível)
+   │
+   ▼ [Transação Atômica no SQLite Oficial + Lock da Conta Ativo]
+[RESERVED]
+   │
+   ├──(Releitura JIT na origem: tarefa já fechada, conta caiu, campanha revogada ou resposta prévia)
+   │      └──► [ABORTED_PRECHECK] (Terminal seguro: zero chamada ao ConnectSafely)
+   │
+   ▼ (Releitura JIT aprovada -> Chamada ao Provedor de Canal: ConnectSafely / E-mail)
+[DISPATCHING_TO_PROVIDER]
+   │
+   ├──(Erro comprovado ANTES do envio, ex.: validação local/400 sem execução)
+   │      └──► [FAILED_NOT_SENT] (Não conclui Apollo; pode ser corrigido se erro de configuração)
+   │
+   ├──(Timeout, queda de rede, HTTP 502/504 ou resposta ambígua do provedor)
+   │      └──► [UNCERTAIN_NEEDS_REVIEW] (BLOQUEIA RETRY AUTOMÁTICO; não conclui Apollo; vai p/ Exceções)
+   │                 │
+   │                 ├──(Operador/Verificação comprova que NÃO saiu)──► [RESOLVED_NOT_SENT]
+   │                 └──(Operador/Verificação comprova que SAIU)──────► [PROVIDER_CONFIRMED_ORIGIN_PENDING]
+   │
+   ▼ (Provedor de canal retorna recibo inequívoco de execução)
+[PROVIDER_CONFIRMED_ORIGIN_PENDING]
+   │
+   ├──(Se Modo Nativo: avança ponteiro local na mesma transação)──► [COMPLETED_AND_RECONCILED]
+   │
+   ├──(Se Modo Apollo + Resposta detectada durante o envio)
+   │      └──► [PROVIDER_CONFIRMED_ORIGIN_HELD_BY_REPLY] (Não conclui tarefa no Apollo; requer revisão)
+   │
+   └──(Se Modo Apollo + Regras aprovadas permitem conclusão)
+          │
+          ├──(API do Apollo confirma conclusão da tarefa)──► [COMPLETED_AND_RECONCILED] (Terminal)
+          └──(API do Apollo falha/timeout ao concluir)─────► [ORIGIN_RECONCILIATION_RETRY]
+                                                                 │
+                                        (Retenta SÓ o Apollo; NUNCA chama ConnectSafely de novo)
+```
+
+#### C. Máquina de Estado de Resposta e Interrupção (`reply_events.pause_state`)
+* `DETECTED_LOCAL_BLOCK_APPLIED`: Resposta gravada no banco; qualquer nova reserva ou releitura JIT para esse lead no Thunder OS já é negada imediatamente.
+* `EXTERNAL_PAUSE_REQUESTED`: Chamada enviada ao Apollo para pausar a sequência do lead.
+* `EXTERNAL_PAUSE_CONFIRMED`: Leitura de volta no Apollo comprovou que a matrícula está pausada/finalizada na sequência externa.
+* `EXTERNAL_PAUSE_FAILED_ALERT`: Falha ao pausar no Apollo; bloqueio local permanece firme e alerta crítico é exibido na fila do Operador.
+
+#### D. Máquina de Estado da Conta de Canal (`channel_accounts.health_status`)
+* `REGISTERED_UNVERIFIED`: Conta cadastrada pelo Admin, mas ainda sem teste de conexão real comprovado (inelegível para execução).
+* `CONNECTED_READY`: Conexão e sessão comprovadas pelo provedor; apta a adquirir lock e executar.
+* `RATE_LIMITED_COOLDOWN`: Conta atingiu limite operacional configurado ou reportado pelo provedor; aguarda janela de resfriamento.
+* `DISCONNECTED_OR_EXPIRED`: Sessão inválida ou credencial rejeitada; bloqueia imediatamente todas as tarefas dependentes desta conta sem fazer fallback para outra conta.
+* `DISABLED_BY_ADMIN`: Pausada intencionalmente pelo Administrador.
+
+---
+
+## 4. Contratos Internos e Arquitetura (Reaproveitando a Stack Atual)
+
+### 4.1 Arquitetura em Camadas e Fronteiras de Processo (Python 3 + HTML/CSS/JS + SQLite)
+
+Para cumprir os requisitos de segurança (R07, R08, R09, R14) sem reescrever a stack atual em Python 3, o sistema é organizado em **quatro fronteiras claras**, executando sobre o mesmo código-base modularizado e apontando obrigatoriamente para o **único arquivo SQLite oficial da instalação** (em modo `WAL` — *Write-Ahead Logging* — com `busy_timeout` configurado e transações `BEGIN IMMEDIATE` para reservas e locks):
+
+```
+┌───────────────────────────────────────────────────────────────────────────────┐
+│ 1. PAINEL WEB (HTML / CSS / JS Vanilla)                                       │
+│    - Visão de campanhas, prévias (read-only), aprovações, respostas, exceções │
+└───────────────────────────────┬───────────────────────────────────────────────┘
+                                │ HTTP (Servidor Python 3)
+┌───────────────────────────────▼───────────────────────────────────────────────┐
+│ 2. SERVIDOR HTTP & CAMADA DE APLICAÇÃO DO PAINEL (Python 3)                   │
+│    - Endpoints GET (100% Read-Only: sem mutação, sem reserva, sem client send)│
+│    - Endpoints POST de Gestão (Aprovar versão, resolver exceção, config)      │
+│    - PROIBIDO instanciar o cliente de envio do ConnectSafely neste processo   │
+└───────────────────────────────┬───────────────────────────────────────────────┘
+                                │ Leitura / Escrita de Gestão
+┌───────────────────────────────▼───────────────────────────────────────────────┐
+│ 3. NÚCLEO DE DOMÍNIO & REPOSITÓRIO OFICIAL (SQLite Único + Ledger toques.py)  │
+│    - Validador de Vínculos e Identidade   - Máquina de Estados de Reserva     │
+│    - Gerenciador de Lock por Conta        - Integração preservada c/ toques.py│
+└───────────────────────────────▲───────────────────────────────────────────────┘
+                                │ Transações Atômicas (BEGIN IMMEDIATE)
+┌───────────────────────────────┴───────────────────────────────────────────────┐
+│ 4. WORKER EXECUTOR & RECONCILIADOR (Processo Python 3 Separado)               │
+│    - Valida existência do Banco Oficial no boot (Fail-Closed se ausente)      │
+│    - Adquire Lock exclusivo por channel_account_id                            │
+│    - Executa ciclo: Reserva -> Releitura JIT -> Envio -> Evidência -> Apollo  │
+└───────┬───────────────────────┬────────────────────────┬──────────────────────┘
+        │                       │                        │
+        ▼                       ▼                        ▼
+[Adaptador Apollo]   [Adaptador ConnectSafely]   [Adaptadores E-mail / CRM]
+```
+
+### 4.2 Contratos Internos (Interfaces Python `Protocol` / ABC)
+
+#### 1. `OfficialStorageGate` & `AccountLockManager` (Infraestrutura de Segurança)
+* `verify_official_storage() -> StorageIdentity`: Confirma no boot que o caminho do SQLite corresponde ao manifesto oficial da instalação e valida a assinatura da tabela de metadados da instalação. Se falhar, lança `FatalStorageConfigurationError` e impede o início do executor.
+* `acquire_account_lock(workspace_id: str, account_id: str, process_id: str, ttl_seconds: int) -> LockToken | None`: Executa `INSERT OR REPLACE` condicional (apenas se não existir ou se `lease_expires_at < now`) dentro de `BEGIN IMMEDIATE`.
+* `renew_account_lock(token: LockToken) -> bool` e `release_account_lock(token: LockToken) -> None`.
+
+#### 2. `CadenceOriginAdapter` (Fronteira com o Dono da Cadência: Apollo ou Nativo)
+Separado em duas interfaces para garantir que o painel nunca tenha poder de escrita indevida:
+* **`CadenceOriginReader` (Usado pelo Coletor, Painel e Releitura JIT):**
+  * `fetch_open_tasks(workspace_id: str, sequence_ids: list[str], cursor: str | None) -> PageResult[ExternalTaskDTO]`: Retorna tarefas abertas junto com metadados de cobertura (`observed_at`, `is_complete_snapshot`, `page_info`).
+  * `reverify_single_task_jit(workspace_id: str, external_task_id: str) -> TaskJitVerification`: Chamado milissegundos antes do envio. Confirma se a tarefa específica continua aberta, a qual sequência e pessoa pertence, e se o lead continua ativo na sequência.
+  * `fetch_enrollment_status(workspace_id: str, external_enrollment_id: str) -> EnrollmentOriginStatus`.
+* **`CadenceOriginMutator` (Restrito ao Executor/Reconciliador):**
+  * `complete_origin_task(workspace_id: str, external_task_id: str, evidence_ref: str) -> OriginMutationResult`: Conclui a tarefa no Apollo somente após confirmação do ConnectSafely.
+  * `pause_origin_enrollment(workspace_id: str, external_enrollment_id: str, reason: str) -> OriginPauseResult`: Pausa a sequência no Apollo quando uma resposta é detectada e lê o estado de volta para comprovar a pausa.
+
+#### 3. `LinkedInChannelAdapter` (Fronteira ConnectSafely)
+* **`LinkedInHealthAndReader` (Segurança e Verificação):**
+  * `verify_account_session(workspace_id: str, account_id: str) -> AccountHealthDTO`: Comprova se a conta está realmente conectada e operante no ConnectSafely.
+  * `fetch_recent_replies(workspace_id: str, account_id: str, since: datetime) -> CoverageResult[ReplyEventDTO]`: Lê respostas recebidas no LinkedIn.
+  * `check_action_status_by_receipt(workspace_id: str, account_id: str, receipt_id_or_idempotency_key: str) -> ActionVerificationDTO`: Permite investigar ações que caíram em `UNCERTAIN_NEEDS_REVIEW` sem reenviar [VALIDAR suporte de consulta de status no ConnectSafely].
+* **`LinkedInActionSender` (Exclusivo do processo Executor — nunca importado pelo servidor HTTP de leitura):**
+  * `execute_linkedin_action(cmd: LinkedInActionCommand) -> ProviderSendOutcome`: Recebe conta remetente explícita, tipo de ação, destinatário e texto resolvido. Retorna enumeração estrita:
+    * `CONFIRMED(receipt_id, timestamp, raw_evidence)`
+    * `FAILED_BEFORE_SEND(error_code, reason)`
+    * `UNCERTAIN(reason, partial_data)` — qualquer timeout HTTP ou resposta não reconhecida cai obrigatoriamente aqui.
+
+#### 4. `EmailChannelAdapter` (Para Fase de Cadência Nativa)
+* `verify_mailbox(workspace_id: str, account_id: str) -> AccountHealthDTO`
+* `send_native_email(cmd: NativeEmailCommand) -> ProviderSendOutcome`
+* `fetch_email_replies_and_bounces(workspace_id: str, account_id: str, since: datetime) -> CoverageResult[EmailEventDTO]`
+
+#### 5. `CrmAdapter` (Fronteira Adaptável — ex.: HubSpot)
+* `verify_crm_connection(workspace_id: str) -> CrmHealthDTO`
+* `lookup_contact_read_only(workspace_id: str, identifiers: LeadIdentifiers) -> CrmLookupResult`: Usado em leituras; **contrato proíbe criação ou atualização de registros durante lookup**.
+* `sync_confirmed_touch(workspace_id: str, event: ConfirmedTouchEvent, write_policy: CrmWritePolicy) -> CrmSyncResult`: Chamado de forma assíncrona apenas para ações já confirmadas ou respostas recebidas.
+
+#### 6. `ContactLedgerBridge` (Integração com `toques.py` / PostgreSQL Externo)
+* Mantém o módulo `toques.py` existente encapsulado atrás de um adaptador que preserva 100% do seu contrato e hash atuais, registrando os toques confirmados sem confundir o ledger histórico externo com o banco operacional SQLite do Thunder OS.
+
+---
+
+## 5. Plano de Entrega por Fases e Critérios de Aceite Verificáveis
+
+### Fase 1 — Jornada P0: Apollo + LinkedIn (Via ConnectSafely) para a Thunder
+**Escopo:** Orquestração controlada pelo Apollo; leitura e validação de tarefas manuais de LinkedIn; múltiplas contas de LinkedIn cadastradas; conta padrão por campanha; aprovação por versão de campanha; prévia 100% somente leitura; armazenamento SQLite oficial único; reserva atômica por `(workspace_id, apollo_task_id, action_type)`; lock entre processos por conta; releitura JIT no Apollo; reconciliação separada (Apollo vs. LinkedIn); caixa de exceções para resultados incertos; bloqueio por resposta conhecida; guarda anti-autoconvite e trava de primeiro envio real de Ygor.
+
+| Critério de Aceite Verificável (Fase 1) | Método de Verificação / Teste |
+|---|---|
+| **CA1.1 — Prévia Somente Leitura (R06, R07, R14):** Chamadas aos endpoints de painel e prévia exibem lead, conta, ação, texto conhecido e bloqueios, com zero gravações em `action_reservations` e zero chamadas de rede para endpoints de mutação do ConnectSafely ou Apollo. | Teste automatizado inspecionando contagem de linhas no SQLite antes/depois do `GET` e mock/spy de rede garantindo ausência de cliente de envio no servidor HTTP de leitura. |
+| **CA1.2 — Unicidade e Reserva Atômica (R08):** Duas tentativas concorrentes de reservar a mesma tupla `(workspace_id, apollo_task_id, action_type)` resultam em exatamente 1 reserva vencedora e 1 rejeição por constraint de unicidade antes de qualquer chamada externa. | Teste de concorrência com duas conexões SQLite disputando a mesma tarefa Apollo simultaneamente. |
+| **CA1.3 — Lock por Conta e Fail-Closed (R09):** Dois processos executores iniciados para a mesma conta de LinkedIn resultam em apenas um adquirindo o lock; se o banco oficial não estiver presente/válido, ambos abortam imediatamente com erro visível. | Teste entre processos (`multiprocessing`/`subprocess`) validando exclusão mútua e falha fechada sem banco oficial. |
+| **CA1.4 — Conta Padrão sem Troca Silenciosa (R04):** Tarefa sem conta explícita usa a conta padrão da campanha; se a conta padrão estiver desconectada, a tarefa fica `BLOCKED` mesmo havendo outra conta conectada na empresa. | Teste funcional com 2 contas na empresa (Conta A padrão desconectada, Conta B conectada) comprovando bloqueio e zero uso da Conta B. |
+| **CA1.5 — Releitura JIT na Origem (R10):** Se uma tarefa Apollo for fechada no Apollo após a leitura inicial da lista mas antes do envio, a releitura JIT aborta a execução (`ABORTED_PRECHECK`) e não chama o ConnectSafely. | Teste simulando mudança de status da tarefa no endpoint individual do Apollo no momento da releitura JIT. |
+| **CA1.6 — Separação de Falha Apollo vs. Incerteza LinkedIn (R12, R13):** (a) Sucesso no ConnectSafely + erro 500 no Apollo agenda reconciliação somente do Apollo, sem reenviar LinkedIn; (b) Timeout no ConnectSafely move ação para `UNCERTAIN_NEEDS_REVIEW`, interrompe retry automático e não conclui Apollo. | Testes de injeção de falha para ambos os cenários comprovando transições de estado exatas e ausência de segunda chamada ao ConnectSafely. |
+| **CA1.7 — Autoconvite e Primeiro Envio Real (R15):** Tarefa cujo lead coincide com perfil da conta remetente é bloqueada permanentemente; enquanto a frase específica de Ygor não for fornecida, o modo de envio real permanece bloqueado. | Teste de guarda com os dados da tarefa de autoconvite real garantindo que ela permanece intacta. |
+
+---
+
+### Fase 2 — P1: Cobertura de Campanha, Detecção de Respostas e Pausa Cross-Channel Comprovada
+**Escopo:** Monitoramento estruturado de respostas (LinkedIn e Apollo); interrupção automática com comprovação de pausa na sequência do Apollo; tratamento de resposta durante o envio; relatórios de campanha separando coorte observada na leitura atual vs. histórico preservado, exibindo fonte, data e cobertura.
+
+| Critério de Aceite Verificável (Fase 2) | Método de Verificação / Teste |
+|---|---|
+| **CA2.1 — Coorte Observada vs. Histórico Preservado:** Quando uma coleta do Apollo retorna apenas uma janela parcial de matrículas/tarefas, os leads ausentes nessa leitura não são dados como removidos e aparecem separados de forma clara no painel com a data da última observação. | Teste de ingestão com página 1 completa seguida de coleta parcial, verificando preservação do histórico e metadados de cobertura no painel. |
+| **CA2.2 — Pausa Cross-Channel Comprovada (R11):** Resposta detectada antes da execução bloqueia o envio local na hora e aciona a pausa no Apollo; o status só aparece como "Pausa Confirmada" após leitura de volta no Apollo comprovar o estado pausado. | Teste ponta a ponta do fluxo de resposta verificando bloqueio imediato no SQLite e transições `LOCAL_PAUSED_ONLY` $\rightarrow$ `EXTERNAL_PAUSE_CONFIRMED`. |
+| **CA2.3 — Resposta Durante Envio (R11):** Se uma resposta chegar durante a chamada ao ConnectSafely, o recibo do envio é salvo, a tarefa Apollo **não** é concluída automaticamente e um item de revisão é aberto. | Teste de condição de corrida controlada entre retorno do ConnectSafely e chegada de evento de resposta. |
+
+---
+
+### Fase 3 — P2.A: Listas Próprias, Deduplicação Avançada e Cadências Multicanal Nativas (LinkedIn + E-mail)
+**Escopo:** Importação de listas (CSV/manual); motor de deduplicação no workspace; construtor e agendador de cadências próprias do Thunder OS (`THUNDER_NATIVE`) combinando passos de LinkedIn (ConnectSafely) e E-mail (provedor nativo configurado); garantia de dono único de cadência por matrícula; chave de reserva nativa mantendo a compatibilidade exata com a chave Apollo.
+
+| Critério de Aceite Verificável (Fase 3) | Método de Verificação / Teste |
+|---|---|
+| **CA3.1 — Dono Único de Cadência (R01 estendido):** Uma matrícula `APOLLO_ORCHESTRATED` jamais é agendada pelo motor nativo, e uma matrícula `THUNDER_NATIVE` executa seus passos de e-mail e LinkedIn sem depender do Apollo, usando o mesmo pipeline de reserva atômica, lock de conta e aprovação de versão. | Teste validando que ambos os modos passam pelo mesmo `ActionReservation` e `AccountLockManager`, sem colisão de agendadores. |
+| **CA3.2 — Deduplicação e Colisão no Import:** Importação de lista contendo leads duplicados ou com canais conflitantes bloqueia os registros ambíguos antes de matricular e gera relatório de saneamento para o Gestor. | Teste de importação com lote de CSV contendo duplicatas exatas e conflitos parciais (mesmo LinkedIn, e-mails diferentes). |
+
+---
+
+### Fase 4 — P2.B: Caixa de Respostas Unificada Operacional e Adaptador de CRM (HubSpot Inicial)
+**Escopo:** Interface unificada para operadores lerem e classificarem respostas de LinkedIn e e-mail; adaptador plugável de CRM (iniciando com HubSpot) com mapeamento por empresa e política de escrita explícita; garantia de que leituras não geram escritas indiretas no CRM.
+
+| Critério de Aceite Verificável (Fase 4) | Método de Verificação / Teste |
+|---|---|
+| **CA4.1 — Isolamento de Leitura no CRM:** Consultas de enriquecimento ou verificação de vínculo com o CRM executam apenas chamadas `GET`/busca e jamais criam ou alteram contatos/negócios como efeito colateral. | Teste do adaptador CRM verificando que métodos de leitura não invocam endpoints de criação/atualização sob nenhuma condição. |
+| **CA4.2 — Resiliência de Sincronização CRM:** Se o CRM estiver fora do ar no momento em que uma ação de LinkedIn é confirmada, o recibo do LinkedIn e a reconciliação do Apollo funcionam normalmente, e a escrita no CRM vai para fila de retentativa assíncrona. | Teste simulando indisponibilidade do CRM durante execução de campanha ativa. |
+
+---
+
+### Fase 5 — P2.C: Isolamento Multiempresa Completo (Multi-Tenant B2B) e Escala de Banco (Se Justificado)
+**Escopo:** Onboarding de empresas clientes externas; auditoria e testes de penetração de isolamento por `workspace_id` em todas as queries, locks, filas e credenciais; avaliação baseada em métricas reais de volume/concorrência para eventual migração reversível do banco operacional SQLite para PostgreSQL.
+
+| Critério de Aceite Verificável (Fase 5) | Método de Verificação / Teste |
+|---|---|
+| **CA5.1 — Isolamento Estrito entre Empresas:** Um usuário autenticado na Empresa A não consegue ler, aprovar, visualizar prévias, acessar contas de canal ou interferir em locks/exceções da Empresa B, mesmo manipulando IDs internos ou externos nas requisições. | Suíte automatizada de testes de segurança cross-tenant tentando acessar recursos da Empresa B com sessão da Empresa A em 100% dos endpoints. |
+| **CA5.2 — Migração Reversível de Banco (Condicional):** Caso a migração para PostgreSQL seja autorizada após medição real, o corte deve possuir backup verificado, paridade de contagem e hashes de registros com o SQLite oficial e script de rollback testado. | Execução de ensaio de migração e rollback em ambiente de staging com verificação de integridade referencial e constraints de unicidade. |
+
+---
+
+## 6. Consolidação Final: Decisões, Propostas e Validações Pendentes
+
+### (a) DECISÕES DO YGOR (Preservadas Integralmente — Não Reabrir)
+1. **Visão e Escopo do Produto:** Plataforma própria de GTM e prospecção da Thunder (e futuramente para outras empresas), suportando múltiplas contas de LinkedIn e de e-mail por empresa, CRM adaptável, operando tanto campanhas orquestradas pelo Apollo quanto listas e cadências multicanal próprias do Thunder OS.
+2. **Dono da Cadência na Fase Inicial:** Na jornada inicial Apollo + LinkedIn, o Apollo continua criando e controlando a sequência e enviando os e-mails; o Thunder OS não cria cadência paralela para a mesma matrícula.
+3. **Canal LinkedIn:** Direção tecnológica via ConnectSafely REST.
+4. **Aprovação por Versão de Campanha:** A campanha e suas regras são aprovadas uma única vez por versão pelo gestor (não há aprovação individual lead a lead/ação a ação dentro da autorização vigente).
+5. **Conta Padrão na Campanha e Proibição de Troca Silenciosa:** A conta padrão de LinkedIn pertence à campanha. Se a tarefa não especificar conta claramente, usa-se a conta padrão da campanha; se não houver conta válida/disponível, bloqueia-se a execução. Nunca trocar silenciosamente para outra conta.
+6. **Armazenamento Oficial Único:** Existe um único armazenamento oficial durável por instalação (atualmente SQLite). Dois armazenamentos independentes não são configuração suportada.
+7. **Chave Única e Reserva Atômica Durável:** A identidade de ação é única por `empresa + ID da tarefa Apollo + tipo de ação`, reservada de forma atômica e durável antes de executar.
+8. **Um Executor Ativo por Conta com Lock:** No máximo um executor ativo por conta de LinkedIn via lock entre processos; sem armazenamento oficial ou sem lock válido, o executor falha fechado (não inicia/não atua) e exibe erro visível.
+9. **Releitura na Origem Antes da Ação:** Imediatamente antes de executar, reler no Apollo a tarefa específica e revalidar pré-condições (se fechada, indisponível, sem autorização ou com resposta, não executar).
+10. **Proibição de Retry Automático em Resultado Incerto:** Se o resultado do LinkedIn/provedor for desconhecido ou incerto, interromper retry automático e enviar à caixa de exceções. Se o provedor confirmar a ação e só o Apollo falhar na conclusão, reconciliar apenas o Apollo sem repetir o LinkedIn.
+11. **Prévia Somente Leitura e Guarda de Credenciais:** Endpoints de consulta e prévia não enviam, não concluem, não reservam e não usam cliente com capacidade de envio. Segredos ficam fora do código, dos logs e do painel.
+12. **Guarda de Teste e Autorização do Primeiro Envio Real:** A tarefa de autoconvite permanece intacta; o primeiro envio real exige frase/autorização específica de Ygor.
+13. **Stack Tecnológica Atual:** Manter e evoluir Python 3 (servidor HTTP próprio e módulos de domínio), frontend HTML/CSS/JS existente e SQLite (preservando integração externa com `toques.py`/PostgreSQL). Não reescrever para Node/Mastra/React por moda; PostgreSQL ou React apenas no futuro se necessidade e custo forem demonstrados.
+
+---
+
+### (b) PROPOSTAS TÉCNICAS DESTE DOCUMENTO (Pendentes de Aprovação)
+1. **Esquema de Generalização da Chave Única para Cadências Nativas:** Manter a constraint explícita `UNIQUE(workspace_id, apollo_task_id, action_type)` no SQLite para todas as ações originadas no Apollo e adicionar `origin_type` + `origin_task_id` com `UNIQUE(workspace_id, origin_type, origin_task_id, action_type)` para que passos de cadências nativas usem a mesma tabela `action_reservations` sem abrir brecha na regra do Apollo.
+2. **Versionamento com Hash Criptográfico (`config_hash`):** Gerar um hash determinístico sobre `(conta_padrao, templates, regras_conclusao, sequencia_vinculada)` em `campaign_versions` para detectar automaticamente qualquer alteração que exija nova aprovação de campanha.
+3. **Separação Física de Clientes no Código Python (`Reader` vs. `Sender/Mutator`):** Dividir os adaptadores do ConnectSafely e do Apollo em classes distintas de Leitura e de Escrita, injetando apenas as classes de Leitura no processo do servidor HTTP do painel para garantir por construção que rotas de visualização jamais disparem envios.
+4. **Máquina de Estados de Pausa em Duas Etapas (`LOCAL_PAUSED_ONLY` $\rightarrow$ `EXTERNAL_PAUSE_CONFIRMED`):** Aplicar o bloqueio local no SQLite no exato milissegundo em que uma resposta é detectada (protegendo o LinkedIn imediatamente) enquanto a confirmação de pausa no Apollo é processada e verificada por leitura de volta.
+5. **Estado Específico `PROVIDER_CONFIRMED_ORIGIN_HELD_BY_REPLY`:** Quando uma resposta do lead é detectada exatamente durante o voo de um envio ao ConnectSafely, gravar o recibo real do envio, mas reter a conclusão da tarefa no Apollo para impedir que o Apollo avance a sequência para o próximo e-mail.
+6. **Fila Assíncrona Desacoplada para Escrita no CRM:** Processar o envio de eventos confirmados ao CRM fora da transação crítica de reserva/evidência do canal, evitando que lentidão ou erro no HubSpot atrase a gravação do recibo do ConnectSafely ou a reconciliação do Apollo.
+
+---
+
+### (c) FATOS QUE EXIGEM VALIDAÇÃO (Fornecedores, Dados e Runtime)
+1. **[VALIDAR — Apollo API de Tarefas]:** Quais campos exatos do payload da API do Apollo identificam de forma inequívoca a tarefa manual de LinkedIn, o subtipo da ação (convite vs. mensagem vs. visita), o texto/template associado, o `apollo_sequence_id` e o usuário responsável? Qual é o limite de paginação e rate-limit na listagem e na releitura individual da tarefa?
+2. **[VALIDAR — Apollo API de Conclusão e Pausa]:** Qual endpoint exato conclui uma tarefa específica no Apollo e qual o comportamento exato da sequência após essa chamada? Qual endpoint pausa/finaliza a matrícula de um lead em uma sequência quando o Thunder OS detecta uma resposta no LinkedIn, e qual endpoint permite ler esse estado de volta para comprovar a pausa?
+3. **[VALIDAR — ConnectSafely Autenticação e Vínculo de Múltiplas Contas]:** Como a API REST do ConnectSafely vincula credenciais a múltiplas contas de LinkedIn de uma mesma empresa? Qual endpoint comprova que a sessão do LinkedIn está ativa e saudável (`Health Check`) sem realizar ações no perfil?
+4. **[VALIDAR — ConnectSafely Recibos e Consulta Pós-Timeout]:** Quais campos exatos da resposta HTTP do ConnectSafely comprovam que o convite ou mensagem foi efetivamente entregue ao LinkedIn (vs. apenas enfileirado)? O ConnectSafely oferece um endpoint de consulta por ID de requisição/idempotência para verificar se uma ação que sofreu timeout de rede foi executada ou não?
+5. **[VALIDAR — Detecção de Respostas por Canal]:** O ConnectSafely e o Apollo fornecem webhooks de resposta ou exigem polling periódico? Qual é a janela máxima de atraso e quais metadados indicam se a listagem de respostas/mensagens retornou uma cobertura completa ou parcial?
+6. **[VALIDAR — Contrato e Comportamento de `toques.py`]:** Quais são os parâmetros exatos, garantias de idempotência e expectativas de transação do módulo `toques.py` (PostgreSQL externo) hoje presente no repositório para que o registro de evidências do Thunder OS alimente o ledger sem quebrar contratos existentes?
+7. **[VALIDAR — Parâmetros do Primeiro Teste Real com Ygor]:** Qual será a frase exata de autorização definida por Ygor, qual a conexão real pré-aprovada que receberá a mensagem de teste, qual o texto exato do teste e qual o ID da tarefa correspondente no Apollo?
+
