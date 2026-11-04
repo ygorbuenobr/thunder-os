@@ -69,6 +69,7 @@ ALLOWED_FILES = {
     "scripts/test_mexico_e1_runner.cjs",
     "docs/branches.md",
     "docs/thunder-os-contexto-completo-entire.md",
+    "docs/thunder-os-validacoes-bloco-b.md",
     "docs/journey-approval-modes.md",
     "docs/task3-membership.md",
     "docs/external-email-integrations.md",
