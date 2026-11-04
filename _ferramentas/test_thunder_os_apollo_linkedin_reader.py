@@ -118,3 +118,54 @@ class ApolloReaderTest(unittest.TestCase):
         row = self.row('task'); row.pop('user_id')
         self.pages[1] = self.page(1, 1, [row])
         self.assertEqual(self.reader.list_open_tasks()['tasks'], [row])
+
+    def test_attention_page_budget_returns_collected_rows_and_partial_coverage(self):
+        self.pages[1] = self.page(1, 101, [self.row(i) for i in range(100)])
+        self.pages[2] = self.page(2, 101, [self.row(100)])
+        with self.reader.attention_budget(seconds=5, max_pages=1):
+            result = self.reader.list_open_tasks()
+        self.assertEqual(result['coverage'], 'partial')
+        self.assertEqual(result['reason'], 'page_budget_exhausted')
+        self.assertEqual(len(result['tasks']), 100)
+        self.assertEqual([x[2]['page'] for x in self.calls if x[0] == 'POST'], [1])
+        self.assertEqual(self.reader.list_open_tasks()['coverage'], 'complete')
+
+    def test_attention_deadline_reduces_timeout_and_blocks_later_details(self):
+        from thunder_os.apollo_linkedin_reader import ApolloLinkedInReader
+        now = [0.0]
+        calls = []
+        def request(method, path, body, headers, timeout):
+            calls.append((path, timeout))
+            now[0] += 1
+            if path.endswith('api_profile'):
+                return 200, self.json.dumps({'user': {'id':'actor', 'team_id':'team'}}).encode()
+            return 200, self.json.dumps({'task': {'id': 'task'}}).encode()
+        reader = ApolloLinkedInReader(lambda: 'token', team_id='team', api_actor_id='actor',
+                                     owner_ids=['owner'], request=request, clock=lambda: now[0])
+        with reader.attention_budget(seconds=1.5, max_pages=1):
+            with self.assertRaisesRegex(ValueError, 'time_budget_exhausted'):
+                reader.get('task')
+            with self.assertRaisesRegex(ValueError, 'time_budget_exhausted'):
+                reader.get('task')
+        self.assertEqual([timeout for _, timeout in calls], [1.5, 0.5])
+        self.assertEqual(len(calls), 2)
+
+    def test_attention_timeout_during_pagination_keeps_partial_tasks(self):
+        from thunder_os.apollo_linkedin_reader import ApolloLinkedInReader
+        now = [0.0]
+        self.pages[1] = self.page(1, 101, [self.row(i) for i in range(100)])
+        def request(method, path, body, headers, timeout):
+            if path.endswith('api_profile'):
+                return 200, self.json.dumps({'user': {'id':'actor', 'team_id':'team'}}).encode()
+            if body['page'] == 1:
+                now[0] = 0.5
+                return 200, self.json.dumps(self.pages[1]).encode()
+            now[0] = 2
+            return 200, self.json.dumps(self.page(2, 101, [self.row(100)])).encode()
+        reader = ApolloLinkedInReader(lambda: 'token', team_id='team', api_actor_id='actor',
+                                     owner_ids=['owner'], request=request, clock=lambda: now[0])
+        with reader.attention_budget(seconds=1, max_pages=2):
+            result = reader.list_open_tasks()
+        self.assertEqual(result['coverage'], 'partial')
+        self.assertEqual(result['reason'], 'time_budget_exhausted')
+        self.assertEqual(len(result['tasks']), 100)

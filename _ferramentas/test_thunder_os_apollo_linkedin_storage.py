@@ -34,6 +34,7 @@ class ApolloLinkedinStorageTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.path = str(Path(self.tmp.name) / 'painel.db')
+        Path(self.path).touch()
         self.patcher = patch("thunder_os.db.OFFICIAL_PANEL_DB", Path(self.path))
         self.patcher.start(); self.addCleanup(self.patcher.stop)
         self.service = ThunderService(Repository(self.path))
@@ -82,6 +83,66 @@ class ApolloLinkedinStorageTest(unittest.TestCase):
             self.assertEqual(queue.get(timeout=15), 'conflict')
             process.join(15)
             self.assertEqual(process.exitcode, 0)
+
+    def test_expired_lease_is_recovered_only_after_owner_exits(self):
+        import sqlite3
+        ctx = multiprocessing.get_context('spawn')
+        queue = ctx.Queue()
+        with self.service.apollo_linkedin_account_lock('account'):
+            with sqlite3.connect(self.path) as con:
+                con.execute("UPDATE apollo_linkedin_account_locks SET lease_until=? WHERE account_id=?",
+                            ('2000-01-01T00:00:00+00:00', 'account'))
+            process = ctx.Process(target=contend_account, args=(self.path, queue))
+            process.start()
+            self.assertEqual(queue.get(timeout=15), 'conflict')
+            process.join(15)
+            self.assertEqual(process.exitcode, 0)
+        with sqlite3.connect(self.path) as con:
+            con.execute('INSERT INTO apollo_linkedin_account_locks (account_id, owner, created_at, lease_until) VALUES (?,?,?,?)',
+                        ('account', 'dead-owner', '2000-01-01T00:00:00+00:00', '2000-01-01T00:01:00+00:00'))
+        with self.service.apollo_linkedin_account_lock('account'):
+            self.assertEqual(len(self.service.list_apollo_linkedin_account_locks()), 1)
+
+    def test_cleanup_failure_does_not_mask_original_exception(self):
+        import sqlite3
+        with self.assertLogs('thunder_os.db', level='ERROR'):
+            with self.assertRaisesRegex(ValueError, 'original error'):
+                with self.service.apollo_linkedin_account_lock('account'):
+                    with sqlite3.connect(self.path) as con:
+                        con.execute('DELETE FROM apollo_linkedin_account_locks WHERE account_id=?', ('account',))
+                    raise ValueError('original error')
+
+    def test_unknown_or_malformed_lease_fails_closed(self):
+        import sqlite3
+        for value in (None, '', '0', '2000-01-01T00:00:00'):
+            with self.subTest(value=value):
+                with sqlite3.connect(self.path) as con:
+                    con.execute('DELETE FROM apollo_linkedin_account_locks')
+                    con.execute('INSERT INTO apollo_linkedin_account_locks (account_id, owner, created_at, lease_until) VALUES (?,?,?,?)',
+                                ('account', 'unknown-owner', '2000-01-01T00:00:00+00:00', value))
+                with self.assertRaises(RepositoryConflict):
+                    with self.service.apollo_linkedin_account_lock('account'):
+                        self.fail('unverifiable lease was recovered')
+
+    def test_configured_store_requires_existing_absolute_database(self):
+        import os
+        missing = Path(self.tmp.name) / 'not-created.db'
+        with patch.dict(os.environ, {'THUNDER_APOLLO_LI_OFFICIAL_DB': str(missing)}):
+            with self.assertRaisesRegex(RepositoryConflict, 'unavailable'):
+                Repository(missing)
+            self.assertFalse(missing.exists())
+            missing.touch()
+            configured = Repository(missing)
+            self.assertTrue(configured.apollo_linkedin_store_ready())
+            with self.assertRaises(RepositoryConflict):
+                self.service.apollo_linkedin_store_ready()
+        with patch.dict(os.environ, {'THUNDER_APOLLO_LI_OFFICIAL_DB': 'relative.db'}):
+            with self.assertRaisesRegex(RepositoryConflict, 'configuration invalid'):
+                self.service.apollo_linkedin_store_ready()
+            # Invalid T3 configuration disables only T3; unrelated repositories still open.
+            unrelated = Repository(Path(self.tmp.name) / 'unrelated.db')
+            with self.assertRaisesRegex(RepositoryConflict, 'configuration invalid'):
+                unrelated.apollo_linkedin_store_ready()
 
     def test_wrong_existing_database_refuses(self):
         other = Path(self.tmp.name) / 'other.db'

@@ -17,10 +17,38 @@ from urllib.parse import urlsplit
 import painel_servidor as panel
 from thunder_os.connectsafely_application import ConnectSafelyApplication
 from thunder_os.connectsafely_composition import ConnectSafelyComposition
-from thunder_os.connectsafely_live import build_panel_composition
+from thunder_os.connectsafely_live import build_panel_composition, credential
 from thunder_os.db import Repository, RepositoryConflict
 from thunder_os.campaign_registry import CampaignRegistry
 from thunder_os.service import AuthorizationError
+
+
+class LazyCredentialPathTests(unittest.TestCase):
+    def test_symlink_can_be_configured_but_is_rejected_on_use(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / 'credential'
+            target.write_text('synthetic-secret')
+            link = root / 'link'
+            link.symlink_to(target)
+            read = credential(link)
+            self.assertEqual(read.credential_ref, hashlib.sha256(str(link).encode()).hexdigest())
+            with self.assertRaisesRegex(ValueError, 'explicit_regular_file_required'):
+                read()
+
+    def test_relative_path_can_be_configured_but_is_rejected_on_use(self):
+        read = credential('relative/credential')
+        self.assertEqual(read.credential_ref, hashlib.sha256(b'relative/credential').hexdigest())
+        with self.assertRaisesRegex(ValueError, 'explicit_regular_file_required'):
+            read()
+
+    def test_valid_absolute_path_read_and_binding_remain_unchanged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'credential'
+            path.write_text('synthetic-secret')
+            read = credential(path)
+            self.assertEqual(read.credential_ref, hashlib.sha256(str(path).encode()).hexdigest())
+            self.assertEqual(read(), 'synthetic-secret')
 
 
 class PanelWiringTests(unittest.TestCase):

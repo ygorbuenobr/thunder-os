@@ -6,6 +6,10 @@ from pathlib import PurePosixPath
 
 
 ALLOWED_FILES = {
+    "scripts/test_connectsafely_read_broker_staging.py",
+    "_ferramentas/test_thunder_os_connectsafely_read_broker_client.py",
+    "_ferramentas/test_thunder_os_connectsafely_read_broker_runtime.py",
+    "_ferramentas/test_thunder_os_connectsafely_read_broker_contract.py",
     "_ferramentas/test_thunder_os_apollo_linkedin_attention_http.py",
     "_ferramentas/test_thunder_os_apollo_linkedin_executor.py",
     "_ferramentas/test_thunder_os_apollo_linkedin_reader.py",

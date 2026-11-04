@@ -48,7 +48,15 @@ def credential(path):
         value=explicit_path(path).read_text().strip()
         if not value or '\n' in value:raise ValueError('credential_unavailable')
         return value
-    read.credential_ref = hashlib.sha256(str(explicit_path(path)).encode()).hexdigest()
+    # Bind the configured path without opening or validating it during startup.
+    # Validation stays in read(), immediately before a secret is used.  In
+    # particular, an invalid legacy path must disable that credential rather
+    # than prevent unrelated panel routes from starting.
+    try:
+        configured_path = str(Path(path))
+        read.credential_ref = hashlib.sha256(configured_path.encode()).hexdigest()
+    except (TypeError, ValueError, OSError, UnicodeError):
+        read.credential_ref = None
     return read
 
 

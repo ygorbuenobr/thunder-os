@@ -4,10 +4,15 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+import fcntl
+import hashlib
 import json
+import logging
+import os
 from pathlib import Path
 import re
 import sqlite3
+import sys
 from threading import local
 from typing import Any, Iterator
 from uuid import uuid4
@@ -16,6 +21,26 @@ from .models import WorkItem, as_payload, parse_work_item, payload_hash
 
 
 OFFICIAL_PANEL_DB = Path('/root/.hermes/profiles/ygor-personal/painel-dados/painel.db')
+APOLLO_LINKEDIN_STORE_ENV = 'THUNDER_APOLLO_LI_OFFICIAL_DB'
+APOLLO_LINKEDIN_LOCK_TTL = timedelta(minutes=5)
+
+
+def _official_apollo_linkedin_db():
+    """Return the configured installation store; invalid config never falls back."""
+    value = os.environ.get(APOLLO_LINKEDIN_STORE_ENV)
+    if value is None:
+        return OFFICIAL_PANEL_DB
+    if not value or value != value.strip() or not Path(value).is_absolute():
+        raise RepositoryConflict('official Apollo LinkedIn store configuration invalid')
+    return Path(value)
+
+
+def _configured_apollo_linkedin_db():
+    """Startup/migration view: invalid config disables T3, not the whole repository."""
+    try:
+        return _official_apollo_linkedin_db()
+    except RepositoryConflict:
+        return None
 
 
 class RepositoryConflict(RuntimeError):
@@ -26,6 +51,10 @@ class Repository:
     def __init__(self, path: str | Path):
         self.path = str(path)
         self._local = local()
+        official = _configured_apollo_linkedin_db()
+        if (official is not None and Path(self.path).is_absolute() and Path(self.path).resolve() == official.resolve()
+                and not Path(self.path).is_file()):
+            raise RepositoryConflict('official Apollo LinkedIn store unavailable')
         self.migrate()
 
     def _connect(self) -> sqlite3.Connection:
@@ -94,7 +123,8 @@ class Repository:
             )
 
         # T3 schema is provisioned only in the canonical panel database.
-        if Path(self.path).is_absolute() and Path(self.path).resolve() == OFFICIAL_PANEL_DB.resolve():
+        official = _configured_apollo_linkedin_db()
+        if official is not None and Path(self.path).is_absolute() and Path(self.path).resolve() == official.resolve():
             with self._connect() as con:
                 con.executescript("""
                 CREATE TABLE IF NOT EXISTS apollo_linkedin_reservations (
@@ -111,15 +141,19 @@ class Repository:
                 CREATE TABLE IF NOT EXISTS apollo_linkedin_account_locks (
                     account_id TEXT PRIMARY KEY,
                     owner TEXT NOT NULL,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    lease_until TEXT
                 );
                 """)
+                columns = {row[1] for row in con.execute('PRAGMA table_info(apollo_linkedin_account_locks)')}
+                if 'lease_until' not in columns:
+                    con.execute('ALTER TABLE apollo_linkedin_account_locks ADD COLUMN lease_until TEXT')
 
     def apollo_linkedin_store_ready(self):
         """Require an existing, accessible installation DB with both migrated tables."""
         path = Path(self.path)
         if (self.path == ':memory:' or not path.is_absolute() or not path.is_file()
-                or path.resolve() != OFFICIAL_PANEL_DB.resolve()):
+                or path.resolve() != _official_apollo_linkedin_db().resolve()):
             raise RepositoryConflict('official Apollo LinkedIn store unavailable')
         try:
             with self._connect() as con:
@@ -129,7 +163,7 @@ class Repository:
                 if len(tables) != 2:
                     raise RepositoryConflict('official Apollo LinkedIn store not migrated')
                 con.execute('SELECT 1 FROM apollo_linkedin_reservations LIMIT 1').fetchone()
-                con.execute('SELECT 1 FROM apollo_linkedin_account_locks LIMIT 1').fetchone()
+                con.execute('SELECT lease_until FROM apollo_linkedin_account_locks LIMIT 1').fetchone()
         except sqlite3.Error as exc:
             raise RepositoryConflict('official Apollo LinkedIn store unavailable') from exc
         return True
@@ -173,28 +207,59 @@ class Repository:
         self.apollo_linkedin_store_ready()
         with self._connect() as con:
             return [dict(row) for row in con.execute(
-                'SELECT account_id, created_at FROM apollo_linkedin_account_locks ORDER BY created_at')]
+                'SELECT account_id, created_at, lease_until FROM apollo_linkedin_account_locks ORDER BY created_at')]
 
     @contextmanager
     def apollo_linkedin_account_lock(self, account_id):
         if not isinstance(account_id, str) or not account_id.strip() or account_id != account_id.strip():
             raise ValueError('invalid LinkedIn account')
         self.apollo_linkedin_store_ready()
-        owner = uuid4().hex
-        with self.transaction() as con:
-            try:
-                con.execute('INSERT INTO apollo_linkedin_account_locks VALUES (?,?,?)',
-                            (account_id, owner, datetime.now(timezone.utc).isoformat()))
-            except sqlite3.IntegrityError as exc:
-                raise RepositoryConflict('LinkedIn account locked') from exc
+        # An expiring DB row alone can overlap a slow sender. A per-account OS
+        # lock stays held until process exit, fencing lease takeover on this host.
+        lock_dir = Path(self.path).resolve().parent / '.apollo-linkedin-locks'
+        lock_dir.mkdir(mode=0o700, exist_ok=True)
+        lock_name = hashlib.sha256(account_id.encode('utf-8')).hexdigest() + '.lock'
+        fd = os.open(lock_dir / lock_name, os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
         try:
-            yield
-        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise RepositoryConflict('LinkedIn account locked') from exc
+            owner = uuid4().hex
+            now = datetime.now(timezone.utc)
             with self.transaction() as con:
-                changed = con.execute('DELETE FROM apollo_linkedin_account_locks WHERE account_id=? AND owner=?',
-                                      (account_id, owner)).rowcount
-                if changed != 1:
-                    raise RepositoryConflict('LinkedIn account lock lost')
+                existing = con.execute('SELECT lease_until FROM apollo_linkedin_account_locks WHERE account_id=?',
+                                       (account_id,)).fetchone()
+                if existing:
+                    # Legacy rows have no expiry: fail closed instead of guessing.
+                    try:
+                        expiry = datetime.fromisoformat(existing['lease_until'])
+                        if expiry.tzinfo is None or expiry.utcoffset() is None:
+                            raise ValueError('naive lease expiry')
+                    except (TypeError, ValueError):
+                        raise RepositoryConflict('LinkedIn account lock expiry invalid') from None
+                    if expiry > now:
+                        raise RepositoryConflict('LinkedIn account locked')
+                    con.execute('DELETE FROM apollo_linkedin_account_locks WHERE account_id=?', (account_id,))
+                con.execute('INSERT INTO apollo_linkedin_account_locks '
+                            '(account_id,owner,created_at,lease_until) VALUES (?,?,?,?)',
+                            (account_id, owner, now.isoformat(), (now + APOLLO_LINKEDIN_LOCK_TTL).isoformat()))
+            try:
+                yield
+            finally:
+                primary_error = sys.exc_info()[0] is not None
+                try:
+                    with self.transaction() as con:
+                        changed = con.execute('DELETE FROM apollo_linkedin_account_locks WHERE account_id=? AND owner=?',
+                                              (account_id, owner)).rowcount
+                        if changed != 1:
+                            raise RepositoryConflict('LinkedIn account lock lost')
+                except Exception:
+                    if not primary_error:
+                        raise
+                    logging.getLogger(__name__).exception('Apollo LinkedIn lock release failed')
+        finally:
+            os.close(fd)
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:

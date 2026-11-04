@@ -56,7 +56,8 @@ class ApolloLinkedinPreviewHttpTests(unittest.TestCase):
 
     def test_startup_is_offline_and_requires_complete_matching_config(self):
         server = SimpleNamespace(thunder_connectsafely_app=SimpleNamespace(provider=SimpleNamespace(
-            direct_client=SimpleNamespace(account_id='acct', expected_public_id='owner', account_status=Mock()))))
+            direct_client=SimpleNamespace(account_id='acct', expected_public_id='owner', account_status=Mock()))),
+            thunder_apollo_linkedin_read_identity=SimpleNamespace(account_id='acct', public_id='owner'))
         loader = Mock(side_effect=AssertionError('must not read at startup'))
         self.assertIsNone(panel.configure_apollo_linkedin_preview(server, loader, {}))
         self.assertIsNone(panel.configure_apollo_linkedin_preview(server, loader, {'THUNDER_APOLLO_LI_TEAM': 'team'}))
@@ -71,6 +72,45 @@ class ApolloLinkedinPreviewHttpTests(unittest.TestCase):
         env['THUNDER_APOLLO_LI_ACCOUNT'] = 'other'
         self.assertIsNone(panel.configure_apollo_linkedin_preview(server, loader, env))
         self.assertEqual(server.thunder_apollo_linkedin_preview_error, 'account_mismatch')
+
+    def test_panel_uses_only_credential_free_broker_client(self):
+        from thunder_os.connectsafely_read_broker_client import AccountStatusBrokerClient
+        server = SimpleNamespace()
+        account = 'a' * 24
+        env = {'THUNDER_APOLLO_LI_BROKER_SOCKET': '/tmp/thunder-test/broker.sock',
+               'THUNDER_APOLLO_LI_BROKER_UID': '12001', 'THUNDER_APOLLO_LI_COMPANY': 'company',
+               'THUNDER_APOLLO_LI_ACCOUNT': account, 'THUNDER_APOLLO_LI_PUBLIC_ID': 'sender',
+               'THUNDER_APOLLO_LI_TEAM': 'team', 'THUNDER_APOLLO_LI_OWNER': 'owner',
+               'THUNDER_APOLLO_LI_API_ACTOR': 'actor', 'THUNDER_APOLLO_LI_SEQUENCE': 'sequence',
+               'THUNDER_APOLLO_LI_TASK': 'task'}
+        with patch.object(AccountStatusBrokerClient, 'account_status', return_value={
+                'id': account, 'publicId': 'sender', 'available': True,
+                'source': 'connectsafely', 'write_authorized': False}) as get_status:
+            identity = panel.configure_apollo_linkedin_read_broker(server, env)
+            preview = panel.configure_apollo_linkedin_preview(server, lambda: 'fake', env)
+            self.assertIsNotNone(identity)
+            self.assertFalse(hasattr(identity, 'send'))
+            self.assertFalse(hasattr(identity, 'credential'))
+            self.assertTrue(preview._status()['available'])
+            get_status.assert_called_once_with()
+
+    def test_broker_configuration_fails_closed_without_fallback(self):
+        server = SimpleNamespace()
+        self.assertIsNone(panel.configure_apollo_linkedin_read_broker(server, {}))
+        self.assertIsNone(server.thunder_apollo_linkedin_read_identity)
+        env = {'THUNDER_APOLLO_LI_BROKER_SOCKET':'/tmp/broker.sock', 'THUNDER_APOLLO_LI_BROKER_UID':'0',
+               'THUNDER_APOLLO_LI_COMPANY':'c', 'THUNDER_APOLLO_LI_ACCOUNT':'a'*24,
+               'THUNDER_APOLLO_LI_PUBLIC_ID':'sender'}
+        self.assertIsNone(panel.configure_apollo_linkedin_read_broker(server, env))
+
+    def test_broker_rejects_panel_with_send_provider(self):
+        account = 'a' * 24
+        env = {'THUNDER_APOLLO_LI_BROKER_SOCKET':'/tmp/broker.sock', 'THUNDER_APOLLO_LI_BROKER_UID':'12001',
+               'THUNDER_APOLLO_LI_COMPANY':'c', 'THUNDER_APOLLO_LI_ACCOUNT':account,
+               'THUNDER_APOLLO_LI_PUBLIC_ID':'sender'}
+        server = SimpleNamespace(thunder_connectsafely_app=SimpleNamespace(provider=object()))
+        self.assertIsNone(panel.configure_apollo_linkedin_read_broker(server, env))
+        self.assertIsNone(server.thunder_apollo_linkedin_read_identity)
 
 
 if __name__ == '__main__':

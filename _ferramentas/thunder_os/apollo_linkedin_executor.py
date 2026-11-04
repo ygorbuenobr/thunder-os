@@ -6,6 +6,7 @@ are reserved only by a future authorized execution; dry runs do not consume iden
 from contextlib import nullcontext
 
 from .apollo_linkedin_preview import _slug
+from .apollo_linkedin_attention import EXCLUDED_TASK
 
 _ACTIONS = {'linkedin_step_connect': 'invite', 'linkedin_step_message': 'message'}
 
@@ -22,8 +23,18 @@ class DryRunExecutor:
     def prepare(self, task, *, company_id, team_id, read_only=False):
         if not isinstance(task, dict):
             return {'state': 'blocked', 'reason': 'identity_unverified'}
+        if task.get('id') == EXCLUDED_TASK:
+            return {'state': 'blocked', 'reason': 'fixture_protegida'}
         action = _ACTIONS.get(task.get('type'))
         company, task_id = company_id, task.get('id')
+        if read_only and self.client is None:
+            observation = self.bindings.observe_account(company_id=company_id, team_id=team_id,
+                campaign_id=task.get('emailer_campaign_id'), owner_id=task.get('user_id'),
+                account_status_reader=self.account_status_reader)
+            if observation.get('status') != 'observed':
+                return {'state': 'blocked', 'reason': observation.get('reason', 'account_status_unavailable')}
+            return {'state': 'blocked', 'reason': 'execution_binding_unverified',
+                    'account_observation': observation, 'execution_enabled': False}
         binding = self.bindings.resolve(company_id=company_id, team_id=team_id,
             campaign_id=task.get('emailer_campaign_id'), owner_id=task.get('user_id'),
             account_status_reader=self.account_status_reader, client=self.client)

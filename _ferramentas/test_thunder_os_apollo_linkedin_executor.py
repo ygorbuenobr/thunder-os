@@ -16,6 +16,7 @@ class ExecutorTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
         self.patcher = patch('thunder_os.db.OFFICIAL_PANEL_DB', Path(self.tmp.name) / 'painel.db')
         self.patcher.start(); self.addCleanup(self.patcher.stop)
+        (Path(self.tmp.name) / 'painel.db').touch()
         self.service = ThunderService(Repository(str(Path(self.tmp.name) / 'painel.db')))
         self.task = {'id': 'task', 'type': 'linkedin_step_connect', 'status': 'scheduled', 'emailer_campaign_id': 'campaign', 'user_id': 'owner', 'contact': {'linkedin_url': 'https://www.linkedin.com/in/person/'}}
         self.bindings = CampaignBindings([{'company_id':'company', 'team_id':'team', 'campaign_id':'campaign', 'account_id':'account', 'public_id':'sender', 'credential_ref':'credential', 'owner_ids':['owner']}])

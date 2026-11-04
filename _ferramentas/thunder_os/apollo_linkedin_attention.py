@@ -1,18 +1,46 @@
 """Read-only attention projection over a non-dispatching task preparation."""
 
 from datetime import datetime, timezone
+from contextlib import nullcontext
+import threading
 
 EXCLUDED_TASK = '6aea584a2b8c4b0020f93935'
 
 
 class ApolloLinkedInAttention:
-    def __init__(self, service, reader, executor, *, company_id, team_id):
+    def __init__(self, service, reader, executor, *, company_id, team_id, budget_seconds=5, max_pages=3):
         self.service, self.reader, self.executor = service, reader, executor
         self.company_id, self.team_id = company_id, team_id
         self._first_observed = {}
+        self.budget_seconds, self.max_pages = budget_seconds, max_pages
+        self._inflight = threading.BoundedSemaphore(1)
+        self._partial_items = []
 
     def snapshot(self):
-        items = []
+        if not self._inflight.acquire(blocking=False):
+            return {'status': 'partial', 'coverage': 'unknown', 'reason': 'read_in_progress', 'items': list(self._partial_items)}
+        finished = threading.Event()
+        result = []
+        partial_items = []
+        self._partial_items = partial_items
+        def run():
+            try:
+                factory = getattr(self.reader, 'attention_budget', None) if callable(getattr(type(self.reader), 'attention_budget', None)) else None
+                context = factory(seconds=self.budget_seconds, max_pages=self.max_pages) if callable(factory) else nullcontext()
+                with context as budget:
+                    result.append(self._snapshot(budget, partial_items))
+            except Exception:
+                result.append({'status': 'partial', 'coverage': 'unknown', 'reason': 'read_unavailable', 'items': []})
+            finally:
+                self._inflight.release()
+                finished.set()
+        threading.Thread(target=run, daemon=True).start()
+        if not finished.wait(self.budget_seconds):
+            return {'status': 'partial', 'coverage': 'unknown', 'reason': 'time_budget_exhausted', 'items': list(partial_items)}
+        return result[0]
+
+    def _snapshot(self, budget=None, items=None):
+        items = [] if items is None else items
         try:
             for row in self.service.list_apollo_linkedin_reservations():
                 if row['state'] in ('uncertain', 'reserved'):
@@ -28,8 +56,16 @@ class ApolloLinkedInAttention:
             return {'status': 'unavailable', 'items': [], 'reason': 'official_store_unavailable'}
         try:
             result = self.reader.list_open_tasks()
+            exhausted = False
             for task in result['tasks']:
+                if budget is not None and budget.expired():
+                    exhausted = True
+                    break
                 if task.get('id') == EXCLUDED_TASK:
+                    items.append({'task_id': task.get('id'), 'reason': 'fixture_protegida',
+                                  'stopped_at': task.get('updated_at') or task.get('created_at'),
+                                  'next_action': 'Fixture protegida: não executar nem concluir.',
+                                  'execution_enabled': False})
                     continue
                 try:
                     detail = self.reader.get(task['id'])
@@ -45,8 +81,12 @@ class ApolloLinkedInAttention:
                     items.append({'task_id': task.get('id'), 'reason': prepared.get('reason', 'blocked'),
                                   'stopped_at': task.get('updated_at') or task.get('created_at') or observed,
                                   'age_basis': 'provider' if task.get('updated_at') or task.get('created_at') else 'first_observed',
+                                  'account_observation': prepared.get('account_observation'),
                                   'next_action': 'Verificar os dados e a conta padrão antes de qualquer ação.'})
-            return {'status': 'ok' if result.get('coverage') == 'complete' else 'partial',
-                    'coverage': result.get('coverage', 'unknown'), 'items': items}
+            if budget is not None and budget.expired():
+                exhausted = True
+            coverage = 'partial' if exhausted else result.get('coverage', 'unknown')
+            return {'status': 'ok' if coverage == 'complete' else 'partial',
+                    'coverage': coverage, 'reason': 'time_budget_exhausted' if exhausted else result.get('reason'), 'items': items}
         except Exception:
             return {'status': 'partial', 'coverage': 'unknown', 'items': items}

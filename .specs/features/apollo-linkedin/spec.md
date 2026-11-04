@@ -99,3 +99,16 @@ Apollo owns sequences and email, but the OS cannot yet process its manual Linked
 - [ ] Every scoped acceptance criterion has direct test evidence.
 - [ ] No production network, credentials, live provider, scheduler or data is used.
 - [ ] Independent review validates implementation and reports any gap.
+
+## T3: isolated ConnectSafely account read (design; not enabled)
+
+The simulation-only requirements above remain unchanged. This separate T3 design prepares a safe account-status read while keeping the independently authorized ConnectSafely action path. It does not authorize a real send, provider mutation, production network in tests, or any change to the protected Apollo fixture.
+
+1. **RO-01:** WHEN the panel requests account status THEN it SHALL only access an account-status interface with no capability to invoke a ConnectSafely write and no access to a send-capable credential.
+2. **RO-02:** IF the provider credential is not proven read-scoped THEN isolation SHALL be enforced outside the panel process and security identity; a GET-only wrapper around a write-capable key is not proof of this boundary.
+3. **RO-03:** WHEN account status is queried THEN company, account and expected public identity SHALL be bound explicitly; missing, mismatched, stale or unavailable evidence SHALL produce a visible blocked/unknown result rather than a ready state.
+4. **RO-04:** IF the broker, credential, configured account mapping, transport or authorization is missing, inconsistent or times out THEN the panel SHALL fail closed with a bounded, visible status; it SHALL not fall back to the send client or default account.
+5. **RO-05:** IF a caller requests a mutation, arbitrary URL, arbitrary account, or malformed/oversized input THEN the isolated read interface SHALL reject it before any provider call. Secrets and unnecessary provider data SHALL not enter the response or logs.
+6. **RO-06:** A successful account read SHALL NOT prove or expose the separately verified execution-credential binding, a provider delivery receipt or approval to send.
+7. **RO-07:** Tests SHALL use fake credentials and fake provider responses; they SHALL exercise normal and adversarial inputs without real network or external actions. A distinct staging test SHALL establish OS identity separation and peer authorization before any operational claim.
+8. **RO-08:** The existing action path remains independently available only to its authorized executor and retains campaign approval, account binding, reservation, locking, kill switch and explicit real-send authorization.

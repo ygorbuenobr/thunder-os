@@ -7,11 +7,36 @@ import json
 import math
 import os
 import ssl
+import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from urllib.parse import urlencode
 
 from .apollo_linkedin_preview import _json
 
 _ID = re.compile(r'[A-Za-z0-9_.-]{1,160}\Z')
+
+_active_budget = ContextVar('apollo_linkedin_read_budget', default=None)
+
+
+class _ReadBudget:
+    def __init__(self, reader, seconds, max_pages):
+        self.reader = reader
+        self.deadline = reader._clock() + seconds
+        self.max_pages = max_pages
+        self.pages = 0
+
+    def remaining(self):
+        return max(0.0, self.deadline - self.reader._clock())
+
+    def expired(self):
+        return self.remaining() <= 0
+
+    def require_time(self):
+        remaining = self.remaining()
+        if remaining <= 0:
+            raise ValueError('time_budget_exhausted')
+        return remaining
 
 
 def _valid(value):
@@ -69,6 +94,25 @@ class CampaignBindings:
         return {'status': 'ready', 'reason': None, 'account_id': binding['account_id'],
                 'credential_ref': binding['credential_ref'], 'public_id': binding['public_id']}
 
+    def observe_account(self, *, company_id, team_id, campaign_id, owner_id, account_status_reader):
+        """Read observation only; never attest the sender's execution binding."""
+        binding = self._routes.get((company_id, team_id, campaign_id))
+        if binding is None:
+            return {'status': 'blocked', 'reason': 'campaign_binding_missing'}
+        if owner_id not in binding['owner_ids']:
+            return {'status': 'blocked', 'reason': 'owner_not_configured'}
+        try:
+            account = account_status_reader(binding['account_id'])
+        except Exception:
+            account = None
+        if (not isinstance(account, dict) or account.get('id') != binding['account_id']
+                or account.get('publicId') != binding['public_id'] or account.get('available') is not True
+                or account.get('write_authorized') is not False):
+            return {'status': 'blocked', 'reason': 'default_account_unavailable'}
+        return {'status': 'observed', 'account_id': binding['account_id'],
+                'public_id': binding['public_id'], 'observed_at': account.get('observed_at'),
+                'source': account.get('source')}
+
 
 
 _SEARCH = '/api/v1/tasks/search'
@@ -108,16 +152,31 @@ def _https_request(method, path, body, headers, timeout):
 class ApolloLinkedInReader:
     """Bounded team search. Empty means zero only with proven complete pagination."""
     def __init__(self, credential_loader, *, team_id, api_actor_id, owner_ids,
-                 request=None, timeout=8, max_pages=500):
+                 request=None, timeout=8, max_pages=500, clock=time.monotonic):
         if (not callable(credential_loader) or not _valid(team_id) or not _valid(api_actor_id)
                 or not isinstance(owner_ids, (tuple, list)) or not owner_ids
                 or any(not _valid(x) for x in owner_ids) or len(set(owner_ids)) != len(owner_ids)
                 or type(max_pages) is not int or not 1 <= max_pages <= 500
-                or type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 15):
+                or type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 15
+                or not callable(clock)):
             raise ValueError('configuration_invalid')
         self._loader, self._request = credential_loader, request or _https_request
         self.team_id, self.api_actor_id, self.owner_ids = team_id, api_actor_id, frozenset(owner_ids)
         self.timeout, self.max_pages = timeout, max_pages
+        self._clock = clock
+
+    @contextmanager
+    def attention_budget(self, *, seconds, max_pages):
+        """Per-request budget, independent across concurrent handler contexts."""
+        if (type(seconds) not in (int, float) or not math.isfinite(seconds) or seconds <= 0
+                or type(max_pages) is not int or not 1 <= max_pages <= self.max_pages):
+            raise ValueError('budget_invalid')
+        budget = _ReadBudget(self, seconds, max_pages)
+        token = _active_budget.set(budget)
+        try:
+            yield budget
+        finally:
+            _active_budget.reset(token)
 
     def _call(self, method, path, body=None):
         # Enforce the allowlist even if a request transport is injected.
@@ -129,11 +188,23 @@ class ApolloLinkedInReader:
                                re.fullmatch(r'/api/v1/tasks/[A-Za-z0-9_-]{1,128}', path)))
         if not allowed:
             raise ValueError('endpoint_blocked')
+        budget = _active_budget.get()
+        if budget is not None and budget.reader is not self:
+            budget = None
+        if budget is not None:
+            budget.require_time()
+            if method == 'POST':
+                if budget.pages >= budget.max_pages:
+                    raise ValueError('page_budget_exhausted')
+                budget.pages += 1
         token = self._loader()
         if not isinstance(token, str) or not token or any(c.isspace() for c in token):
             raise ValueError('credential_unavailable')
+        timeout = min(self.timeout, budget.require_time()) if budget is not None else self.timeout
         status, raw = self._request(method, path, body,
-                                    {'x-api-key': token, 'Accept': 'application/json'}, self.timeout)
+                                    {'x-api-key': token, 'Accept': 'application/json'}, timeout)
+        if budget is not None:
+            budget.require_time()
         if status != 200:
             raise ValueError('apollo_unavailable')
         return _json(raw)
@@ -184,6 +255,8 @@ class ApolloLinkedInReader:
                     return {'tasks': tasks, 'coverage': 'complete', 'reason': None}
             raise ValueError('pagination_incomplete')
         except Exception as exc:
+            if isinstance(exc, ValueError) and str(exc) in ('page_budget_exhausted', 'time_budget_exhausted'):
+                return {'tasks': tasks, 'coverage': 'partial', 'reason': str(exc)}
             reason = str(exc) if isinstance(exc, ValueError) and str(exc) in {
                 'pagination_incomplete', 'team_mismatch', 'credential_unavailable', 'apollo_unavailable'
             } else 'apollo_read_unavailable'
