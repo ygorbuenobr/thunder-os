@@ -14,6 +14,40 @@ Mapeamento de código e documentação local em 04/11/2026. Nenhuma API externa,
 |---|---|---|---|
 | Cliente de leitura de conta, quota e histórico; tratamento parcial de 429. | `connectsafely_client.py`: `accounts`, `verify_identity`, `account_status`, `quota`, `connections`, `sent_invitations`, `relationship`, `conversations`, `messages`, `reconcile`, `_call`, `_quota_allowed`; `test_thunder_os_connectsafely_client.py`, `test_thunder_os_connectsafely_transport.py` com fake 429. | Identidade efetiva, paginação, reset, `Retry-After`, restrição e distinção entre fila e envio não comprovados no fornecedor. | Futuramente ler `GET /linkedin/accounts`, `/linkedin/account/{id}/status`, `/linkedin/account/{id}/quota`, `/linkedin/relationship/{id}/{publicId}`, `/linkedin/conversations` e `/linkedin/conversations/{urn}/messages`, além de convites enviados pelo método `sent_invitations`. Confirmar perfil, quota por conta, janela/reset, vínculo e cobertura; inspecionar cabeçalhos de resposta reais e documentação de consulta por recibo. Verificar se existe leitura por ID após timeout; ausência de recibo conclusivo mantém resultado incerto. |
 
+## Leituras reais de B1 e B2 (04/11/2026, somente leitura)
+
+Leituras feitas pelo Claude no Mac. Não houve escrita, conclusão de tarefa, envio nem alteração de configuração. A fixture `6aea584a2b8c4b0020f93935` continua `scheduled` e intacta. Dados de terceiros (nomes e perfis de convidados) não foram copiados para cá.
+
+### B1 — Apollo
+
+O acesso foi pelo CLI oficial `apollo` 2.2.0, autenticado como o usuário da Thunder via OAuth, em `https://api.apollo.io`.
+
+| Ponto | Resultado observado |
+|---|---|
+| Detalhe da tarefa (`GET /tasks/{id}`) | A fixture retorna `type=linkedin_step_connect`, `status=scheduled`, `user_id` (dono, igual ao `creator_id`), `contact_id`, `emailer_campaign_id`, `campaign_name`, `campaign_position=1`, `pending_send=false`, `due_at`, `adherence_status=overdue` e **`linkedin_emailer_template.body_text`** (o texto do passo). |
+| Correção do registro anterior | O registro anterior dizia que o detalhe não trazia dono nem template. Pela via do CLI, ambos vêm: o dono no campo `user_id` (o campo `owner_id` não existe) e o texto em `linkedin_emailer_template`. **Ainda falta confirmar** se a chave de API do painel (`x-api-key`, na VPS) recebe os mesmos campos; não foi testado daqui. |
+| Busca e paginação (`POST /tasks/search`, filtro por `user_id`) | `pagination.total_entries=42` e `total_pages=2`; a página 1 trouxe 25 tarefas, a 2 trouxe 17 e a 3, zero. A cobertura completa é comprovável pela soma das páginas. A busca também traz `linkedin_emailer_template` nas tarefas de LinkedIn. |
+| Tarefas de LinkedIn abertas do usuário | Duas: a fixture (sequência `TESTE THUNDER OS - LinkedIn`, `6aea57ca9f01eb000c4d5672`, ativa, 1 passo) e uma `linkedin_step_message` manual (`6aea56153612b300105c51c3`), sem sequência e sem template. Pela regra AL-03, essa segunda deve ficar bloqueada por falta de texto. |
+| Conclusão e pausa | O CLI usa `POST /tasks/{id}/complete` (com `note` opcional) e `POST /tasks/{id}/skip`. **Nenhuma das duas foi chamada.** O efeito sobre o relógio da sequência e o readback depois da conclusão continuam sem prova e exigem teste autorizado. |
+
+### B2 — ConnectSafely
+
+O acesso foi pelo MCP da conta da Thunder (conta `6abe5fc087213e2040fb9b1b`, `publicId=ygorbuenobr`, a única conta visível).
+
+| Ponto | Resultado observado |
+|---|---|
+| Identidade e estado | `GET /linkedin/accounts` e `/linkedin/account/{id}/status`: `status=AVAILABLE`, `enabled=true`, `hasTokens=true`, `apiSeatAllocated=true`, Premium Business, `lastUsed` presente. Esses são os campos que o broker de leitura do T3 espera. |
+| Quota de convites | `CONNECT`: janela **semanal**, `limit=200` (o ConnectSafely rejeita com 429 ao atingir), `linkedinLimit=200`, `resetAt` às segundas, 00:00 UTC. **Isso resolve a divergência com os 90 por semana:** o teto efetivo hoje é 200, igual à A1. Mensagens: limite diário de 150 (o do LinkedIn é 200). |
+| O que a quota mede | O `used` conta só ações feitas pelo ConnectSafely. Nesta semana, `CONNECT.used=0`, mas a lista de convites enviados mostra convites de 1 hora a 1 dia atrás, feitos por outra via. **A quota não é o total da conta no LinkedIn**: o teto de A1 precisa somar os convites feitos fora do ConnectSafely, ou ser conservador. |
+| Recibo do convite | `get-sent-invitations` devolve `invitationId`, `invitationUrn`, `memberUrn`, `publicIdentifier` e `sentAt` só **relativo** ("Sent 1 hour ago"), sem horário absoluto. A paginação usa `nextStartIndex` e termina em `endOfList=true`; uma página vazia com 502/`INVITATIONS_UNAVAILABLE` não indica fim da lista. Dá para confirmar, depois de um timeout, que o convite saiu, buscando pelo `publicIdentifier` do lead; o horário exato não vem. |
+| Ainda não comprovado | Cabeçalhos `Retry-After` e reset numa resposta 429 real; se o POST de convite devolve um ID de recibo síncrono; existência de chave só de leitura. A MCP não mostra cabeçalhos HTTP. |
+
+### Consequências para a jornada Apollo + LinkedIn
+
+- A pergunta pendente 1 ("de onde vem o texto do convite") tem resposta técnica provável: do `linkedin_emailer_template.body_text` da própria tarefa. Falta confirmar pela chave do painel. A decisão continua com o Ygor.
+- A1 pode usar 200 por semana como teto, sem depender da hipótese dos 90; o contador interno precisa considerar convites feitos fora do ConnectSafely.
+- O recibo pós-timeout pode ser a presença do `publicIdentifier` em `sent-invitations`, lido até `endOfList`. Sem horário absoluto, o resultado fica `uncertain` sempre que já existia um convite pendente para a mesma pessoa.
+
 ## B3 — Webhooks e respostas — implementado com teste (parcial)
 
 | O que existe | Evidência no código | Lacuna | Próxima verificação |
