@@ -68,6 +68,7 @@ ALLOWED_FILES = {
     "scripts/recover_mexico_runner.cjs",
     "scripts/test_mexico_e1_runner.cjs",
     "docs/branches.md",
+    "docs/thunder-os-contexto-completo-entire.md",
     "docs/journey-approval-modes.md",
     "docs/task3-membership.md",
     "docs/external-email-integrations.md",
