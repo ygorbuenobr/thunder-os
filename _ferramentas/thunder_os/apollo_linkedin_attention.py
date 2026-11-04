@@ -37,7 +37,7 @@ class ApolloLinkedInAttention:
                     if any(task.get(key) != detail.get(key) for key in keys):
                         prepared = {'state': 'blocked', 'reason': 'task_changed'}
                     else:
-                        prepared = self.executor.prepare(detail, company_id=self.company_id, team_id=self.team_id)
+                        prepared = self.executor.prepare(detail, company_id=self.company_id, team_id=self.team_id, read_only=True)
                 except Exception:
                     prepared = {'state': 'blocked', 'reason': 'preparation_unavailable'}
                 if prepared.get('state') == 'blocked':

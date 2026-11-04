@@ -48,6 +48,7 @@ def credential(path):
         value=explicit_path(path).read_text().strip()
         if not value or '\n' in value:raise ValueError('credential_unavailable')
         return value
+    read.credential_ref = hashlib.sha256(str(explicit_path(path)).encode()).hexdigest()
     return read
 
 

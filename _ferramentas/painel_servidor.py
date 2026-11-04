@@ -2873,9 +2873,6 @@ def configure_apollo_linkedin_attention(server, loader, environ=None):
         company = env['THUNDER_APOLLO_LI_COMPANY']
         team = env['THUNDER_APOLLO_LI_TEAM']
         actor = env['THUNDER_APOLLO_LI_API_ACTOR']
-        credential_ref = env['THUNDER_APOLLO_LI_CONNECTSAFELY_CREDENTIAL_REF']
-        if not credential_ref or any(b.get('credential_ref') != credential_ref for b in bindings_data):
-            raise ValueError('credential_binding_mismatch')
         if any(b.get('company_id') != company or b.get('team_id') != team for b in bindings_data):
             raise ValueError('binding_scope_mismatch')
         bindings = CampaignBindings(bindings_data)
@@ -2890,7 +2887,7 @@ def configure_apollo_linkedin_attention(server, loader, environ=None):
                 return None
             return status
         reader = ApolloLinkedInReader(loader, team_id=team, api_actor_id=actor, owner_ids=owners)
-        executor = DryRunExecutor(server.thunder_service, reader, bindings, account_status)
+        executor = DryRunExecutor(server.thunder_service, reader, bindings, account_status, client=client)
         attention = ApolloLinkedInAttention(server.thunder_service, reader, executor,
                                              company_id=company, team_id=team)
         server.thunder_apollo_linkedin_attention = attention
