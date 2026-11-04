@@ -6,9 +6,13 @@ from thunder_os.apollo_linkedin_reader import CampaignBindings, list_open_tasks
 class BindingsTest(unittest.TestCase):
     def setUp(self):
         self.binding = dict(company_id='company', team_id='team', campaign_id='campaign',
-                            account_id='account1', credential_ref='secret-ref', owner_ids=['owner'])
+                            account_id='account1', public_id='sender', credential_ref='secret-ref', owner_ids=['owner'])
         self.routes = CampaignBindings([self.binding])
-        self.args = dict(company_id='company', team_id='team', campaign_id='campaign', owner_id='owner')
+        from types import SimpleNamespace
+        credential = lambda: 'token'
+        credential.credential_ref = 'secret-ref'
+        self.client = SimpleNamespace(account_id='account1', expected_public_id='sender', request=SimpleNamespace(account_id='account1', credential=credential))
+        self.args = dict(client=self.client, company_id='company', team_id='team', campaign_id='campaign', owner_id='owner')
 
     def test_exact_binding_and_availability(self):
         calls = []

@@ -31,7 +31,7 @@ class CampaignBindings:
         for binding in bindings:
             if not isinstance(binding, dict):
                 raise ValueError('bindings_invalid')
-            fields = ('company_id', 'team_id', 'campaign_id', 'account_id', 'credential_ref')
+            fields = ('company_id', 'team_id', 'campaign_id', 'account_id', 'public_id', 'credential_ref')
             if any(not _valid(binding.get(key)) for key in fields):
                 raise ValueError('bindings_invalid')
             owners = binding.get('owner_ids')
@@ -44,12 +44,19 @@ class CampaignBindings:
             self._routes[key] = {field: binding[field] for field in fields}
             self._routes[key]['owner_ids'] = tuple(owners)
 
-    def resolve(self, *, company_id, team_id, campaign_id, owner_id, account_status_reader):
+    def resolve(self, *, company_id, team_id, campaign_id, owner_id, account_status_reader, client=None):
         binding = self._routes.get((company_id, team_id, campaign_id))
         if binding is None:
             return {'status': 'blocked', 'reason': 'campaign_binding_missing'}
         if owner_id not in binding['owner_ids']:
             return {'status': 'blocked', 'reason': 'owner_not_configured'}
+        transport = getattr(client, 'request', None)
+        credential = getattr(transport, 'credential', None)
+        if (not callable(credential) or getattr(credential, 'credential_ref', None) != binding['credential_ref']
+                or getattr(transport, 'account_id', None) != binding['account_id']
+                or getattr(client, 'account_id', None) != binding['account_id']
+                or getattr(client, 'expected_public_id', None) != binding['public_id']):
+            return {'status': 'blocked', 'reason': 'credential_unbound'}
         if not callable(account_status_reader):
             return {'status': 'blocked', 'reason': 'account_status_unavailable'}
         try:
@@ -60,7 +67,7 @@ class CampaignBindings:
             return {'status': 'blocked', 'reason': 'default_account_unavailable',
                     'account_id': binding['account_id']}
         return {'status': 'ready', 'reason': None, 'account_id': binding['account_id'],
-                'credential_ref': binding['credential_ref']}
+                'credential_ref': binding['credential_ref'], 'public_id': binding['public_id']}
 
 
 

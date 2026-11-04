@@ -18,10 +18,14 @@ class ExecutorTest(unittest.TestCase):
         self.patcher.start(); self.addCleanup(self.patcher.stop)
         self.service = ThunderService(Repository(str(Path(self.tmp.name) / 'painel.db')))
         self.task = {'id': 'task', 'type': 'linkedin_step_connect', 'status': 'scheduled', 'emailer_campaign_id': 'campaign', 'user_id': 'owner', 'contact': {'linkedin_url': 'https://www.linkedin.com/in/person/'}}
-        self.bindings = CampaignBindings([{'company_id':'company', 'team_id':'team', 'campaign_id':'campaign', 'account_id':'account', 'credential_ref':'credential', 'owner_ids':['owner']}])
+        self.bindings = CampaignBindings([{'company_id':'company', 'team_id':'team', 'campaign_id':'campaign', 'account_id':'account', 'public_id':'sender', 'credential_ref':'credential', 'owner_ids':['owner']}])
+        from types import SimpleNamespace
+        credential = lambda: 'token'
+        credential.credential_ref = 'credential'
+        self.client = SimpleNamespace(account_id='account', expected_public_id='sender', request=SimpleNamespace(account_id='account', credential=credential))
         self.status = lambda account: {'id': account, 'available': True}
     def executor(self, task=None, status=None):
-        return DryRunExecutor(self.service, Apollo(task or self.task), self.bindings, status or self.status)
+        return DryRunExecutor(self.service, Apollo(task or self.task), self.bindings, status or self.status, client=self.client)
     def prepare(self, executor): return executor.prepare(self.task, company_id='company', team_id='team')
     def test_missing_store_and_enabled_execution_refused(self):
         with self.assertRaises(ValueError): DryRunExecutor(self.service, Apollo(self.task), self.bindings, self.status, execution_enabled=True)
@@ -37,6 +41,17 @@ class ExecutorTest(unittest.TestCase):
         result = self.prepare(self.executor(dict(self.task, status='completed')))
         self.assertEqual(result['reason'], 'task_changed')
         self.assertEqual(self.service.list_apollo_linkedin_reservations(), [])
+    def test_credential_must_match_client_and_account(self):
+        from types import SimpleNamespace
+        good = self.client
+        for client in (SimpleNamespace(account_id='other', expected_public_id='sender', request=good.request),
+                       SimpleNamespace(account_id='account', expected_public_id='other', request=good.request),
+                       SimpleNamespace(account_id='account', expected_public_id='sender', request=None)):
+            self.client = client
+            self.assertEqual(self.prepare(self.executor())['reason'], 'credential_unbound')
+        self.client = good
+        self.assertEqual(self.prepare(self.executor())['state'], 'dry_run')
+
     def test_unavailable_account_does_not_reserve(self):
         result = self.prepare(self.executor(status=lambda _: None))
         self.assertEqual(result['reason'], 'default_account_unavailable')
@@ -55,7 +70,7 @@ class ExecutorTest(unittest.TestCase):
         reader = Mock()
         reader.list_open_tasks.return_value = {'tasks': [task], 'coverage': 'unknown'}
         reader.get.return_value = task
-        executor = DryRunExecutor(self.service, reader, self.bindings, lambda _: None)
+        executor = DryRunExecutor(self.service, reader, self.bindings, lambda _: None, client=self.client)
         attention = ApolloLinkedInAttention(self.service, reader, executor, company_id='company', team_id='team')
         with self.service.apollo_linkedin_account_lock('abandoned'):
             result = attention.snapshot()

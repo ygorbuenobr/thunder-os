@@ -52,6 +52,45 @@ class AttentionHttpTests(unittest.TestCase):
         self.assertEqual(body['items'][0]['stopped_at'], task['created_at'])
         executor.prepare.assert_called_once()
 
+    def test_get_does_not_write_locks_or_reservations(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from thunder_os.db import Repository
+        from thunder_os.service import ThunderService
+        from thunder_os.apollo_linkedin_attention import ApolloLinkedInAttention
+        from thunder_os.apollo_linkedin_executor import DryRunExecutor
+        from thunder_os.apollo_linkedin_reader import CampaignBindings
+        with tempfile.TemporaryDirectory() as tmp, patch('thunder_os.db.OFFICIAL_PANEL_DB', Path(tmp) / 'panel.db'):
+            service = ThunderService(Repository(str(Path(tmp) / 'panel.db')))
+            credential = lambda: 'token'
+            credential.credential_ref = 'ref'
+            client = SimpleNamespace(account_id='account', expected_public_id='sender',
+                                     request=SimpleNamespace(account_id='account', credential=credential))
+            bindings = CampaignBindings([dict(company_id='company', team_id='team', campaign_id='campaign',
+                account_id='account', public_id='sender', credential_ref='ref', owner_ids=['owner'])])
+            task = dict(id='task', type='linkedin_step_connect', status='scheduled', emailer_campaign_id='campaign',
+                        user_id='owner', contact={'linkedin_url': 'https://linkedin.com/in/person/'})
+            reader = Mock(); reader.list_open_tasks.return_value = {'tasks': [task], 'coverage': 'complete'}
+            reader.get.return_value = task
+            executor = DryRunExecutor(service, reader, bindings, lambda _: {'id': 'account', 'available': True}, client=client)
+            self.handler.server.thunder_apollo_linkedin_attention = ApolloLinkedInAttention(
+                service, reader, executor, company_id='company', team_id='team')
+            before = (service.list_apollo_linkedin_account_locks(), service.list_apollo_linkedin_reservations())
+            statements = []
+            connect = service.repository._connect
+            def traced_connect():
+                connection = connect()
+                connection.set_trace_callback(statements.append)
+                return connection
+            with patch.object(service.repository, '_connect', side_effect=traced_connect), \
+                 patch.object(service, 'apollo_linkedin_account_lock', side_effect=AssertionError('lock write')), \
+                 patch.object(service, 'reserve_apollo_linkedin', side_effect=AssertionError('reservation write')):
+                status, body = self.request()
+            self.assertFalse([sql for sql in statements if sql.lstrip().upper().startswith(('INSERT', 'UPDATE', 'DELETE', 'REPLACE'))])
+            self.assertEqual((status, body['status']), (200, 'ok'))
+            self.assertEqual(before, (service.list_apollo_linkedin_account_locks(), service.list_apollo_linkedin_reservations()))
+
     def test_missing_timestamp_uses_observed_age(self):
         from thunder_os.apollo_linkedin_attention import ApolloLinkedInAttention
         task = {'id': 'task', 'type': 'linkedin_step_connect', 'status': 'scheduled',
