@@ -854,17 +854,19 @@ Separado em duas interfaces para garantir que o painel nunca tenha poder de escr
 7. **[VALIDAR — Parâmetros do Primeiro Teste Real com Ygor]:** Qual será a frase exata de autorização definida por Ygor, qual a conexão já escolhida, sujeita às autorizações necessárias, para receber a mensagem de teste, qual o texto exato do teste e qual o ID da tarefa correspondente no Apollo?
 
 
-## Decisões pendentes do Ygor — auditoria de 04/11/2026
+## Decisões da auditoria de 04/11/2026 — fechadas por Ygor em 05/11/2026
 
-Estas perguntas complementam as decisões já fechadas; não reabrem A1–A14. Nenhuma alternativa abaixo foi aprovada por este registro.
+Estas decisões complementam A1–A14 e não as reabrem. Cada uma ainda precisa virar contrato e teste; registrar aqui não altera serviços nem autoriza envios.
 
-1. **Texto do convite:** quando a tarefa do Apollo não trouxer o texto, ele deverá vir de um passo consultável no Apollo, ser criado no Thunder OS a partir do contexto da campanha, ser cadastrado no Thunder OS, ou combinar essas opções?
-2. **Identidade do painel (T3):** o painel deve deixar de rodar como root para permitir isolamento do broker de leitura, ou outra fronteira comprovada deve ser adotada? A escolha exige prova de isolamento; uma chave apenas de leitura ainda não foi comprovada.
-3. **Feriados BR/MX:** aplicar a união dos calendários ou o calendário do país do lead? Qual fonte de feriados será adotada?
-4. **Saúde dos canais (A14):** qual janela e amostra mínima usar para o limite de bounce de 2%? Qual queda de aceite no LinkedIn deve disparar redução de ritmo e qual redução aplicar?
-5. **Alertas (A9):** qual serviço enviará os alertas por e-mail, inclusive se a caixa de prospecção estiver indisponível?
-6. **Distribuição LinkedIn:** qual regra usar entre as contas selecionadas quando a campanha optar pela distribuição automática?
-7. **Contatos por empresa:** qual intervalo ou condição separa o início da abordagem dos até três contatos da mesma empresa?
-8. **IA e custo (A8):** qual backend e autenticação usar em produção para cada capacidade, e em que unidade monetária contabilizar limites e custos?
+1. **Texto do convite e da mensagem (decidido):** a fonte é o texto já preenchido da própria tarefa do Apollo (`linkedin_emailer_template.body_text`). Em 04/11 ficou comprovado que ele vem renderizado por contato, tanto pela chave do painel quanto pelo OAuth. O Thunder OS não reescreve o texto: valida, guarda o hash e relê antes de agir. Para mudar o texto, edita-se o passo no Apollo.
+2. **Identidade do painel (decidido):** o painel deixa de rodar como root e passa a um usuário próprio, sem privilégio; o broker de leitura do ConnectSafely roda em outro usuário. Exige deploy com rollback e prova de isolamento no servidor real. Até lá, a prévia do LinkedIn fica desligada em produção (falha fechada).
+3. **Feriados (decidido):** valem os feriados do país do lead: BR para leads do Brasil, MX para leads do México. Sem país confirmado, aplica-se a união BR + MX. A fonte é uma lista nacional mantida no Thunder OS e revisada a cada ano; sem a lista do ano, a cadência continua bloqueada em `calendar_unverified`.
+4. **Saúde dos canais, A14 (decidido):**
+   - **E-mail:** bounce medido por caixa nos últimos 7 dias, com amostra mínima de 50 envios; acima de 2%, a caixa pausa e gera alerta.
+   - **LinkedIn:** aceite medido por conta nos últimos 14 dias, com amostra mínima de 30 convites; abaixo de 20%, o ritmo da conta cai pela metade e gera alerta.
+5. **Alertas, A9 (decidido):** os alertas urgentes saem por um serviço de e-mail transacional separado (por exemplo, Resend ou Amazon SES), com domínio próprio e fora das caixas de prospecção, para funcionar mesmo com a caixa de prospecção pausada ou caída.
+6. **Distribuição entre contas do LinkedIn (decidido):** cada lead novo vai para a conta com maior saldo de convites na semana; empate é resolvido por rodízio. Depois do primeiro toque, a conta passa a ser a dona do lead (A3).
+7. **Contatos da mesma empresa, A12 (decidido):** o segundo contato começa 3 dias úteis depois do primeiro toque do anterior, e o terceiro, mais 3 dias úteis depois. Resposta de qualquer um pausa os demais.
+8. **IA e custo, A8 (decidido para agora):** por enquanto continua o OAuth pessoal do Codex, só para a operação da própria Thunder. A API oficial e a moeda do custo serão decididas quando entrar o primeiro cliente. Até lá, o teto de custo por campanha (A8) não é aplicável em dinheiro e o custo fica registrado como "não medido".
 
-As respostas exigem posterior tradução em contratos e testes; este documento não altera serviços nem autoriza envios.
+Continua pendente, como decisão técnica: a autoridade da reserva (SQLite oficial do Thunder OS ou PostgreSQL de `toques.py`), ver a seção Authority Map da spec V1.
