@@ -68,6 +68,29 @@ class ExecutorTest(unittest.TestCase):
         for text in ('', 'Olá {{first_name}}', 'x' * 301):
             task = dict(self.task, linkedin_emailer_template={'body_text': text})
             self.assertEqual(self.executor().prepare(task, company_id='company', team_id='team', expected_text_hash=self.text_hash)['state'], 'blocked')
+
+    def test_read_only_validates_text_before_account_observation_and_exposes_hash(self):
+        from unittest.mock import Mock
+        status = Mock(return_value={'id': 'account', 'publicId': 'sender', 'available': True,
+                                    'write_authorized': False})
+        executor = DryRunExecutor(self.service, Apollo(self.task), self.bindings, status, client=None)
+        for template, reason in ((None, 'text_missing'), ({'body_text': 42}, 'text_missing'),
+                                 ({'body_text': '   '}, 'text_empty'),
+                                 ({'body_text': 'Hi {{first_name}}'}, 'text_unresolved_variables'),
+                                 ({'body_text': 'x' * 301}, 'text_too_long')):
+            task = dict(self.task, linkedin_emailer_template=template)
+            with self.subTest(reason=reason):
+                result = executor.prepare(task, company_id='company', team_id='team', read_only=True)
+                self.assertEqual(result['reason'], reason)
+                self.assertFalse(result['execution_enabled'])
+                self.assertNotIn('text_hash', result)
+        status.assert_not_called()
+        result = executor.prepare(self.task, company_id='company', team_id='team', read_only=True)
+        self.assertEqual(result['reason'], 'execution_binding_unverified')
+        self.assertEqual(result['text_hash'], self.text_hash)
+        self.assertFalse(result['execution_enabled'])
+        status.assert_called_once_with('account')
+        self.assertEqual(self.service.list_apollo_linkedin_reservations(), [])
     def test_credential_must_match_client_and_account(self):
         from types import SimpleNamespace
         good = self.client

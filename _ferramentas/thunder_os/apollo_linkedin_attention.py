@@ -83,6 +83,7 @@ class ApolloLinkedInAttention:
                                   'stopped_at': task.get('updated_at') or task.get('created_at') or observed,
                                   'age_basis': 'provider' if task.get('updated_at') or task.get('created_at') else 'first_observed',
                                   'account_observation': prepared.get('account_observation'),
+                                  'text_hash': prepared.get('text_hash'),
                                   'execution_enabled': False,
                                   'next_action': ('Tarefa removida no Apollo: não executar nem marcar como concluída.'
                                                   if prepared.get('reason') == 'task_removed' else

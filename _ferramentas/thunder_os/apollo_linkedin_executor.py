@@ -30,13 +30,18 @@ class DryRunExecutor:
         action = _ACTIONS.get(task.get('type'))
         company, task_id = company_id, task.get('id')
         if read_only and self.client is None:
+            _, text_hash, blocker = validated_task_text(
+                task, action, invite_limit=self.invite_limit, message_limit=self.message_limit)
+            if blocker:
+                return {'state': 'blocked', 'reason': blocker, 'execution_enabled': False}
             observation = self.bindings.observe_account(company_id=company_id, team_id=team_id,
                 campaign_id=task.get('emailer_campaign_id'), owner_id=task.get('user_id'),
                 account_status_reader=self.account_status_reader)
             if observation.get('status') != 'observed':
-                return {'state': 'blocked', 'reason': observation.get('reason', 'account_status_unavailable')}
+                return {'state': 'blocked', 'reason': observation.get('reason', 'account_status_unavailable'),
+                        'text_hash': text_hash, 'execution_enabled': False}
             return {'state': 'blocked', 'reason': 'execution_binding_unverified',
-                    'account_observation': observation, 'execution_enabled': False}
+                    'account_observation': observation, 'text_hash': text_hash, 'execution_enabled': False}
         binding = self.bindings.resolve(company_id=company_id, team_id=team_id,
             campaign_id=task.get('emailer_campaign_id'), owner_id=task.get('user_id'),
             account_status_reader=self.account_status_reader, client=self.client)

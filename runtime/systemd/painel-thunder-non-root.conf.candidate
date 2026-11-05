@@ -1,0 +1,21 @@
+# CANDIDATE ONLY — not deployable until the runbook's access and isolation
+# prerequisites are verified. Do not install without a reviewed rollout.
+[Service]
+User=thunder-panel
+Group=thunder-panel
+SupplementaryGroups=thunder-panel-db thunder-li-socket
+UMask=0007
+NoNewPrivileges=yes
+ProtectSystem=strict
+# The currently reported database and brain are under /root; traversal and
+# individual file access must be granted narrowly before this can work.
+ProtectHome=off
+PrivateTmp=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=yes
+ReadWritePaths=/root/.hermes/profiles/ygor-personal/painel-dados /run/thunder-panel-ingress
+Environment=THUNDER_APOLLO_LI_BROKER_SOCKET=/run/thunder-li-reader/account.sock
+# This root-managed file must contain THUNDER_APOLLO_LI_BROKER_UID=<numeric UID>
+# and no credentials. A missing file or invalid UID fails closed.
+EnvironmentFile=/etc/thunder-os/panel-li-reader.env

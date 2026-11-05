@@ -24,6 +24,12 @@ Simulated Apollo task → reader → eligibility and campaign/account checks →
 
 Reservation uniqueness is company + Apollo task ID + action type; organization, campaign, sequence position, recipient and selected account are independently validated authorization bindings and do not permit duplicate reservations. A repeat with conflicting identity or changed input is blocked, not merged. Follow-up steps remain distinct operations. Approval refers to campaign version and allowed rendered content; no unsupported equivalence is inferred.
 
+### Reservation authority and optional reporting mirror (05/11/2026)
+
+For Apollo + LinkedIn, the one authority is the installation's official Thunder OS SQLite: `Repository.reserve_apollo_linkedin` and `Repository.finish_apollo_linkedin` in `_ferramentas/thunder_os/db.py`, using the `(company, task_id, action_type)` primary key and account locks. No parallel reservation or dual write to `toques.py` is performed for this journey. The existing touch ledger remains authoritative for the separate flows that already use it. The actual T3 executor is currently dry-run only and does not reserve or dispatch; these repository methods alone do not establish a real action pipeline.
+
+**Future integration point, not implemented:** the live executor/coordinator to be created must durably record a *verified provider receipt* and confirmed outcome in the official SQLite transaction at the boundary represented today by `Repository.finish_apollo_linkedin(..., 'confirmed')`, before separately reconciling Apollo task completion. Only after that commit may a retryable, idempotent reporting projection mirror the confirmed receipt to `toques.py`; mirror failure must leave the confirmed SQLite record intact and never cause LinkedIn to be resent. The method currently stores state and reason, **not a receipt or mirror outbox**: these contracts and recovery tests must be designed first. `Simulation._execute_locked` in `_ferramentas/thunder_os/apollo_linkedin_simulation.py` demonstrates the analogous *fake* `provider_confirmed` record before fake Apollo completion, but is not a live integration point. Existing `TouchLedger.finish` expects a preexisting ledger reservation and `confirm_receipt` accepts only Gmail receipts; neither can be wired as a blind mirror without a separate reporting contract. The mirror is not an authorization source or second reservation authority.
+
 ## Error Handling Strategy
 
 | Condition | Result |

@@ -1,0 +1,27 @@
+# CANDIDATE ONLY — blocked pending reviewed configuration and staging proof.
+# Environment file contains identifiers and a credential path, never a secret.
+[Unit]
+Description=Thunder OS ConnectSafely isolated account reader (candidate)
+After=network-online.target
+
+[Service]
+Type=exec
+User=thunder-li-reader
+Group=thunder-li-socket
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=yes
+RuntimeDirectory=thunder-li-reader
+RuntimeDirectoryMode=0750
+ReadWritePaths=/run/thunder-li-reader
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+WorkingDirectory=/opt/thunder-os/current
+Environment=PYTHONPATH=/opt/thunder-os/current/_ferramentas
+EnvironmentFile=/etc/thunder-os/connectsafely-read-broker.env
+ExecStart=/usr/bin/python3 -m thunder_os.connectsafely_read_broker_service
+Restart=no

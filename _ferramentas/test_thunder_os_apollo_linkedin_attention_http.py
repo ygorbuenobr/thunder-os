@@ -201,11 +201,13 @@ class AttentionHttpTests(unittest.TestCase):
         self.assertIsNone(preview._status())
 
     def test_attention_observes_account_but_does_not_authorize_execution(self):
+        import hashlib
         from thunder_os.apollo_linkedin_attention import ApolloLinkedInAttention
         from thunder_os.apollo_linkedin_executor import DryRunExecutor
         from thunder_os.apollo_linkedin_reader import CampaignBindings
         task = {'id': 'test-task', 'type': 'linkedin_step_connect', 'status': 'scheduled',
-                'emailer_campaign_id': 'campaign', 'user_id': 'owner'}
+                'emailer_campaign_id': 'campaign', 'user_id': 'owner',
+                'linkedin_emailer_template': {'body_text': 'Olá, lead!'}}
         reader = Mock(); reader.list_open_tasks.return_value = {'tasks': [task], 'coverage': 'complete'}
         reader.get.return_value = task
         service = SimpleNamespace(apollo_linkedin_store_ready=lambda: True,
@@ -223,7 +225,17 @@ class AttentionHttpTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body['items'][0]['reason'], 'execution_binding_unverified')
         self.assertEqual(body['items'][0]['account_observation']['account_id'], 'account')
+        self.assertEqual(body['items'][0]['text_hash'], hashlib.sha256('Olá, lead!'.encode()).hexdigest())
+        self.assertFalse(body['items'][0]['execution_enabled'])
         account_status.assert_called_once_with('account')
+
+        for value, expected in ((None, 'text_missing'), ('{{name}}', 'text_unresolved_variables'), ('x' * 301, 'text_too_long')):
+            with self.subTest(reason=expected):
+                task['linkedin_emailer_template'] = {'body_text': value}
+                item = self.request()[1]['items'][0]
+                self.assertEqual(item['reason'], expected)
+                self.assertIsNone(item['text_hash'])
+                self.assertFalse(item['execution_enabled'])
 
     def test_deadline_returns_partial_even_if_reader_hangs(self):
         import threading

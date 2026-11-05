@@ -6,6 +6,13 @@ from pathlib import PurePosixPath
 
 
 ALLOWED_FILES = {
+    "_ferramentas/test_thunder_os_connectsafely_read_broker_service.py",
+    "docs/thunder-os-painel-nao-root.md",
+    "runtime/systemd/painel-thunder-non-root.conf.candidate",
+    "runtime/systemd/thunder-os-connectsafely-read-broker.service.candidate",
+    "runtime/systemd/panel-li-reader.env.candidate",
+    "runtime/systemd/connectsafely-read-broker.env.candidate",
+    "scripts/test_panel_non_root_units.py",
     "scripts/test_connectsafely_read_broker_staging.py",
     "_ferramentas/test_thunder_os_connectsafely_read_broker_client.py",
     "_ferramentas/test_thunder_os_connectsafely_read_broker_runtime.py",
