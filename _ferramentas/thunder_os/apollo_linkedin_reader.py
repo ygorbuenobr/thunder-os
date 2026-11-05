@@ -205,6 +205,9 @@ class ApolloLinkedInReader:
                                     {'x-api-key': token, 'Accept': 'application/json'}, timeout)
         if budget is not None:
             budget.require_time()
+        if (status in (404, 422) and method == 'GET'
+                and re.fullmatch(r'/api/v1/tasks/[A-Za-z0-9_-]{1,128}', path)):
+            raise ValueError('task_removed')
         if status != 200:
             raise ValueError('apollo_unavailable')
         return _json(raw)

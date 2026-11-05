@@ -23,13 +23,13 @@ Apollo owns sequences and email, but the OS cannot yet process its manual Linked
 | --- | --- | --- | --- |
 | Campaign account | Explicit campaign default | Avoid silent sender changes | y |
 | Authorization | One approval of campaign and rules | User decision; no real send authorized here | y |
-| Missing user or personalized text | Block when needed | Actual sequence-generated task detail omitted both | n |
-| Task content and owner verification in production | Open, no inferred value | A future live validation must establish authoritative source | n |
+| Missing user or personalized text | Block when needed | Read `user_id` and `linkedin_emailer_template.body_text`; no inferred values | y |
+| Task content and owner | Task detail and search | On 04/11/2026, observed via OAuth and panel API key; sequence test rendered `{{first_name}}` per contact | y |
 | Reply coverage | Missing or stale coverage blocks | No action based on incomplete evidence | y |
 | Authoritative storage | Exactly one official shared store per installation | User decision; all executor processes must use it | y |
 | Uniqueness | Company + Apollo task ID + action type | User decision; organization and account are validated bindings, not alternative uniqueness keys | y |
 
-**Open questions:** recorded above; actual sequence content, owner and completion semantics remain unverified.
+**Open questions:** completion semantics, provider limits by action and delivery receipts remain unverified. Evidence: `docs/thunder-os-validacoes-bloco-b.md`, “Leituras reais de B1 e B2”.
 
 ## User Stories
 
@@ -44,6 +44,7 @@ Apollo owns sequences and email, but the OS cannot yet process its manual Linked
 1. WHEN an observed task includes task ID, scheduled status, supported type, contact, profile, sequence and position THEN the reader SHALL expose those values without fabricating missing fields. (AL-01)
 2. IF the task list is empty THEN the reader SHALL return an empty result without an execution. (AL-02)
 3. IF task identity, campaign association, owner or required rendered text cannot be established THEN the executor SHALL block and report the reason. (AL-03)
+   For T3, use the exact string in `linkedin_emailer_template.body_text`; reject a missing/non-string/blank value, unresolved `{{` or `}}`, or a value exceeding the configurable action limit. Default invitation limit is 300 characters and the conservative message default is 1000; both require provider/action validation before live operation. Preview exposes exact text and SHA-256, and the immediate reread must match the preview or reservation hash, otherwise `text_changed` blocks. A call preview is never executable.
 4. IF a task is not scheduled or its type is unsupported THEN the executor SHALL block it without invoking the simulated action. (AL-04)
 5. IF the campaign is not approved or its default LinkedIn account is absent or mismatched THEN the executor SHALL block without switching accounts. (AL-05)
 6. IF a reply is observed or response coverage is unavailable or stale THEN the executor SHALL block without invoking the simulated action. (AL-06)
@@ -59,6 +60,7 @@ Apollo owns sequences and email, but the OS cannot yet process its manual Linked
 16. WHEN an eligible task is processed THEN the executor SHALL acquire an executor lock for its LinkedIn account before the simulated external effect. (AL-19)
 17. WHEN an executor is about to perform the simulated effect THEN the executor SHALL reread the task and verify it remains open. (AL-20)
 18. IF that reread is unavailable, incomplete or no longer open THEN the executor SHALL block without invoking the simulated effect. (AL-21)
+19. IF an identified task from search returns 404/422 at detail THEN show `task_removed` in attention, block execution, and never treat it as completed. A 404/422 of search itself leaves coverage unknown; do not invent a removed task. A sequence deactivation was observed to delete a pending task. (AL-22)
 
 **Independent Test**: isolated fake-provider tests cover eligible and blocked tasks, empty source, concurrency, timeout, replay and completion semantics. Separate OS processes using the same temporary official store contend for the same task and account lock; missing official storage prevents initialization.
 

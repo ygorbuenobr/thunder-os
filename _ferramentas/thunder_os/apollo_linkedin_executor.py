@@ -5,22 +5,24 @@ are reserved only by a future authorized execution; dry runs do not consume iden
 """
 from contextlib import nullcontext
 
-from .apollo_linkedin_preview import _slug
+from .apollo_linkedin_preview import _slug, validated_task_text
 from .apollo_linkedin_attention import EXCLUDED_TASK
 
 _ACTIONS = {'linkedin_step_connect': 'invite', 'linkedin_step_message': 'message'}
 
 
 class DryRunExecutor:
-    def __init__(self, service, apollo, bindings, account_status_reader, *, client=None, execution_enabled=False):
+    def __init__(self, service, apollo, bindings, account_status_reader, *, client=None, execution_enabled=False,
+                 invite_limit=300, message_limit=1000):
         if execution_enabled is not False:
             raise ValueError('execution_forbidden')
         if service is None or not service.apollo_linkedin_store_ready():
             raise RuntimeError('official_store_unavailable')
         self.service, self.apollo = service, apollo
         self.bindings, self.account_status_reader, self.client = bindings, account_status_reader, client
+        self.invite_limit, self.message_limit = invite_limit, message_limit
 
-    def prepare(self, task, *, company_id, team_id, read_only=False):
+    def prepare(self, task, *, company_id, team_id, read_only=False, expected_text_hash=None):
         if not isinstance(task, dict):
             return {'state': 'blocked', 'reason': 'identity_unverified'}
         if task.get('id') == EXCLUDED_TASK:
@@ -45,6 +47,15 @@ class DryRunExecutor:
             return {'state': 'blocked', 'reason': 'identity_unverified'}
         if task.get('status') != 'scheduled':
             return {'state': 'blocked', 'reason': 'task_not_open'}
+        text, text_hash, blocker = validated_task_text(
+            task, action, invite_limit=self.invite_limit, message_limit=self.message_limit)
+        if blocker:
+            return {'state': 'blocked', 'reason': blocker}
+        if not isinstance(expected_text_hash, str) or len(expected_text_hash) != 64 or any(
+                c not in '0123456789abcdef' for c in expected_text_hash):
+            return {'state': 'blocked', 'reason': 'text_reference_missing'}
+        if expected_text_hash != text_hash:
+            return {'state': 'blocked', 'reason': 'text_changed'}
         contact = task.get('contact') or {}
         recipient = _slug(contact.get('linkedin_url')) if isinstance(contact, dict) else None
         if not recipient:
@@ -55,12 +66,23 @@ class DryRunExecutor:
         with lock:
             try:
                 current = self.apollo.get(task_id)
+            except ValueError as exc:
+                if str(exc) == 'task_removed':
+                    return {'state': 'blocked', 'reason': 'task_removed'}
+                return {'state': 'blocked', 'reason': 'reread_unavailable'}
             except Exception:
                 return {'state': 'blocked', 'reason': 'reread_unavailable'}
+            if not isinstance(current, dict):
+                return {'state': 'blocked', 'reason': 'reread_unavailable'}
+            _, current_hash, current_blocker = validated_task_text(
+                current, action, invite_limit=self.invite_limit, message_limit=self.message_limit)
+            if current_blocker or current_hash != text_hash:
+                return {'state': 'blocked', 'reason': 'text_changed'}
             if current != task or current.get('status') != 'scheduled':
                 return {'state': 'blocked', 'reason': 'task_changed'}
             if action == 'invite':
-                path, body = '/linkedin/connect', {'accountId': account, 'profileId': recipient, 'profileUrn': None, 'customMessage': None}
+                path, body = '/linkedin/connect', {'accountId': account, 'profileId': recipient, 'profileUrn': None, 'customMessage': text}
             else:
-                path, body = '/linkedin/conversations/send', {'accountId': account, 'recipientProfileId': recipient, 'recipientProfileUrn': None, 'messagingChannel': 'linkedin_inbox', 'message': None}
-            return {'state': 'dry_run', 'execution_enabled': False, 'call_preview': {'method': 'POST', 'path': path, 'body': body, 'executable': False}}
+                path, body = '/linkedin/conversations/send', {'accountId': account, 'recipientProfileId': recipient, 'recipientProfileUrn': None, 'messagingChannel': 'linkedin_inbox', 'message': text}
+            return {'state': 'dry_run', 'execution_enabled': False, 'text_hash': text_hash,
+                    'call_preview': {'method': 'POST', 'path': path, 'body': body, 'executable': False}}

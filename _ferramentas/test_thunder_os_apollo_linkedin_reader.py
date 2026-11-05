@@ -119,6 +119,22 @@ class ApolloReaderTest(unittest.TestCase):
         self.pages[1] = self.page(1, 1, [row])
         self.assertEqual(self.reader.list_open_tasks()['tasks'], [row])
 
+    def test_missing_detail_is_task_removed_but_search_error_is_unknown(self):
+        from thunder_os.apollo_linkedin_reader import ApolloLinkedInReader
+        for code in (404, 422):
+            def request(method, path, body, headers, timeout):
+                if path.endswith('api_profile'):
+                    return 200, self.json.dumps({'user': {'id': 'actor', 'team_id': 'team'}}).encode()
+                return code, b'{}'
+            reader = ApolloLinkedInReader(lambda: 'token', team_id='team', api_actor_id='actor',
+                                          owner_ids=['owner'], request=request)
+            with self.subTest(status=code), self.assertRaisesRegex(ValueError, '^task_removed$'):
+                reader.get('task')
+            result = reader.list_open_tasks()
+            self.assertEqual(result['coverage'], 'unknown')
+            self.assertEqual(result['reason'], 'apollo_unavailable')
+            self.assertEqual(result['tasks'], [])
+
     def test_attention_page_budget_returns_collected_rows_and_partial_coverage(self):
         self.pages[1] = self.page(1, 101, [self.row(i) for i in range(100)])
         self.pages[2] = self.page(2, 101, [self.row(100)])

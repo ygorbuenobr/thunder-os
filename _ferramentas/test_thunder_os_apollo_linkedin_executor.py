@@ -1,4 +1,5 @@
 import tempfile
+import hashlib
 import unittest
 from unittest.mock import patch
 from pathlib import Path
@@ -18,7 +19,8 @@ class ExecutorTest(unittest.TestCase):
         self.patcher.start(); self.addCleanup(self.patcher.stop)
         (Path(self.tmp.name) / 'painel.db').touch()
         self.service = ThunderService(Repository(str(Path(self.tmp.name) / 'painel.db')))
-        self.task = {'id': 'task', 'type': 'linkedin_step_connect', 'status': 'scheduled', 'emailer_campaign_id': 'campaign', 'user_id': 'owner', 'contact': {'linkedin_url': 'https://www.linkedin.com/in/person/'}}
+        self.task = {'id': 'task', 'type': 'linkedin_step_connect', 'status': 'scheduled', 'emailer_campaign_id': 'campaign', 'user_id': 'owner', 'contact': {'linkedin_url': 'https://www.linkedin.com/in/person/'}, 'linkedin_emailer_template': {'body_text': 'Olá, pessoa!'}}
+        self.text_hash = hashlib.sha256('Olá, pessoa!'.encode()).hexdigest()
         self.bindings = CampaignBindings([{'company_id':'company', 'team_id':'team', 'campaign_id':'campaign', 'account_id':'account', 'public_id':'sender', 'credential_ref':'credential', 'owner_ids':['owner']}])
         from types import SimpleNamespace
         credential = lambda: 'token'
@@ -27,7 +29,7 @@ class ExecutorTest(unittest.TestCase):
         self.status = lambda account: {'id': account, 'available': True}
     def executor(self, task=None, status=None):
         return DryRunExecutor(self.service, Apollo(task or self.task), self.bindings, status or self.status, client=self.client)
-    def prepare(self, executor): return executor.prepare(self.task, company_id='company', team_id='team')
+    def prepare(self, executor): return executor.prepare(self.task, company_id='company', team_id='team', expected_text_hash=self.text_hash)
     def test_missing_store_and_enabled_execution_refused(self):
         with self.assertRaises(ValueError): DryRunExecutor(self.service, Apollo(self.task), self.bindings, self.status, execution_enabled=True)
         self.service.repository.path = str(Path(self.tmp.name) / 'missing')
@@ -36,12 +38,36 @@ class ExecutorTest(unittest.TestCase):
         result = self.prepare(self.executor())
         self.assertEqual(result['state'], 'dry_run')
         self.assertFalse(result['call_preview']['executable'])
+        self.assertEqual(result['call_preview']['body']['customMessage'], 'Olá, pessoa!')
+        self.assertEqual(result['text_hash'], self.text_hash)
         self.assertEqual(self.service.list_apollo_linkedin_reservations(), [])
         self.assertEqual(self.prepare(self.executor())['state'], 'dry_run')
     def test_changed_task_blocks_after_reservation(self):
         result = self.prepare(self.executor(dict(self.task, status='completed')))
         self.assertEqual(result['reason'], 'task_changed')
         self.assertEqual(self.service.list_apollo_linkedin_reservations(), [])
+    def test_changed_text_blocks_at_reread(self):
+        current = dict(self.task, linkedin_emailer_template={'body_text': 'Outro texto'})
+        self.assertEqual(self.prepare(self.executor(current))['reason'], 'text_changed')
+        self.assertEqual(self.service.list_apollo_linkedin_reservations(), [])
+
+    def test_reference_hash_required_and_must_match(self):
+        executor = self.executor()
+        self.assertEqual(executor.prepare(self.task, company_id='company', team_id='team')['reason'], 'text_reference_missing')
+        self.assertEqual(executor.prepare(self.task, company_id='company', team_id='team', expected_text_hash='0' * 64)['reason'], 'text_changed')
+
+    def test_removed_task_does_not_execute(self):
+        executor = self.executor()
+        class Removed:
+            def get(self, task_id): raise ValueError('task_removed')
+        executor.apollo = Removed()
+        self.assertEqual(self.prepare(executor)['reason'], 'task_removed')
+        self.assertEqual(self.service.list_apollo_linkedin_reservations(), [])
+
+    def test_unresolved_or_oversized_text_does_not_execute(self):
+        for text in ('', 'Olá {{first_name}}', 'x' * 301):
+            task = dict(self.task, linkedin_emailer_template={'body_text': text})
+            self.assertEqual(self.executor().prepare(task, company_id='company', team_id='team', expected_text_hash=self.text_hash)['state'], 'blocked')
     def test_credential_must_match_client_and_account(self):
         from types import SimpleNamespace
         good = self.client

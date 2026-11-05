@@ -40,7 +40,9 @@ Reservation uniqueness is company + Apollo task ID + action type; organization, 
 
 ## Risks & Concerns
 
-Actual sequence-generated task search provided ID, type, status, due date, contact and sequence position; detail did not return owner or invitation template. These omissions cannot be inferred from a fixture. Separate-process tests establish only the simulated single-store contract. A real provider may change state between checks; no cross-provider exactly-once guarantee is claimed. Live responses, authorization scope, completion and returned proof remain unverified.
+Earlier observations incorrectly reported missing owner and template. On 04/11/2026, real task detail and search returned `user_id` and `linkedin_emailer_template.body_text`; an authorized test with `{{first_name}}` showed the task body already rendered for that contact, both via OAuth CLI and panel API key. See `docs/thunder-os-validacoes-bloco-b.md`, “Leituras reais de B1 e B2”. T3 reads and hashes the exact body, rejects absent, non-string, blank, unresolved or over-limit text, and compares the reread hash against the preview/reservation before action. Invite default: 300 characters; message default: conservative 1000, configurable; both require validation for each action/provider before live use. Deactivating the test sequence caused Apollo to delete the pending task; GET 404/422 for an identified task must produce `task_removed`, never completion; search errors leave coverage unknown rather than fabricating a removed task. Separate-process tests establish only the simulated single-store contract. A real provider may change state between checks; no cross-provider exactly-once guarantee is claimed. Completion semantics and returned proof remain unverified.
+
+**TODO B2:** validate the current invitation and message character limits and counting semantics with the provider before live use; defaults are local safety limits, not provider guarantees.
 
 ### Read-only account verification: T3 boundary (04/11/2026)
 

@@ -52,6 +52,31 @@ class AttentionHttpTests(unittest.TestCase):
         self.assertEqual(body['items'][0]['stopped_at'], task['created_at'])
         executor.prepare.assert_called_once()
 
+    def test_search_result_deleted_before_detail_is_visible_and_not_prepared(self):
+        from thunder_os.apollo_linkedin_attention import ApolloLinkedInAttention
+        from thunder_os.apollo_linkedin_reader import ApolloLinkedInReader
+        import json
+        task = {'id': 'gone', 'type': 'linkedin_step_connect', 'status': 'scheduled', 'user_id': 'owner'}
+        for code in (404, 422):
+            def request(method, path, body, headers, timeout):
+                if path.endswith('api_profile'):
+                    return 200, json.dumps({'user': {'id': 'actor', 'team_id': 'team'}}).encode()
+                if path.endswith('/search'):
+                    return 200, json.dumps({'tasks': [task], 'pagination': {
+                        'page': 1, 'per_page': 100, 'total_entries': 1, 'total_pages': 1}}).encode()
+                return code, b'{}'
+            reader = ApolloLinkedInReader(lambda: 'fake', team_id='team', api_actor_id='actor',
+                                          owner_ids=['owner'], request=request)
+            executor = Mock()
+            service = SimpleNamespace(list_apollo_linkedin_reservations=lambda: [],
+                                      list_apollo_linkedin_account_locks=lambda: [])
+            result = ApolloLinkedInAttention(service, reader, executor, company_id='c', team_id='team').snapshot()
+            with self.subTest(status=code):
+                self.assertEqual(result['items'][0]['reason'], 'task_removed')
+                self.assertFalse(result['items'][0]['execution_enabled'])
+                self.assertIn('nem marcar como concluída', result['items'][0]['next_action'])
+                executor.prepare.assert_not_called()
+
     def test_get_does_not_write_locks_or_reservations(self):
         import tempfile
         from pathlib import Path

@@ -74,15 +74,19 @@ class ApolloLinkedInAttention:
                         prepared = {'state': 'blocked', 'reason': 'task_changed'}
                     else:
                         prepared = self.executor.prepare(detail, company_id=self.company_id, team_id=self.team_id, read_only=True)
-                except Exception:
-                    prepared = {'state': 'blocked', 'reason': 'preparation_unavailable'}
+                except Exception as exc:
+                    reason = 'task_removed' if isinstance(exc, ValueError) and str(exc) == 'task_removed' else 'preparation_unavailable'
+                    prepared = {'state': 'blocked', 'reason': reason}
                 if prepared.get('state') == 'blocked':
                     observed = self._first_observed.setdefault(task.get('id'), datetime.now(timezone.utc).isoformat())
                     items.append({'task_id': task.get('id'), 'reason': prepared.get('reason', 'blocked'),
                                   'stopped_at': task.get('updated_at') or task.get('created_at') or observed,
                                   'age_basis': 'provider' if task.get('updated_at') or task.get('created_at') else 'first_observed',
                                   'account_observation': prepared.get('account_observation'),
-                                  'next_action': 'Verificar os dados e a conta padrão antes de qualquer ação.'})
+                                  'execution_enabled': False,
+                                  'next_action': ('Tarefa removida no Apollo: não executar nem marcar como concluída.'
+                                                  if prepared.get('reason') == 'task_removed' else
+                                                  'Verificar os dados e a conta padrão antes de qualquer ação.')})
             if budget is not None and budget.expired():
                 exhausted = True
             coverage = 'partial' if exhausted else result.get('coverage', 'unknown')
