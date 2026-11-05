@@ -25,6 +25,12 @@ class PreviewTest(unittest.TestCase):
             account_status_reader=account_status or (lambda: {'id': 'account1', 'publicId': 'sender',
                 'available': True}), request=self.request, **kwargs)
 
+    def test_preview_marks_accepted_in_process_read_even_on_error(self):
+        preview = self.preview(read_isolation='in_process_accepted')
+        self.assertEqual('in_process_accepted', preview.read()['read_isolation'])
+        preview._request = lambda *args: (_ for _ in ()).throw(ValueError())
+        self.assertEqual('in_process_accepted', preview.read()['read_isolation'])
+
     def test_read_is_only_get_exact_scoped_routes(self):
         result = self.preview().read()
         self.assertEqual(self.calls, [('GET', '/api/v1/users/api_profile', None),

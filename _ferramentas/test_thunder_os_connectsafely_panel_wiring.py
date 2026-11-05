@@ -46,6 +46,7 @@ class LazyCredentialPathTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'credential'
             path.write_text('synthetic-secret')
+            path.chmod(0o600)
             read = credential(path)
             self.assertEqual(read.credential_ref, hashlib.sha256(str(path).encode()).hexdigest())
             self.assertEqual(read(), 'synthetic-secret')

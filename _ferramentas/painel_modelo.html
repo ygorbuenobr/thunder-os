@@ -4153,8 +4153,9 @@ async function carregarApolloLinkedinAttention(){
   try{
     const result=await apiServidor('/api/os/v1/integrations/apollo/linkedin-attention');
     if(!result||!['ok','partial','unavailable'].includes(result.status)||!Array.isArray(result.items))throw new Error('invalid_attention');
-    if(result.status==='unavailable'){status.textContent=result.reason==='official_store_unavailable'?'Banco oficial indisponível ou não identificado; a cobertura não foi verificada.':'Pendências indisponíveis; a cobertura não foi verificada.';return;}
-    status.textContent=result.status==='partial'?'Consulta incompleta; podem existir outras pendências.':result.items.length?'Pendências para revisão.':'Nenhuma pendência encontrada nesta consulta.';
+    const isolationWarning=result.read_isolation==='in_process_accepted'?' Leitura no processo do painel, sem isolamento de processo.':'';
+    if(result.status==='unavailable'){status.textContent=(result.reason==='official_store_unavailable'?'Banco oficial indisponível ou não identificado; a cobertura não foi verificada.':'Pendências indisponíveis; a cobertura não foi verificada.')+isolationWarning;return;}
+    status.textContent=(result.status==='partial'?'Consulta incompleta; podem existir outras pendências.':result.items.length?'Pendências para revisão.':'Nenhuma pendência encontrada nesta consulta.')+isolationWarning;
     for(const item of result.items){
       const card=document.createElement('article'),title=document.createElement('h4'),reason=document.createElement('p'),age=document.createElement('p'),next=document.createElement('p');
       title.textContent='Tarefa '+(item.task_id||'não identificada');reason.textContent='Motivo: '+(item.reason||'Não informado');
@@ -4177,9 +4178,10 @@ async function carregarApolloLinkedinPreview(){
   try{
     const result=await apiServidor('/api/os/v1/integrations/apollo/linkedin-preview');
     if(!result||result.execution_enabled!==false||result.dry_run!==true||!['blocked','ready_for_review','unavailable'].includes(result.status)||!Array.isArray(result.blockers))throw new Error('invalid_preview');
-    if(result.status==='unavailable'){status.textContent='Prévia indisponível. Tente consultar novamente.';return;}
+    const isolationWarning=result.read_isolation==='in_process_accepted'?' Leitura no processo do painel, sem isolamento de processo.':'';
+    if(result.status==='unavailable'){status.textContent='Prévia indisponível. Tente consultar novamente.'+isolationWarning;return;}
     if(!result.task||!result.account||!result.lead||!result.text||!['invite','message',null].includes(result.action))throw new Error('invalid_preview');
-    status.textContent=result.status==='blocked'?'Bloqueada · não está pronta para executar.':'Prévia disponível para revisão · não autoriza envio.';
+    status.textContent=(result.status==='blocked'?'Bloqueada · não está pronta para executar.':'Prévia disponível para revisão · não autoriza envio.')+isolationWarning;
     const entries=[['Conta LinkedIn',result.account.verified===true?(result.account.public_id||result.account.id||'Não identificada'):'Não verificada'],['Lead',result.lead.name||'Nome não disponível'],['Perfil LinkedIn',result.lead.linkedin_url||'Não disponível'],['Ação',result.action==='invite'?'Convite de conexão':result.action==='message'?'Mensagem':'Não identificada'],['Texto',result.text.verified===true?(result.text.value===''?'Convite sem mensagem':typeof result.text.value==='string'?result.text.value:'Não disponível'):'Não verificado'],['Tarefa Apollo',result.task.status||'Não verificada']];
     const list=document.createElement('dl');
     for(const [label,value] of entries){const term=document.createElement('dt'),description=document.createElement('dd');term.textContent=label;description.textContent=value;list.append(term,description);}

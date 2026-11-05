@@ -96,7 +96,8 @@ def _json(raw):
 class ApolloLinkedInPreview:
     def __init__(self, credential_loader, *, team_id, sequence_id, task_id,
                  account_id, account_public_id, api_actor_id, owner_id, account_status_reader,
-                 request=None, timeout=8, invite_text_limit=300, message_text_limit=1000):
+                 request=None, timeout=8, invite_text_limit=300, message_text_limit=1000,
+                 read_isolation=None):
         if not all(_identifier(x) for x in (team_id, sequence_id, task_id, account_id, api_actor_id, owner_id)):
             raise ValueError('configuration_invalid')
         if not isinstance(account_public_id, str) or not _SLUG.fullmatch(account_public_id):
@@ -114,6 +115,9 @@ class ApolloLinkedInPreview:
         self.account_id, self.account_public_id, self.owner_id = account_id, account_public_id, owner_id
         self.api_actor_id = api_actor_id
         self.timeout = timeout
+        if read_isolation not in (None, 'in_process_accepted', 'separate_broker'):
+            raise ValueError('configuration_invalid')
+        self.read_isolation = read_isolation
         self.invite_text_limit, self.message_text_limit = invite_text_limit, message_text_limit
 
     def _get(self, path):
@@ -132,6 +136,7 @@ class ApolloLinkedInPreview:
 
     def read(self):
         result = {'status': 'unavailable', 'execution_enabled': False, 'dry_run': True,
+                  'read_isolation': self.read_isolation,
                   'task': None, 'account': None, 'lead': None, 'action': None,
                   'text': {'value': None, 'verified': False}, 'blockers': [], 'call_preview': None}
         try:

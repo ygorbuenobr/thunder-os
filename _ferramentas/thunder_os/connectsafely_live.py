@@ -4,11 +4,13 @@ All paths/pins are deployment inputs. Secrets are read lazily inside connection
 callbacks, never returned/logged. This module does not migrate or call providers
 when building the composition. Evidence must be approved and pinned externally.
 """
+from .credential_paths import credential_path
 from contextlib import contextmanager
 import hashlib
 import json
 import os
 import re
+import stat
 from pathlib import Path
 import time
 from .connectsafely_composition import compose_connectsafely
@@ -45,8 +47,21 @@ def evidence(spec):
 
 def credential(path):
     def read():
-        value=explicit_path(path).read_text().strip()
-        if not value or '\n' in value:raise ValueError('credential_unavailable')
+        names = {'/etc/thunder-os/connectsafely.token': 'connectsafely_token', '/etc/thunder-os/social-db.dsn': 'social_db_dsn'}
+        resolved = credential_path(names[path], path) if isinstance(path, str) and path in names else path
+        resolved = explicit_path(resolved)
+        try:
+            fd = os.open(resolved, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, 'rb') as stream:
+                info = os.fstat(stream.fileno())
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid not in (0, os.geteuid())
+                        or info.st_mode & 0o077 or not 0 < info.st_size <= 4096):
+                    raise ValueError('credential_unavailable')
+                value = stream.read(4097).decode('utf-8').strip()
+            if not value or len(value) > 4096 or '\n' in value:
+                raise ValueError('credential_unavailable')
+        except (OSError, UnicodeError, ValueError):
+            raise ValueError('credential_unavailable') from None
         return value
     # Bind the configured path without opening or validating it during startup.
     # Validation stays in read(), immediately before a secret is used.  In

@@ -8,7 +8,10 @@ EXCLUDED_TASK = '6aea584a2b8c4b0020f93935'
 
 
 class ApolloLinkedInAttention:
-    def __init__(self, service, reader, executor, *, company_id, team_id, budget_seconds=5, max_pages=3):
+    def __init__(self, service, reader, executor, *, company_id, team_id, budget_seconds=5, max_pages=3, read_isolation=None):
+        if read_isolation not in (None, 'in_process_accepted', 'separate_broker'):
+            raise ValueError('configuration_invalid')
+        self.read_isolation = read_isolation
         self.service, self.reader, self.executor = service, reader, executor
         self.company_id, self.team_id = company_id, team_id
         self._first_observed = {}
@@ -17,6 +20,11 @@ class ApolloLinkedInAttention:
         self._partial_items = []
 
     def snapshot(self):
+        result = self._snapshot_bounded()
+        result['read_isolation'] = self.read_isolation
+        return result
+
+    def _snapshot_bounded(self):
         if not self._inflight.acquire(blocking=False):
             return {'status': 'partial', 'coverage': 'unknown', 'reason': 'read_in_progress', 'items': list(self._partial_items)}
         finished = threading.Event()

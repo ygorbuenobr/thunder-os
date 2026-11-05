@@ -32,6 +32,18 @@ class AttentionHttpTests(unittest.TestCase):
         self.assertEqual(body['items'][0]['next_action'], 'Verificar conta')
         self.handler.server.thunder_apollo_linkedin_attention.snapshot.assert_called_once()
 
+    def test_attention_marks_accepted_in_process_read(self):
+        from thunder_os.apollo_linkedin_attention import ApolloLinkedInAttention
+        reader = Mock()
+        reader.list_open_tasks.return_value = {'tasks': [], 'coverage': 'complete'}
+        service = SimpleNamespace(list_apollo_linkedin_reservations=lambda: [],
+                                  list_apollo_linkedin_account_locks=lambda: [])
+        self.handler.server.thunder_apollo_linkedin_attention = ApolloLinkedInAttention(
+            service, reader, Mock(), company_id='company', team_id='team',
+            read_isolation='in_process_accepted')
+        _, body = self.request()
+        self.assertEqual('in_process_accepted', body['read_isolation'])
+
     def test_route_projects_reader_through_executor(self):
         from thunder_os.apollo_linkedin_attention import ApolloLinkedInAttention
         task = {'id': 'task', 'type': 'linkedin_step_connect', 'status': 'scheduled',
@@ -134,7 +146,7 @@ class AttentionHttpTests(unittest.TestCase):
     def test_missing_adapter_is_unavailable_not_empty_success(self):
         self.handler.server.thunder_apollo_linkedin_attention = None
         self.handler.server.thunder_service = SimpleNamespace()
-        self.assertEqual(self.request(), (200, {'status': 'unavailable', 'items': [], 'reason': 'configuration_missing'}))
+        self.assertEqual(self.request(), (200, {'status': 'unavailable', 'items': [], 'reason': 'configuration_missing', 'read_isolation': None}))
 
     def test_uncertain_reservations_are_visible_with_incomplete_coverage(self):
         self.handler.server.thunder_apollo_linkedin_attention = None

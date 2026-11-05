@@ -104,6 +104,8 @@ Apollo owns sequences and email, but the OS cannot yet process its manual Linked
 
 ## T3: isolated ConnectSafely account read (design; not enabled)
 
+**Decisão 05/11/2026:** Ygor aceita que o painel mantenha o cliente e a credencial de envio para operação manual; a leitura T3 pode usar uma fachada no mesmo processo, identificada como `in_process_accepted`. A fachada não expõe envio em sua interface pública, mas o método vinculado mantém referência transitiva ao cliente, recuperável por introspecção. Portanto a exigência de inacessibilidade forte da credencial/cliente de RO-01/RO-02 não é satisfeita nesse modo; não se deve alegar isolamento. O broker separado continua opção sujeita às garantias abaixo. Nenhuma leitura autoriza envio ou liga o executor.
+
 The simulation-only requirements above remain unchanged. This separate T3 design prepares a safe account-status read while keeping the independently authorized ConnectSafely action path. It does not authorize a real send, provider mutation, production network in tests, or any change to the protected Apollo fixture.
 
 1. **RO-01:** WHEN the panel requests account status THEN it SHALL only access an account-status interface with no capability to invoke a ConnectSafely write and no access to a send-capable credential.

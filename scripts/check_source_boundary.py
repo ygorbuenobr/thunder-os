@@ -6,6 +6,10 @@ from pathlib import PurePosixPath
 
 
 ALLOWED_FILES = {
+    "scripts/rehearse_panel_non_root.sh",
+    "scripts/test_rehearse_panel_non_root.py",
+    "_ferramentas/test_thunder_os_credential_paths.py",
+    "_ferramentas/test_thunder_os_connectsafely_panel_read_identity.py",
     "_ferramentas/test_thunder_os_connectsafely_read_broker_service.py",
     "docs/thunder-os-painel-nao-root.md",
     "runtime/systemd/painel-thunder-non-root.conf.candidate",
