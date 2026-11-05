@@ -45,7 +45,7 @@ flowchart TD
 
 ## Authority Map
 
-> **Errata de 04/11/2026 — reserva:** a linha histórica que atribui a reserva a PostgreSQL e as referências a essa autoridade nesta seção não fecham a escolha para Apollo + LinkedIn. Conforme R08 em [decisões vigentes](../../../docs/thunder-os-contexto-completo-entire.md), há um único armazenamento oficial por instalação, com reserva atômica antes da execução. A escolha técnica permanece pendente entre (1) SQLite oficial do Thunder OS, aproveitando `apollo_linkedin_reservations` e sua chave composta em `db.py`, ou (2) PostgreSQL de `toques.py`, aproveitando `TouchLedger` e seus contratos de reserva/reconciliação. Recomendação para T3: avaliar primeiro SQLite oficial já utilizado pela implementação desta fatia, evitando dois responsáveis pela mesma reserva; verificar integração com o ledger de toques, concorrência e consistência entre fluxos antes de decidir. O código existente não prova que outros executores consultem essa reserva nem autoriza armazenamento independente ou sincronização por projeção como segunda autoridade. A escolha ainda precisa de validação e decisão técnica; não é migração nem mudança implementada.
+> **Decisão técnica de 05/11/2026 — Apollo + LinkedIn:** para esta jornada a autoridade única de reserva e deduplicação é o SQLite oficial do Thunder OS (`apollo_linkedin_reservations` em `_ferramentas/thunder_os/db.py`), com chave única por empresa, tarefa e tipo de ação antes de executar. A reserva e os locks existem em `db.py`; o dry-run não realiza disparo real. O design Apollo + LinkedIn detalha o contrato de recibo e a integração ainda necessária.
 
 | Information | Authority | Readers | Writers | Projection / mirror |
 | --- | --- | --- | --- | --- |
@@ -53,12 +53,13 @@ flowchart TD
 | Fatos curados da conta | `contas/<slug>/ficha.md` | research, UI, agents | fluxo de promoção validada | índice/projeção SQLite |
 | Conversas curadas | `contas/<slug>/conversas.md` append-only | replies, UI, agents | ingestores de canal | referência no ledger de respostas |
 | Trabalho, jobs, pesquisas em revisão, cadências, passos e aprovações | SQLite externo do Thunder OS | service, worker, UI | somente `ThunderService` | cards e timelines |
-| Reserva, deduplicação, efeito externo e resposta recebida | PostgreSQL de toques | effect coordinator, reply coordinator, UI | adapters/ingestores governados | estado resumido no SQLite |
+| Reserva e deduplicação Apollo + LinkedIn | SQLite oficial: `apollo_linkedin_reservations` e locks em `db.py` | executor T3 e atenção | repositório oficial | eventual espelho de recibo em toques para relatórios, ainda não implementado |
+| Reserva, deduplicação, efeito externo e resposta recebida nos demais fluxos existentes | PostgreSQL de toques | effect coordinator, reply coordinator, UI | adapters/ingestores governados | estado resumido no SQLite |
 | Resultado no provider | provider + receipt/readback persistido | reconciliation, UI | provider adapter | toque confirmado e evento |
 | HubSpot | espelho comercial | leadership, UI | adapter após autorização | status de mirror no Thunder OS |
 | `_log/atividade.jsonl` | auditoria append-only de ações | painel secundário, humanos | todos os executores | nunca governa estado |
 
-O sistema não tenta uma transação distribuída entre SQLite, PostgreSQL e providers. Ele usa outbox, idempotência e reconciliação:
+O sistema não tenta uma transação distribuída entre SQLite, PostgreSQL e providers. O fluxo histórico abaixo aplica-se aos caminhos que já usam `toques.py`, **não** à reserva Apollo + LinkedIn, cuja autoridade é o SQLite oficial. Ele usa outbox, idempotência e reconciliação:
 
 1. `ThunderService` persiste intenção e outbox no mesmo commit SQLite.
 2. O worker reclama um job por comparação de versão.
