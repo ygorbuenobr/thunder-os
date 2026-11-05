@@ -26,8 +26,8 @@ class RehearsalSafetyTests(unittest.TestCase):
                          'THUNDER_EXTERNAL_EFFECTS_ENABLED=false', 'THUNDER_OS_SEQD_SEND_ENABLED=false',
                          'THUNDER_OS_HUBSPOT_WRITE_ENABLED=false', 'sqlite3 -init /dev/null -readonly',
                          'LoadCredential=rehearsal_probe:', 'work_inode=', 'created_user=',
-                         'mkdir -m 0700 -- "$lockdir"', 'ReadOnlyPaths=${db%/*}',
-                         'ReadWritePaths=$work/db', '$work/root-db/painel.db',
+                         'mkdir -m 0700 -- "$lockdir"', 'file:${db}?mode=ro',
+                         '$work/db"', '$work/root-db/painel.db',
                          'nsenter --net="/proc/self/fd/$network_fd" curl --disable',
                          "SELECT dados FROM itens WHERE id=?"):
             self.assertIn(required, text)

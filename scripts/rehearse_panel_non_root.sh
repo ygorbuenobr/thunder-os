@@ -121,20 +121,30 @@ if (( process_status != 1 )); then
   printf '%s\n' 'UID já possui processos ou verificação falhou; operação recusada.' >&2; exit 2
 fi
 mkdir -m 0700 -- "$work/brain" "$work/db" "$work/credentials" "$work/root-db"
-# SQLite sees the source directory through a kernel-enforced read-only mount;
-# if WAL/SHM cannot be read that way the backup must fail, never ignore WAL.
+# SQLite read-only connection with the WAL included. A read-only bind mount of
+# the source directory was rejected: when no other connection holds the
+# database open, -wal/-shm do not exist and a WAL reader cannot create -shm on
+# a read-only mount ("unable to open database file", observed on the VPS
+# 05/11/2026). mode=ro never writes database pages; at most it creates -shm,
+# exactly like the panel's own readers.
 launched_backup=1
 systemd-run --quiet --collect --wait --pipe --unit="$backup_unit" \
   --property=User=root --property=NoNewPrivileges=yes \
-  --property=ProtectSystem=strict --property=ProtectHome=read-only \
-  --property=CapabilityBoundingSet= --property=AmbientCapabilities= \
+  --property=ProtectSystem=strict \
   --property=RestrictSUIDSGID=yes --property=PrivateNetwork=yes \
   '--property=RestrictAddressFamilies=AF_INET AF_INET6' \
-  "--property=ReadOnlyPaths=${db%/*}" "--property=ReadWritePaths=$work/db" \
+  "--property=ReadWritePaths=${db%/*} $work/db" \
   /usr/bin/sqlite3 -init /dev/null -readonly "file:${db}?mode=ro" ".backup '$work/db/painel.db'"
 # Make the root WAL probe copy before granting the rehearsal UID any access.
 # Its parent remains root:root 0700 for the whole test.
-sqlite3 -init /dev/null -readonly "file:${work}/db/painel.db?mode=ro" ".backup '$work/root-db/painel.db'"
+# A normal (not mode=ro) connection on this private copy: a read-only WAL
+# reader leaves root-owned -wal/-shm behind, which later made the rehearsal
+# UID fail with "attempt to write a readonly database" (observed 05/11/2026).
+# The last normal connection checkpoints and removes them on close.
+sqlite3 -init /dev/null "$work/db/painel.db" ".backup '$work/root-db/painel.db'"
+for suffix in -wal -shm; do
+  [[ ! -e $work/db/painel.db$suffix ]] || { printf '%s\n' 'WAL/SHM remanescente na cópia; recusando.' >&2; exit 1; }
+done
 chown "$uid:$gid" "$work/root-db/painel.db"
 chmod 0660 "$work/root-db/painel.db"
 cp -a -x -- "$brain/." "$work/brain/"
@@ -160,6 +170,9 @@ props=(
   '--property=RestrictSUIDSGID=yes' '--property=RestrictNamespaces=yes' '--property=UMask=0007'
   '--property=RestrictAddressFamilies=AF_INET AF_INET6'
   "--property=BindPaths=$work:/run/thunder-panel-rehearsal"
+  # PrivateTmp hides /var/tmp; publish the candidate release read-only so a
+  # release staged there remains the WorkingDirectory (observed 05/11/2026).
+  "--property=BindReadOnlyPaths=$release"
   '--property=ReadWritePaths=/run/thunder-panel-rehearsal'
   "--property=LoadCredential=rehearsal_probe:$work/credentials/probe"
   "--property=WorkingDirectory=$release"
