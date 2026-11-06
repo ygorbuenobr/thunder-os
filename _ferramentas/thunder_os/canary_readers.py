@@ -577,7 +577,10 @@ class CanarySEQDClient:
 def build_canary_readers(config, *, owner_public_id, linkedin_client=None):
     """Read-only composition, also available while all effect gates are off."""
     from .instantly_reader import private_text
+    from .credential_paths import resolve_legacy
     def credential(path):
+        # A non-root panel reads root-only legacy paths through systemd credentials.
+        path = resolve_legacy(path)
         require(isinstance(path, str) and Path(path).is_absolute() and not Path(path).is_symlink(),
                 'canary_credential_reference_invalid')
         return partial(private_text, path)
