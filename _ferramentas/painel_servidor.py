@@ -1405,26 +1405,44 @@ class Handler(BaseHTTPRequestHandler):
         expected_uid = getattr(self.server, 'thunder_nginx_uid', None)
         if expected_uid is None or getattr(getattr(self, 'connection', None), 'family', None) != socket.AF_UNIX:
             return False
+        privileged = os.geteuid() == 0
+
+        def executable_matches(process):
+            # A non-root panel may not read another user's /proc/<pid>/exe.
+            # Then the executable is unverifiable (None), never assumed true.
+            try:
+                return os.path.samefile(f'/proc/{process}/exe', self.server.thunder_nginx_executable)
+            except PermissionError:
+                return None if not privileged else False
+
         try:
             pid, uid, _gid = struct.unpack('3i', self.connection.getsockopt(
                 socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize('3i')))
-            if uid != expected_uid or not os.path.samefile(
-                    f'/proc/{pid}/exe', self.server.thunder_nginx_executable):
+            if uid != expected_uid or executable_matches(pid) is False:
                 return False
             # UID and executable alone also admit an independently started nginx.
             # Bind workers to the configured root-controlled service master.
             pidfile = Path(self.server.thunder_nginx_pid_file)
             info = pidfile.lstat()
-            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid not in {os.geteuid(), 0}
                     or info.st_mode & 0o022):
                 return False
             master_text = pidfile.read_text(encoding='ascii').strip()
             if not re.fullmatch(r'[0-9]{1,10}', master_text):
                 return False
             master = int(master_text)
-            if master <= 1 or not os.path.samefile(
-                    f'/proc/{master}/exe', self.server.thunder_nginx_executable):
+            if master <= 1 or executable_matches(master) is False:
                 return False
+            if not privileged:
+                # Accepted risk (Ygor, 05/11/2026): without privilege, require a
+                # root-owned master named in a root-owned pidfile instead of the
+                # unreadable executable link.
+                if info.st_uid != 0:
+                    return False
+                status_lines = Path(f'/proc/{master}/status').read_text().splitlines()
+                uid_line = next((line for line in status_lines if line.startswith('Uid:')), '')
+                if uid_line.split()[1:2] != ['0']:
+                    return False
             process_fields = Path(f'/proc/{pid}/stat').read_text().rpartition(') ')[2].split()
             return pid == master or (len(process_fields) > 1 and int(process_fields[1]) == master)
         except (OSError, ValueError, AttributeError):

@@ -55,6 +55,55 @@ class ConfirmationSocketTests(unittest.TestCase):
         handler.server.thunder_nginx_executable = '/dev/null'
         self.assertFalse(handler.trusted_confirmation_peer())
 
+    def test_non_root_panel_trusts_root_master_without_exe_access(self):
+        from unittest import mock
+        import stat as stat_module
+        import struct
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        pidfile = Path(temp.name) / 'nginx.pid'
+        pidfile.write_text('4242')
+        handler = object.__new__(panel.Handler)
+        handler.connection = SimpleNamespace(family=socket.AF_UNIX,
+            getsockopt=lambda *a: struct.pack('3i', 4243, 33, 33))
+        handler.server = SimpleNamespace(thunder_nginx_uid=33, thunder_nginx_executable='/usr/sbin/nginx',
+                                         thunder_nginx_pid_file=str(pidfile))
+        real_lstat = Path.lstat
+
+        def owned_by(uid):
+            def fake(self):
+                info = real_lstat(self)
+                return SimpleNamespace(st_mode=stat_module.S_IFREG | 0o644, st_uid=uid)
+            return fake
+
+        def read_text(self, *a, **k):
+            if str(self) == '/proc/4243/stat':
+                return '4243 (nginx) S 4242 0'
+            if str(self) == '/proc/4242/status':
+                return 'Name:\tnginx\nUid:\t%s\t0\t0\t0\n' % master_uid[0]
+            return Path.read_bytes(self).decode()
+        master_uid = ['0']
+        if not hasattr(socket, 'SO_PEERCRED'):
+            self.skipTest('SO_PEERCRED unavailable')
+        with mock.patch.object(panel.os, 'geteuid', return_value=990), \
+             mock.patch.object(panel.os.path, 'samefile', side_effect=PermissionError), \
+             mock.patch.object(Path, 'read_text', read_text):
+            with mock.patch.object(Path, 'lstat', owned_by(0)):
+                self.assertTrue(handler.trusted_confirmation_peer())
+                master_uid[0] = '33'
+                self.assertFalse(handler.trusted_confirmation_peer())
+                master_uid[0] = '0'
+                handler.connection.getsockopt = lambda *a: struct.pack('3i', 4243, 34, 34)
+                self.assertFalse(handler.trusted_confirmation_peer())
+                handler.connection.getsockopt = lambda *a: struct.pack('3i', 4243, 33, 33)
+            with mock.patch.object(Path, 'lstat', owned_by(990)):
+                self.assertFalse(handler.trusted_confirmation_peer())
+        with mock.patch.object(panel.os, 'geteuid', return_value=0), \
+             mock.patch.object(panel.os.path, 'samefile', side_effect=PermissionError), \
+             mock.patch.object(Path, 'read_text', read_text), \
+             mock.patch.object(Path, 'lstat', owned_by(0)):
+            self.assertFalse(handler.trusted_confirmation_peer())
+
     def test_socket_parent_and_existing_target_are_checked(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / 'confirmation.sock'

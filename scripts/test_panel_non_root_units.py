@@ -51,14 +51,16 @@ class NonRootCandidateTests(unittest.TestCase):
                 self.assertNotIn(str(normalized), ('/', '/root'))
         self.assertEqual('0007', self.panel['UMask'])
         self.assertEqual('0750', self.broker['RuntimeDirectoryMode'])
-        self.assertIn('thunder-li-socket', self.panel['SupplementaryGroups'].split())
+        # In-process read accepted (05/11/2026): the panel does not join the broker socket group.
+        self.assertEqual(['thunder-panel-db', 'www-data'], self.panel['SupplementaryGroups'].split())
         self.assertEqual('thunder-li-socket', self.broker['Group'])
 
     def test_candidates_contain_no_literal_secrets_and_broker_fails_closed(self):
         common = {'User', 'Group', 'UMask', 'NoNewPrivileges', 'ProtectSystem', 'ProtectHome',
                   'PrivateTmp', 'CapabilityBoundingSet', 'AmbientCapabilities', 'RestrictSUIDSGID',
                   'ReadWritePaths', 'Environment', 'EnvironmentFile'}
-        self.assertEqual(common | {'SupplementaryGroups', 'UnsetEnvironment'}, set(self.panel))
+        self.assertEqual(common - {'Environment', 'EnvironmentFile'} | {'SupplementaryGroups', 'UnsetEnvironment'},
+                         set(self.panel))
         self.assertEqual(common | {'Type', 'RuntimeDirectory', 'RuntimeDirectoryMode',
                                    'RestrictAddressFamilies', 'ExecStart', 'Restart', 'WorkingDirectory'},
                          set(self.broker))
@@ -69,9 +71,8 @@ class NonRootCandidateTests(unittest.TestCase):
                 self.assertFalse(re.search(r'(?i)(?:api[_-]?key|secret|token|password)\s*=\s*\S+', line), line)
         self.assertIn('THUNDER_APOLLO_LI_BROKER_UID=0', BROKER_ENV.read_text(encoding='utf-8').splitlines())
         self.assertEqual('/usr/bin/python3 -m thunder_os.connectsafely_read_broker_service', self.broker['ExecStart'])
-        self.assertEqual('THUNDER_APOLLO_LI_BROKER_SOCKET=/run/thunder-li-reader/account.sock',
-                         self.panel['Environment'])
-        self.assertEqual('-/etc/thunder-os/panel-li-reader.env', self.panel['EnvironmentFile'])
+        self.assertNotIn('Environment', self.panel)
+        self.assertNotIn('EnvironmentFile', self.panel)
         self.assertEqual('PYTHONPATH=/opt/thunder-os/current/_ferramentas', self.broker['Environment'])
         self.assertEqual('/etc/thunder-os/connectsafely-read-broker.env', self.broker['EnvironmentFile'])
         self.assertFalse(any(key in self.broker for key in ('LoadCredential', 'SetCredential')))
@@ -87,10 +88,10 @@ class NonRootCandidateTests(unittest.TestCase):
             'instantly_reader_enabled': '/etc/thunder-os/instantly_reader_enabled',
             'connectsafely_token': '/etc/thunder-os/connectsafely.token',
             'social_db_dsn': '/etc/thunder-os/social-db.dsn',
-            'connectsafely_config': '/etc/thunder-os/TO-BE-REPLACED/direct-runtime.json',
-            'hubspot_access': '/etc/thunder-os/TO-BE-REPLACED/hubspot_access',
-            'seqd_bridge': '/etc/thunder-os/TO-BE-REPLACED/seqd_bridge',
-            'seqd_email_ledger': '/etc/thunder-os/TO-BE-REPLACED/seqd_email_ledger',
+            'connectsafely_config': '/etc/thunder-os/direct-runtime-20261103.json',
+            'hubspot_access': '/var/lib/thunder-os-integrations/credentials/hubspot_access',
+            'seqd_bridge': '/var/lib/thunder-os-integrations/credentials/seqd_bridge',
+            'seqd_email_ledger': '/var/lib/thunder-os-integrations/credentials/seqd_email_ledger',
         }
         self.assertEqual(len(expected), len(lines))
         self.assertEqual({f'LoadCredential={key}:{value}' for key, value in expected.items()}, set(lines))

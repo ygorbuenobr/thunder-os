@@ -1,26 +1,22 @@
-# CANDIDATE ONLY — not deployable until the runbook's access and isolation
-# prerequisites are verified. Do not install without a reviewed rollout.
+# Non-root panel drop-in. Sources below match the configuration installed on
+# srv1433640 as read on 05/11/2026; re-verify before each rollout.
 [Service]
 User=thunder-panel
 Group=thunder-panel
-SupplementaryGroups=thunder-panel-db thunder-li-socket
+# thunder-panel-db: shared SQLite group. www-data: the panel must hand its
+# confirmation socket to nginx's group (chgrp needs membership without root).
+SupplementaryGroups=thunder-panel-db www-data
 UMask=0007
 NoNewPrivileges=yes
 ProtectSystem=strict
-# The currently reported database and brain are under /root; traversal and
-# individual file access must be granted narrowly before this can work.
+# The database and brain live under /root; access is granted by narrow ACLs
+# (traverse-only on /root/.hermes and the profile, rwX on the brain).
 ProtectHome=off
 PrivateTmp=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
 RestrictSUIDSGID=yes
 ReadWritePaths=/root/.hermes/profiles/ygor-personal/painel-dados /root/.hermes/profiles/ygor-personal/brain /run/thunder-panel-ingress
-Environment=THUNDER_APOLLO_LI_BROKER_SOCKET=/run/thunder-li-reader/account.sock
-# This root-managed file must contain THUNDER_APOLLO_LI_BROKER_UID=<numeric UID>
-# and no credentials. A missing file or invalid UID fails closed.
-EnvironmentFile=-/etc/thunder-os/panel-li-reader.env
-# Sources under /etc/thunder-os/TO-BE-REPLACED are deliberately invalid.
-# Review actual installed drop-ins and replace every source before any rollout.
 # LoadCredential copies each file to CREDENTIALS_DIRECTORY; no secret value here.
 LoadCredential=apollo_api_key:/root/.config/thunder/credentials/apollo_api_key.txt
 LoadCredential=instantly_api_key:/etc/thunder-os/instantly_api_key
@@ -30,10 +26,9 @@ LoadCredential=apollo_reader_enabled:/etc/thunder-os/apollo_reader_enabled
 LoadCredential=instantly_reader_enabled:/etc/thunder-os/instantly_reader_enabled
 LoadCredential=connectsafely_token:/etc/thunder-os/connectsafely.token
 LoadCredential=social_db_dsn:/etc/thunder-os/social-db.dsn
-LoadCredential=connectsafely_config:/etc/thunder-os/TO-BE-REPLACED/direct-runtime.json
-LoadCredential=hubspot_access:/etc/thunder-os/TO-BE-REPLACED/hubspot_access
-LoadCredential=seqd_bridge:/etc/thunder-os/TO-BE-REPLACED/seqd_bridge
-LoadCredential=seqd_email_ledger:/etc/thunder-os/TO-BE-REPLACED/seqd_email_ledger
-# Existing explicit paths precede the systemd credential directory; clear only
-# after matching each source above to the installed configuration.
+LoadCredential=connectsafely_config:/etc/thunder-os/direct-runtime-20261103.json
+LoadCredential=hubspot_access:/var/lib/thunder-os-integrations/credentials/hubspot_access
+LoadCredential=seqd_bridge:/var/lib/thunder-os-integrations/credentials/seqd_bridge
+LoadCredential=seqd_email_ledger:/var/lib/thunder-os-integrations/credentials/seqd_email_ledger
+# Explicit legacy paths would take precedence over the credential directory.
 UnsetEnvironment=THUNDER_OS_HUBSPOT_CREDENTIAL_FILE THUNDER_OS_SEQD_CREDENTIAL_FILE THUNDER_OS_SEQD_EMAIL_LEDGER_CREDENTIAL_FILE
