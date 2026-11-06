@@ -78,6 +78,14 @@ class SafetyTests(unittest.TestCase):
         self.touch(datetime.fromtimestamp(self.now - 10, timezone.utc).isoformat())
         self.assertFalse(self.safety.ready(self.binding, self.plan))
 
+    def test_legacy_row_without_update_time_uses_creation_time(self):
+        with sqlite3.connect(self.path) as con:
+            con.execute('INSERT INTO toques VALUES(?,?,?,?,?)', ('linkedin', 'feito', 'https://www.linkedin.com/in/legacy',
+                        None, datetime.fromtimestamp(self.now - 10, timezone.utc).isoformat()))
+        self.assertFalse(self.safety.ready(self.binding, self.plan))
+        self.now += 31
+        self.assertTrue(self.safety.ready(self.binding, self.plan))
+
     def test_unknown_timestamp_and_ledger_failure_block(self):
         self.touch(None)
         self.assertFalse(self.safety.ready(self.binding, self.plan))

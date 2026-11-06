@@ -67,7 +67,11 @@ class RuntimeSafety:
     def _ledger_time(self, person=None):
         with self.ledger._banco() as (con, mark):
             cur = con.cursor()
-            sql = "SELECT MAX(atualizado_em), COUNT(*), COUNT(atualizado_em) FROM toques WHERE canal='linkedin' AND status IN ('feito','incerto')"
+            # Legacy rows (observed on the live ledger, 06/11/2026) lack
+            # atualizado_em; their creation time is the available bound. A row
+            # with neither timestamp still blocks.
+            sql = ("SELECT MAX(COALESCE(atualizado_em, criado_em)), COUNT(*), COUNT(COALESCE(atualizado_em, criado_em)) "
+                   "FROM toques WHERE canal='linkedin' AND status IN ('feito','incerto')")
             args = ()
             if person is not None:
                 sql += ' AND pessoa_chave=' + mark
