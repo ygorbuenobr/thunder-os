@@ -275,7 +275,9 @@ class ReplyCoverage:
                 return 'unknown', 'apollo_activity_unavailable'
             if any(e.get('type') == 'replied' for e in events):
                 return 'reply', 'apollo_reply_observed'
-            if not isinstance(row.get('email_status'), str) or not row['email_status']:
+            # A LinkedIn-only contact has no address, so no email_status either.
+            no_address = not target.get('email') and not row.get('email')
+            if not no_address and (not isinstance(row.get('email_status'), str) or not row['email_status']):
                 return 'unknown', 'apollo_coverage_incomplete'
             matches = [m for m in memberships if isinstance(m, dict)
                        and m.get('emailer_campaign_id') == target['sequence_id']]

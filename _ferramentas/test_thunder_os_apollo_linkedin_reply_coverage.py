@@ -296,6 +296,22 @@ class ApolloActivityFallbackTest(unittest.TestCase):
         feed.row['contact_campaign_statuses'][0]['status'] = 'paused'
         self.assertEqual(self.observe(feed)['status'], 'unknown')
 
+    def test_contact_without_email_uses_feed_and_membership(self):
+        # Real LinkedIn-only contact (06/11/2026): no email and no email_status.
+        feed = self.Feed([{'type': 'enrolled', 'sequence_id': 'sequence'}])
+        feed.row.update(email=None, email_status=None)
+        target = dict(TARGET, email=None)
+        result = ReplyCoverage(feed, LinkedIn(), clock=lambda: NOW).observe(target)['sources']['apollo']
+        self.assertEqual(result['status'], 'ok')
+        # The missing status is accepted only when there is no address at all.
+        feed.row['email'] = 'lead@example.invalid'
+        result = ReplyCoverage(feed, LinkedIn(), clock=lambda: NOW).observe(target)['sources']['apollo']
+        self.assertEqual(result['status'], 'unknown')
+        feed.row['email'] = None
+        feed.events = [{'type': 'replied', 'sequence_id': 'sequence'}]
+        result = ReplyCoverage(feed, LinkedIn(), clock=lambda: NOW).observe(target)['sources']['apollo']
+        self.assertEqual(result['status'], 'reply')
+
     def test_full_page_is_incomplete(self):
         calls = []
         def request(method, path, body, headers, timeout):
