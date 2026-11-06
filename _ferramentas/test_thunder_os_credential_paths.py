@@ -38,3 +38,16 @@ class ConnectSafelyCredentialTests(unittest.TestCase):
             path.unlink()
             path.symlink_to(Path(tmp) / 'missing')
             with self.assertRaises(ValueError): read()
+
+    def test_config_referenced_legacy_paths_use_systemd_credentials(self):
+        from thunder_os.connectsafely_live import credential
+        legacy = {'/root/.config/thunder/credentials/apollo_api_key.txt': 'apollo_api_key',
+                  '/var/lib/thunder-os-integrations/credentials/hubspot_access': 'hubspot_access',
+                  '/etc/thunder-os/connectsafely.token': 'connectsafely_token',
+                  '/etc/thunder-os/social-db.dsn': 'social_db_dsn'}
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'CREDENTIALS_DIRECTORY': tmp}):
+            for path, name in legacy.items():
+                stored = Path(tmp) / name
+                stored.write_text('fake-' + name)
+                stored.chmod(0o400)
+                self.assertEqual('fake-' + name, credential(path)())

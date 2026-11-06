@@ -47,7 +47,10 @@ def evidence(spec):
 
 def credential(path):
     def read():
-        names = {'/etc/thunder-os/connectsafely.token': 'connectsafely_token', '/etc/thunder-os/social-db.dsn': 'social_db_dsn'}
+        names = {'/etc/thunder-os/connectsafely.token': 'connectsafely_token', '/etc/thunder-os/social-db.dsn': 'social_db_dsn',
+                 # Also referenced by the pinned direct-runtime config (observed 05/11/2026).
+                 '/root/.config/thunder/credentials/apollo_api_key.txt': 'apollo_api_key',
+                 '/var/lib/thunder-os-integrations/credentials/hubspot_access': 'hubspot_access'}
         resolved = credential_path(names[path], path) if isinstance(path, str) and path in names else path
         resolved = explicit_path(resolved)
         try:
