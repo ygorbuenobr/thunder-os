@@ -119,7 +119,9 @@ class DmIdentityTests(unittest.TestCase):
     def test_contradictory_cursor_page_retains_uncertainty_and_static_diagnosis(self):
         fixture=ReadFixture()
         first={**fixture.page,'hasMore':True,'nextCursor':str(NOW*1000)}
-        second={**fixture.page,'messages':[],'hasMore':True,'nextCursor':None}
+        # The empty tail after a cursor is the provider's normal end (ea1701c);
+        # rows that still say hasMore without a cursor remain contradictory.
+        second={**fixture.page,'hasMore':True,'nextCursor':None}
         fixture.pages=[first,second]
         result=fixture.reconcile()
         self.assertEqual({'status':'uncertain','error_code':'pagination_contradictory'},result)
@@ -267,7 +269,7 @@ class DmJobTests(unittest.TestCase):
 
     def test_incomplete_history_preserves_touch_and_job_and_no_retry(self):
         self.fixture.pages=[{**self.fixture.page,'hasMore':True,'nextCursor':str(NOW*1000)},
-                            {**self.fixture.page,'messages':[],'hasMore':True,'nextCursor':None}]
+                            {**self.fixture.page,'hasMore':True,'nextCursor':None}]
         result=self.reconcile()
         self.assertEqual('uncertain',result['status']);self.assertEqual('pagination_contradictory',result['error_code'])
         self.assertFalse(result['retry_write']);self.assertEqual(('incerto',None),self.canonical())
