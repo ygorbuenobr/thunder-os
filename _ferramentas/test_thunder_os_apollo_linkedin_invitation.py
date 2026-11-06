@@ -91,6 +91,10 @@ class InvitationTests(unittest.TestCase):
         self.assertEqual(client.offsets, [0, 20])
         with self.assertRaises(ValueError):
             InvitationAdapter(client, window_calls=0)
+        # The default budget must fit a real window read (about 21 s observed).
+        self.assertGreaterEqual(InvitationAdapter(client).time_budget, 45)
+        with self.assertRaises(ValueError):
+            InvitationAdapter(client, time_budget=91)
         ticks = iter([100, 100, 121])
         adapter = InvitationAdapter(client, clock=lambda: next(ticks), time_budget=20)
         self.assertEqual(adapter.send(PLAN, 1000, before_dispatch=lambda: True)['status'], 'blocked')

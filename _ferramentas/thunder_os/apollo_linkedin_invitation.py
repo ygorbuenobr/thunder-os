@@ -21,9 +21,11 @@ from .connectsafely_client import ConnectSafelyClient
 
 
 class InvitationAdapter:
-    def __init__(self, client, *, clock=time.monotonic, page_budget=30, time_budget=20, window_calls=1):
+    # One relationship read plus one 3-page window took about 21 s in
+    # production (single list calls up to 17.7 s); 20 s failed every attempt.
+    def __init__(self, client, *, clock=time.monotonic, page_budget=30, time_budget=60, window_calls=1):
         if (not callable(clock) or type(page_budget) is not int or not 3 <= page_budget <= 30
-                or type(time_budget) not in (int, float) or not 0 < time_budget <= 30
+                or type(time_budget) not in (int, float) or not 0 < time_budget <= 90
                 or type(window_calls) is not int or not 1 <= window_calls <= page_budget // 3):
             raise ValueError('invitation_budget_invalid')
         self.client = client
