@@ -15,6 +15,8 @@ from .connectsafely_client import ConnectSafelyError, require, urn
 logger = logging.getLogger(__name__)
 
 HOST='api.connectsafely.ai'
+WRITE_PATHS=('/linkedin/connect','/linkedin/conversations/send')
+WRITE_TIMEOUT=90
 MAX_RESPONSE=1_000_000
 
 
@@ -89,7 +91,11 @@ class ConnectSafelyHTTPS:
         try:
             credential=self.credential()
             require(isinstance(credential,str) and 16<=len(credential)<=4096 and re.fullmatch(r'[A-Za-z0-9._~-]+',credential),'credential_unavailable')
-            connection=self.factory(HOST,443,timeout=15,context=ssl.create_default_context())
+            # Writes may wait on the provider's own pacing: on 2026-11-06 a real
+            # invite went out but its response did not arrive within 15 s, so
+            # the attempt became uncertain. Reads keep the short bound.
+            connection=self.factory(HOST,443,timeout=WRITE_TIMEOUT if method=='POST' and path in WRITE_PATHS else 15,
+                                    context=ssl.create_default_context())
             wire=json.dumps(body,ensure_ascii=False,separators=(',',':'),allow_nan=False).encode() if body is not None else None
             require(wire is None or len(wire)<=40000,'request_too_large')
             connection.request(method,path+('?' + urlencode(query) if query else ''),body=wire,headers={'Authorization':'Bearer '+credential,'Accept':'application/json','Content-Type':'application/json'})
@@ -112,7 +118,8 @@ class ConnectSafelyHTTPS:
             allowed={'credential_unavailable','request_too_large','provider_schema_invalid','response_too_large'}
             raise ConnectSafelyError(str(exc) if str(exc) in allowed else 'provider_outcome_unknown') from None
         except Exception as exc:
-            if method == 'GET' and path in ('/linkedin/accounts', '/linkedin/connections', '/linkedin/profile'):
+            if (method == 'GET' and path in ('/linkedin/accounts', '/linkedin/connections', '/linkedin/profile')
+                    or method == 'POST' and path in WRITE_PATHS):
                 # Only fixed categories; exception text and request data are private.
                 category = ('timeout' if isinstance(exc, TimeoutError) else
                             'tls' if isinstance(exc, ssl.SSLError) else

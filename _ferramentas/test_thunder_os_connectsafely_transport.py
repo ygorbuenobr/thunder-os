@@ -51,6 +51,8 @@ class TransportTests(unittest.TestCase):
         self.transport('POST','/linkedin/conversations/send',{},dict(accountId='a'*24,messagingChannel='linkedin_inbox',message='fixture'))
         self.assertEqual(len(loads),2)
         self.assertEqual([c[1]['headers']['Authorization'] for c in self.calls],['Bearer synthetic-token-only']*2)
+        # Reads keep 15 s; writes wait for the provider's pacing.
+        self.assertEqual([c[1]['timeout'] for c in self.created],[15,90])
     def test_prefixed_or_whitespace_credential_never_opens_connection(self):
         for value in ('Bearer synthetic-token-only',' synthetic-token-only','synthetic-token-only\n','synthetic token only'):
             self.transport.credential=lambda:value
