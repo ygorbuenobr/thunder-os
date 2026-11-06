@@ -13,6 +13,7 @@
 - Login autenticado pelo nginx confirmado pelo Ygor no navegador em 06/11/2026, depois da troca.
 - **Incidente de 06/11, entre 10:52 e 11:36:** um job do Hermes reaplicou `700` em `/root/.hermes/profiles/ygor-personal`, o que zera a máscara da ACL. O painel sem root perdeu o acesso ao banco, e o problema só apareceu no restart do deploy. Restaurado às 11:36.
 - **Proteção instalada (aprovada pelo Ygor):** `thunder-panel-acl-guard.sh`, mais o timer de 30 s e um `ExecStartPre=+` no painel (`zzzzzz-acl-guard.conf`). Os arquivos estão em `runtime/systemd/thunder-panel-acl-guard.*`. Testada com `chmod 700`: a máscara foi reparada e cada reparo fica registrado no journal com a tag `thunder-panel-acl-guard`. Para reverter: `systemctl disable --now thunder-panel-acl-guard.timer` e remover o drop-in.
+- **Renovação da conta ConnectSafely (06/11/2026, aprovada pelo Ygor):** a evidência anterior era de 24 h para uma única DM (03/11) e venceu em 04/11 às 17:18. Desde então, o envio manual do painel e o executor ficaram sem cliente de envio (falha fechada). Nova evidência com escopo "envios do Thunder OS atrás dos portões vigentes", leitura fresca de identidade e quota e **validade até 20/11/2026**. Nova config `/etc/thunder-os/direct-runtime-20261106.json`, com o vínculo `connectsafely_runtime_config` reconciliado para o hash novo (`bind_config` exige reconciliação explícita). Rollback em `/var/backups/thunder-cs-renewal-1793977728/rollback.sh`. Depois da troca, o executor monta o runtime completo. **Renovar antes de 20/11.**
 
 ---
 
