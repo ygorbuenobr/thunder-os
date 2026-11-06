@@ -32,7 +32,7 @@ def _config(value):
     configuration = value['configuration']
     if (not isinstance(configuration, Mapping)
             or not {'flow_version', 'provider_accounts'} <= set(configuration)
-            or set(configuration) - {'flow_version', 'provider_accounts', 'linkedin_policy', 'apollo_linkedin'}
+            or set(configuration) - {'flow_version', 'provider_accounts', 'linkedin_policy', 'apollo_linkedin', 'required_custom_field_id'}
             or not _text(configuration['flow_version'])):
         raise ApprovalError('campaign_registry_configuration_invalid')
     accounts = configuration['provider_accounts']
@@ -42,6 +42,12 @@ def _config(value):
         raise ApprovalError('campaign_registry_accounts_invalid')
     normalized = {**value, 'providers': dict(providers), 'configuration': {
         'flow_version': configuration['flow_version'], 'provider_accounts': dict(accounts)}}
+    if 'required_custom_field_id' in configuration:
+        field_id = configuration['required_custom_field_id']
+        if (not isinstance(field_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', field_id)
+                or 'apollo_linkedin' not in configuration):
+            raise ApprovalError('campaign_registry_custom_field_invalid')
+        normalized['configuration']['required_custom_field_id'] = field_id
     if 'apollo_linkedin' in configuration:
         # Routing data only: a registered configuration is NOT an approval.
         # All bindings are covered by the existing configuration hash/revision.

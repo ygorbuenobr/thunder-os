@@ -89,6 +89,8 @@ class InvitationEndToEnd(unittest.TestCase):
         row = self.repo.get_apollo_linkedin_reservation('company', 'fixture-task', 'linkedin_step_connect')
         self.assertEqual(row['apollo_status'], 'confirmed')
         self.assertEqual(len(self.posts()), 1)
+        # The rendered Apollo task body must be the actual invitation note.
+        self.assertEqual(self.posts()[0][2]['customMessage'], base.TEXT)
         self.assertEqual(sum(call[0] == 'POST' for call in self.fake.apollo_calls), 1)
         self.run_executor()
         self.assertEqual(len(self.posts()), 1)

@@ -58,6 +58,17 @@ class CampaignWorker:
                 return {**result, 'reason': 'reader_binding_mismatch'}
             if execute and not self.coordinator._gate():
                 return {**result, 'reason': 'execution_disabled'}
+            pending_skips = set()
+            for claim in self.coordinator.repo.list_state('apollo_linkedin_skip'):
+                if (isinstance(claim, dict) and claim.get('state') == 'attempted'
+                        and claim.get('company') == binding['company_id']
+                        and claim.get('campaign_id') == self.campaign_id
+                        and claim.get('account_id') == binding.get('account_id')
+                        and valid_id(claim.get('task_id'))):
+                    pending_skips.add(claim['task_id'])
+            for task_id in sorted(pending_skips):
+                result['items'].append({'task_id': task_id, 'state': 'attention',
+                                        'reason': 'skip_reconcile_pending'})
             with reader.attention_budget(seconds=self.budget_seconds, max_pages=self.max_pages):
                 scan = reader.list_open_tasks()
             if (not isinstance(scan, dict) or scan.get('coverage') not in ('complete', 'partial', 'unknown')
@@ -77,6 +88,8 @@ class CampaignWorker:
                     result.update(state='partial', coverage='unknown', reason='duplicate_task')
                     return result
                 seen.add(ident)
+                if ident in pending_skips:
+                    continue
                 if ident == EXCLUDED_TASK:
                     result['items'].append({'task_id': ident, 'state': 'blocked', 'reason': 'fixture_protegida'})
                     continue

@@ -69,6 +69,21 @@ class CampaignRegistryTests(unittest.TestCase):
             self.registry.register(value, 'ygor', 0)
         self.assertIsNone(self.repo.get_state('campaign_config', 'synthetic'))
 
+    def test_required_custom_field_is_validated_and_bound_to_campaign_revision(self):
+        for invalid in ('', '../wrong', None, 42):
+            value = self.apollo_config()
+            value['configuration']['required_custom_field_id'] = invalid
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ApprovalError, 'campaign_registry_custom_field_invalid'):
+                self.registry.register(value, 'ygor', 0)
+        value = self.apollo_config()
+        value['configuration']['required_custom_field_id'] = 'field_abm_1'
+        first = self.registry.register(value, 'ygor', 0)
+        self.assertEqual(self.registry.configuration('synthetic')['required_custom_field_id'], 'field_abm_1')
+        changed = deepcopy(value)
+        changed['configuration']['required_custom_field_id'] = 'field_abm_2'
+        second = self.registry.register(changed, 'ygor', 1)
+        self.assertNotEqual(first['context']['configuration_hash'], second['context']['configuration_hash'])
+
     def test_digests_and_binding_are_derived_and_detached(self):
         cfg = config()
         row = self.registry.register(cfg, 'ygor', 0)

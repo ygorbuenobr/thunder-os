@@ -2,10 +2,30 @@ import json
 import hashlib
 import unittest
 
-from thunder_os.apollo_linkedin_preview import ApolloLinkedInPreview, _https_request
+from thunder_os.apollo_linkedin_preview import ApolloLinkedInPreview, _https_request, validated_task_text
 
 
 class PreviewTest(unittest.TestCase):
+    def test_required_custom_field_must_be_present_nonempty_and_rendered(self):
+        task = {'contact': {'typed_custom_fields': {}}, 'linkedin_emailer_template': {'body_text': 'Olá!'}}
+        for value in (None, '', '   ', 123):
+            task['contact']['typed_custom_fields']['abm_field'] = value
+            self.assertEqual(validated_task_text(task, 'invite', required_custom_field_id='abm_field')[2],
+                             'custom_field_missing_or_empty')
+        task['contact']['typed_custom_fields']['abm_field'] = 'Pesquisa sintética'
+        self.assertEqual(validated_task_text(task, 'invite', required_custom_field_id='abm_field')[2],
+                         'custom_field_not_rendered')
+        task['linkedin_emailer_template']['body_text'] = 'Olá! Pesquisa sintética'
+        self.assertIsNone(validated_task_text(task, 'invite', required_custom_field_id='abm_field')[2])
+        with self.assertRaises(ValueError):
+            validated_task_text(task, 'invite', required_custom_field_id='')
+
+    def test_preview_blocks_when_configured_custom_field_was_rendered_empty(self):
+        self.task['linkedin_emailer_template'] = {'body_text': 'Olá, pessoa!'}
+        self.task['contact']['typed_custom_fields'] = {'abm_field': ''}
+        result = self.preview(required_custom_field_id='abm_field').read()
+        self.assertIn('custom_field_missing_or_empty', result['blockers'])
+        self.assertFalse(result['call_preview']['executable'])
     def setUp(self):
         self.calls = []
         self.task = {'id': 'task1', 'type': 'linkedin_step_connect', 'status': 'scheduled',

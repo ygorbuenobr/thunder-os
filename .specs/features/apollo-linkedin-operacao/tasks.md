@@ -11,6 +11,7 @@
 | AO-13–15, AO-20–22 | fontes de resposta, histórico/coorte, CRM não configurado e alerta/contexto | pendente |
 | AO-16–19 | pausa local e releitura externa, indisponibilidade, resposta em voo e zero repetição | pendente |
 | AO-21 | permissão gestor/admin, justificativa auditada e sem retomada automática | pendente |
+| AO-23–32 | HTTP fake: tarefa de mensagem conectada/não conectada/desconhecida, salto Apollo e convite/texto renderizado | pendente |
 
 ## Gate Check Commands
 
@@ -26,8 +27,8 @@ worker de ciclo único, vínculo de identidade, webhook, reconciliação de even
 antecipados e parada local possuem implementação e testes offline, desligados por
 padrão. O monitor Apollo cobre somente contatos com vínculo e reserva comprovados;
 não comprova a parada externa para seu sinal agregado. A ponte de contenção no
-Apollo está desligada e sua confirmação externa não foi provada. Convites seguem
-bloqueados por falta de prova de recibo conforme o contrato vigente. A identidade
+Apollo está desligada e sua confirmação externa não foi provada. O adaptador de
+convites tem testes offline, mas não há prova de envio real de convite nesta rodada. A identidade
 comercial, o histórico entre canais, a cobertura HubSpot configurada, a parada por
 empresa prospectada e a retomada segura de ações bloqueadas antes do POST ainda
 não estão completos. Nenhuma peça está homologada nesta rodada em produção.
@@ -50,6 +51,14 @@ Implementar e verificar T1, T2 e T3, em ordem. Mensagem T4d existente é ponto d
 Implementar e verificar T4, T5 e T6; fechar com T7. As tarefas de documentação e código são incrementais e não implicam ativação de runner ou envio.
 
 ## Task Breakdown
+
+### Relógio Apollo e tratamento de tarefas (AO-23–32)
+
+1. Preservar o worker e o executor existentes; não construir coordenador com relógio próprio. O exemplo é uma sequência linear de sete passos no Apollo, com D0, D3, D6, D9, D12 e D14 como alvos sujeitos à duração real dos passos.
+2. Reproduzir em HTTP fake: mensagem `CONNECTED` segue caminho existente; relação conhecida diferente de `CONNECTED` solicita salto Apollo com `não conectado, pulado` e nenhum POST LinkedIn; erro, relação desconhecida ou identidade divergente bloqueiam sem salto.
+3. Verificar recepção e releitura do salto, idempotência e falha/timeout sem afirmar conclusão; nenhum efeito real nos testes. Validar conclusão/salto de tarefa e a liberação do próximo passo com o contato de teste, pelo Claude após commit, antes de afirmar comportamento em produção.
+4. Validar nota renderizada do convite, limite e hash, e placeholders não resolvidos. Campo ABM obrigatório vazio exige prova distinta do corpo parcialmente renderizado; adicionar testes do contrato efetivo e explicitar limitação se o dado não estiver disponível.
+5. Não incluir `apollo_linkedin_journey.py` nem seus testes de relógio próprio neste commit. Revisão independente, testes focados, `check_source_boundary.py` e `git diff --check`; não ligar timer ou efetuar envios.
 
 ### T1: Reconciliar contratos e provas existentes
 

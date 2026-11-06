@@ -17,12 +17,18 @@ from thunder_os.connectsafely_client import ConnectSafelyClient
 from thunder_os import apollo_linkedin_approve as approve
 from thunder_os import apollo_linkedin_canary_issue as issue
 from thunder_os import apollo_linkedin_live_executor as runtime
-from test_thunder_os_apollo_linkedin_authority import config
+from test_thunder_os_apollo_linkedin_authority import config as base_config
 
 ACCOUNT = 'a' * 24
 OWNER = 'urn:li:fsd_profile:OWNER_FIXTURE'
 RECIPIENT = 'urn:li:fsd_profile:RECIPIENT_FIXTURE'
 TEXT = 'Synthetic message for integration test.'
+
+
+def config():
+    cfg = base_config()
+    cfg['configuration']['required_custom_field_id'] = 'abm_field'
+    return cfg
 
 
 class Ledger:
@@ -56,7 +62,8 @@ class Scenario:
     def task(self):
         return {'id': 'fixture-task', 'type': 'linkedin_step_message', 'status': self.status,
                 'emailer_campaign_id': 'seq', 'user_id': 'owner', 'contact_id': 'contact',
-                'contact': {'id': 'contact', 'linkedin_url': 'https://www.linkedin.com/in/fixture-person/'},
+                'contact': {'id': 'contact', 'linkedin_url': 'https://www.linkedin.com/in/fixture-person/',
+                            'typed_custom_fields': {'abm_field': TEXT}},
                 'linkedin_emailer_template': {'body_text': TEXT}, 'note': self.note}
 
     def apollo(self, method, path, body, headers, timeout):
@@ -157,6 +164,30 @@ class T4dEndToEnd(unittest.TestCase):
 
     def posts(self):
         return [call for call in self.fake.linkedin_calls if call[0] == 'POST']
+
+    def test_unconnected_message_skips_apollo_without_linkedin_post(self):
+        linkedin = self.fake.linkedin
+        apollo = self.fake.apollo
+        def not_connected(method, path, query=None, body=None):
+            if '/relationship/' in path:
+                self.fake.linkedin_calls.append((method, path, body))
+                return 200, {'accountId': ACCOUNT, 'profileUrn': RECIPIENT, 'status': 'INVITATION_SENT',
+                             'connected': False, 'invitationSent': True, 'invitationReceived': False}
+            return linkedin(method, path, query, body)
+        def skip(method, path, body, headers, timeout):
+            if method == 'POST' and path.endswith('/skip'):
+                self.fake.apollo_calls.append((method, path, body))
+                self.fake.note = json.loads(body)['note']
+                self.fake.status = 'skipped'
+                return 200, json.dumps({'task': self.fake.task()}).encode()
+            return apollo(method, path, body, headers, timeout)
+        self.client.request = not_connected
+        with patch('thunder_os.apollo_linkedin_completion._skip_request', skip):
+            _, result = self.run_executor()
+        self.assertEqual('skipped', result['state'])
+        self.assertEqual('não conectado, pulado', self.fake.note)
+        self.assertEqual([], self.posts())
+        self.assertEqual(1, sum(c[0] == 'POST' and c[1].endswith('/skip') for c in self.fake.apollo_calls))
 
     def test_no_email_real_components_and_fake_http_prove_receipt_then_completion(self):
         code, result = self.run_executor()

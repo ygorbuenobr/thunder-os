@@ -21,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 from .apollo_linkedin_attention import EXCLUDED_TASK
 from .apollo_linkedin_preview import _slug, validated_task_text
 from .apollo_linkedin_reply_coverage import coverage_current
-from .apollo_linkedin_completion import write_completion_guard
+from .apollo_linkedin_completion import write_completion_guard, skip_claim_key
 
 _ID = re.compile(r'[A-Za-z0-9_-]{1,128}\Z')
 
@@ -91,7 +91,7 @@ class MessageCoordinator:
                 and isinstance(control, dict) and control.get('paused') is False)
 
     @staticmethod
-    def _task(task, task_id, auth, binding):
+    def _task(task, task_id, auth, binding, required_custom_field_id=None):
         action_type = auth.get('action_type', 'linkedin_step_message')
         if (not isinstance(task, dict) or task.get('id') != task_id
                 or action_type not in ('linkedin_step_message', 'linkedin_step_connect')
@@ -104,7 +104,8 @@ class MessageCoordinator:
                 or task.get('contact_id') != contact['id']
                 or _slug(contact.get('linkedin_url')) != auth['recipient']):
             raise ValueError('recipient_changed')
-        text, digest, error = validated_task_text(task, 'invite' if action_type == 'linkedin_step_connect' else 'message')
+        text, digest, error = validated_task_text(task, 'invite' if action_type == 'linkedin_step_connect' else 'message',
+                                                  required_custom_field_id=required_custom_field_id)
         if error or digest != auth['text_hash']:
             raise ValueError('text_changed')
         return text
@@ -144,6 +145,10 @@ class MessageCoordinator:
                 return {'state': 'blocked', 'reason': 'execution_disabled'}
             approved = self.authority.require(campaign_id, approval_id, campaign_version)
             binding = approved['binding']
+            config = approved.get('configuration')
+            required_custom_field_id = config.get('required_custom_field_id') if isinstance(config, dict) else None
+            if not isinstance(required_custom_field_id, str) or not required_custom_field_id.strip():
+                return {'state': 'blocked', 'reason': 'required_custom_field_unconfigured'}
             if (self.apollo.team_id != binding['team_id']
                     or self.apollo.owner_ids != frozenset(binding['owner_ids'])):
                 return {'state': 'blocked', 'reason': 'reader_binding_mismatch'}
@@ -153,7 +158,8 @@ class MessageCoordinator:
             action_type = task.get('type')
             if action_type not in ('linkedin_step_message', 'linkedin_step_connect'):
                 return {'state': 'blocked', 'reason': 'task_unverified'}
-            _, digest, error = validated_task_text(task, 'invite' if action_type == 'linkedin_step_connect' else 'message')
+            _, digest, error = validated_task_text(task, 'invite' if action_type == 'linkedin_step_connect' else 'message',
+                required_custom_field_id=required_custom_field_id)
             if (error or not recipient
                     or task.get('status') != 'scheduled'):
                 return {'state': 'blocked', 'reason': 'task_unverified'}
@@ -195,6 +201,9 @@ class MessageCoordinator:
         try:
             approved = self.authority.require(campaign, auth['approval_id'], version)
             binding = approved['binding']
+            required_custom_field_id = approved.get('configuration', {}).get('required_custom_field_id')
+            if not isinstance(required_custom_field_id, str) or not required_custom_field_id.strip():
+                return {'state': 'blocked', 'reason': 'required_custom_field_unconfigured'}
             action_type = auth.get('action_type', 'linkedin_step_message')
             is_invite = action_type == 'linkedin_step_connect'
             adapter = self.invitation if is_invite else self.message
@@ -208,8 +217,15 @@ class MessageCoordinator:
             with self.repo.apollo_linkedin_account_lock(binding['account_id']):
                 if not self._gate():
                     return {'state': 'blocked', 'reason': 'execution_disabled'}
+                if not is_invite and self.repo.get_state('apollo_linkedin_skip', skip_claim_key(auth['company'], task_id)) is not None:
+                    reconcile = getattr(self.completion, 'reconcile_skip', None)
+                    if not callable(reconcile):
+                        return {'state': 'skip_reconcile_pending', 'reason': 'skip_unverified'}
+                    return reconcile(auth['company'], task_id, campaign_id=campaign,
+                                     approval_id=auth['approval_id'], campaign_version=version,
+                                     account_id=binding['account_id'], binding=binding, recipient=auth['recipient'])
                 task = self.apollo.get(task_id)
-                text = self._task(task, task_id, auth, binding)
+                text = self._task(task, task_id, auth, binding, required_custom_field_id)
                 contact = task['contact']
                 if canary_id is None and contact.get('id') != auth.get('contact_id'):
                     return {'state': 'blocked', 'reason': 'contact_changed'}
@@ -226,9 +242,15 @@ class MessageCoordinator:
                 bind_plan = getattr(self.coverage, 'bind_plan', None)
                 if callable(bind_plan):
                     bind_plan(plan)
-                if not adapter.relationship(plan):
+                relationship_status = getattr(adapter, 'relationship_status', None)
+                relation = (relationship_status(plan) if not is_invite and callable(relationship_status)
+                            else ('CONNECTED' if adapter.relationship(plan) else 'unknown'))
+                if relation == 'unknown':
                     return {'state': 'blocked', 'reason': 'not_connected_or_unknown'}
-                if self.safety.other_writers_inactive() is not True or self.safety.ready(binding, plan) is not True:
+                nonconnected = not is_invite and relation in ('NOT_CONNECTED', 'INVITATION_SENT', 'INVITATION_RECEIVED')
+                if (self.safety.other_writers_inactive() is not True
+                        or (not nonconnected and self.safety.ready(binding, plan) is not True)
+                        or (nonconnected and self.repo.get_state('apollo_linkedin_reply_stop', self.safety._key(binding, plan)) is not None)):
                     return {'state': 'blocked', 'reason': 'safety_unverified'}
                 observed = self.coverage.observe(target)
                 if observed.get('status') == 'reply':
@@ -238,6 +260,33 @@ class MessageCoordinator:
                 if not coverage_current(observed, datetime.now(timezone.utc),
                                         hubspot_configured=self.coverage.hubspot_configured):
                     return {'state': 'blocked', 'reason': 'coverage_unavailable'}
+                if nonconnected:
+                    def before_skip():
+                        if not self._gate() or self.safety.other_writers_inactive() is not True:
+                            return False
+                        if self.repo.get_apollo_linkedin_reservation(auth['company'], task_id, action_type) is not None:
+                            return False
+                        if self.repo.get_state('apollo_linkedin_reply_stop', self.safety._key(binding, plan)) is not None:
+                            return False
+                        self.authority.require(campaign, auth['approval_id'], version)
+                        current = self.apollo.get(task_id)
+                        self._task(current, task_id, auth, binding, required_custom_field_id)
+                        if (current['contact'].get('id') != target['apollo_contact_id']
+                                or current['contact'].get('email') != target['email']
+                                or relationship_status(plan) not in ('NOT_CONNECTED', 'INVITATION_SENT', 'INVITATION_RECEIVED')):
+                            return False
+                        latest = self.coverage.observe(target)
+                        if latest.get('status') == 'reply':
+                            self.safety.pause_after_reply(binding, plan)
+                            return False
+                        return coverage_current(latest, datetime.now(timezone.utc),
+                                                hubspot_configured=self.coverage.hubspot_configured)
+                    skip = getattr(self.completion, 'skip_unconnected', None)
+                    if not callable(skip):
+                        return {'state': 'blocked', 'reason': 'skip_unavailable'}
+                    return skip(auth['company'], task_id, campaign_id=campaign,
+                                approval_id=auth['approval_id'], campaign_version=version,
+                                account_id=binding['account_id'], before_dispatch=before_skip)
                 key = (auth['company'], task_id, action_type)
                 if canary_id is None:
                     self.repo.reserve_apollo_linkedin_for_campaign(campaign, auth['approval_id'], version,
@@ -258,7 +307,7 @@ class MessageCoordinator:
                             return False
                         self.authority.require(campaign, auth['approval_id'], version)
                         current = self.apollo.get(task_id)
-                        self._task(current, task_id, auth, binding)
+                        self._task(current, task_id, auth, binding, required_custom_field_id)
                         if (current['contact'].get('id') != target['apollo_contact_id']
                                 or current['contact'].get('email') != target['email']):
                             return False
@@ -389,11 +438,16 @@ def runtime_preflight(task, authorization=None):
             approval = coordinator.repo.get_state('approval', auth['approval_id'])
             approved = coordinator.authority.require(approval['campaign_id'], auth['approval_id'], auth['campaign_version'])
             binding = approved['binding']
+            required_custom_field_id = approved.get('configuration', {}).get('required_custom_field_id')
+            if not isinstance(required_custom_field_id, str) or not required_custom_field_id.strip():
+                checks['personalization'] = 'required_custom_field_unconfigured'
+                raise ValueError('required_custom_field_unconfigured')
             is_invite = auth.get('action_type') == 'linkedin_step_connect'
             if is_invite:
                 binding = {**binding, '_linkedin_policy': approved.get('configuration', {}).get('linkedin_policy')}
             task_data = coordinator.apollo.get(task)
-            content = coordinator._task(task_data, task, auth, binding)
+            content = coordinator._task(task_data, task, auth, binding, required_custom_field_id)
+            checks['personalization'] = 'verified'
             contact = task_data['contact']
             plan = {'account_id': binding['account_id'], 'account_public_id': binding['public_id'],
                     'action': 'invite' if is_invite else 'dm', 'recipient_public_id': auth['recipient'],

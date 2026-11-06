@@ -22,18 +22,23 @@ class MessageAdapter:
     def __init__(self, client):
         self.client = client
 
-    def relationship(self, plan):
+    def relationship_status(self, plan):
         try:
             self.client._plan(plan)
             if plan['action'] not in ('dm', 'invite'):
-                return False
+                return 'unknown'
             evidence = self.client.relationship(plan)
-            return (evidence.get('relationship_status') == 'CONNECTED'
-                    and evidence.get('account_id') == plan['account_id']
-                    and evidence.get('recipient_public_id') == plan['recipient_public_id']
-                    and evidence.get('recipient_profile_urn') == plan['recipient_profile_urn'])
+            if (evidence.get('account_id') != plan['account_id']
+                    or evidence.get('recipient_public_id') != plan['recipient_public_id']
+                    or evidence.get('recipient_profile_urn') != plan['recipient_profile_urn']):
+                return 'unknown'
+            status = evidence.get('relationship_status')
+            return status if status in ('CONNECTED', 'NOT_CONNECTED', 'INVITATION_SENT', 'INVITATION_RECEIVED') else 'unknown'
         except Exception:
-            return False
+            return 'unknown'
+
+    def relationship(self, plan):
+        return self.relationship_status(plan) == 'CONNECTED'
 
     def send(self, plan, reserved_at, *, before_dispatch):
         """Send once and reconcile ambiguity; requires an already durable reservation."""

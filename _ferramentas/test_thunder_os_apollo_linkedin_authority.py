@@ -50,6 +50,19 @@ class CampaignApprovalAuthorityTest(unittest.TestCase):
         self.assertEqual(result['binding']['sequence_id'], 'seq')
         self.assertEqual(result['configuration']['linkedin_policy']['weekly_invite_limit'], 200)
 
+    def test_required_custom_field_is_in_the_approved_snapshot(self):
+        updated = deepcopy(self.cfg)
+        updated['configuration']['required_custom_field_id'] = 'abm_field'
+        self.registry.register(updated, 'ygor', 1)
+        approval = self.approve()
+        result = self.gate.require('campaign', approval['id'], 'v1')
+        self.assertEqual(result['configuration']['required_custom_field_id'], 'abm_field')
+        changed = deepcopy(updated)
+        changed['configuration']['required_custom_field_id'] = 'another_field'
+        self.registry.register(changed, 'ygor', 2)
+        with self.assertRaises(ApprovalError):
+            self.gate.require('campaign', approval['id'], 'v1')
+
     def test_snapshot_mutation_denied(self):
         approval = self.approve()
         snapshot = self.repo.get_state('campaign_version_snapshot', approval['snapshot_id'])

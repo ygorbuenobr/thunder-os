@@ -22,7 +22,20 @@ class ResolverHTTPS(FakeHTTPS):
 
 class CampaignRunnerTest(fixtures.T4dEndToEnd):
     def setUp(self):
+        original_config = fixtures.config
+        def personalized_config():
+            cfg = original_config()
+            cfg['configuration']['required_custom_field_id'] = 'abm_field'
+            return cfg
+        config_patch = patch.object(fixtures, 'config', side_effect=personalized_config)
+        config_patch.start(); self.addCleanup(config_patch.stop)
         super().setUp()
+        task = self.fake.task
+        def personalized_task():
+            value = task()
+            value['contact']['typed_custom_fields'] = {'abm_field': fixtures.TEXT}
+            return value
+        self.fake.task = personalized_task
         connection = patch('http.client.HTTPSConnection', ResolverHTTPS)
         connection.start(); self.addCleanup(connection.stop)
         identity_transport = patch('thunder_os.apollo_linkedin_identity_binding._https_request',
@@ -47,6 +60,7 @@ class CampaignRunnerTest(fixtures.T4dEndToEnd):
         result = self.run_campaign()
         self.assertEqual(result['state'], 'confirmed')
         self.assertEqual(len(self.posts()), 1)
+
         row = self.repo.get_apollo_linkedin_reservation('company', 'fixture-task', 'linkedin_step_message')
         self.assertEqual(row['state'], 'confirmed')
         self.assertEqual(row['apollo_status'], 'confirmed')
@@ -64,6 +78,16 @@ class CampaignRunnerTest(fixtures.T4dEndToEnd):
         self.assertNotEqual(self.run_campaign()['state'], 'confirmed')
         self.assertEqual(len(self.posts()), 1)
 
+    def test_automated_campaign_without_required_field_stops_before_provider(self):
+        class Authority:
+            def require(self, *args):
+                return {'binding': {}, 'configuration': {}}
+        coordinator = runtime.MessageCoordinator(repository=self.repo, authority=Authority(),
+            apollo=None, message=None, coverage=None, safety=None, completion=None)
+        result = coordinator.run_campaign('fixture-task', 'campaign', 'approval', 'v1', dry_run=False)
+        self.assertEqual('required_custom_field_unconfigured', result['reason'])
+        self.assertEqual([], self.posts())
+
     def test_campaign_binding_or_disabled_key_never_reserves_or_posts(self):
         self.resolver = lambda _: {'resolved': True, 'read_only': True,
             'source': 'provider_observation', 'target': {'account_id': 'wrong'}}
@@ -78,6 +102,7 @@ class CampaignRunnerTest(fixtures.T4dEndToEnd):
         from test_thunder_os_apollo_linkedin_authority import config
         service = ThunderService(self.repo)
         changed = config()
+        changed['configuration']['required_custom_field_id'] = 'abm_field'
         changed['campaign_version'] = 'v1.0'
         service.configure_campaign(changed, 'ygor', expected_version=1)
         review = service.apollo_campaign_approval_review('campaign')

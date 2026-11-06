@@ -32,6 +32,10 @@ def completion_guard_key(company, task_id, action_type):
     return payload_hash({'company': company, 'task_id': task_id, 'action_type': action_type})
 
 
+def skip_claim_key(company, task_id):
+    return payload_hash({'company': company, 'task_id': task_id, 'action_type': 'linkedin_step_message'})
+
+
 def write_completion_guard(repository, company, task_id, action_type, receipt_id, status):
     """Bind post-dispatch coverage to a receipt; blocked states cannot auto-clear."""
     if (status not in ('pending', 'clear', 'reply', 'unknown')
@@ -121,6 +125,27 @@ def _complete_request(method, path, body, headers, timeout):
         connection.close()
 
 
+def _skip_request(method, path, body, headers, timeout):
+    match = re.fullmatch(r'/api/v1/tasks/([A-Za-z0-9_-]{1,128})/skip', path) if isinstance(path, str) else None
+    if not match or method != 'POST' or match.group(1) == EXCLUDED_TASK:
+        raise ValueError('endpoint_blocked')
+    if not isinstance(body, bytes) or _json(body) != {'note': 'não conectado, pulado'}:
+        raise ValueError('body_invalid')
+    if os.environ.get('SSL_CERT_FILE') or os.environ.get('SSL_CERT_DIR'):
+        raise ValueError('tls_override_blocked')
+    connection = http.client.HTTPSConnection('api.apollo.io', 443, timeout=timeout,
+                                             context=ssl.create_default_context())
+    try:
+        connection.request(method, path, body=body, headers=headers)
+        response = connection.getresponse()
+        raw = response.read(1_000_001)
+        if not isinstance(raw, bytes) or len(raw) > 1_000_000:
+            raise ValueError('response_invalid')
+        return response.status, raw
+    finally:
+        connection.close()
+
+
 class ApolloLinkedInCompletion:
     def __init__(self, credential_loader, *, team_id, actor_id, repository,
                  enabled=False, request=None, timeout=8, coverage=None, safety=None):
@@ -133,6 +158,7 @@ class ApolloLinkedInCompletion:
         self._loader, self._repo = credential_loader, repository
         self._request, self._enabled = request or _request, enabled
         self._post_request = request or _complete_request
+        self._skip_post_request = request or _skip_request
         self.team_id, self.actor_id, self.timeout = team_id, actor_id, timeout
         # These ports are supplied by the runtime factory, not by a completion call.
         self._coverage, self._safety = coverage, safety
@@ -176,6 +202,71 @@ class ApolloLinkedInCompletion:
             return False
         control = self._repo.get_state('control', 'global')
         return isinstance(control, dict) and control.get('paused') is False
+
+    def skip_unconnected(self, company, task_id, *, campaign_id, approval_id,
+                         campaign_version, account_id, before_dispatch):
+        """Claim one Apollo-only skip; unknown POSTs are never retried."""
+        self._task_id(task_id)
+        if not all(isinstance(v, str) and _ID.fullmatch(v) for v in
+                   (company, campaign_id, approval_id, account_id)) or not callable(before_dispatch):
+            return {'state': 'blocked', 'reason': 'skip_binding_invalid'}
+        key = skip_claim_key(company, task_id)
+        identity = {'company': company, 'task_id': task_id, 'campaign_id': campaign_id,
+                    'approval_id': approval_id, 'campaign_version': campaign_version, 'account_id': account_id}
+        try:
+            if not self._execution_allowed():
+                return {'state': 'blocked', 'reason': 'execution_disabled'}
+            self._verify_team()
+            with self._repo.transaction():
+                previous = self._repo.get_state('apollo_linkedin_skip', key)
+                if previous is not None:
+                    return {'state': 'skip_reconcile_pending', 'reason': 'skip_already_attempted'}
+                if not self._execution_allowed() or before_dispatch() is not True:
+                    return {'state': 'blocked', 'reason': 'skip_gate_unverified'}
+                self._repo.put_state('apollo_linkedin_skip', key, {**identity, 'state': 'attempted'})
+            token = self._loader()
+            if not isinstance(token, str) or not token or any(c.isspace() for c in token):
+                raise ValueError('credential_unavailable')
+            body = json.dumps({'note': 'não conectado, pulado'}, ensure_ascii=False).encode()
+            with self._repo.transaction():
+                if not self._execution_allowed() or before_dispatch() is not True:
+                    return {'state': 'skip_reconcile_pending', 'reason': 'skip_gate_unverified'}
+                status, raw = self._skip_post_request('POST', '/api/v1/tasks/' + task_id + '/skip', body,
+                    {'x-api-key': token, 'Accept': 'application/json', 'Content-Type': 'application/json'}, self.timeout)
+                result = _json(raw)
+                if status != 200 or result.get('deleted') is True or (isinstance(result.get('task'), dict)
+                        and result['task'].get('deleted') is True):
+                    raise ValueError('skip_unverified')
+            task = self.get(task_id)
+            if (task.get('deleted') is True or task.get('status') != 'skipped'
+                    or task.get('note') != 'não conectado, pulado'):
+                raise ValueError('skip_unverified')
+            self._repo.put_state('apollo_linkedin_skip', key, {**identity, 'state': 'confirmed'})
+            return {'state': 'skipped', 'reason': 'not_connected'}
+        except Exception:
+            return {'state': 'skip_reconcile_pending', 'reason': 'skip_unverified'}
+
+    def reconcile_skip(self, company, task_id, *, campaign_id, approval_id,
+                       campaign_version, account_id, binding, recipient):
+        """Resolve an attempted skip only by scoped Apollo readback; never POST."""
+        try:
+            key = skip_claim_key(company, self._task_id(task_id))
+            claim = self._repo.get_state('apollo_linkedin_skip', key)
+            identity = {'company': company, 'task_id': task_id, 'campaign_id': campaign_id,
+                        'approval_id': approval_id, 'campaign_version': campaign_version, 'account_id': account_id}
+            if not isinstance(claim, dict) or any(claim.get(k) != v for k, v in identity.items()):
+                raise ValueError('skip_binding_mismatch')
+            task = self.get(task_id)
+            if (task.get('deleted') is True or task.get('type') != 'linkedin_step_message'
+                    or task.get('status') != 'skipped' or task.get('note') != 'não conectado, pulado'
+                    or task.get('emailer_campaign_id') != binding.get('sequence_id')
+                    or task.get('user_id') not in binding.get('owner_ids', ())
+                    or not isinstance(task.get('contact'), dict)
+                    or _slug(task['contact'].get('linkedin_url')) != recipient):
+                raise ValueError('skip_unverified')
+            return {'state': 'skipped', 'reason': 'not_connected'}
+        except Exception:
+            return {'state': 'skip_reconcile_pending', 'reason': 'skip_unverified'}
 
     def complete(self, company, task_id, action_type):
         """Fail closed: a verified approved binding and shared pause fence are absent."""

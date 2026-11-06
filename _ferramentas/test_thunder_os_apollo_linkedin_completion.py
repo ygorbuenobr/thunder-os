@@ -99,6 +99,62 @@ class ApolloCompletionTests(unittest.TestCase):
         self.load.assert_not_called(); self.assertEqual([], self.fake.calls)
         self.assertEqual('pending', self.row()['apollo_status'])
 
+    def test_skip_posts_once_and_requires_apollo_readback(self):
+        calls = []
+        def http(method, path, body, headers, timeout):
+            calls.append((method, path, body))
+            if path.endswith('api_profile'):
+                return 200, raw({'user': {'id': 'actor', 'team_id': 'team'}})
+            if method == 'POST':
+                self.assertEqual('/api/v1/tasks/task1/skip', path)
+                self.assertEqual({'note': 'não conectado, pulado'}, json.loads(body))
+                return 200, raw({'task': {'id': 'task1', 'status': 'skipped'}})
+            return 200, raw({'task': {'id': 'task1', 'status': 'skipped', 'note': 'não conectado, pulado'}})
+        port = ApolloLinkedInCompletion(self.load, team_id='team', actor_id='actor',
+                                        repository=self.repo, enabled=True, request=http)
+        args = dict(campaign_id='campaign', approval_id='approval', campaign_version='v1',
+                    account_id='account', before_dispatch=lambda: True)
+        self.assertEqual('skipped', port.skip_unconnected('company', 'task1', **args)['state'])
+        self.assertEqual('skip_reconcile_pending', port.skip_unconnected('company', 'task1', **args)['state'])
+        self.assertEqual(1, sum(call[0] == 'POST' for call in calls))
+
+    def test_skip_uncertain_post_never_retries(self):
+        calls = []
+        def http(method, path, body, headers, timeout):
+            calls.append(method)
+            if path.endswith('api_profile'):
+                return 200, raw({'user': {'id': 'actor', 'team_id': 'team'}})
+            raise TimeoutError('synthetic')
+        port = ApolloLinkedInCompletion(self.load, team_id='team', actor_id='actor',
+                                        repository=self.repo, enabled=True, request=http)
+        args = dict(campaign_id='campaign', approval_id='approval', campaign_version='v1',
+                    account_id='account', before_dispatch=lambda: True)
+        self.assertEqual('skip_reconcile_pending', port.skip_unconnected('company', 'task1', **args)['state'])
+        self.assertEqual('skip_reconcile_pending', port.skip_unconnected('company', 'task1', **args)['state'])
+        self.assertEqual(1, calls.count('POST'))
+
+    def test_skip_reconciliation_reads_only_and_requires_exact_task_binding(self):
+        from thunder_os.apollo_linkedin_completion import skip_claim_key
+        identity = {'company': 'company', 'task_id': 'task1', 'campaign_id': 'campaign',
+                    'approval_id': 'approval', 'campaign_version': 'v1', 'account_id': 'account'}
+        self.repo.put_state('apollo_linkedin_skip', skip_claim_key('company', 'task1'),
+                            {**identity, 'state': 'attempted'})
+        calls = []
+        def http(method, path, body, headers, timeout):
+            calls.append(method)
+            if path.endswith('api_profile'):
+                return 200, raw({'user': {'id': 'actor', 'team_id': 'team'}})
+            return 200, raw({'task': {'id': 'task1', 'type': 'linkedin_step_message', 'status': 'skipped',
+                'note': 'não conectado, pulado', 'emailer_campaign_id': 'sequence', 'user_id': 'owner',
+                'contact': {'linkedin_url': 'https://www.linkedin.com/in/lead'}}})
+        port = ApolloLinkedInCompletion(self.load, team_id='team', actor_id='actor',
+                                        repository=self.repo, enabled=True, request=http)
+        kwargs = dict(campaign_id='campaign', approval_id='approval', campaign_version='v1',
+                      account_id='account', binding={'sequence_id': 'sequence', 'owner_ids': ['owner']}, recipient='lead')
+        self.assertEqual('skipped', port.reconcile_skip('company', 'task1', **kwargs)['state'])
+        self.assertEqual('skip_reconcile_pending', port.reconcile_skip('company', 'task1', **{**kwargs, 'recipient': 'other'})['state'])
+        self.assertNotIn('POST', calls)
+
     def test_fixture_and_invalid_id_fail_before_provider(self):
         for task_id in (EXCLUDED_TASK, '../task', 'task?x=1'):
             with self.subTest(task_id=task_id), self.assertRaises(ValueError):

@@ -28,6 +28,7 @@ class Repo:
         self.states[(kind, _id)] = dict(payload)
     def apollo_linkedin_account_lock(self, account): return nullcontext()
     def transaction(self): return nullcontext()
+    def get_apollo_linkedin_reservation(self, *args): return self.row
     def reserve_apollo_linkedin_with_canary(self, *args, **kwargs):
         if self.row: raise ValueError('duplicate')
         self.row = {'state': 'reserved'}
@@ -39,14 +40,16 @@ class Repo:
 class Authority:
     def require(self, *args):
         return {'binding': {'company_id': 'company', 'account_id': 'account', 'public_id': 'sender',
-                            'sequence_id': 'sequence', 'owner_ids': ['owner']}}
+                            'sequence_id': 'sequence', 'owner_ids': ['owner']},
+                'configuration': {'required_custom_field_id': 'abm_field'}}
 
 
 class Apollo:
     def get(self, task_id):
         return {'id': task_id, 'type': 'linkedin_step_message', 'status': 'scheduled',
             'emailer_campaign_id': 'sequence', 'user_id': 'owner', 'contact_id': 'contact',
-            'contact': {'id': 'contact', 'email': 'lead@example.test', 'linkedin_url': 'https://www.linkedin.com/in/lead'},
+            'contact': {'id': 'contact', 'email': 'lead@example.test', 'linkedin_url': 'https://www.linkedin.com/in/lead',
+                        'typed_custom_fields': {'abm_field': 'hello'}},
             'linkedin_emailer_template': {'body_text': 'hello'}}
 
 
@@ -73,6 +76,7 @@ class Coverage:
 
 class Safety:
     def __init__(self): self.paused = False
+    def _key(self, binding, plan): return 'reply-stop'
     def other_writers_inactive(self): return True
     def ready(self, binding, plan): return True
     def pause_after_reply(self, binding, plan):
@@ -115,6 +119,14 @@ class CoordinatorTests(unittest.TestCase):
         for target in self.coverage.targets:
             self.assertEqual(target['account_id'], 'account')
             self.assertEqual(target['recipient_public_id'], 'lead')
+
+    def test_canary_without_approved_custom_field_is_blocked(self):
+        class LegacyAuthority:
+            def require(self, *args):
+                return {'binding': {}, 'configuration': {}}
+        self.subject.authority = LegacyAuthority()
+        self.assertEqual('required_custom_field_unconfigured', self.run_one()['reason'])
+        self.assertEqual(0, self.message.sent)
     def test_missing_receipt_is_uncertain_and_never_retried(self):
         self.message.result = {'status': 'uncertain'}
         self.assertEqual(self.run_one()['state'], 'uncertain')
@@ -124,6 +136,69 @@ class CoordinatorTests(unittest.TestCase):
         self.message.connected = False
         self.assertEqual(self.run_one()['reason'], 'not_connected_or_unknown')
         self.assertIsNone(self.repo.row)
+
+    def test_non_connection_skips_apollo_without_linkedin_send(self):
+        self.message.relationship_status = lambda plan: 'INVITATION_SENT'
+        calls = []
+        def skip(company, task_id, **kwargs):
+            self.assertTrue(kwargs['before_dispatch']())
+            calls.append((company, task_id))
+            return {'state': 'skipped', 'reason': 'not_connected'}
+        self.completion.skip_unconnected = skip
+        self.assertEqual('skipped', self.run_one()['state'])
+        self.assertEqual([('company', 'task')], calls)
+        self.assertEqual(0, self.message.sent)
+        self.assertIsNone(self.repo.row)
+
+    def test_unknown_connection_and_dry_run_never_skip(self):
+        self.message.relationship_status = lambda plan: 'unknown'
+        self.completion.skip_unconnected = lambda *a, **k: self.fail('must not skip')
+        self.assertEqual('not_connected_or_unknown', self.run_one()['reason'])
+        self.assertEqual('dry_run', self.subject.run('task', 'auth')['state'])
+
+    def test_reply_or_pause_before_skip_prevents_apollo_write(self):
+        self.message.relationship_status = lambda plan: 'NOT_CONNECTED'
+        self.coverage.status = 'reply'
+        self.completion.skip_unconnected = lambda *a, **k: self.fail('must not skip')
+        self.assertEqual('human_reply', self.run_one()['reason'])
+        self.coverage.status = 'ok'
+        self.repo.control['paused'] = True
+        self.assertEqual('execution_disabled', self.run_one()['reason'])
+
+    def test_skip_gate_refuses_prior_uncertain_message_attempt(self):
+        self.message.relationship_status = lambda plan: 'NOT_CONNECTED'
+        self.repo.row = {'state': 'uncertain'}
+        def skip(company, task_id, **kwargs):
+            self.assertFalse(kwargs['before_dispatch']())
+            return {'state': 'blocked', 'reason': 'skip_gate_unverified'}
+        self.completion.skip_unconnected = skip
+        self.assertEqual('skip_gate_unverified', self.run_one()['reason'])
+        self.assertEqual(0, self.message.sent)
+
+    def test_uncertain_skip_followed_by_connected_never_sends(self):
+        from thunder_os.apollo_linkedin_completion import skip_claim_key
+        self.message.relationship_status = lambda plan: 'CONNECTED'
+        self.repo.put_state('apollo_linkedin_skip', skip_claim_key('company', 'task'), {'state': 'attempted'})
+        self.completion.reconcile_skip = lambda *a, **k: {'state': 'skip_reconcile_pending', 'reason': 'skip_unverified'}
+        self.assertEqual('skip_reconcile_pending', self.run_one()['state'])
+        self.assertEqual(0, self.message.sent)
+        self.assertIsNone(self.repo.row)
+
+    def test_unconnected_skip_does_not_require_dm_quota_or_pacing(self):
+        self.message.relationship_status = lambda plan: 'INVITATION_SENT'
+        self.safety.ready = lambda *args: False
+        def skip(company, task_id, **kwargs):
+            self.assertTrue(kwargs['before_dispatch']())
+            return {'state': 'skipped', 'reason': 'not_connected'}
+        self.completion.skip_unconnected = skip
+        self.assertEqual('skipped', self.run_one()['state'])
+        self.assertEqual(0, self.message.sent)
+
+    def test_persisted_reply_stop_blocks_skip_even_when_provider_read_is_empty(self):
+        self.message.relationship_status = lambda plan: 'INVITATION_SENT'
+        self.repo.put_state('apollo_linkedin_reply_stop', 'reply-stop', {'status': 'stopped'})
+        self.completion.skip_unconnected = lambda *a, **k: self.fail('must not skip')
+        self.assertEqual('safety_unverified', self.run_one()['reason'])
     def test_reply_blocks_and_pauses(self):
         self.coverage.status = 'reply'
         self.assertEqual(self.run_one()['reason'], 'human_reply')
@@ -203,12 +278,14 @@ class CoordinatorTests(unittest.TestCase):
         class Approved:
             def require(self, *args):
                 return {'binding': {'company_id': 'company', 'account_id': ACCOUNT,
-                    'public_id': 'ygorbuenobr', 'sequence_id': 'sequence', 'owner_ids': ['owner']}}
+                    'public_id': 'ygorbuenobr', 'sequence_id': 'sequence', 'owner_ids': ['owner']},
+                    'configuration': {'required_custom_field_id': 'abm_field'}}
         class Task:
             def get(self, task_id):
                 task = Apollo().get(task_id)
                 task['contact']['linkedin_url'] = 'https://www.linkedin.com/in/fixture-person'
                 task['linkedin_emailer_template']['body_text'] = 'Synthetic message'
+                task['contact']['typed_custom_fields']['abm_field'] = 'Synthetic message'
                 return task
         self.subject.authority = Approved()
         self.subject.apollo = Task()

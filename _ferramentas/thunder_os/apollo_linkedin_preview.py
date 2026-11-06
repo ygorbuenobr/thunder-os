@@ -19,7 +19,7 @@ _ID = re.compile(r'[A-Za-z0-9_-]{1,128}\Z')
 _SLUG = re.compile(r'[A-Za-z0-9_.-]{1,160}\Z')
 
 
-def validated_task_text(task, action, *, invite_limit=300, message_limit=1000):
+def validated_task_text(task, action, *, invite_limit=300, message_limit=1000, required_custom_field_id=None):
     """Validate and hash the exact per-contact Apollo body without rewriting it."""
     if any(type(limit) is not int or not 1 <= limit <= 100_000
            for limit in (invite_limit, message_limit)):
@@ -32,6 +32,16 @@ def validated_task_text(task, action, *, invite_limit=300, message_limit=1000):
         return None, None, 'text_empty'
     if '{{' in text or '}}' in text:
         return None, None, 'text_unresolved_variables'
+    if required_custom_field_id is not None:
+        if not isinstance(required_custom_field_id, str) or not _ID.fullmatch(required_custom_field_id):
+            raise ValueError('configuration_invalid')
+        contact = task.get('contact')
+        fields = contact.get('typed_custom_fields') if isinstance(contact, dict) else None
+        value = fields.get(required_custom_field_id) if isinstance(fields, dict) else None
+        if not isinstance(value, str) or not value.strip():
+            return None, None, 'custom_field_missing_or_empty'
+        if value not in text:
+            return None, None, 'custom_field_not_rendered'
     if action not in ('invite', 'message'):
         return None, None, 'unsupported_action'
     if len(text) > (invite_limit if action == 'invite' else message_limit):
@@ -97,7 +107,7 @@ class ApolloLinkedInPreview:
     def __init__(self, credential_loader, *, team_id, sequence_id, task_id,
                  account_id, account_public_id, api_actor_id, owner_id, account_status_reader,
                  request=None, timeout=8, invite_text_limit=300, message_text_limit=1000,
-                 read_isolation=None):
+                 read_isolation=None, required_custom_field_id=None):
         if not all(_identifier(x) for x in (team_id, sequence_id, task_id, account_id, api_actor_id, owner_id)):
             raise ValueError('configuration_invalid')
         if not isinstance(account_public_id, str) or not _SLUG.fullmatch(account_public_id):
@@ -109,6 +119,8 @@ class ApolloLinkedInPreview:
         if any(type(limit) is not int or not 1 <= limit <= 100_000
                for limit in (invite_text_limit, message_text_limit)):
             raise ValueError('configuration_invalid')
+        if required_custom_field_id is not None and not _identifier(required_custom_field_id):
+            raise ValueError('configuration_invalid')
         self._loader, self._request = credential_loader, request or _https_request
         self._status = account_status_reader
         self.team_id, self.sequence_id, self.task_id = team_id, sequence_id, task_id
@@ -119,6 +131,7 @@ class ApolloLinkedInPreview:
             raise ValueError('configuration_invalid')
         self.read_isolation = read_isolation
         self.invite_text_limit, self.message_text_limit = invite_text_limit, message_text_limit
+        self.required_custom_field_id = required_custom_field_id
 
     def _get(self, path):
         if path not in ('/api/v1/users/api_profile', '/api/v1/tasks/' + self.task_id):
@@ -172,7 +185,7 @@ class ApolloLinkedInPreview:
             elif recipient == self.account_public_id.lower(): blockers.append('self_invitation' if result['action'] == 'invite' else 'self_message')
             text, text_hash, text_blocker = validated_task_text(
                 task, result['action'], invite_limit=self.invite_text_limit,
-                message_limit=self.message_text_limit)
+                message_limit=self.message_text_limit, required_custom_field_id=self.required_custom_field_id)
             result['text'] = {'value': text, 'verified': text_blocker is None, 'hash': text_hash}
             if text_blocker and text_blocker not in blockers:
                 blockers.append(text_blocker)

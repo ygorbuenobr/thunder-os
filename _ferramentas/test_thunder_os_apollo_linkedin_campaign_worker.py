@@ -76,9 +76,11 @@ class WorkerTest(unittest.TestCase):
                 if (campaign, approval, version) != ('campaign', 'approval', 'v1'):
                     raise ValueError('approval_invalid')
                 return {'binding': {'team_id': 'team', 'company_id': 'company',
-                                    'owner_ids': ['owner'], 'sequence_id': 'sequence'}}
+                                    'owner_ids': ['owner'], 'sequence_id': 'sequence', 'account_id': 'account'}}
 
         class Repo:
+            def list_state(self, kind):
+                return [value for (state_kind, _), value in outer.states.items() if state_kind == kind]
             def get_apollo_linkedin_reservation(self, company, task, action):
                 return outer.reservations.get((company, task, action))
             def get_state(self, kind, ident):
@@ -121,6 +123,18 @@ class WorkerTest(unittest.TestCase):
         self.assertEqual(self.outcomes, [])
         self.assertEqual(self.states, {})
         self.assertEqual(self.calls, [('GET', '/api/v1/users/api_profile'), ('POST', '/api/v1/tasks/search')])
+
+    def test_attempted_skip_remains_visible_when_task_is_no_longer_open(self):
+        self.rows = []
+        self.total = 0
+        self.states[('apollo_linkedin_skip', 'claim')] = {'state': 'attempted', 'company': 'company',
+            'campaign_id': 'campaign', 'approval_id': 'approval', 'campaign_version': 'v1',
+            'account_id': 'account', 'task_id': 'already-skipped'}
+        result = self.worker.run_once()
+        self.assertIn({'task_id': 'already-skipped', 'state': 'attention',
+                       'reason': 'skip_reconcile_pending'}, result['items'])
+        self.assertEqual([], self.outcomes)
+        self.assertTrue(all(method == 'GET' or path.endswith('/search') for method, path in self.calls))
 
     def test_explicit_activation_calls_campaign_coordinator_once(self):
         with patch.dict(os.environ, {'THUNDER_APOLLO_LI_WORKER_ENABLED': 'true',
