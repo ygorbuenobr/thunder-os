@@ -148,6 +148,13 @@ class Repository:
                 columns = {row[1] for row in con.execute('PRAGMA table_info(apollo_linkedin_account_locks)')}
                 if 'lease_until' not in columns:
                     con.execute('ALTER TABLE apollo_linkedin_account_locks ADD COLUMN lease_until TEXT')
+            # Serialize additive column checks across process startups. Existing
+            # reservations stay intact and retain their original CHECK constraint.
+            with self.transaction() as con:
+                columns = {row[1] for row in con.execute('PRAGMA table_info(apollo_linkedin_reservations)')}
+                for column in ('text_hash', 'campaign_version', 'recipient', 'receipt', 'apollo_status'):
+                    if column not in columns:
+                        con.execute('ALTER TABLE apollo_linkedin_reservations ADD COLUMN ' + column + ' TEXT')
 
     def apollo_linkedin_store_ready(self):
         """Require an existing, accessible installation DB with both migrated tables."""
@@ -162,46 +169,300 @@ class Repository:
                     "('apollo_linkedin_reservations','apollo_linkedin_account_locks')")}
                 if len(tables) != 2:
                     raise RepositoryConflict('official Apollo LinkedIn store not migrated')
-                con.execute('SELECT 1 FROM apollo_linkedin_reservations LIMIT 1').fetchone()
+                con.execute('SELECT text_hash,campaign_version,recipient,receipt,apollo_status FROM apollo_linkedin_reservations LIMIT 1').fetchone()
                 con.execute('SELECT lease_until FROM apollo_linkedin_account_locks LIMIT 1').fetchone()
         except sqlite3.Error as exc:
             raise RepositoryConflict('official Apollo LinkedIn store unavailable') from exc
         return True
 
-    def reserve_apollo_linkedin(self, company, task_id, action_type, account_id):
+    def reserve_apollo_linkedin(self, company, task_id, action_type, account_id, *, text_hash=None,
+                                campaign_version=None, recipient=None):
         for value in (company, task_id, action_type, account_id):
             if not isinstance(value, str) or not value.strip() or value != value.strip():
                 raise ValueError('invalid Apollo LinkedIn reservation identity')
         if action_type not in {'linkedin_step_connect', 'linkedin_step_message'}:
             raise ValueError('unsupported Apollo LinkedIn action')
+        supplied = (text_hash, campaign_version, recipient)
+        if any(value is not None for value in supplied):
+            if (not isinstance(text_hash, str) or not re.fullmatch(r'[0-9a-f]{64}', text_hash)
+                    or isinstance(campaign_version, bool)
+                    or not isinstance(campaign_version, (str, int))
+                    or (isinstance(campaign_version, int) and campaign_version < 1)
+                    or not str(campaign_version).strip() or str(campaign_version) != str(campaign_version).strip()
+                    or len(str(campaign_version)) > 128
+                    or not isinstance(recipient, str) or not recipient.strip()
+                    or recipient != recipient.strip() or len(recipient) > 256):
+                raise ValueError('invalid Apollo LinkedIn reservation binding')
+            campaign_version = str(campaign_version)
         self.apollo_linkedin_store_ready()
         now = datetime.now(timezone.utc).isoformat()
         with self.transaction() as con:
             try:
-                con.execute('INSERT INTO apollo_linkedin_reservations VALUES (?,?,?,?,?,?,?,?)',
-                            (company, task_id, action_type, account_id, 'reserved', None, now, now))
+                con.execute('INSERT INTO apollo_linkedin_reservations '
+                            '(company,task_id,action_type,account_id,state,reason,created_at,updated_at,text_hash,campaign_version,recipient) '
+                            'VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                            (company, task_id, action_type, account_id, 'reserved', None, now, now,
+                             text_hash, campaign_version, recipient))
             except sqlite3.IntegrityError as exc:
                 raise RepositoryConflict('Apollo LinkedIn task already reserved') from exc
         return {'company': company, 'task_id': task_id, 'action_type': action_type,
                 'account_id': account_id, 'state': 'reserved', 'reason': None,
-                'created_at': now, 'updated_at': now}
+                'created_at': now, 'updated_at': now, 'text_hash': text_hash,
+                'campaign_version': campaign_version, 'recipient': recipient,
+                'receipt': None, 'apollo_status': None}
 
-    def finish_apollo_linkedin(self, company, task_id, action_type, state, reason=None):
+    @staticmethod
+    def _t4_canary_fields(company, task_id, account_id, recipient, text_hash):
+        # A canary is bound to exact identifiers, never an inferred default.
+        for value in (company, task_id, account_id, recipient):
+            if (not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}', value)):
+                raise ValueError('invalid canary identity')
+        from .apollo_linkedin_attention import EXCLUDED_TASK
+        if task_id == EXCLUDED_TASK:
+            raise ValueError('protected fixture')
+        if not isinstance(text_hash, str) or not re.fullmatch(r'[a-f0-9]{64}', text_hash):
+            raise ValueError('invalid canary text hash')
+
+    def issue_apollo_linkedin_canary(self, company, task_id, account_id, recipient, text_hash, actor):
+        """Persist a bounded one-shot canary; caller must authenticate actor/role."""
+        self._t4_canary_fields(company, task_id, account_id, recipient, text_hash)
+        if not isinstance(actor, str) or not re.fullmatch(r'[A-Za-z0-9_.@-]{1,100}', actor):
+            raise ValueError('invalid canary actor')
+        self.apollo_linkedin_store_ready()
+        now = datetime.now(timezone.utc)
+        key = uuid4().hex
+        payload = {'company': company, 'task_id': task_id, 'account_id': account_id,
+                   'recipient': recipient, 'text_hash': text_hash, 'actor': actor,
+                   'issued_at': now.isoformat(), 'expires_at': (now + timedelta(minutes=30)).isoformat(),
+                   'state': 'issued'}
+        with self.transaction() as con:
+            try:
+                con.execute('INSERT INTO thunder_state VALUES (?,?,?,?,?)',
+                            ('apollo_linkedin_canary', key, 1,
+                             json.dumps(payload, ensure_ascii=False, sort_keys=True), now.isoformat()))
+            except sqlite3.IntegrityError as exc:
+                raise RepositoryConflict('canary identity conflict') from exc
+            self.append_event(key, 'apollo_linkedin_canary_issued',
+                              {'company': company, 'task_id': task_id, 'actor': actor})
+        return {**payload, 'id': key, 'version': 1, 'updated_at': now.isoformat()}
+
+    def reserve_apollo_linkedin_with_canary(self, canary_id, company, task_id, action_type,
+                                            account_id, recipient, text_hash, campaign_version):
+        """Consume canary and reserve atomically; any failure rolls back both."""
+        self._t4_canary_fields(company, task_id, account_id, recipient, text_hash)
+        if (not isinstance(canary_id, str) or not re.fullmatch(r'[a-f0-9]{32}', canary_id)
+                or action_type != 'linkedin_step_connect'
+                or isinstance(campaign_version, bool) or not isinstance(campaign_version, (str, int))
+                or not str(campaign_version).strip() or str(campaign_version) != str(campaign_version).strip()
+                or len(str(campaign_version)) > 128
+                or (isinstance(campaign_version, int) and campaign_version < 1)):
+            raise ValueError('invalid canary reservation')
+        self.apollo_linkedin_store_ready()
+        now = datetime.now(timezone.utc)
+        with self.transaction() as con:
+            row = con.execute('SELECT version,payload FROM thunder_state WHERE kind=? AND entity_id=?',
+                              ('apollo_linkedin_canary', canary_id)).fetchone()
+            try:
+                if row is None:
+                    raise ValueError('missing')
+                auth = json.loads(row['payload'])
+                if not isinstance(auth, dict) or set(auth) != {'company', 'task_id', 'account_id', 'recipient',
+                        'text_hash', 'actor', 'issued_at', 'expires_at', 'state'}:
+                    raise ValueError('invalid')
+                issued = datetime.fromisoformat(auth['issued_at'])
+                expires = datetime.fromisoformat(auth['expires_at'])
+                if (type(row['version']) is not int or row['version'] < 1
+                        or not isinstance(auth['actor'], str)
+                        or not re.fullmatch(r'[A-Za-z0-9_.@-]{1,100}', auth['actor'])
+                        or issued.tzinfo is None or expires.tzinfo is None or issued.utcoffset() is None
+                        or expires.utcoffset() is None or issued > now or expires <= now
+                        or not timedelta(0) < expires - issued <= timedelta(minutes=30)
+                        or auth['state'] != 'issued'
+                        or (auth['company'], auth['task_id'], auth['account_id'], auth['recipient'], auth['text_hash'])
+                        != (company, task_id, account_id, recipient, text_hash)):
+                    raise ValueError('invalid')
+            except (KeyError, ValueError, TypeError, OverflowError):
+                raise RepositoryConflict('canary unavailable or mismatched') from None
+            previous = con.execute('SELECT * FROM apollo_linkedin_reservations '
+                                   'WHERE company=? AND task_id=? AND action_type=?',
+                                   (company, task_id, action_type)).fetchone()
+            if previous is None:
+                try:
+                    con.execute('INSERT INTO apollo_linkedin_reservations '
+                                '(company,task_id,action_type,account_id,state,reason,created_at,updated_at,text_hash,campaign_version,recipient) '
+                                'VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                                (company, task_id, action_type, account_id, 'reserved', None, now.isoformat(),
+                                 now.isoformat(), text_hash, str(campaign_version), recipient))
+                except sqlite3.IntegrityError as exc:
+                    raise RepositoryConflict('Apollo LinkedIn task already reserved') from exc
+            else:
+                # A human release never dispatches. It permits exactly one later,
+                # explicitly requested reservation using a fresh matching canary.
+                resolution_key = payload_hash({'company': company, 'task_id': task_id, 'action_type': action_type})
+                resolution = self.get_state('apollo_linkedin_uncertain_resolution', resolution_key)
+                try:
+                    resolved_at = datetime.fromisoformat(resolution['updated_at'])
+                    if resolved_at.tzinfo is None or resolved_at.utcoffset() is None or issued < resolved_at:
+                        raise ValueError('canary predates release')
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    raise RepositoryConflict('Apollo LinkedIn release unavailable') from None
+                if (previous['state'] != 'uncertain' or previous['receipt'] is not None
+                        or previous['apollo_status'] is not None
+                        or (previous['account_id'], previous['recipient'], previous['text_hash'], previous['campaign_version'])
+                           != (account_id, recipient, text_hash, str(campaign_version))
+                        or not isinstance(resolution, dict) or resolution.get('decision') != 'release'
+                        or resolution.get('consumed') is not False
+                        or resolution.get('reservation_updated_at') != previous['updated_at']):
+                    raise RepositoryConflict('Apollo LinkedIn task already reserved')
+                changed = con.execute("UPDATE apollo_linkedin_reservations SET state='reserved', reason=NULL, updated_at=? "
+                                      "WHERE company=? AND task_id=? AND action_type=? AND state='uncertain' AND updated_at=?",
+                                      (now.isoformat(), company, task_id, action_type, previous['updated_at'])).rowcount
+                if changed != 1:
+                    raise RepositoryConflict('Apollo LinkedIn release changed')
+                stored = {k: v for k, v in resolution.items() if k not in {'id', 'version', 'updated_at'}}
+                self._put_state_in(con, 'apollo_linkedin_uncertain_resolution', resolution_key,
+                                   {**stored, 'consumed': True, 'canary_id': canary_id,
+                                    'consumed_at': now.isoformat()}, now.isoformat(), resolution['version'])
+                self.append_event(resolution_key, 'apollo_linkedin_release_consumed',
+                                  {'company': company, 'task_id': task_id, 'action_type': action_type,
+                                   'canary_id': canary_id})
+            self._put_state_in(con, 'apollo_linkedin_canary', canary_id,
+                               {**auth, 'state': 'consumed'}, now.isoformat(), row['version'])
+        return {'company': company, 'task_id': task_id, 'action_type': action_type,
+                'account_id': account_id, 'state': 'reserved', 'text_hash': text_hash,
+                'campaign_version': str(campaign_version), 'recipient': recipient}
+
+    def resolve_apollo_linkedin_uncertain(self, company, task_id, action_type, decision, justification, actor):
+        """Record a human decision atomically; never perform or authorize an effect.
+
+        The caller is responsible for trusted-proxy authentication and RBAC.
+        A release decision never itself retries; an explicit later request requires
+        fresh canary, all preflight checks and an atomic reservation transition.
+        """
+        if (decision not in ('release', 'close') or not isinstance(justification, str)
+                or not justification.strip() or len(justification) > 2000
+                or not isinstance(actor, str) or not re.fullmatch(r'[A-Za-z0-9_.@-]{1,100}', actor)
+                or not all(isinstance(v, str) and v.strip() == v and v for v in (company, task_id, action_type))):
+            raise ValueError('invalid uncertainty resolution')
+        from .apollo_linkedin_attention import EXCLUDED_TASK
+        if task_id == EXCLUDED_TASK:
+            raise ValueError('protected fixture')
+        self.apollo_linkedin_store_ready()
+        with self.transaction() as con:
+            row = con.execute('SELECT state,updated_at FROM apollo_linkedin_reservations '
+                              'WHERE company=? AND task_id=? AND action_type=?',
+                              (company, task_id, action_type)).fetchone()
+            if row is None or row['state'] != 'uncertain':
+                raise RepositoryConflict('reservation not uncertain')
+            key = payload_hash({'company': company, 'task_id': task_id, 'action_type': action_type})
+            previous = self.get_state('apollo_linkedin_uncertain_resolution', key)
+            if previous is not None and previous.get('reservation_updated_at') == row['updated_at']:
+                raise RepositoryConflict('uncertainty already resolved')
+            record = {'company': company, 'task_id': task_id, 'action_type': action_type,
+                      'decision': decision, 'justification': justification.strip(), 'actor': actor,
+                      'reservation_updated_at': row['updated_at'], 'consumed': False}
+            if previous is None:
+                self.append_state('apollo_linkedin_uncertain_resolution', key, record)
+            else:
+                self._put_state_in(con, 'apollo_linkedin_uncertain_resolution', key, record,
+                                   datetime.now(timezone.utc).isoformat(), previous['version'])
+            self.append_event(key, 'apollo_linkedin_uncertain_resolved', record)
+        return {'state': 'uncertain', 'decision': decision, 'execution_enabled': False}
+
+    def finish_apollo_linkedin(self, company, task_id, action_type, state, reason=None, *,
+                               receipt=None, apollo_status=None):
         if state not in {'confirmed', 'rejected', 'uncertain'}:
             raise ValueError('invalid Apollo LinkedIn terminal state')
         self.apollo_linkedin_store_ready()
         with self.transaction() as con:
+            row = con.execute('SELECT text_hash,campaign_version,recipient FROM apollo_linkedin_reservations '
+                              'WHERE company=? AND task_id=? AND action_type=? AND state=\'reserved\'',
+                              (company, task_id, action_type)).fetchone()
+            if row is None:
+                raise RepositoryConflict('Apollo LinkedIn reservation is not reserved')
+            t4 = any(row[key] is not None for key in ('text_hash', 'campaign_version', 'recipient'))
+            if t4 and not all(row[key] is not None for key in ('text_hash', 'campaign_version', 'recipient')):
+                raise RepositoryConflict('Apollo LinkedIn reservation binding incomplete')
+            if receipt is not None:
+                if not isinstance(receipt, dict) or not receipt:
+                    raise ValueError('invalid Apollo LinkedIn receipt')
+                if t4:
+                    if set(receipt) - {'provider_id', 'publicIdentifier'}:
+                        raise ValueError('invalid Apollo LinkedIn receipt')
+                    provider_id = receipt.get('provider_id')
+                    public_id = receipt.get('publicIdentifier')
+                    if provider_id is not None and (not isinstance(provider_id, str) or not provider_id.strip()
+                                                    or len(provider_id) > 256):
+                        raise ValueError('invalid Apollo LinkedIn receipt')
+                    if public_id is not None and public_id != row['recipient']:
+                        raise ValueError('invalid Apollo LinkedIn receipt')
+                    if not ((isinstance(provider_id, str) and bool(provider_id.strip()))
+                            or (isinstance(public_id, str) and public_id == row['recipient'])):
+                        raise ValueError('invalid Apollo LinkedIn receipt')
+                try:
+                    receipt = json.dumps(receipt, allow_nan=False, ensure_ascii=False, separators=(',', ':'))
+                except (TypeError, ValueError):
+                    raise ValueError('invalid Apollo LinkedIn receipt') from None
+                if len(receipt.encode('utf-8')) > 8192:
+                    raise ValueError('invalid Apollo LinkedIn receipt')
+            if t4 and state == 'confirmed' and (receipt is None or apollo_status != 'pending'):
+                raise ValueError('confirmed Apollo LinkedIn action requires receipt and pending reconciliation')
+            if state != 'confirmed' and (receipt is not None or apollo_status is not None):
+                raise ValueError('receipt requires confirmed Apollo LinkedIn action')
+            if apollo_status not in (None, 'pending'):
+                raise ValueError('invalid Apollo reconciliation status')
             changed = con.execute(
-                "UPDATE apollo_linkedin_reservations SET state=?,reason=?,updated_at=? "
+                "UPDATE apollo_linkedin_reservations SET state=?,reason=?,updated_at=?,receipt=?,apollo_status=? "
                 "WHERE company=? AND task_id=? AND action_type=? AND state='reserved'",
-                (state, reason, datetime.now(timezone.utc).isoformat(), company, task_id, action_type)).rowcount
+                (state, reason, datetime.now(timezone.utc).isoformat(), receipt, apollo_status,
+                 company, task_id, action_type)).rowcount
             if changed != 1:
                 raise RepositoryConflict('Apollo LinkedIn reservation is not reserved')
+
+    @staticmethod
+    def _apollo_linkedin_reservation(row):
+        result = dict(row)
+        if result.get('receipt') is not None:
+            try:
+                result['receipt'] = json.loads(result['receipt'])
+                if not isinstance(result['receipt'], dict):
+                    raise ValueError('invalid receipt')
+            except (TypeError, ValueError):
+                raise RepositoryConflict('Apollo LinkedIn receipt invalid') from None
+        return result
+
+    def get_apollo_linkedin_reservation(self, company, task_id, action_type):
+        self.apollo_linkedin_store_ready()
+        with self._connect() as con:
+            row = con.execute('SELECT * FROM apollo_linkedin_reservations WHERE company=? AND task_id=? AND action_type=?',
+                              (company, task_id, action_type)).fetchone()
+            return None if row is None else self._apollo_linkedin_reservation(row)
+
+    def claim_apollo_linkedin_completion(self, company, task_id, action_type):
+        """Durably claim the one Apollo POST before it can cross the network."""
+        self.apollo_linkedin_store_ready()
+        with self.transaction() as con:
+            changed = con.execute("UPDATE apollo_linkedin_reservations SET apollo_status='attempted',updated_at=? "
+                                  "WHERE company=? AND task_id=? AND action_type=? AND state='confirmed' "
+                                  "AND apollo_status='pending' AND receipt IS NOT NULL",
+                                  (datetime.now(timezone.utc).isoformat(), company, task_id, action_type)).rowcount
+            if changed != 1:
+                raise RepositoryConflict('Apollo LinkedIn completion already attempted or not pending')
+
+    def reconcile_apollo_linkedin(self, company, task_id, action_type):
+        self.apollo_linkedin_store_ready()
+        with self.transaction() as con:
+            changed = con.execute("UPDATE apollo_linkedin_reservations SET apollo_status='confirmed',updated_at=? "
+                                  "WHERE company=? AND task_id=? AND action_type=? AND state='confirmed' "
+                                  "AND apollo_status='attempted' AND receipt IS NOT NULL",
+                                  (datetime.now(timezone.utc).isoformat(), company, task_id, action_type)).rowcount
+            if changed != 1:
+                raise RepositoryConflict('Apollo LinkedIn reconciliation not pending')
 
     def list_apollo_linkedin_reservations(self):
         self.apollo_linkedin_store_ready()
         with self._connect() as con:
-            return [dict(row) for row in con.execute('SELECT * FROM apollo_linkedin_reservations ORDER BY created_at')]
+            return [self._apollo_linkedin_reservation(row) for row in con.execute('SELECT * FROM apollo_linkedin_reservations ORDER BY created_at')]
 
     def list_apollo_linkedin_account_locks(self):
         self.apollo_linkedin_store_ready()
