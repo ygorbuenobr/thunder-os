@@ -494,7 +494,13 @@ class ConnectSafelyClient:
             # The real send response (06/11/2026) echoes accountId; a different
             # account is a contradiction, an absent one is tolerated.
             require(data.get('accountId') in (None,self.account_id),'receipt_unverified')
-            if plan['action']=='invite':return {'status':'uncertain','error_code':'invite_receipt_unavailable'}
+            if plan['action']=='invite':
+                # The documented synchronous response confirms only that the
+                # provider sent to this profile; it does not contain an
+                # invitation ID and therefore is not itself our receipt.
+                confirmed=(data.get('success') is True and data.get('profileUrn')==plan['recipient_profile_urn'])
+                return {'status':'uncertain','error_code':'invite_receipt_unavailable',
+                        **({'provider_send_confirmed':True} if confirmed else {})}
             require(data.get('recipientProfileUrn')==plan['recipient_profile_urn'],'receipt_unverified')
             return self._send_receipt(data.get('sentMessage'),plan,attempted_at)
         except ConnectSafelyError as exc:

@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
 from thunder_os.apollo_linkedin_completion import ApolloLinkedInCompletion, _request, _complete_request
@@ -15,6 +16,25 @@ from thunder_os.models import payload_hash
 
 def raw(data):
     return json.dumps(data).encode()
+
+
+class FakeCoverage:
+    hubspot_configured = False
+    plan = {'account_id': 'account', 'account_public_id': 'sender', 'action': 'dm',
+            'recipient_public_id': 'lead', 'recipient_profile_urn': 'urn:li:fsd_profile:abc'}
+    def __init__(self, status='ok'):
+        self.status = status
+        self.targets = []
+    def observe(self, target):
+        self.targets.append(dict(target))
+        stamp = datetime.now(timezone.utc).isoformat()
+        return {'status': self.status, 'required_sources': ['apollo', 'linkedin'], 'sources': {
+            name: {'status': self.status, 'observed_at': stamp} for name in ('apollo', 'linkedin')}}
+
+
+class FakeSafety:
+    def _key(self, binding, plan): return 'synthetic-stop'
+    def pause_after_reply(self, binding, plan): return {'persisted': True}
 
 
 class FakeApollo:
@@ -175,7 +195,7 @@ class ApolloCompletionTests(unittest.TestCase):
             text_hash=digest, campaign_version='1', recipient='lead')
         task = {'id': 'message1', 'status': 'scheduled', 'type': 'linkedin_step_message',
                 'emailer_campaign_id': 'seq', 'user_id': 'owner',
-                'contact': {'linkedin_url': 'https://www.linkedin.com/in/lead/'},
+                'contact_id': 'contact', 'contact': {'id': 'contact', 'linkedin_url': 'https://www.linkedin.com/in/lead/'},
                 'linkedin_emailer_template': {'body_text': text}}
         calls = []
         def fake(method, path, body, headers, timeout):
@@ -187,19 +207,147 @@ class ApolloCompletionTests(unittest.TestCase):
                 task['status'] = 'completed'
                 task['note'] = json.loads(body)['note']
             return 200, raw({'task': task})
-        binding = {'binding': {'company_id': 'company', 'team_id': 'team', 'account_id': 'account',
+        binding = {'binding': {'company_id': 'company', 'team_id': 'team', 'account_id': 'account', 'public_id': 'sender',
                                'sequence_id': 'seq', 'owner_ids': ['owner']}}
         port = ApolloLinkedInCompletion(self.load, team_id='team', actor_id='actor', repository=self.repo,
-                                         enabled=True, request=fake)
+                                         enabled=True, request=fake, coverage=FakeCoverage(), safety=FakeSafety())
         args = dict(campaign_id='campaign', approval_id='approval', campaign_version=1)
         with patch('thunder_os.apollo_linkedin_completion.CampaignApprovalAuthority.require', return_value=binding):
             self.assertEqual('apollo_reconcile_pending', port.complete_verified('company', 'message1', 'linkedin_step_message', **args)['state'])
             self.assertFalse(any(c[0] == 'POST' for c in calls))
             self.repo.finish_apollo_linkedin('company', 'message1', 'linkedin_step_message', 'confirmed',
                 receipt={'provider_id': 'receipt1'}, apollo_status='pending')
+            from thunder_os.apollo_linkedin_completion import write_completion_guard
+            write_completion_guard(self.repo, 'company', 'message1', 'linkedin_step_message', 'receipt1', 'pending')
+            write_completion_guard(self.repo, 'company', 'message1', 'linkedin_step_message', 'receipt1', 'clear')
+            restarted = ApolloLinkedInCompletion(self.load, team_id='team', actor_id='actor',
+                repository=Repository(self.path), enabled=True, request=fake)
+            blocked = restarted.complete_verified('company', 'message1', 'linkedin_step_message', **args)
+            self.assertEqual(blocked['reason'], 'completion_live_check_required')
+            self.assertFalse(any(c[0] == 'POST' for c in calls))
+            with self.assertRaises(TypeError):
+                restarted.complete_verified('company', 'message1', 'linkedin_step_message',
+                                            dispatch_check=lambda: True, **args)
+            self.assertEqual(self.repo.get_apollo_linkedin_reservation(
+                'company', 'message1', 'linkedin_step_message')['apollo_status'], 'pending')
+            self.assertFalse(any(c[0] == 'POST' for c in calls))
             self.assertEqual('confirmed', port.complete_verified('company', 'message1', 'linkedin_step_message', **args)['state'])
             self.assertEqual('confirmed', self.repo.get_apollo_linkedin_reservation('company', 'message1', 'linkedin_step_message')['apollo_status'])
             self.assertEqual(1, sum(c[0] == 'POST' for c in calls))
+
+    def test_invitation_completion_requires_receipt_and_rechecks_reply_coverage(self):
+        from thunder_os.apollo_linkedin_completion import write_completion_guard
+        text = 'Olá, vamos nos conectar?'
+        self.repo.reserve_apollo_linkedin('company', 'invite1', 'linkedin_step_connect', 'account',
+            text_hash=hashlib.sha256(text.encode()).hexdigest(), campaign_version='1', recipient='lead')
+        task = {'id': 'invite1', 'status': 'scheduled', 'type': 'linkedin_step_connect',
+                'emailer_campaign_id': 'seq', 'user_id': 'owner', 'contact_id': 'contact',
+                'contact': {'id': 'contact', 'linkedin_url': 'https://www.linkedin.com/in/lead/'},
+                'linkedin_emailer_template': {'body_text': text}}
+        calls = []
+        def fake(method, path, body, headers, timeout):
+            calls.append(method)
+            if path.endswith('api_profile'):
+                return 200, raw({'user': {'id': 'actor', 'team_id': 'team'}})
+            if method == 'POST':
+                task['status'], task['note'] = 'completed', json.loads(body)['note']
+            return 200, raw({'task': task})
+        binding = {'binding': {'company_id': 'company', 'team_id': 'team', 'account_id': 'account',
+            'public_id': 'sender', 'sequence_id': 'seq', 'owner_ids': ['owner']}}
+        coverage = FakeCoverage()
+        coverage.plan = {**coverage.plan, 'action': 'invite'}
+        port = ApolloLinkedInCompletion(self.load, team_id='team', actor_id='actor', repository=self.repo,
+                                       enabled=True, request=fake, coverage=coverage, safety=FakeSafety())
+        args = dict(campaign_id='campaign', approval_id='approval', campaign_version=1)
+        with patch('thunder_os.apollo_linkedin_completion.CampaignApprovalAuthority.require', return_value=binding):
+            self.assertEqual('apollo_reconcile_pending', port.complete_verified('company', 'invite1', 'linkedin_step_connect', **args)['state'])
+            self.assertNotIn('POST', calls)
+            self.repo.finish_apollo_linkedin('company', 'invite1', 'linkedin_step_connect', 'confirmed',
+                                             receipt={'provider_id': 'connectsafely:invitation-id:abc'}, apollo_status='pending')
+            write_completion_guard(self.repo, 'company', 'invite1', 'linkedin_step_connect', 'connectsafely:invitation-id:abc', 'pending')
+            write_completion_guard(self.repo, 'company', 'invite1', 'linkedin_step_connect', 'connectsafely:invitation-id:abc', 'clear')
+            self.assertEqual('confirmed', port.complete_verified('company', 'invite1', 'linkedin_step_connect', **args)['state'])
+            self.assertEqual(1, calls.count('POST'))
+            self.assertTrue(coverage.targets)
+
+    def test_invitation_completion_blocks_reply_and_changed_text_without_post(self):
+        from thunder_os.apollo_linkedin_completion import write_completion_guard
+        binding = {'binding': {'company_id': 'company', 'team_id': 'team', 'account_id': 'account',
+            'public_id': 'sender', 'sequence_id': 'seq', 'owner_ids': ['owner']}}
+        args = dict(campaign_id='campaign', approval_id='approval', campaign_version=1)
+        for variant in ('reply', 'changed_text', 'wrong_action'):
+            with self.subTest(variant=variant):
+                task_id = 'invite_' + variant
+                self.repo.reserve_apollo_linkedin('company', task_id, 'linkedin_step_connect', 'account',
+                    text_hash=hashlib.sha256(b'hello').hexdigest(), campaign_version='1', recipient='lead')
+                self.repo.finish_apollo_linkedin('company', task_id, 'linkedin_step_connect', 'confirmed',
+                    receipt={'provider_id': 'invite-receipt'}, apollo_status='pending')
+                write_completion_guard(self.repo, 'company', task_id, 'linkedin_step_connect', 'invite-receipt', 'pending')
+                write_completion_guard(self.repo, 'company', task_id, 'linkedin_step_connect', 'invite-receipt', 'clear')
+                task = {'id': task_id, 'status': 'scheduled',
+                        'type': 'linkedin_step_message' if variant == 'wrong_action' else 'linkedin_step_connect',
+                        'emailer_campaign_id': 'seq', 'user_id': 'owner', 'contact_id': 'contact',
+                        'contact': {'id': 'contact', 'linkedin_url': 'https://www.linkedin.com/in/lead/'},
+                        'linkedin_emailer_template': {'body_text': 'different' if variant == 'changed_text' else 'hello'}}
+                calls = []
+                def fake(method, path, body, headers, timeout):
+                    calls.append(method)
+                    if path.endswith('api_profile'):
+                        return 200, raw({'user': {'id': 'actor', 'team_id': 'team'}})
+                    return 200, raw({'task': task})
+                coverage = FakeCoverage('reply' if variant == 'reply' else 'ok')
+                coverage.plan = {**coverage.plan, 'action': 'invite'}
+                port = ApolloLinkedInCompletion(self.load, team_id='team', actor_id='actor', repository=self.repo,
+                                               enabled=True, request=fake, coverage=coverage, safety=FakeSafety())
+                with patch('thunder_os.apollo_linkedin_completion.CampaignApprovalAuthority.require', return_value=binding):
+                    self.assertEqual('apollo_reconcile_pending', port.complete_verified('company', task_id, 'linkedin_step_connect', **args)['state'])
+                self.assertNotIn('POST', calls)
+                self.assertEqual('pending', self.repo.get_apollo_linkedin_reservation('company', task_id, 'linkedin_step_connect')['apollo_status'])
+
+    def test_invitation_completion_timeout_never_retries_post(self):
+        from thunder_os.apollo_linkedin_completion import write_completion_guard
+        action, task_id = 'linkedin_step_connect', 'invite_timeout'
+        self.repo.reserve_apollo_linkedin('company', task_id, action, 'account',
+            text_hash=hashlib.sha256(b'hello').hexdigest(), campaign_version='1', recipient='lead')
+        self.repo.finish_apollo_linkedin('company', task_id, action, 'confirmed',
+                                         receipt={'provider_id': 'invite-receipt'}, apollo_status='pending')
+        write_completion_guard(self.repo, 'company', task_id, action, 'invite-receipt', 'pending')
+        write_completion_guard(self.repo, 'company', task_id, action, 'invite-receipt', 'clear')
+        task = {'id': task_id, 'status': 'scheduled', 'type': action, 'emailer_campaign_id': 'seq',
+                'user_id': 'owner', 'contact_id': 'contact',
+                'contact': {'id': 'contact', 'linkedin_url': 'https://www.linkedin.com/in/lead/'},
+                'linkedin_emailer_template': {'body_text': 'hello'}}
+        calls = []
+        def fake(method, path, body, headers, timeout):
+            calls.append(method)
+            if path.endswith('api_profile'):
+                return 200, raw({'user': {'id': 'actor', 'team_id': 'team'}})
+            if method == 'POST':
+                raise TimeoutError('unknown outcome')
+            return 200, raw({'task': task})
+        binding = {'binding': {'company_id': 'company', 'team_id': 'team', 'account_id': 'account',
+            'public_id': 'sender', 'sequence_id': 'seq', 'owner_ids': ['owner']}}
+        coverage = FakeCoverage()
+        coverage.plan = {**coverage.plan, 'action': 'invite'}
+        port = ApolloLinkedInCompletion(self.load, team_id='team', actor_id='actor', repository=self.repo,
+                                       enabled=True, request=fake, coverage=coverage, safety=FakeSafety())
+        args = dict(campaign_id='campaign', approval_id='approval', campaign_version=1)
+        scope = {'context': {'platform': 'apollo', 'campaign_version': 1},
+                 'configuration': {'apollo_linkedin': binding['binding']}, 'campaign_config': {}}
+        digest = payload_hash(scope)
+        self.repo.put_state('campaign_version_snapshot', 'apollo-campaign-' + digest,
+                            {'scope': scope, 'scope_hash': digest})
+        self.repo.put_state('approval', 'approval', {'scope': 'campaign_version', 'campaign_id': 'campaign',
+                            'campaign_version': 1, 'actor': 'ygor', 'scope_hash': digest,
+                            'snapshot_id': 'apollo-campaign-' + digest})
+        with patch('thunder_os.apollo_linkedin_completion.CampaignApprovalAuthority.require', return_value=binding):
+            self.assertEqual('apollo_reconcile_pending', port.complete_verified('company', task_id, action, **args)['state'])
+            self.assertEqual('apollo_reconcile_pending', port.complete_verified('company', task_id, action, **args)['state'])
+            self.assertEqual(1, calls.count('POST'))
+            task['status'], task['note'] = 'completed', 'Thunder OS: enviado via ConnectSafely, recibo invite-receipt'
+            with patch.dict(os.environ, {'THUNDER_APOLLO_LI_EXECUTION_ENABLED': 'false'}):
+                self.assertEqual('confirmed', port.reconcile_verified('company', task_id, action, **args)['state'])
+            self.assertEqual(1, calls.count('POST'))
 
     def test_completion_timeout_is_never_retried_and_reconciliation_only_reads(self):
         digest = hashlib.sha256(b'text').hexdigest()
@@ -207,9 +355,12 @@ class ApolloCompletionTests(unittest.TestCase):
             text_hash=digest, campaign_version='1', recipient='lead')
         self.repo.finish_apollo_linkedin('company', 'message1', 'linkedin_step_message', 'confirmed',
             receipt={'provider_id': 'receipt1'}, apollo_status='pending')
+        from thunder_os.apollo_linkedin_completion import write_completion_guard
+        write_completion_guard(self.repo, 'company', 'message1', 'linkedin_step_message', 'receipt1', 'pending')
+        write_completion_guard(self.repo, 'company', 'message1', 'linkedin_step_message', 'receipt1', 'clear')
         task = {'id': 'message1', 'status': 'scheduled', 'type': 'linkedin_step_message',
                 'emailer_campaign_id': 'seq', 'user_id': 'owner',
-                'contact': {'linkedin_url': 'https://www.linkedin.com/in/lead/'},
+                'contact_id': 'contact', 'contact': {'id': 'contact', 'linkedin_url': 'https://www.linkedin.com/in/lead/'},
                 'linkedin_emailer_template': {'body_text': 'text'}}
         calls = []
         def fake(method, path, body, headers, timeout):
@@ -217,9 +368,10 @@ class ApolloCompletionTests(unittest.TestCase):
             if path.endswith('api_profile'): return 200, raw({'user': {'id': 'actor', 'team_id': 'team'}})
             if method == 'POST': raise TimeoutError('unknown outcome')
             return 200, raw({'task': task})
-        binding = {'binding': {'company_id': 'company', 'team_id': 'team', 'account_id': 'account',
+        binding = {'binding': {'company_id': 'company', 'team_id': 'team', 'account_id': 'account', 'public_id': 'sender',
                                'sequence_id': 'seq', 'owner_ids': ['owner']}}
-        port = ApolloLinkedInCompletion(self.load, team_id='team', actor_id='actor', repository=self.repo, enabled=True, request=fake)
+        coverage = FakeCoverage()
+        port = ApolloLinkedInCompletion(self.load, team_id='team', actor_id='actor', repository=self.repo, enabled=True, request=fake, coverage=coverage, safety=FakeSafety())
         args = dict(campaign_id='campaign', approval_id='approval', campaign_version=1)
         scope = {'context': {'platform': 'apollo', 'campaign_version': 1},
                  'configuration': {'apollo_linkedin': binding['binding']}, 'campaign_config': {}}
@@ -233,6 +385,10 @@ class ApolloCompletionTests(unittest.TestCase):
             self.assertEqual('apollo_reconcile_pending', port.complete_verified('company', 'message1', 'linkedin_step_message', **args)['state'])
             self.assertEqual('apollo_reconcile_pending', port.complete_verified('company', 'message1', 'linkedin_step_message', **args)['state'])
             self.assertEqual(1, calls.count('POST'))
+            self.assertTrue(coverage.targets)
+            for target in coverage.targets:
+                self.assertEqual(target['account_id'], 'account')
+                self.assertEqual(target['recipient_public_id'], 'lead')
             task['status'] = 'completed'
             self.repo.put_state('control', 'global', {'paused': True})
             task['note'] = 'other actor completed this task'
@@ -242,6 +398,50 @@ class ApolloCompletionTests(unittest.TestCase):
                 self.assertEqual('confirmed', port.reconcile_verified('company', 'message1', 'linkedin_step_message', **args)['state'])
             self.assertEqual(1, calls.count('POST'))
 
-
+    def test_post_dispatch_guard_survives_restart_and_refuses_completion(self):
+        from thunder_os.apollo_linkedin_completion import write_completion_guard
+        binding = {'binding': {'company_id': 'company', 'team_id': 'team', 'account_id': 'account', 'public_id': 'sender',
+                               'sequence_id': 'seq', 'owner_ids': ['owner']}}
+        args = dict(campaign_id='campaign', approval_id='approval', campaign_version=1)
+        for state in ('pending', 'reply', 'unknown', 'missing', 'expired', 'race', 'stop'):
+            with self.subTest(state=state):
+                task_id = 'message_' + state
+                self.repo.reserve_apollo_linkedin('company', task_id, 'linkedin_step_message', 'account',
+                    text_hash=hashlib.sha256(b'text').hexdigest(), campaign_version='1', recipient='lead')
+                if state != 'missing':
+                    write_completion_guard(self.repo, 'company', task_id, 'linkedin_step_message', 'receipt1', 'pending')
+                    if state != 'pending':
+                        write_completion_guard(self.repo, 'company', task_id, 'linkedin_step_message', 'receipt1',
+                                               'clear' if state in ('expired', 'race', 'stop') else state)
+                    if state == 'expired':
+                        from thunder_os.apollo_linkedin_completion import completion_guard_key
+                        key = completion_guard_key('company', task_id, 'linkedin_step_message')
+                        guard = self.repo.get_state('apollo_linkedin_completion_guard', key)
+                        self.repo.put_state('apollo_linkedin_completion_guard', key,
+                            {**guard, 'checked_at': '2000-01-01T00:00:00+00:00'})
+                self.repo.finish_apollo_linkedin('company', task_id, 'linkedin_step_message', 'confirmed',
+                    receipt={'provider_id': 'receipt1'}, apollo_status='pending')
+                calls = []
+                def fake(method, path, body, headers, timeout):
+                    calls.append(method)
+                    if path.endswith('api_profile'):
+                        return 200, raw({'user': {'id': 'actor', 'team_id': 'team'}})
+                    return 200, raw({'task': {'id': task_id, 'status': 'scheduled',
+                        'type': 'linkedin_step_message', 'emailer_campaign_id': 'seq', 'user_id': 'owner',
+                        'contact_id': 'contact', 'contact': {'id': 'contact', 'linkedin_url': 'https://www.linkedin.com/in/lead/'},
+                        'linkedin_emailer_template': {'body_text': 'text'}}})
+                restarted = Repository(self.path)
+                if state == 'stop':
+                    restarted.put_state('apollo_linkedin_reply_stop', 'synthetic-stop', {'active': True})
+                coverage = FakeCoverage('reply' if state == 'race' else 'ok')
+                port = ApolloLinkedInCompletion(self.load, team_id='team', actor_id='actor',
+                    repository=restarted, enabled=True, request=fake, coverage=coverage, safety=FakeSafety())
+                with patch('thunder_os.apollo_linkedin_completion.CampaignApprovalAuthority.require', return_value=binding):
+                    result = port.complete_verified('company', task_id, 'linkedin_step_message', **args)
+                self.assertEqual(result['state'], 'apollo_reconcile_pending')
+                self.assertNotIn('POST', calls)
+                row = restarted.get_apollo_linkedin_reservation('company', task_id, 'linkedin_step_message')
+                self.assertEqual(row['apollo_status'], 'pending')
+                self.assertEqual(row['receipt'], {'provider_id': 'receipt1'})
 if __name__ == '__main__':
     unittest.main()

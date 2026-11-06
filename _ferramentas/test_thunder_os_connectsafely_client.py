@@ -129,6 +129,17 @@ class ClientTests(unittest.TestCase):
         self.post=(200,dict(success=True,accountId=ACCOUNT,profileUrn=RECIPIENT))
         result=self.client.send(plan,before_dispatch=lambda:True);self.assertEqual(result['status'],'uncertain');self.assertNotIn('receipt_ref',result)
         self.calls=[];self.assertEqual(self.client.reconcile(plan,NOW)['status'],'uncertain');self.assertTrue(all(c[0]=='GET' for c in self.calls))
+    def test_invite_sync_evidence_requires_exact_success_and_profile(self):
+        plan={**PLAN,'action':'invite','content':'','conversation_urn':None}
+        for payload, expected in [({'success':True,'profileUrn':RECIPIENT},True),
+                                  ({'success':True,'profileUrn':'urn:li:fsd_profile:OTHER'},False),
+                                  ({'success':True},False),({'success':False,'profileUrn':RECIPIENT},False)]:
+            with self.subTest(payload=payload):
+                self.post=(200,payload)
+                result=self.client.send(plan,before_dispatch=lambda:True)
+                self.assertEqual(result['status'],'uncertain')
+                self.assertEqual(result.get('provider_send_confirmed') is True,expected)
+                self.assertNotIn('receipt_ref',result)
     def test_reconcile_exact_participants_content_time_no_post(self):
         result=self.client.reconcile(PLAN,NOW);self.assertEqual(result['status'],'sent');self.assertFalse(result['write_attribution_confirmed']);self.assertEqual(result['confirmation_kind'],'observed_outbound')
         self.assertTrue(all(c[0]=='GET' for c in self.calls))

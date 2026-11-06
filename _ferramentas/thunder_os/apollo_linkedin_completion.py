@@ -13,15 +13,59 @@ import math
 import os
 import re
 import ssl
+from datetime import datetime, timedelta, timezone
 
 from .apollo_linkedin_attention import EXCLUDED_TASK
 from .apollo_linkedin_preview import _json, _slug, validated_task_text
 from .apollo_linkedin_authority import CampaignApprovalAuthority
 from .models import payload_hash
 from .db import Repository
+from .apollo_linkedin_reply_coverage import coverage_current
 
 _ID = re.compile(r'[A-Za-z0-9_-]{1,128}\Z')
 _TASK = re.compile(r'/api/v1/tasks/([A-Za-z0-9_-]{1,128})(/complete)?\Z')
+
+_GUARD = 'apollo_linkedin_completion_guard'
+
+
+def completion_guard_key(company, task_id, action_type):
+    return payload_hash({'company': company, 'task_id': task_id, 'action_type': action_type})
+
+
+def write_completion_guard(repository, company, task_id, action_type, receipt_id, status):
+    """Bind post-dispatch coverage to a receipt; blocked states cannot auto-clear."""
+    if (status not in ('pending', 'clear', 'reply', 'unknown')
+            or not isinstance(receipt_id, str) or not receipt_id.strip()):
+        raise ValueError('completion_guard_invalid')
+    key = completion_guard_key(company, task_id, action_type)
+    with repository.transaction():
+        previous = repository.get_state(_GUARD, key)
+        identity = {'company': company, 'task_id': task_id, 'action_type': action_type,
+                    'receipt_hash': payload_hash({'provider_id': receipt_id})}
+        if previous is None:
+            if status != 'pending':
+                raise ValueError('completion_guard_missing')
+        elif (any(previous.get(k) != v for k, v in identity.items())
+              or previous.get('status') != 'pending' or status == 'pending'):
+            raise ValueError('completion_guard_transition_invalid')
+        repository.put_state(_GUARD, key, {**identity, 'status': status,
+            'checked_at': datetime.now(timezone.utc).isoformat() if status == 'clear' else None})
+
+
+def require_completion_guard(repository, company, task_id, action_type, receipt_id):
+    guard = repository.get_state(_GUARD, completion_guard_key(company, task_id, action_type))
+    if (not isinstance(guard, dict) or guard.get('status') != 'clear'
+            or guard.get('company') != company or guard.get('task_id') != task_id
+            or guard.get('action_type') != action_type
+            or guard.get('receipt_hash') != payload_hash({'provider_id': receipt_id})):
+        raise ValueError('completion_guard_blocked')
+    try:
+        checked = datetime.fromisoformat(guard['checked_at'])
+        age = datetime.now(timezone.utc) - checked
+        if checked.tzinfo is None or not timedelta(0) <= age <= timedelta(seconds=30):
+            raise ValueError('completion_guard_expired')
+    except (KeyError, TypeError, OverflowError):
+        raise ValueError('completion_guard_expired') from None
 
 
 def _request(method, path, body, headers, timeout):
@@ -79,7 +123,7 @@ def _complete_request(method, path, body, headers, timeout):
 
 class ApolloLinkedInCompletion:
     def __init__(self, credential_loader, *, team_id, actor_id, repository,
-                 enabled=False, request=None, timeout=8):
+                 enabled=False, request=None, timeout=8, coverage=None, safety=None):
         if (not callable(credential_loader) or type(repository) is not Repository
                 or not all(isinstance(v, str) and _ID.fullmatch(v) for v in (team_id, actor_id))
                 or type(enabled) is not bool or type(timeout) not in (int, float)
@@ -90,6 +134,8 @@ class ApolloLinkedInCompletion:
         self._request, self._enabled = request or _request, enabled
         self._post_request = request or _complete_request
         self.team_id, self.actor_id, self.timeout = team_id, actor_id, timeout
+        # These ports are supplied by the runtime factory, not by a completion call.
+        self._coverage, self._safety = coverage, safety
 
     @staticmethod
     def _task_id(task_id):
@@ -194,7 +240,7 @@ class ApolloLinkedInCompletion:
 
     def _verified_binding(self, company, task_id, action_type, campaign_id, approval_id, campaign_version, *, historical=False):
         """Read durable approval, reservation and provider task; fail closed."""
-        if action_type != 'linkedin_step_message' or (not historical and not self._execution_allowed()):
+        if action_type not in ('linkedin_step_message', 'linkedin_step_connect') or (not historical and not self._execution_allowed()):
             raise ValueError('execution_disabled')
         if historical:
             binding = self._historical_binding(campaign_id, approval_id, campaign_version)
@@ -218,10 +264,40 @@ class ApolloLinkedInCompletion:
                 or not isinstance(task.get('contact'), dict)
                 or _slug(task['contact'].get('linkedin_url')) != row.get('recipient')):
             raise ValueError('execution_binding_unverified')
-        _, text_hash, blocker = validated_task_text(task, 'message')
+        action = 'message' if action_type == 'linkedin_step_message' else 'invite'
+        _, text_hash, blocker = validated_task_text(task, action)
         if blocker or text_hash != row.get('text_hash'):
             raise ValueError('text_changed')
         return row, task, receipt_id
+
+    def _reply_clear(self, row, task, binding):
+        coverage, safety = self._coverage, self._safety
+        plan = getattr(coverage, 'plan', None)
+        contact = task.get('contact')
+        if (not isinstance(plan, dict) or not isinstance(contact, dict)
+                or plan.get('account_id') != row.get('account_id')
+                or plan.get('account_public_id') != binding.get('public_id')
+                or plan.get('recipient_public_id') != row.get('recipient')
+                or plan.get('action') != ('invite' if task.get('type') == 'linkedin_step_connect' else 'dm')
+                or not isinstance(plan.get('recipient_profile_urn'), str)
+                or not isinstance(contact.get('id'), str) or not contact['id']
+                or task.get('contact_id') != contact['id']):
+            return False
+        # A previously persisted reply stop remains authoritative even if a
+        # subsequent provider read is empty or a message disappears upstream.
+        stop_key = safety._key(binding, plan)
+        if self._repo.get_state('apollo_linkedin_reply_stop', stop_key) is not None:
+            return False
+        target = {'email': contact.get('email'), 'apollo_contact_id': contact['id'],
+                  'sequence_id': binding.get('sequence_id'),
+                  'linkedin_profile_urn': plan['recipient_profile_urn'],
+                  'account_id': row['account_id'], 'recipient_public_id': row['recipient']}
+        observed = coverage.observe(target)
+        if observed.get('status') == 'reply':
+            safety.pause_after_reply(binding, plan)
+            return False
+        return coverage_current(observed, datetime.now(timezone.utc),
+                                hubspot_configured=coverage.hubspot_configured)
 
     def complete_verified(self, company, task_id, action_type, *, campaign_id, approval_id, campaign_version):
         """Attempt one Apollo-only completion after persisted receipt and binding.
@@ -230,17 +306,34 @@ class ApolloLinkedInCompletion:
         The caller holds the account lock for the entire dispatch/completion.
         """
         self._task_id(task_id)
+        # A durable observation is not a capability to complete after restart.
+        if self._coverage is None or self._safety is None:
+            return {'state': 'apollo_reconcile_pending', 'reason': 'completion_live_check_required'}
         try:
             row, task, receipt_id = self._verified_binding(company, task_id, action_type, campaign_id, approval_id, campaign_version)
             if row['apollo_status'] != 'pending' or task.get('status') != 'scheduled':
                 return {'state': 'apollo_reconcile_pending', 'reason': 'completion_unverified'}
-            self._repo.claim_apollo_linkedin_completion(company, task_id, action_type)
+            with self._repo.transaction():
+                require_completion_guard(self._repo, company, task_id, action_type, receipt_id)
+                approved = CampaignApprovalAuthority(self._repo).require(campaign_id, approval_id, campaign_version)
+                if not self._execution_allowed() or not self._reply_clear(row, task, approved['binding']):
+                    return {'state': 'apollo_reconcile_pending', 'reason': 'completion_live_check_blocked'}
+                self._repo.claim_apollo_linkedin_completion(company, task_id, action_type)
             token = self._loader()
             if not isinstance(token, str) or not token or any(c.isspace() for c in token):
                 raise ValueError('credential_unavailable')
             body = json.dumps({'note': 'Thunder OS: enviado via ConnectSafely, recibo ' + receipt_id}, ensure_ascii=False).encode()
-            self._post_request('POST', '/api/v1/tasks/' + task_id + '/complete', body,
-                               {'x-api-key': token, 'Accept': 'application/json', 'Content-Type': 'application/json'}, self.timeout)
+            # Claim is already committed: a crash or unknown POST outcome must
+            # never permit another POST. The separate fence serializes the last
+            # pause/approval/reply observation with the network boundary.
+            with self._repo.transaction():
+                if not self._execution_allowed():
+                    return {'state': 'apollo_reconcile_pending', 'reason': 'completion_paused'}
+                approved = CampaignApprovalAuthority(self._repo).require(campaign_id, approval_id, campaign_version)
+                if not self._reply_clear(row, task, approved['binding']) or not self._execution_allowed():
+                    return {'state': 'apollo_reconcile_pending', 'reason': 'completion_live_check_blocked'}
+                self._post_request('POST', '/api/v1/tasks/' + task_id + '/complete', body,
+                                   {'x-api-key': token, 'Accept': 'application/json', 'Content-Type': 'application/json'}, self.timeout)
             _, readback, _ = self._verified_binding(company, task_id, action_type, campaign_id, approval_id, campaign_version)
             if (readback.get('status') != 'completed' or readback.get('note') !=
                     'Thunder OS: enviado via ConnectSafely, recibo ' + receipt_id):

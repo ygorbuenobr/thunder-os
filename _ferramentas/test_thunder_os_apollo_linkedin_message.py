@@ -79,6 +79,52 @@ class MessageAdapterTests(unittest.TestCase):
         self.client.pages = [FakeClient().pages[0]]; self.client.pages[0]['messages'] = [row(None)]
         self.assertFalse(read(PLAN['recipient_profile_urn'])['complete'])
 
+    def test_reply_source_reads_invite_plan_with_empty_note_without_sending(self):
+        plan = {**PLAN, 'action': 'invite', 'content': ''}
+        self.client._plan = lambda candidate: None if candidate == plan else (_ for _ in ()).throw(ValueError('invalid'))
+        self.client.pages[0]['messages'] = [{'messageUrn': 'urn:li:messagingMessage:sample',
+            'senderProfileId': 'lead', 'isSentByOwner': False, 'sentAt': 101}]
+        result = self.adapter.reply_source(plan, 100)(plan['recipient_profile_urn'])
+        self.assertTrue(result['suppressed'])
+        self.assertEqual(result['reply']['recipient_profile_urn'], plan['recipient_profile_urn'])
+        self.assertTrue(all(call[0] == 'GET' for call in self.client.calls))
+
+    def test_invite_reply_source_refuses_different_profile(self):
+        plan = {**PLAN, 'action': 'invite', 'content': ''}
+        self.client._plan = lambda candidate: None if candidate == plan else (_ for _ in ()).throw(ValueError('invalid'))
+        result = self.adapter.reply_source(plan, 100)('urn:li:fsd_profile:other')
+        self.assertFalse(result['complete'])
+        self.assertFalse(result['suppressed'])
+        self.assertEqual(self.client.calls, [])
+
+    def test_inbound_evidence_preserves_provider_identity_content_and_time(self):
+        self.client.pages[0]['messages'] = [{'messageUrn': 'urn:li:messagingMessage:sample',
+            'senderProfileId': 'lead', 'isSentByOwner': False, 'sentAt': 101,
+            'text': 'Synthetic reply'}]
+        result = self.adapter.reply_source(PLAN, 100)(PLAN['recipient_profile_urn'])
+        self.assertTrue(result['suppressed'])
+        self.assertTrue(result['positive_evidence_verified'])
+        self.assertFalse(result['history_complete'])
+        self.assertEqual(result['reply'], {'provider': 'connectsafely', 'account_id': 'account',
+            'recipient_profile_urn': PLAN['recipient_profile_urn'], 'recipient_public_id': 'lead',
+            'conversation_urn': 'urn:li:msg_conversation:thread',
+            'provider_message_id': 'urn:li:messagingMessage:sample',
+            'received_at': '1970-01-01T00:01:41+00:00', 'content': 'Synthetic reply'})
+
+    def test_inbound_without_text_still_blocks_but_does_not_fabricate_content(self):
+        self.client.pages[0]['messages'] = [{'messageUrn': 'urn:li:messagingMessage:sample',
+            'senderProfileId': 'lead', 'isSentByOwner': False, 'sentAt': 101}]
+        result = self.adapter.reply_source(PLAN, 100)(PLAN['recipient_profile_urn'])
+        self.assertTrue(result['suppressed'])
+        self.assertIsNone(result['reply']['content'])
+
+    def test_inbound_with_unverified_message_identifier_still_blocks(self):
+        self.client.pages[0]['messages'] = [{'messageUrn': 'invalid-id',
+            'senderProfileId': 'lead', 'isSentByOwner': False, 'sentAt': 101, 'text': 'Synthetic'}]
+        result = self.adapter.reply_source(PLAN, 100)(PLAN['recipient_profile_urn'])
+        self.assertTrue(result['suppressed'])
+        self.assertIsNone(result['reply']['provider_message_id'])
+
     def test_partial_history_and_wrong_participant_are_unknown(self):
         read = self.adapter.reply_source(PLAN, 100)
         self.client.pages[0]['participants'] = [{'profileId':'owner'}, {'profileId':'other'}]
@@ -154,6 +200,31 @@ class RealClientFakeHTTPTests(unittest.TestCase):
         self.fixture.message['text'] = 'not the approved text'
         self.assertEqual(self.adapter.send(self.plan, self.now-1, before_dispatch=lambda:True)['status'], 'uncertain')
         self.assertEqual(sum(call[0] == 'POST' for call in self.fixture.calls), 1)
+
+    def test_invite_reply_source_accepts_real_client_plan_without_post(self):
+        from thunder_os.connectsafely_client import ConnectSafelyClient
+        account = 'a' * 24
+        profile = 'urn:li:fsd_profile:lead'
+        plan = {'account_id': account, 'account_public_id': 'sender', 'action': 'invite',
+                'recipient_public_id': 'lead', 'recipient_profile_urn': profile,
+                'channel': 'linkedin', 'messaging_channel': 'linkedin_inbox',
+                'content': '', 'conversation_urn': None}
+        calls = []
+        def request(method, path, query, body):
+            calls.append((method, path))
+            if path == '/linkedin/accounts':
+                return 200, [{'id': account, 'publicId': 'sender', 'status': 'AVAILABLE', 'enabled': True}]
+            if '/exists/' in path:
+                return 200, {'success': True, 'accountId': account, 'profileUrn': profile,
+                             'hasConversation': False}
+            raise AssertionError('unexpected request')
+        client = ConnectSafelyClient(account, 'sender', request=request,
+                                    self_profile_id='urn:li:fsd_profile:owner')
+        result = MessageAdapter(client).reply_source(plan, 100)(profile)
+        self.assertTrue(result['complete'])
+        self.assertTrue(result['no_record'])
+        self.assertFalse(result['suppressed'])
+        self.assertTrue(all(method == 'GET' for method, _ in calls))
 
     def test_reply_source_crosses_real_https_transport_without_network(self):
         import json

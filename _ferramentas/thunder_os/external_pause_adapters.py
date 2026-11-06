@@ -67,16 +67,19 @@ class ApolloExternalPause:
     trusted bounded transport with the same fixed-host contract as Apollo reads.
     """
     def __init__(self, binding, *, credential_loader=None, request=None,
-                 mutation_enabled=False, read_enabled=False, authorize=None, timeout=10, repository=None):
+                 mutation_enabled=False, read_enabled=False, authorize=None, timeout=10, repository=None,
+                 mode='mark_as_finished'):
         _require(isinstance(binding, dict) and set(binding) == {'campaign_id', 'account_id', 'sequence_id'}
                  and all(_identifier(v) for v in binding.values()), 'invalid_pause_binding')
         _require(type(timeout) in (int, float) and math.isfinite(timeout) and 0 < timeout <= 15,
                  'invalid_pause_timeout')
+        _require(mode in ('mark_as_finished', 'stop'), 'invalid_pause_mode')
         self.repo = repository
         self.binding = deepcopy(binding)
         self.loader, self.request = credential_loader, request or _https_request
         self.mutation_enabled, self.read_enabled = mutation_enabled, read_enabled
         self.authorize, self.timeout = authorize, timeout
+        self.mode = mode
 
     def _command(self, command):
         _require(isinstance(command, dict) and set(command) == set(self.binding) | {'contact_id', 'email'}
@@ -128,11 +131,19 @@ class ApolloExternalPause:
         _require(getattr(self.repo._local, 'connection', None) is None, 'pause_outer_transaction_blocked')
         key = payload_hash({'provider': 'apollo', **{k: command[k] for k in
             ('account_id', 'sequence_id', 'contact_id')}})
-        digest = payload_hash(command)
+        # Preserve legacy hashes; a different mode must never reuse an attempt.
+        digest = payload_hash(command) if self.mode == 'mark_as_finished' else payload_hash({'command': command, 'mode': self.mode})
         with self.repo.transaction():
             prior = self.repo.get_state('external_pause_attempt', key)
             if prior:
                 _require(prior['command_hash'] == digest, 'pause_idempotency_conflict')
+                if prior.get('status') == 'pre_dispatch_blocked':
+                    # This status is emitted only after confirming this code's
+                    # durable attempted marker was never reached. Legacy
+                    # needs_human/reserved/attempted rows stay closed.
+                    self.repo.put_states_atomic([('external_pause_attempt', key,
+                        {'command_hash': digest, 'status': 'reserved'}, prior['version'])])
+                    prior = None
             else:
                 self.repo.append_state('external_pause_attempt', key,
                     {'command_hash': digest, 'status': 'reserved'})
@@ -143,9 +154,20 @@ class ApolloExternalPause:
         try:
             result = self._stop_once(command, key)
         except Exception:
-            self._attempt(key, 'needs_human')
+            # The attempted marker is persisted before the network boundary.
+            # Only a failure while still reserved proves zero POST occurred.
+            with self.repo.transaction():
+                state = self.repo.get_state('external_pause_attempt', key)
+                self._attempt(key, 'pre_dispatch_blocked' if state.get('status') == 'reserved'
+                              else 'needs_human')
             raise
-        self._attempt(key, result['status'])
+        # An unmapped membership status is not proof of external pause, but
+        # also did not call POST. It may be observed again on a later cycle.
+        state = ('pre_dispatch_blocked' if self.mode == 'stop'
+                 and result.get('write_attempted') is False
+                 and result.get('reason') == 'stop_state_mapping_unverified'
+                 else result['status'])
+        self._attempt(key, state)
         return result
 
     def _attempt(self, key, status):
@@ -156,6 +178,10 @@ class ApolloExternalPause:
         token = self._credential()
         state = self._membership(command, token)
         _require(state.get('status') in {'active', 'paused', 'finished'}, 'pause_state_unverified')
+        if self.mode == 'stop' and state['status'] != 'active':
+            return {'provider': 'apollo', 'status': 'unverified', 'paused': False,
+                    'readback_verified': False, 'write_attempted': False, 'retry_allowed': False,
+                    'reason': 'stop_state_mapping_unverified', 'target': command}
         if state['status'] == 'finished':
             return {'provider': 'apollo', 'status': 'already_stopped', 'paused': True,
                     'readback_verified': True, 'write_attempted': False, 'retry_allowed': False,
@@ -163,7 +189,7 @@ class ApolloExternalPause:
         self._authority(command)
         path = '/api/v1/emailer_campaigns/remove_or_stop_contact_ids?' + urlencode({
             'emailer_campaign_ids[]': command['sequence_id'], 'contact_ids[]': command['contact_id'],
-            'mode': 'mark_as_finished'})
+            'mode': self.mode})
         result = {'provider': 'apollo', 'paused': False, 'readback_verified': False,
                   'write_attempted': True, 'retry_allowed': False, 'target': command}
         self._attempt(key, 'attempted')
@@ -188,6 +214,13 @@ class ApolloExternalPause:
             return {'provider': 'apollo', 'status': 'unverified', 'paused': False,
                     'readback_verified': False, 'retry_allowed': False, 'write_attempted': False,
                     'reason': 'fresh_membership_unavailable', 'target': command}
+        if self.mode == 'stop':
+            # Apollo documents that this mode halts progression but does not
+            # document a membership state proving it or whether it can resume.
+            return {'provider': 'apollo', 'status': 'unverified', 'paused': False,
+                    'readback_verified': False, 'retry_allowed': False, 'write_attempted': False,
+                    'reason': 'stop_state_mapping_unverified', 'target': command,
+                    'source': 'fresh_contact_membership', 'observed_state': state.get('status')}
         stopped = state.get('status') == 'finished'
         return {'provider': 'apollo', 'status': 'confirmed' if stopped else 'not_stopped',
                 'paused': stopped, 'readback_verified': stopped, 'retry_allowed': False,

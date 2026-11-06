@@ -54,6 +54,7 @@ NONCE_LIMIT = 1024
 NONCE_LOCK = threading.Lock()
 AGENTTRAIL_INGRESS_TOKEN = Path('/etc/thunder-os/agenttrail-ingress.token')
 LIMITE = 200 * 1024
+CONNECTSAFELY_WEBHOOK_BODY_TIMEOUT_SECONDS = 5
 COLECOES = ('itens', 'regras', 'sugestoes')
 TZ = ZoneInfo('America/Sao_Paulo')
 
@@ -1661,6 +1662,67 @@ class Handler(BaseHTTPRequestHandler):
         service = getattr(self.server, 'thunder_service', None)
         if service is None:
             raise Erro('Thunder OS indisponível', 503)
+        if rota.path == '/api/os/v1/integrations/connectsafely/webhook':
+            if self.command != 'POST' or rota.query:
+                raise Erro('Webhook exige POST sem parâmetros.', 405)
+            receiver = getattr(self.server, 'thunder_connectsafely_webhook', None)
+            if receiver is None:
+                self.close_connection = True
+                return self.responder(503, {'status': 'disabled'})
+            if self.headers.get('Transfer-Encoding'):
+                raise Erro('Transfer-Encoding não suportado.', 400)
+            lengths = self.headers.get_all('Content-Length', [])
+            if len(lengths) != 1 or not re.fullmatch(r'[0-9]{1,8}', lengths[0]):
+                raise Erro('Content-Length inválido.', 400)
+            size = int(lengths[0])
+            if not 1 <= size <= 200_000:
+                raise Erro('Corpo inválido ou excede limite.', 413)
+            if self.headers.get_content_type() != 'application/json':
+                raise Erro('Use Content-Type application/json.', 400)
+            previous_timeout = self.connection.gettimeout()
+            try:
+                deadline = time.monotonic() + CONNECTSAFELY_WEBHOOK_BODY_TIMEOUT_SECONDS
+                chunks, remaining = [], size
+                while remaining:
+                    timeout = deadline - time.monotonic()
+                    if timeout <= 0:
+                        raise TimeoutError()
+                    self.connection.settimeout(timeout)
+                    chunk = self.rfile.read1(min(remaining, 8192))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    remaining -= len(chunk)
+                raw = b''.join(chunks)
+            except (TimeoutError, socket.timeout):
+                self.close_connection = True
+                raise Erro('Tempo de leitura do webhook excedido.', 408) from None
+            finally:
+                self.connection.settimeout(previous_timeout)
+            if len(raw) != size:
+                raise Erro('Corpo incompleto.', 400)
+            # HTTPMessage is not a Mapping; reject duplicates before creating
+            # the exact header projection passed to the HMAC verifier.
+            signed_headers = {}
+            for name in ('X-Webhook-Signature', 'X-Webhook-Timestamp'):
+                values = self.headers.get_all(name, [])
+                if len(values) != 1:
+                    return self.responder(401, {'status': 'rejected'})
+                signed_headers[name] = values[0]
+            from thunder_os.connectsafely_webhook import WebhookError
+            try:
+                accepted = receiver.accept(raw, signed_headers)
+            except WebhookError as exc:
+                status = 401 if str(exc) == 'invalid_signature' else 400
+                return self.responder(status, {'status': 'rejected'})
+            if accepted['status'] != 'quarantined':
+                try:
+                    receiver.process(accepted['event_id'], service)
+                except Exception:
+                    # Event was durably received: return a retryable failure;
+                    # a replay is deduplicated and can safely resume processing.
+                    return self.responder(503, {'status': 'processing_pending'})
+            return self.responder(200, {'status': accepted['status']})
         if rota.path == '/api/os/v1/new-journey' or rota.path.startswith('/api/os/v1/new-journey/'):
             return self.new_journey_api(rota)
         journey_step_action = re.fullmatch(r'/api/os/v1/journey/steps/(review|approve|revise|discard)', rota.path)
@@ -2872,6 +2934,28 @@ class Handler(BaseHTTPRequestHandler):
     do_OPTIONS = executar
 
 
+def configure_connectsafely_webhook(server, repository, environ=None):
+    """Attach one explicitly configured receiver; malformed config fails closed."""
+    env = os.environ if environ is None else environ
+    server.thunder_connectsafely_webhook = None
+    server.thunder_connectsafely_webhook_error = 'disabled'
+    if env.get('THUNDER_OS_CONNECTSAFELY_WEBHOOK_ENABLED') != 'true':
+        return
+    try:
+        from thunder_os.connectsafely_live import credential
+        from thunder_os.connectsafely_webhook import ConnectSafelyWebhook
+        from thunder_os.credential_paths import credential_path
+        account = env.get('THUNDER_OS_CONNECTSAFELY_WEBHOOK_ACCOUNT', '')
+        secret_path = env.get('THUNDER_OS_CONNECTSAFELY_WEBHOOK_SECRET_FILE', '')
+        if not re.fullmatch(r'[a-f0-9]{24}', account) or not secret_path:
+            raise ValueError('configuration_invalid')
+        secret = credential(credential_path('connectsafely_webhook_secret', secret_path))().encode('utf-8')
+        server.thunder_connectsafely_webhook = ConnectSafelyWebhook(repository, secret=secret, account_id=account)
+        server.thunder_connectsafely_webhook_error = None
+    except Exception:
+        server.thunder_connectsafely_webhook_error = 'configuration_invalid'
+
+
 def configure_connectsafely_server(server, repository, factory=None):
     """Attach an injected composition or the explicitly pinned panel config.
 
@@ -2995,6 +3079,9 @@ def issue_apollo_linkedin_panel_canary(server, repo, body, actor):
     from thunder_os.apollo_linkedin_authority import CampaignApprovalAuthority
     from thunder_os.approvals import ApprovalError
     from thunder_os.apollo_linkedin_preview import _slug, validated_task_text
+    from thunder_os.apollo_linkedin_attention import EXCLUDED_TASK
+    if body.get('task_id') == EXCLUDED_TASK:
+        raise Erro('Fixture protegida.', 403)
     attention = getattr(server, 'thunder_apollo_linkedin_attention', None)
     resolver = getattr(server, 'thunder_connectsafely_read_resolver', None)
     reader = getattr(attention, 'reader', None)
@@ -3010,21 +3097,23 @@ def issue_apollo_linkedin_panel_canary(server, repo, body, actor):
             raise ValueError('binding_mismatch')
         task = reader.get(body['task_id'])
         contact = task.get('contact')
-        if (task.get('id') != body['task_id'] or task.get('type') != 'linkedin_step_message'
+        action = {'linkedin_step_message': 'dm', 'linkedin_step_connect': 'invite'}.get(task.get('type'))
+        if (task.get('id') != body['task_id'] or action is None
                 or task.get('status') != 'scheduled' or task.get('emailer_campaign_id') != binding['sequence_id']
                 or task.get('user_id') not in binding['owner_ids'] or not isinstance(contact, dict)
                 or not contact.get('id') or task.get('contact_id') != contact['id']):
             raise ValueError('task_mismatch')
         recipient = _slug(contact.get('linkedin_url'))
-        _, digest, text_error = validated_task_text(task, 'message')
+        _, digest, text_error = validated_task_text(task, 'message' if action == 'dm' else 'invite')
         if not recipient or recipient == binding['public_id'].lower() or text_error:
             raise ValueError('recipient_or_text_invalid')
-        observation = resolver({'action': 'dm', 'profile_url': 'https://www.linkedin.com/in/' + recipient + '/'})
+        observation = resolver({'action': action, 'profile_url': 'https://www.linkedin.com/in/' + recipient + '/'})
         target = observation.get('target') if isinstance(observation, dict) else None
         if (observation.get('resolved') is not True or observation.get('read_only') is not True
                 or observation.get('source') != 'provider_observation' or not isinstance(target, dict)
                 or target.get('account_id') != binding['account_id']
                 or target.get('account_public_id') != binding['public_id']
+                or (action == 'invite' and target.get('action') != action)
                 or target.get('recipient_public_id') != recipient
                 or not isinstance(target.get('recipient_profile_urn'), str)
                 or not re.fullmatch(r'urn:li:fsd_profile:[A-Za-z0-9_-]{1,200}', target['recipient_profile_urn'])):
@@ -3037,7 +3126,7 @@ def issue_apollo_linkedin_panel_canary(server, repo, body, actor):
                 raise ValueError('approval_changed')
             return repo.issue_apollo_linkedin_canary(
                 body['company'], body['task_id'], binding['account_id'], recipient, digest, actor,
-                action_type='linkedin_step_message', member_urn=target['recipient_profile_urn'],
+                action_type=task['type'], member_urn=target['recipient_profile_urn'],
                 campaign_version=body['campaign_version'], approval_id=body['approval_id'])
     except ApprovalError:
         raise Erro('Aprovação de campanha indisponível ou inválida.', 409) from None
@@ -3157,6 +3246,7 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
             from thunder_os.campaign_sources import CampaignSources
             servidor.thunder_campaign_sources=CampaignSources(repository)
             configure_connectsafely_server(servidor, servidor.thunder_service.repository, connectsafely_factory)
+            configure_connectsafely_webhook(servidor, servidor.thunder_service.repository)
             seqd_read = os.environ.get('THUNDER_OS_SEQD_READ_ENABLED', '') == 'true'
             seqd_send = external_effects_enabled() and os.environ.get('THUNDER_OS_SEQD_SEND_ENABLED', '') == 'true'
             canary_readers = getattr(getattr(servidor, 'thunder_connectsafely_app', None), 'canary_readers', None)

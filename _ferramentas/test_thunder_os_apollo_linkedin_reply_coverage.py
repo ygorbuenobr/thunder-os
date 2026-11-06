@@ -104,6 +104,66 @@ class CoverageTest(unittest.TestCase):
         result = self.observe()
         self.assertEqual(result['status'], 'reply')
         self.assertFalse(coverage_current(result,NOW,hubspot_configured=False))
+
+    def test_linkedin_reply_details_require_matching_account_and_recipient(self):
+        urn = TARGET['linkedin_profile_urn']
+        reply = {'provider': 'connectsafely', 'account_id': 'account',
+                 'recipient_profile_urn': urn, 'recipient_public_id': 'lead',
+                 'conversation_urn': 'urn:li:msg_conversation:thread',
+                 'provider_message_id': 'urn:li:messagingMessage:sample',
+                 'received_at': NOW.isoformat(), 'content': 'Synthetic reply'}
+        def source(profile):
+            return {'target':profile, 'complete':True, 'suppressed':True,
+                    'coverage':'exact_profile_conversation', 'reply':reply}
+        reader = ReplyCoverage(self.apollo, source, clock=lambda:NOW)
+        bound = {**TARGET, 'account_id':'account', 'recipient_public_id':'lead'}
+        result = reader.observe(bound)
+        self.assertEqual(result['status'], 'reply')
+        self.assertEqual(result['sources']['linkedin']['reply'], reply)
+        reply['provider_message_id'] = 'urn:li:messagingMessage:(a,b)'
+        self.assertEqual(reader.observe(bound)['sources']['linkedin']['reply']['provider_message_id'], reply['provider_message_id'])
+        for target in (TARGET, {**bound, 'account_id':'other'}, {**bound, 'recipient_public_id':'other'}):
+            result = reader.observe(target)
+            self.assertEqual(result['status'], 'reply')
+            self.assertNotIn('reply', result['sources']['linkedin'])
+
+    def test_linkedin_reply_missing_text_and_invalid_details_still_stops(self):
+        urn = TARGET['linkedin_profile_urn']
+        evidence = {'target':urn, 'complete':True, 'suppressed':True,
+                    'coverage':'exact_profile_conversation', 'reply':{
+                        'provider':'connectsafely', 'account_id':'account',
+                        'recipient_profile_urn':urn, 'recipient_public_id':'lead',
+                        'conversation_urn':'urn:li:msg_conversation:thread',
+                        'provider_message_id':'not-a-provider-urn',
+                        'received_at':'not-a-time', 'content':None}}
+        reader = ReplyCoverage(self.apollo, lambda _:evidence, clock=lambda:NOW)
+        target = {**TARGET, 'account_id':'account', 'recipient_public_id':'lead'}
+        result = reader.observe(target)
+        self.assertEqual(result['status'], 'reply')
+        detail = result['sources']['linkedin']['reply']
+        self.assertIsNone(detail['content'])
+        self.assertIsNone(detail['provider_message_id'])
+        self.assertIsNone(detail['received_at'])
+        evidence['reply']['recipient_profile_urn'] = 'urn:li:fsd_profile:other'
+        result = reader.observe(target)
+        self.assertEqual(result['status'], 'reply')
+        self.assertNotIn('reply', result['sources']['linkedin'])
+
+    def test_positive_reply_preserves_partial_history_flags_without_claiming_full_history(self):
+        evidence = {'target':TARGET['linkedin_profile_urn'], 'complete':True, 'suppressed':True,
+                    'coverage':'exact_profile_conversation', 'positive_evidence_verified':True,
+                    'history_complete':False}
+        reader = ReplyCoverage(self.apollo, lambda _:evidence, clock=lambda:NOW)
+        result = reader.observe(TARGET)
+        self.assertEqual(result['status'], 'reply')
+        self.assertIs(result['sources']['linkedin']['positive_evidence_verified'], True)
+        self.assertIs(result['sources']['linkedin']['history_complete'], False)
+        evidence['history_complete'] = True
+        evidence['positive_evidence_verified'] = 'true'
+        result = reader.observe(TARGET)
+        self.assertEqual(result['status'], 'reply')
+        self.assertNotIn('history_complete', result['sources']['linkedin'])
+        self.assertNotIn('positive_evidence_verified', result['sources']['linkedin'])
     def test_stale_positive_reply_still_requires_stop(self):
         self.linkedin.present = True
         times = iter([NOW, NOW, NOW, NOW, NOW + timedelta(minutes=16), NOW + timedelta(minutes=16)])

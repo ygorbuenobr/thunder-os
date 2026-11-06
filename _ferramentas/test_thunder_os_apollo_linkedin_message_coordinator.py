@@ -13,14 +13,19 @@ from thunder_os.apollo_linkedin_reply_coverage import ReplyCoverage
 class Repo:
     def __init__(self):
         self.row = None
+        self.states = {}
         self.control = {'paused': False}
         self.auth = {'task_id': 'task', 'state': 'issued', 'action_type': 'linkedin_step_message',
             'approval_id': 'approval', 'campaign_version': 'v1', 'company': 'company',
             'account_id': 'account', 'recipient': 'lead', 'member_urn': 'urn:li:fsd_profile:abc',
             'text_hash': hashlib.sha256(b'hello').hexdigest()}
     def get_state(self, kind, _id):
+        if (kind, _id) in self.states:
+            return self.states[(kind, _id)]
         return {'control': self.control, 'approval': {'campaign_id': 'campaign'},
                 'apollo_linkedin_canary': self.auth}.get(kind)
+    def put_state(self, kind, _id, payload):
+        self.states[(kind, _id)] = dict(payload)
     def apollo_linkedin_account_lock(self, account): return nullcontext()
     def transaction(self): return nullcontext()
     def reserve_apollo_linkedin_with_canary(self, *args, **kwargs):
@@ -58,8 +63,9 @@ class Message:
 
 class Coverage:
     hubspot_configured = False
-    def __init__(self): self.status = 'ok'
+    def __init__(self): self.status = 'ok'; self.targets = []
     def observe(self, target):
+        self.targets.append(dict(target))
         stamp = datetime.now(timezone.utc).isoformat()
         return {'status': self.status, 'required_sources': ['apollo', 'linkedin'], 'sources': {
             name: {'status': self.status, 'observed_at': stamp} for name in ('apollo', 'linkedin')}}
@@ -88,10 +94,27 @@ class CoordinatorTests(unittest.TestCase):
     def run_one(self):
         with patch.dict(os.environ, {'THUNDER_APOLLO_LI_EXECUTION_ENABLED': 'true'}):
             return self.subject.run('task', 'auth', dry_run=False)
+
+    def test_invitation_uses_invite_action_and_persists_provider_receipt(self):
+        task = Apollo().get('task')
+        task['type'] = 'linkedin_step_connect'
+        self.subject.apollo.get = lambda _: task
+        self.repo.auth['action_type'] = 'linkedin_step_connect'
+        invite = Message(self.repo)
+        invite.result = {'status': 'sent', 'receipt_ref': 'provider-invitation-id'}
+        self.subject.invitation = invite
+        self.assertEqual(self.run_one()['state'], 'confirmed')
+        self.assertEqual(self.repo.row['receipt'], {'provider_id': 'provider-invitation-id'})
+        self.assertEqual(invite.sent, 1)
+        self.assertEqual(self.message.sent, 0)
     def test_confirmed_receipt_and_completion(self):
         self.assertEqual(self.run_one()['state'], 'confirmed')
         self.assertEqual(self.repo.row['receipt'], {'provider_id': 'message-id'})
         self.assertEqual(self.message.sent, 1)
+        self.assertTrue(self.coverage.targets)
+        for target in self.coverage.targets:
+            self.assertEqual(target['account_id'], 'account')
+            self.assertEqual(target['recipient_public_id'], 'lead')
     def test_missing_receipt_is_uncertain_and_never_retried(self):
         self.message.result = {'status': 'uncertain'}
         self.assertEqual(self.run_one()['state'], 'uncertain')
@@ -119,6 +142,38 @@ class CoordinatorTests(unittest.TestCase):
         self.completion.result = {'state': 'apollo_reconcile_pending'}
         self.assertEqual(self.run_one()['state'], 'apollo_reconcile_pending')
         self.assertEqual(self.repo.row['state'], 'confirmed')
+    def test_reply_during_send_preserves_receipt_and_does_not_complete_apollo(self):
+        send = self.message.send
+        def send_with_reply(*args, **kwargs):
+            result = send(*args, **kwargs)
+            self.coverage.status = 'reply'
+            return result
+        self.message.send = send_with_reply
+        self.completion.complete_verified = lambda *a, **k: self.fail('Apollo completion must wait')
+        result = self.run_one()
+        self.assertEqual(result['reason'], 'human_reply_after_dispatch')
+        self.assertEqual(self.repo.row['state'], 'confirmed')
+        self.assertEqual(self.repo.row['receipt'], {'provider_id': 'message-id'})
+        self.assertTrue(self.safety.paused)
+        self.assertEqual(self.message.sent, 1)
+        from thunder_os.apollo_linkedin_completion import completion_guard_key
+        key = completion_guard_key('company', 'task', 'linkedin_step_message')
+        self.assertEqual(self.repo.get_state('apollo_linkedin_completion_guard', key)['status'], 'reply')
+    def test_unknown_coverage_after_send_preserves_receipt_without_apollo_completion(self):
+        send = self.message.send
+        def send_then_unavailable(*args, **kwargs):
+            result = send(*args, **kwargs)
+            self.coverage.status = 'unknown'
+            return result
+        self.message.send = send_then_unavailable
+        self.completion.complete_verified = lambda *a, **k: self.fail('Apollo completion must wait')
+        result = self.run_one()
+        self.assertEqual(result['reason'], 'coverage_after_dispatch_unavailable')
+        self.assertEqual(self.repo.row['state'], 'confirmed')
+        self.assertEqual(self.repo.row['receipt'], {'provider_id': 'message-id'})
+        from thunder_os.apollo_linkedin_completion import completion_guard_key
+        key = completion_guard_key('company', 'task', 'linkedin_step_message')
+        self.assertEqual(self.repo.get_state('apollo_linkedin_completion_guard', key)['status'], 'unknown')
     def test_actual_reply_coverage_contract_is_composed(self):
         class Contacts:
             def contacts(self, email):

@@ -5,6 +5,10 @@ from pathlib import Path
 from types import SimpleNamespace
 import tempfile
 import unittest
+import json
+import hmac
+import hashlib
+from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
 from thunder_os.campaign_registry import CampaignRegistry
@@ -88,6 +92,20 @@ class ReplyControlTests(unittest.TestCase):
         worker.repository=self.repo
         worker.authorization_service=SimpleNamespace(global_paused=lambda:False)
         self.assertEqual(worker._final_campaign_gate({'cadence_id':'cadence-1'},{}),'approval_not_active')
+
+    def test_apollo_or_linkedin_without_durable_identity_stays_in_triage(self):
+        for provider, channel in (('apollo', 'email'), ('connectsafely', 'linkedin')):
+            with self.subTest(provider=provider):
+                payload = {**event(provider), 'id': 'synthetic-' + provider,
+                           'channel': channel, 'hubspot_contact_id': None,
+                           'source': {'provider': provider, 'account_id': 'synthetic-account',
+                                      'provider_message_id': 'synthetic-' + provider}}
+                result = self.control.ingest(payload, 'verified_source')
+                self.assertEqual(result['status'], 'triage')
+                self.assertFalse(result['reply']['identity_confirmed'])
+                self.assertEqual(result['alerts'][0]['reason'], 'identity_unresolved')
+                self.assertEqual(self.repo.get_state('cadence', 'cadence-1')['status'], 'approved')
+                self.assertTrue(self.control.ingest(payload, 'verified_source')['duplicate'])
 
     def test_triage_replay_cannot_resolve_without_verified_correlation(self):
         from thunder_os.new_journey_checks import NewJourneyChecks
@@ -324,6 +342,268 @@ class ReplyControlTests(unittest.TestCase):
             state=self.control.snapshot()
         self.assertFalse(state['automatic_reply_reader_connected'])
         self.assertFalse(state['external_pause_enabled'])
+
+
+class ApolloLinkedInReplyIdentityTests(unittest.TestCase):
+    def setUp(self):
+        from thunder_os.apollo_linkedin_identity_binding import KIND, binding_key
+        from thunder_os.connectsafely_webhook import ConnectSafelyWebhook
+        from thunder_os.models import payload_hash
+        from thunder_os.service import ThunderService
+        from test_thunder_os_apollo_linkedin_authority import config as apollo_config
+        from test_thunder_os_apollo_linkedin_campaign_reservation import task
+        tmp = tempfile.TemporaryDirectory(); self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / 'store.db'; path.touch()
+        env = patch.dict('os.environ', {'THUNDER_APOLLO_LI_OFFICIAL_DB': str(path)})
+        env.start(); self.addCleanup(env.stop)
+        self.repo = Repository(path); service = ThunderService(self.repo)
+        service.configure_campaign(apollo_config(), 'ygor', expected_version=0)
+        self.repo.put_state('control', 'global', {'paused': False, 'actor': 'ygor'})
+        review = service.apollo_campaign_approval_review('campaign')
+        approval = service.approve_apollo_campaign_version('campaign', 'ygor', execution_confirmation=review['execution_confirmation'])
+        self.binding = {'company': 'company', 'campaign_id': 'campaign', 'approval_id': approval['id'],
+            'campaign_version': 'v1', 'scope_hash': approval['scope_hash'], 'team_id': 'team',
+            'sequence_id': 'seq', 'task_id': 'task1', 'contact_id': 'contact1', 'account_id': 'a' * 24,
+            'recipient_public_id': 'person', 'member_urn': 'urn:li:fsd_profile:synthetic',
+            'action_type': 'linkedin_step_message'}
+        self.binding_id = binding_key('company', 'campaign', 'task1', 'a' * 24, approval['id'])
+        self.repo.append_state(KIND, self.binding_id, self.binding)
+        self.repo.reserve_apollo_linkedin_for_campaign('campaign', approval['id'], 'v1', task(),
+            observed_team_id='team', expected_text_hash=hashlib.sha256(b'Ola').hexdigest(),
+            binding_id=self.binding_id)
+        self.repo.finish_apollo_linkedin('company', 'task1', 'linkedin_step_message', 'confirmed',
+            receipt={'provider_id': 'synthetic-receipt'}, apollo_status='pending')
+        now = 1800000000
+        sent_at = datetime.fromtimestamp(now, timezone.utc).isoformat()
+        data = {'object': 'event', 'event': 'message.received', 'data': {
+            'provider': 'LINKEDIN', 'account_id': 'a' * 24,
+            'message_urn': 'urn:li:messagingMessage:synthetic',
+            'conversation_id': 'urn:li:messagingThread:synthetic',
+            'sender': {'id': 'urn:li:fsd_profile:synthetic'}, 'timestamp': sent_at,
+            'body': 'Synthetic inbound message'}}
+        raw = json.dumps(data).encode(); secret = b's' * 32
+        sig = 'sha256=' + hmac.new(secret, raw, hashlib.sha256).hexdigest()
+        result = ConnectSafelyWebhook(self.repo, secret=secret, account_id='a' * 24, clock=lambda: now).accept(
+            raw, {'x-webhook-signature': sig, 'x-webhook-timestamp': str(now)})
+        self.event_id = result['event_id']
+        self.payload = {'id': 'synthetic', 'channel': 'linkedin', 'content': 'Synthetic inbound message',
+            'received_at': sent_at, 'hubspot_contact_id': None, 'campaign_id': 'campaign',
+            'human_reply': None, 'identity_verified': True, 'source': {'provider': 'connectsafely',
+                'account_id': 'a' * 24, 'provider_message_id': 'urn:li:messagingMessage:synthetic'}}
+        self.correlation = {'binding_id': self.binding_id, 'event_id': self.event_id}
+        self.control = ReplyControl(self.repo, service.campaign_registry)
+
+    def test_webhook_binding_stops_t4_and_records_unclassified_reply_once(self):
+        from thunder_os.apollo_linkedin_runtime_safety import RuntimeSafety
+        result = self.control.ingest(self.payload, 'verified_source', provider_correlation=self.correlation)
+        self.assertTrue(result['reply']['identity_confirmed'])
+        self.assertEqual(result['reply']['state'], 'identity_resolution')
+        self.assertIsNone(result['reply']['human_reply'])
+        self.assertFalse(result['external_pause_enabled'])
+        stop = RuntimeSafety._key({'company_id': 'company'}, {'recipient_public_id': 'person'})
+        self.assertTrue(self.repo.get_state('apollo_linkedin_reply_stop', stop)['active'])
+        self.assertTrue(self.control.ingest(self.payload, 'verified_source', provider_correlation=self.correlation)['duplicate'])
+        self.assertEqual(self.repo.get_state('connectsafely_event', self.event_id)['state'], 'processed')
+        self.assertEqual(self.repo.get_state('connectsafely_event', self.event_id)['reply_id'], result['reply']['id'])
+        from thunder_os.service import ContractError, ThunderService
+        for label in ('negative', 'opt_out', 'risk'):
+            with self.subTest(label=label), self.assertRaisesRegex(ContractError, 'reply identity unresolved'):
+                ThunderService(self.repo).classify_reply(result['reply']['id'], label, 1.0, 'Synthetic', 'ygor')
+
+    def test_unverified_wrong_account_or_spoofed_content_cannot_stop(self):
+        for key, replacement in (('content', 'altered'), ('campaign_id', 'other'), ('human_reply', True)):
+            with self.subTest(key=key), self.assertRaises(ReplyControlError):
+                self.control.ingest({**self.payload, key: replacement}, 'verified_source', provider_correlation=self.correlation)
+        self.assertEqual(self.repo.list_state('apollo_linkedin_reply_stop'), [])
+        self.assertEqual(self.repo.list_state('reply'), [])
+
+    def test_duplicate_identity_across_tenants_is_blocked(self):
+        from thunder_os.apollo_linkedin_identity_binding import KIND
+        from thunder_os.models import payload_hash
+        other = {**self.binding, 'company': 'other'}
+        from thunder_os.apollo_linkedin_identity_binding import binding_key
+        other_id = binding_key('other', 'campaign', 'task1', 'a' * 24, self.binding['approval_id'])
+        self.repo.append_state(KIND, other_id, other)
+        with self.assertRaisesRegex(ReplyControlError, 'reply_provider_binding_ambiguous'):
+            self.control.ingest(self.payload, 'verified_source', provider_correlation=self.correlation)
+        self.assertEqual(self.repo.list_state('apollo_linkedin_reply_stop'), [])
+
+    def test_historical_approval_revocation_does_not_hide_inbound_reply(self):
+        approval = self.repo.get_state('approval', self.binding['approval_id'])
+        self.repo.put_state('approval', self.binding['approval_id'], {**approval, 'status': 'revoked'})
+        result = self.control.ingest(self.payload, 'verified_source', provider_correlation=self.correlation)
+        self.assertTrue(result['reply']['identity_confirmed'])
+        self.assertEqual(len(self.repo.list_state('apollo_linkedin_reply_stop')), 1)
+
+    def test_new_approval_and_changed_urn_cannot_reuse_older_reservation(self):
+        from thunder_os.apollo_linkedin_identity_binding import KIND, binding_key
+        from thunder_os.connectsafely_webhook import ConnectSafelyWebhook
+        from thunder_os.service import ThunderService
+        service = ThunderService(self.repo)
+        review = service.apollo_campaign_approval_review('campaign')
+        newer = service.approve_apollo_campaign_version('campaign', 'ygor',
+            execution_confirmation=review['execution_confirmation'])
+        new_binding = {**self.binding, 'approval_id': newer['id'], 'member_urn': 'urn:li:fsd_profile:new'}
+        new_id = binding_key('company', 'campaign', 'task1', 'a' * 24, newer['id'])
+        self.repo.append_state(KIND, new_id, new_binding)
+        now = 1800000000; sent_at = datetime.fromtimestamp(now, timezone.utc).isoformat()
+        data = {'object': 'event', 'event': 'message.received', 'data': {
+            'provider': 'LINKEDIN', 'account_id': 'a' * 24, 'message_urn': 'urn:li:messagingMessage:new',
+            'conversation_id': 'urn:li:messagingThread:synthetic',
+            'sender': {'id': 'urn:li:fsd_profile:new'}, 'timestamp': sent_at, 'body': 'Synthetic inbound message'}}
+        raw = json.dumps(data).encode(); secret = b's' * 32
+        sig = 'sha256=' + hmac.new(secret, raw, hashlib.sha256).hexdigest()
+        accepted = ConnectSafelyWebhook(self.repo, secret=secret, account_id='a' * 24, clock=lambda: now).accept(
+            raw, {'x-webhook-signature': sig, 'x-webhook-timestamp': str(now)})
+        payload = {**self.payload, 'source': {**self.payload['source'],
+                                               'provider_message_id': 'urn:li:messagingMessage:new'}}
+        with self.assertRaisesRegex(ReplyControlError, 'reply_provider_reservation_binding_unverified'):
+            self.control.ingest(payload, 'verified_source', provider_correlation={
+                'binding_id': new_id, 'event_id': accepted['event_id']})
+        self.assertEqual(self.repo.list_state('reply'), [])
+        self.assertEqual(self.repo.list_state('apollo_linkedin_reply_stop'), [])
+
+    def test_simultaneous_webhook_processing_creates_one_reply_and_one_stop(self):
+        def ingest(_):
+            return self.control.ingest(self.payload, 'verified_source', provider_correlation=self.correlation)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(ingest, range(2)))
+        self.assertEqual(sorted(row['duplicate'] for row in results), [False, True])
+        self.assertEqual(len(self.repo.list_state('reply')), 1)
+        self.assertEqual(len(self.repo.list_state('apollo_linkedin_reply_stop')), 1)
+
+    def test_missing_receipt_or_quarantined_webhook_cannot_confirm_identity(self):
+        event_row = self.repo.get_state('connectsafely_event', self.event_id)
+        self.repo.put_state('connectsafely_event', self.event_id, {**event_row, 'state': 'quarantined'})
+        with self.assertRaisesRegex(ReplyControlError, 'reply_provider_binding_unavailable'):
+            self.control.ingest(self.payload, 'verified_source', provider_correlation=self.correlation)
+        self.assertEqual(self.repo.list_state('apollo_linkedin_reply_stop'), [])
+        self.assertEqual(self.repo.list_state('reply'), [])
+        self.repo.put_state('connectsafely_event', self.event_id, {**event_row, 'state': 'received'})
+        with self.repo.transaction() as con:
+            con.execute("UPDATE apollo_linkedin_reservations SET receipt=? WHERE company=? AND task_id=?",
+                        ('{"publicIdentifier":"person"}', 'company', 'task1'))
+        with self.assertRaisesRegex(ReplyControlError, 'reply_provider_reservation_unverified'):
+            self.control.ingest(self.payload, 'verified_source', provider_correlation=self.correlation)
+
+    def test_older_webhook_is_not_attributed_to_the_campaign(self):
+        from thunder_os.models import payload_hash
+        event_row = self.repo.get_state('connectsafely_event', self.event_id)
+        event = {**event_row['event'], 'sent_at': '2020-01-01T00:00:00+00:00'}
+        self.repo.put_state('connectsafely_event', self.event_id, {**event_row, 'event': event,
+                                                                   'fingerprint': payload_hash(event)})
+        with self.assertRaisesRegex(ReplyControlError, 'reply_provider_event_before_reservation'):
+            self.control.ingest({**self.payload, 'received_at': event['sent_at']}, 'verified_source',
+                                provider_correlation=self.correlation)
+        self.assertEqual(self.repo.list_state('reply'), [])
+
+    def test_already_processed_webhook_is_not_recorded_twice(self):
+        event_row = self.repo.get_state('connectsafely_event', self.event_id)
+        self.repo.put_state('connectsafely_event', self.event_id, {**event_row, 'state': 'processed',
+                                                                   'reply_id': 'legacy-reply'})
+        with self.assertRaisesRegex(ReplyControlError, 'reply_provider_binding_unavailable'):
+            self.control.ingest(self.payload, 'verified_source', provider_correlation=self.correlation)
+        self.assertEqual(self.repo.list_state('reply'), [])
+
+    def test_empty_authenticated_message_stops_without_invented_content(self):
+        from thunder_os.connectsafely_webhook import ConnectSafelyWebhook
+        now = 1800000000; sent_at = datetime.fromtimestamp(now, timezone.utc).isoformat()
+        data = {'object': 'event', 'event': 'message.received', 'data': {
+            'provider': 'LINKEDIN', 'account_id': 'a' * 24,
+            'message_urn': 'urn:li:messagingMessage:empty',
+            'conversation_id': 'urn:li:messagingThread:synthetic',
+            'sender': {'id': 'urn:li:fsd_profile:synthetic'}, 'timestamp': sent_at, 'body': ''}}
+        raw = json.dumps(data).encode(); secret = b's' * 32
+        sig = 'sha256=' + hmac.new(secret, raw, hashlib.sha256).hexdigest()
+        result = ConnectSafelyWebhook(self.repo, secret=secret, account_id='a' * 24, clock=lambda: now).accept(
+            raw, {'x-webhook-signature': sig, 'x-webhook-timestamp': str(now)})
+        payload = {**self.payload, 'content': '[mensagem sem texto; revisar contexto]',
+                   'source': {**self.payload['source'], 'provider_message_id': 'urn:li:messagingMessage:empty'}}
+        recorded = self.control.ingest(payload, 'verified_source', provider_correlation={
+            'binding_id': self.binding_id, 'event_id': result['event_id']})
+        self.assertTrue(recorded['reply']['content_unavailable'])
+        self.assertTrue(recorded['reply']['identity_confirmed'])
+        self.assertEqual(self.repo.get_state('connectsafely_event', result['event_id'])['event']['content'], '')
+        self.assertEqual(len(self.repo.list_state('apollo_linkedin_reply_stop')), 1)
+
+    def _legacy_processed_event(self):
+        from thunder_os.service import ThunderService
+        event_row = self.repo.get_state('connectsafely_event', self.event_id)
+        reply_id = 'connectsafely:' + self.event_id
+        ThunderService(self.repo).record_reply({'id': reply_id, 'channel': 'linkedin',
+                                               'content': event_row['event']['content']}, 'connectsafely-inbox')
+        self.repo.put_state('connectsafely_event', self.event_id, {**event_row, 'state': 'processed', 'reply_id': reply_id})
+        self.repo.append_state('connectsafely_correlation_pending', self.event_id, {
+            'account_id': event_row['event']['account_id'], 'event_id': self.event_id, 'state': 'pending'})
+        return reply_id
+
+    def test_promotes_legacy_reply_atomically_and_idempotently_without_duplicate(self):
+        reply_id = self._legacy_processed_event()
+        result = self.control.promote_connectsafely_event(self.event_id, self.binding_id)
+        self.assertEqual(result['reply']['id'], reply_id)
+        self.assertTrue(result['reply']['identity_confirmed'])
+        self.assertEqual(result['reply']['state'], 'identity_resolution')
+        self.assertIsNone(result['reply']['human_reply'])
+        self.assertEqual(len(self.repo.list_state('reply')), 1)
+        self.assertEqual(len(self.repo.list_state('operator_alert')), 1)
+        self.assertEqual(self.control.snapshot()['replies'][0]['id'], reply_id)
+        self.assertEqual(len(self.repo.list_state('apollo_linkedin_reply_stop')), 1)
+        self.assertTrue(self.control.promote_connectsafely_event(self.event_id, self.binding_id)['duplicate'])
+        self.assertEqual(self.repo.get_state('connectsafely_correlation_pending', self.event_id)['state'], 'resolved')
+
+    def test_legacy_reply_modified_by_human_never_promoted_or_overwritten(self):
+        reply_id = self._legacy_processed_event()
+        legacy = self.repo.get_state('reply', reply_id)
+        self.repo.put_state('reply', reply_id, {**legacy, 'content': 'human-edited'})
+        with self.assertRaisesRegex(ReplyControlError, 'reply_legacy_modified'):
+            self.control.promote_connectsafely_event(self.event_id, self.binding_id)
+        self.assertEqual(self.repo.get_state('reply', reply_id)['content'], 'human-edited')
+        self.assertEqual(self.repo.list_state('apollo_linkedin_reply_stop'), [])
+        self.assertEqual(self.repo.get_state('connectsafely_correlation_pending', self.event_id)['state'], 'pending')
+
+    def test_legacy_promotion_failure_rolls_back_stop_reply_and_pending(self):
+        reply_id = self._legacy_processed_event()
+        append = self.repo.append_state
+        def fail_alert(kind, *args, **kwargs):
+            if kind == 'operator_alert': raise RuntimeError('fake write failure')
+            return append(kind, *args, **kwargs)
+        with patch.object(self.repo, 'append_state', side_effect=fail_alert), self.assertRaises(RuntimeError):
+            self.control.promote_connectsafely_event(self.event_id, self.binding_id)
+        self.assertEqual(self.repo.get_state('reply', reply_id)['version'], 1)
+        self.assertEqual(self.repo.list_state('apollo_linkedin_reply_stop'), [])
+        self.assertEqual(self.repo.get_state('connectsafely_correlation_pending', self.event_id)['state'], 'pending')
+
+    def test_producer_reservation_signed_webhook_and_consumer_with_fake_http(self):
+        from test_thunder_os_apollo_linkedin_identity_binding import IdentityBindingTests, ACCOUNT, URN
+        from thunder_os.connectsafely_webhook import ConnectSafelyWebhook
+        fixture = IdentityBindingTests(methodName='test_exact_identity_is_immutable_and_duplicate_is_idempotent')
+        fixture.setUp(); self.addCleanup(fixture.doCleanups)
+        binding = fixture.create()
+        task = {'id': 'task', 'type': 'linkedin_step_message', 'status': 'scheduled',
+                'emailer_campaign_id': 'seq', 'user_id': 'owner', 'contact_id': 'contact',
+                'contact': {'id': 'contact', 'linkedin_url': 'https://www.linkedin.com/in/synthetic-person'},
+                'linkedin_emailer_template': {'body_text': 'Synthetic text'}}
+        fixture.repo.reserve_apollo_linkedin_for_campaign('campaign', fixture.approval, 'v1', task,
+            observed_team_id='team', expected_text_hash=hashlib.sha256(b'Synthetic text').hexdigest(),
+            binding_id=binding['id'])
+        fixture.repo.finish_apollo_linkedin('company', 'task', 'linkedin_step_message', 'confirmed',
+            receipt={'provider_id': 'synthetic-receipt'}, apollo_status='pending')
+        now = 1800000000; stamp = datetime.fromtimestamp(now, timezone.utc).isoformat()
+        raw = json.dumps({'object': 'event', 'event': 'message.received', 'data': {
+            'provider': 'LINKEDIN', 'account_id': ACCOUNT, 'message_urn': 'urn:li:messagingMessage:e2e',
+            'conversation_id': 'urn:li:messagingThread:e2e', 'sender': {'id': URN},
+            'timestamp': stamp, 'body': 'Synthetic inbound'}}).encode()
+        secret = b'x' * 32; sig = 'sha256=' + hmac.new(secret, raw, hashlib.sha256).hexdigest()
+        accepted = ConnectSafelyWebhook(fixture.repo, secret=secret, account_id=ACCOUNT, clock=lambda: now).accept(
+            raw, {'x-webhook-signature': sig, 'x-webhook-timestamp': str(now)})
+        payload = {'id': 'e2e', 'channel': 'linkedin', 'content': 'Synthetic inbound', 'received_at': stamp,
+                   'hubspot_contact_id': None, 'campaign_id': 'campaign', 'human_reply': None,
+                   'identity_verified': True, 'source': {'provider': 'connectsafely', 'account_id': ACCOUNT,
+                                                         'provider_message_id': 'urn:li:messagingMessage:e2e'}}
+        result = ReplyControl(fixture.repo, fixture.service.campaign_registry).ingest(payload, 'verified_source',
+            provider_correlation={'binding_id': binding['id'], 'event_id': accepted['event_id']})
+        self.assertEqual(result['reply']['identity_basis'], 'verified_connectsafely_event')
+        self.assertEqual(len(fixture.repo.list_state('apollo_linkedin_reply_stop')), 1)
 
 
 if __name__=='__main__':unittest.main()

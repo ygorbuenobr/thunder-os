@@ -260,7 +260,22 @@ class ApolloLinkedinStorageTest(unittest.TestCase):
         with self.assertRaises(RepositoryConflict):
             repo.resolve_apollo_linkedin_uncertain('company', 't4', 'linkedin_step_connect', 'close', 'checked', 'ygor')
 
-    def test_release_needs_fresh_canary_and_reopens_same_reservation_once(self):
+    def test_invitation_uncertain_never_reopens_even_after_release_and_fresh_canary(self):
+        repo = self.service.repository
+        repo.reserve_apollo_linkedin('company', 'invite-risk', 'linkedin_step_connect', 'account',
+                                    text_hash='c'*64, campaign_version='v1', recipient='lead')
+        repo.finish_apollo_linkedin('company', 'invite-risk', 'linkedin_step_connect', 'uncertain', 'timeout')
+        repo.resolve_apollo_linkedin_uncertain('company', 'invite-risk', 'linkedin_step_connect',
+                                               'release', 'Checked provider', 'ygor')
+        auth = repo.issue_apollo_linkedin_canary('company', 'invite-risk', 'account', 'lead', 'c'*64, 'ygor')
+        with self.assertRaises(RepositoryConflict):
+            repo.reserve_apollo_linkedin_with_canary(auth['id'], 'company', 'invite-risk',
+                'linkedin_step_connect', 'account', 'lead', 'c'*64, 'v1')
+        self.assertEqual('uncertain', repo.get_apollo_linkedin_reservation('company', 'invite-risk',
+                                                                            'linkedin_step_connect')['state'])
+        self.assertEqual('issued', repo.get_state('apollo_linkedin_canary', auth['id'])['state'])
+
+    def test_release_and_canaries_never_reopen_invitation(self):
         repo = self.service.repository
         repo.reserve_apollo_linkedin('company', 'canary-task', 'linkedin_step_connect', 'account',
                                     text_hash='c'*64, campaign_version='v1', recipient='lead')
@@ -280,29 +295,27 @@ class ApolloLinkedinStorageTest(unittest.TestCase):
             repo.reserve_apollo_linkedin_with_canary(auth['id'], 'company', 'canary-task',
                 'linkedin_step_connect', 'account', 'lead', 'c'*64, 'v2')
         self.assertEqual(repo.get_state('apollo_linkedin_canary', auth['id'])['state'], 'issued')
-        result = repo.reserve_apollo_linkedin_with_canary(auth['id'], 'company', 'canary-task',
-            'linkedin_step_connect', 'account', 'lead', 'c'*64, 'v1')
-        self.assertEqual(result['state'], 'reserved')
-        self.assertEqual(len(repo.list_apollo_linkedin_reservations()), 1)
-        self.assertEqual(repo.get_state('apollo_linkedin_canary', auth['id'])['state'], 'consumed')
         with self.assertRaises(RepositoryConflict):
             repo.reserve_apollo_linkedin_with_canary(auth['id'], 'company', 'canary-task',
                 'linkedin_step_connect', 'account', 'lead', 'c'*64, 'v1')
-        # A second uncertain outcome cannot reuse the prior release.
-        repo.finish_apollo_linkedin('company', 'canary-task', 'linkedin_step_connect', 'uncertain', 'timeout')
+        self.assertEqual(repo.get_apollo_linkedin_reservation('company', 'canary-task',
+                                                              'linkedin_step_connect')['state'], 'uncertain')
+        self.assertEqual(len(repo.list_apollo_linkedin_reservations()), 1)
+        self.assertEqual(repo.get_state('apollo_linkedin_canary', auth['id'])['state'], 'issued')
+        with self.assertRaises(RepositoryConflict):
+            repo.reserve_apollo_linkedin_with_canary(auth['id'], 'company', 'canary-task',
+                'linkedin_step_connect', 'account', 'lead', 'c'*64, 'v1')
+        # Additional canaries and the audit decision cannot override uncertainty.
         fresh = repo.issue_apollo_linkedin_canary('company', 'canary-task', 'account', 'lead', 'c'*64, 'ygor')
         with self.assertRaises(RepositoryConflict):
             repo.reserve_apollo_linkedin_with_canary(fresh['id'], 'company', 'canary-task',
                 'linkedin_step_connect', 'account', 'lead', 'c'*64, 'v1')
         self.assertEqual(repo.get_state('apollo_linkedin_canary', fresh['id'])['state'], 'issued')
-        # A fresh human decision applies only to the new uncertain outcome.
-        repo.resolve_apollo_linkedin_uncertain('company', 'canary-task', 'linkedin_step_connect',
-                                                'close', 'Confirmed no retry', 'ygor')
         with self.assertRaises(RepositoryConflict):
-            repo.reserve_apollo_linkedin_with_canary(fresh['id'], 'company', 'canary-task',
-                'linkedin_step_connect', 'account', 'lead', 'c'*64, 'v1')
+            repo.resolve_apollo_linkedin_uncertain('company', 'canary-task', 'linkedin_step_connect',
+                                                    'close', 'Confirmed no retry', 'ygor')
 
-    def test_two_processes_compete_for_one_uncertain_release(self):
+    def test_two_processes_cannot_reopen_uncertain_invitation(self):
         repo = self.service.repository
         repo.reserve_apollo_linkedin('company', 'canary-task', 'linkedin_step_connect', 'account',
                                     text_hash='c'*64, campaign_version='v1', recipient='lead')
@@ -319,8 +332,10 @@ class ApolloLinkedinStorageTest(unittest.TestCase):
         for process in processes:
             process.join(15)
             self.assertEqual(process.exitcode, 0)
-        self.assertCountEqual(results, ['reserved', 'conflict'])
-        self.assertEqual(repo.get_state('apollo_linkedin_canary', auth['id'])['state'], 'consumed')
+        self.assertEqual(results, ['conflict', 'conflict'])
+        self.assertEqual(repo.get_state('apollo_linkedin_canary', auth['id'])['state'], 'issued')
+        self.assertEqual(repo.get_apollo_linkedin_reservation('company', 'canary-task',
+                                                              'linkedin_step_connect')['state'], 'uncertain')
 
     def test_t4_evidence_is_persisted_and_reconciliation_is_cas(self):
         repo = self.service.repository

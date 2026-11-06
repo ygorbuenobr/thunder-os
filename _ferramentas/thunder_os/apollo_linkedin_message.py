@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import math
 import re
+from datetime import datetime, timezone
 from urllib.parse import quote
 
-from .connectsafely_client import ConnectSafelyError
+from .connectsafely_client import ConnectSafelyError, urn
 
 
 def _time(value):
@@ -24,7 +25,7 @@ class MessageAdapter:
     def relationship(self, plan):
         try:
             self.client._plan(plan)
-            if plan['action'] != 'dm':
+            if plan['action'] not in ('dm', 'invite'):
                 return False
             evidence = self.client.relationship(plan)
             return (evidence.get('relationship_status') == 'CONNECTED'
@@ -79,7 +80,7 @@ class MessageAdapter:
             try:
                 client = self.client
                 client._plan(plan)
-                if (plan['action'] != 'dm' or profile_urn != plan['recipient_profile_urn']
+                if (plan['action'] not in ('dm', 'invite') or profile_urn != plan['recipient_profile_urn']
                         or not _time(last_touch_at)):
                     return unknown
                 client.verify_identity()
@@ -142,7 +143,27 @@ class MessageAdapter:
                             return unknown
                         times.append(stamp)
                         if sender == recipient and stamp > last_touch_at:
-                            return {**unknown, 'complete': True, 'suppressed': True}
+                            # A verified inbound message always stops the flow;
+                            # missing text is represented explicitly, never invented.
+                            evidence = {'provider': 'connectsafely',
+                                        'account_id': plan['account_id'],
+                                        'recipient_profile_urn': profile_urn,
+                                        'recipient_public_id': plan['recipient_public_id'],
+                                        'conversation_urn': thread,
+                                        'provider_message_id': row['messageUrn'] if urn(row['messageUrn']) else None,
+                                        'received_at': None, 'content': None}
+                            try:
+                                evidence['received_at'] = datetime.fromtimestamp(stamp, timezone.utc).isoformat()
+                            except (ValueError, OverflowError, OSError):
+                                pass
+                            body = row.get('text')
+                            if isinstance(body, str) and body.strip() and len(body) <= 200000:
+                                evidence['content'] = body
+                            # A positive reply proves a stop even when older pages
+                            # were not read; it does not prove full history.
+                            return {**unknown, 'complete': True, 'suppressed': True,
+                                    'positive_evidence_verified': True,
+                                    'history_complete': False, 'reply': evidence}
                     next_cursor = data.get('nextCursor')
                     if data['hasMore'] is False and next_cursor is None:
                         return {**unknown, 'complete': True, 'no_record': not seen}

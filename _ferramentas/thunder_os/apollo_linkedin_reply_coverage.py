@@ -310,8 +310,48 @@ class ReplyCoverage:
         if (not isinstance(evidence, dict) or evidence.get('target') != target['linkedin_profile_urn']
                 or evidence.get('complete') is not True or type(evidence.get('suppressed')) is not bool
                 or evidence.get('coverage') != 'exact_profile_conversation'):
-            return 'unknown', 'linkedin_conversation_incomplete'
-        return ('reply', 'linkedin_reply_observed') if evidence['suppressed'] else ('ok', 'linkedin_conversation_observed')
+            return 'unknown', 'linkedin_conversation_incomplete', None, None
+        if not evidence['suppressed']:
+            return 'ok', 'linkedin_conversation_observed', None, None
+        # An observed inbound message is proof of a stop, not proof that all
+        # older messages were collected. Preserve only the producer's explicit
+        # positive-evidence marker and its explicit incomplete-history marker.
+        markers = {}
+        if evidence.get('positive_evidence_verified') is True:
+            markers['positive_evidence_verified'] = True
+        if evidence.get('history_complete') is False:
+            markers['history_complete'] = False
+        reply = evidence.get('reply')
+        # A positive response always stops the cadence, even if details are
+        # incomplete. Details cross this boundary only when they match the
+        # account and recipient supplied from a separately trusted binding.
+        if (not isinstance(reply, dict) or reply.get('provider') != 'connectsafely'
+                or not isinstance(target.get('account_id'), str) or not target['account_id']
+                or not isinstance(target.get('recipient_public_id'), str) or not target['recipient_public_id']
+                or reply.get('account_id') != target['account_id']
+                or reply.get('recipient_public_id') != target['recipient_public_id']
+                or reply.get('recipient_profile_urn') != target['linkedin_profile_urn']
+                or not isinstance(reply.get('conversation_urn'), str)
+                or not re.fullmatch(r'urn:li:msg_conversation:[^\s\x00-\x1f]{1,512}', reply['conversation_urn'])):
+            return 'reply', 'linkedin_reply_observed', None, markers
+        message_id = reply.get('provider_message_id')
+        if message_id is not None and (not isinstance(message_id, str)
+                or not re.fullmatch(r'urn:li:messagingMessage:[^\s\x00-\x1f]{1,512}', message_id)):
+            message_id = None
+        received_at = reply.get('received_at')
+        try:
+            received_at = _stamp(received_at).isoformat() if received_at is not None else None
+        except (ValueError, TypeError, OverflowError):
+            received_at = None
+        content = reply.get('content')
+        if not isinstance(content, str) or not content.strip() or len(content) > 200000:
+            content = None
+        safe_reply = {'provider': 'connectsafely', 'account_id': target['account_id'],
+                      'recipient_public_id': target['recipient_public_id'],
+                      'recipient_profile_urn': target['linkedin_profile_urn'],
+                      'conversation_urn': reply['conversation_urn'], 'provider_message_id': message_id,
+                      'received_at': received_at, 'content': content}
+        return 'reply', 'linkedin_reply_observed', safe_reply, markers
 
     def observe(self, target):
         email = target.get('email') if isinstance(target, dict) else None
@@ -336,11 +376,13 @@ class ReplyCoverage:
             return result
         for name in required:
             started = _now(self.clock)
+            reply = None
+            markers = None
             try:
                 if name == 'apollo':
                     status, reason = self._apollo(target)
                 elif name == 'linkedin':
-                    status, reason = self._linkedin(target)
+                    status, reason, reply, markers = self._linkedin(target)
                 elif self.hubspot is None:
                     status, reason = 'unknown', 'hubspot_unavailable'
                 else:
@@ -356,6 +398,10 @@ class ReplyCoverage:
                 else:
                     status, reason = 'unknown', 'observation_stale_or_clock_changed'
             result['sources'][name] = _observation(status, started, reason)
+            if status == 'reply' and reply is not None:
+                result['sources'][name]['reply'] = reply
+            if status == 'reply' and markers:
+                result['sources'][name].update(markers)
         now = _now(self.clock)
         result['observed_at'] = now.isoformat().replace('+00:00', 'Z')
         for name in required:

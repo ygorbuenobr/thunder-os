@@ -211,6 +211,82 @@ class Repository:
                 'campaign_version': campaign_version, 'recipient': recipient,
                 'receipt': None, 'apollo_status': None}
 
+    def reserve_apollo_linkedin_for_campaign(self, campaign_id, approval_id, campaign_version,
+                                            task, *, observed_team_id, expected_text_hash, binding_id):
+        """Atomically reserve an observed task against a persisted campaign approval.
+
+        The caller must obtain ``task`` and ``observed_team_id`` from its
+        authenticated Apollo reader. This method checks their bindings but does
+        not itself authenticate the observation or authorize provider dispatch.
+        The executor must re-read the task and all gates at the send boundary.
+        """
+        from .apollo_linkedin_authority import CampaignApprovalAuthority
+        from .apollo_linkedin_identity_binding import KIND, binding_key
+        from .apollo_linkedin_preview import _slug, validated_task_text
+
+        self.apollo_linkedin_store_ready()
+        if not isinstance(task, dict):
+            raise ValueError('task_observation_invalid')
+        task_id, action = task.get('id'), task.get('type')
+        action_name = {'linkedin_step_connect': 'invite', 'linkedin_step_message': 'message'}.get(action)
+        if not action_name or task.get('status') != 'scheduled':
+            raise ValueError('task_observation_invalid')
+        contact = task.get('contact')
+        if (not isinstance(contact, dict) or not isinstance(contact.get('id'), str)
+                or not contact['id'] or task.get('contact_id') != contact['id']):
+            raise ValueError('contact_identity_invalid')
+        recipient = _slug(contact.get('linkedin_url'))
+        _, digest, blocker = validated_task_text(task, action_name)
+        if blocker or not recipient or digest != expected_text_hash:
+            raise ValueError('task_text_or_recipient_invalid')
+        self._t4_canary_fields('placeholder', task_id, 'placeholder', recipient, digest)
+        with self.transaction() as con:
+            # Nested callers may catch an exception without rolling back their
+            # outer transaction; a savepoint preserves reservation+audit atomicity.
+            con.execute('SAVEPOINT campaign_reservation')
+            try:
+                approved = CampaignApprovalAuthority(self).require(campaign_id, approval_id, campaign_version)
+                binding = approved['binding']
+                if (binding.get('team_id') != observed_team_id
+                        or task.get('emailer_campaign_id') != binding.get('sequence_id')
+                        or task.get('user_id') not in binding.get('owner_ids', ())
+                        or recipient == binding.get('public_id', '').lower()):
+                    raise ValueError('task_campaign_binding_invalid')
+                company, account = binding['company_id'], binding['account_id']
+                self._t4_canary_fields(company, task_id, account, recipient, digest)
+                identity = self.get_state(KIND, binding_id) if isinstance(binding_id, str) else None
+                expected_id = binding_key(company, campaign_id, task_id, account, approval_id)
+                if (binding_id != expected_id or not isinstance(identity, dict) or identity.get('version') != 1
+                        or identity.get('id') != expected_id
+                        or identity.get('company') != company or identity.get('campaign_id') != campaign_id
+                        or identity.get('approval_id') != approval_id
+                        or identity.get('campaign_version') != campaign_version
+                        or identity.get('scope_hash') != approved['scope_hash']
+                        or identity.get('team_id') != observed_team_id
+                        or identity.get('sequence_id') != binding['sequence_id']
+                        or identity.get('task_id') != task_id or identity.get('action_type') != action
+                        or identity.get('contact_id') != contact['id']
+                        or identity.get('account_id') != account or identity.get('recipient_public_id') != recipient
+                        or not isinstance(identity.get('member_urn'), str)
+                        or not re.fullmatch(r'urn:li:fsd_profile:[A-Za-z0-9_-]{1,200}', identity['member_urn'])):
+                    raise ValueError('identity_binding_unverified')
+                result = self.reserve_apollo_linkedin(company, task_id, action, account,
+                    text_hash=digest, campaign_version=campaign_version, recipient=recipient)
+                self.append_event(task_id, 'apollo_linkedin_campaign_reservation', {
+                    'company': company, 'task_id': task_id, 'action_type': action,
+                    'account_id': account, 'campaign_id': campaign_id, 'approval_id': approval_id,
+                    'campaign_version': str(campaign_version), 'approval_scope_hash': approved['scope_hash'],
+                    'actor': 'ygor', 'text_hash': digest, 'apollo_contact_id': contact['id'],
+                    'binding_id': binding_id, 'member_urn': identity['member_urn'],
+                    'apollo_owner_id': task['user_id'], 'apollo_sequence_id': binding['sequence_id'],
+                    'apollo_team_id': observed_team_id})
+                con.execute('RELEASE SAVEPOINT campaign_reservation')
+                return result
+            except Exception:
+                con.execute('ROLLBACK TO SAVEPOINT campaign_reservation')
+                con.execute('RELEASE SAVEPOINT campaign_reservation')
+                raise
+
     @staticmethod
     def _t4_canary_fields(company, task_id, account_id, recipient, text_hash):
         # A canary is bound to exact identifiers, never an inferred default.
@@ -330,40 +406,12 @@ class Repository:
                 except sqlite3.IntegrityError as exc:
                     raise RepositoryConflict('Apollo LinkedIn task already reserved') from exc
             else:
-                # A message without a proven receipt must never be retried by
-                # this canary, even if a later operator marks it for release.
+                # An operator's decision is audit evidence, not proof that an
+                # ambiguous provider effect did not happen. Neither a new
+                # canary nor a release may dispatch the same action again.
                 if action_type == 'linkedin_step_message':
                     raise RepositoryConflict('uncertain message cannot be retried')
-                # A human release never dispatches. It permits exactly one later,
-                # explicitly requested reservation using a fresh matching canary.
-                resolution_key = payload_hash({'company': company, 'task_id': task_id, 'action_type': action_type})
-                resolution = self.get_state('apollo_linkedin_uncertain_resolution', resolution_key)
-                try:
-                    resolved_at = datetime.fromisoformat(resolution['updated_at'])
-                    if resolved_at.tzinfo is None or resolved_at.utcoffset() is None or issued < resolved_at:
-                        raise ValueError('canary predates release')
-                except (KeyError, TypeError, ValueError, OverflowError):
-                    raise RepositoryConflict('Apollo LinkedIn release unavailable') from None
-                if (previous['state'] != 'uncertain' or previous['receipt'] is not None
-                        or previous['apollo_status'] is not None
-                        or (previous['account_id'], previous['recipient'], previous['text_hash'], previous['campaign_version'])
-                           != (account_id, recipient, text_hash, str(campaign_version))
-                        or not isinstance(resolution, dict) or resolution.get('decision') != 'release'
-                        or resolution.get('consumed') is not False
-                        or resolution.get('reservation_updated_at') != previous['updated_at']):
-                    raise RepositoryConflict('Apollo LinkedIn task already reserved')
-                changed = con.execute("UPDATE apollo_linkedin_reservations SET state='reserved', reason=NULL, updated_at=? "
-                                      "WHERE company=? AND task_id=? AND action_type=? AND state='uncertain' AND updated_at=?",
-                                      (now.isoformat(), company, task_id, action_type, previous['updated_at'])).rowcount
-                if changed != 1:
-                    raise RepositoryConflict('Apollo LinkedIn release changed')
-                stored = {k: v for k, v in resolution.items() if k not in {'id', 'version', 'updated_at'}}
-                self._put_state_in(con, 'apollo_linkedin_uncertain_resolution', resolution_key,
-                                   {**stored, 'consumed': True, 'canary_id': canary_id,
-                                    'consumed_at': now.isoformat()}, now.isoformat(), resolution['version'])
-                self.append_event(resolution_key, 'apollo_linkedin_release_consumed',
-                                  {'company': company, 'task_id': task_id, 'action_type': action_type,
-                                   'canary_id': canary_id})
+                raise RepositoryConflict('Apollo LinkedIn task already reserved')
             self._put_state_in(con, 'apollo_linkedin_canary', canary_id,
                                {**auth, 'state': 'consumed'}, now.isoformat(), row['version'])
         return {'company': company, 'task_id': task_id, 'action_type': action_type,
@@ -374,8 +422,8 @@ class Repository:
         """Record a human decision atomically; never perform or authorize an effect.
 
         The caller is responsible for trusted-proxy authentication and RBAC.
-        A release decision never itself retries; an explicit later request requires
-        fresh canary, all preflight checks and an atomic reservation transition.
+        A release decision records the review but never authorizes another send;
+        the original uncertain reservation remains authoritative.
         """
         if (decision not in ('release', 'close') or not isinstance(justification, str)
                 or not justification.strip() or len(justification) > 2000

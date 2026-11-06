@@ -1,6 +1,7 @@
 """Offline stop/readback contracts; no provider or runtime mutation."""
 from copy import deepcopy
 import json
+import multiprocessing
 import unittest
 import tempfile
 from pathlib import Path
@@ -11,6 +12,28 @@ from thunder_os.external_pause_adapters import ApolloExternalPause, ExternalPaus
 
 BINDING = {'campaign_id': 'BR-PILOT', 'account_id': 'team-1', 'sequence_id': 'sequence-1'}
 COMMAND = {**BINDING, 'contact_id': 'contact-1', 'email': 'person@example.invalid'}
+
+
+def _retry_process(path, barrier, queue):
+    repo = Repository(path)
+    def wire(method, target, body, headers, timeout):
+        if target == '/api/v1/users/api_profile':
+            return 200, json.dumps({'id': 'user-1', 'team_id': 'team-1'}).encode()
+        if target == '/api/v1/contacts/search':
+            return 200, json.dumps({'contacts': [{'id': 'contact-1', 'email': COMMAND['email'],
+                'team_id': 'team-1', 'contact_campaign_statuses': [
+                    {'emailer_campaign_id': 'sequence-1', 'status': 'active'}]}],
+                'pagination': {'page': 1, 'per_page': 100, 'total_entries': 1, 'total_pages': 1}}).encode()
+        queue.put('post')
+        return 200, b'{}'
+    port = ApolloExternalPause(BINDING, credential_loader=lambda: 'synthetic-secret',
+        request=wire, mutation_enabled=True, authorize=lambda command: command == COMMAND,
+        repository=repo, mode='stop')
+    barrier.wait(timeout=10)
+    try:
+        queue.put(port.stop(COMMAND)['status'])
+    except Exception:
+        queue.put('blocked')
 
 
 class ExternalPauseAdapterTests(unittest.TestCase):
@@ -82,6 +105,77 @@ class ExternalPauseAdapterTests(unittest.TestCase):
                 self.assertEqual(result['status'], expected)
                 self.assertFalse(result['paused']); self.assertFalse(result['retry_allowed'])
                 self.assertEqual(len(self.calls), 3)
+
+    def test_stop_mode_sends_once_and_never_infers_confirmation_from_readback(self):
+        result = self.client(mode='stop').stop(COMMAND)
+        self.assertEqual(result['status'], 'readback_required')
+        self.assertEqual(parse_qs(urlsplit(self.calls[-1][1]).query)['mode'], ['stop'])
+        self.repo = Repository(Path(self.temp.name) / 'stop.db')
+        for state in ('active', 'paused', 'finished'):
+            self.state = state
+            observed = self.client(mode='stop').reconcile(COMMAND)
+            self.assertEqual(observed['status'], 'unverified')
+            self.assertFalse(observed['paused'])
+            self.assertFalse(observed['readback_verified'])
+        repeated = self.client(mode='stop').stop(COMMAND)
+        self.assertEqual(repeated['status'], 'reconciliation_required')
+        self.assertFalse(repeated['retry_allowed'])
+        self.assertEqual(sum('remove_or_stop' in call[1] for call in self.calls), 1)
+
+    def test_stop_mode_timeout_is_uncertain_and_other_mode_cannot_reuse_attempt(self):
+        self.error = TimeoutError()
+        self.assertEqual(self.client(mode='stop').stop(COMMAND)['status'], 'uncertain')
+        with self.assertRaisesRegex(ExternalPauseError, 'idempotency_conflict'):
+            self.client().stop(COMMAND)
+        self.assertEqual(sum('remove_or_stop' in call[1] for call in self.calls), 1)
+
+    def test_stop_mode_non_active_state_never_assumed_or_mutated(self):
+        for state in ('paused', 'finished'):
+            with self.subTest(state=state):
+                self.repo = Repository(Path(self.temp.name) / ('state-' + state + '.db'))
+                self.state = state
+                self.calls.clear()
+                result = self.client(mode='stop').stop(COMMAND)
+                self.assertEqual(result['status'], 'unverified')
+                self.assertFalse(result['write_attempted'])
+                self.assertFalse(result['readback_verified'])
+
+    def test_predispatch_read_failure_can_retry_but_timeout_cannot(self):
+        original_team = self.team
+        self.team = 'different-team'
+        with self.assertRaises(ExternalPauseError):
+            self.client(mode='stop').stop(COMMAND)
+        self.assertFalse(any('remove_or_stop' in path for _, path, _ in self.calls))
+        self.team = original_team
+        result = self.client(mode='stop').stop(COMMAND)
+        self.assertTrue(result['write_attempted'])
+        self.assertEqual(sum('remove_or_stop' in path for _, path, _ in self.calls), 1)
+
+    def test_unmapped_membership_then_active_can_retry_before_any_post(self):
+        self.state = 'paused'
+        first = self.client(mode='stop').stop(COMMAND)
+        self.assertEqual(first['status'], 'unverified')
+        self.assertFalse(first['write_attempted'])
+        self.assertFalse(any('remove_or_stop' in path for _, path, _ in self.calls))
+        self.state = 'active'
+        second = self.client(mode='stop').stop(COMMAND)
+        self.assertTrue(second['write_attempted'])
+        self.assertEqual(sum('remove_or_stop' in path for _, path, _ in self.calls), 1)
+
+    def test_two_processes_retry_predispatch_block_only_once(self):
+        self.team = 'different-team'
+        with self.assertRaises(ExternalPauseError):
+            self.client(mode='stop').stop(COMMAND)
+        ctx = multiprocessing.get_context('fork')
+        barrier, queue = ctx.Barrier(2), ctx.Queue()
+        processes = [ctx.Process(target=_retry_process, args=(str(self.repo.path), barrier, queue))
+                     for _ in range(2)]
+        for process in processes: process.start()
+        for process in processes: process.join(15)
+        self.assertEqual([process.exitcode for process in processes], [0, 0])
+        outcomes = [queue.get(timeout=5) for _ in range(3)]
+        self.assertEqual(outcomes.count('post'), 1)
+        self.assertEqual(outcomes.count('readback_required'), 1)
 
     def test_target_identity_incomplete_or_ambiguous_blocks_before_write(self):
         for field, value in (('team','other'), ('contact','other'), ('sequence','other'),

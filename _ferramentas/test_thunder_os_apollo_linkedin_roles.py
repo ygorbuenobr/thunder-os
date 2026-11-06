@@ -147,5 +147,10 @@ class RoleRoutesTests(unittest.TestCase):
         self.assertEqual('timeout', pending_item['reason'])
         self.assertNotIn('attention_level', pending_item)
 
+    def test_released_uncertain_invitation_never_suggests_resending(self):
+        item = reservation_attention_item({'task_id': 'task', 'state': 'uncertain',
+                                           'action_type': 'linkedin_step_connect'}, 'release')
+        self.assertIn('não pode ser repetido', item['next_action'])
+
 
 if __name__ == '__main__': unittest.main()

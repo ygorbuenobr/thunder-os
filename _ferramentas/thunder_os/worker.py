@@ -93,11 +93,14 @@ class EffectCoordinator:
 class WorkerRuntime:
     def __init__(
         self, repository: Repository, ledger: TouchLedger, adapters: Mapping[str, Any],
-        *, worker_id: str, health_path: Path, revision: str, knowledge_store=None, approved_catalog=None, connectsafely_app=None, campaign_context_loader=None, adapter_provider_ids=None, adapter_account_ids=None, native_executor=None,
+        *, worker_id: str, health_path: Path, revision: str, knowledge_store=None, approved_catalog=None, connectsafely_app=None, campaign_context_loader=None, adapter_provider_ids=None, adapter_account_ids=None, native_executor=None, reply_pause_worker=None, apollo_reply_monitor=None, stored_event_worker=None,
     ):
         self.repository = repository
         self.connectsafely_app = connectsafely_app
         self.native_executor = native_executor
+        self.reply_pause_worker = reply_pause_worker
+        self.apollo_reply_monitor = apollo_reply_monitor
+        self.stored_event_worker = stored_event_worker
         native_readers = dict(native_executor.native_readers) if native_executor is not None else {}
         if native_readers and set(native_readers) != {"source", "research", "crm"}:
             raise ValueError("native_reader_composition_invalid")
@@ -119,6 +122,8 @@ class WorkerRuntime:
         self._reconciliation_cursor = 0
         # Bound and space read-only retries per immutable job snapshot.
         self._native_reconciliation_attempts = {}
+        self._apollo_reply_monitor_error = False
+        self._stored_event_error = False
 
     def stop(self, *_args: Any) -> None:
         self.running = False
@@ -134,6 +139,8 @@ class WorkerRuntime:
             "readiness": state == "ok", "last_progress_at": self.last_progress_at,
             "native_reconciliation_waiting": waiting,
             "campaign_confirmation_required": True,
+            "apollo_reply_monitor_error": self._apollo_reply_monitor_error,
+            "stored_event_reconciliation_error": self._stored_event_error,
             "capabilities": {channel: getattr(adapter, "capability", "injected") for channel, adapter in self.adapters.items()},
         }
         self.health_path.parent.mkdir(parents=True, exist_ok=True)
@@ -143,6 +150,20 @@ class WorkerRuntime:
         self._last_health = time.monotonic()
 
     def process_one(self) -> bool:
+        if getattr(self, 'stored_event_worker', None) is not None:
+            try:
+                self.stored_event_worker.process_one()
+                self._stored_event_error = bool(getattr(self.stored_event_worker, 'degraded', False))
+            except Exception:
+                self._stored_event_error = True
+        if getattr(self, 'apollo_reply_monitor', None) is not None:
+            try:
+                self.apollo_reply_monitor.process_one()
+                self._apollo_reply_monitor_error = bool(getattr(self.apollo_reply_monitor, 'degraded', False))
+            except Exception:
+                self._apollo_reply_monitor_error = True
+        if getattr(self, 'reply_pause_worker', None) is not None and self.reply_pause_worker.process_one():
+            return True
         self._reconcile_registered_effects()
         if self.connectsafely_app is not None:
             try:
@@ -653,9 +674,12 @@ class _FakeTransport:
 
 
 class DisabledRuntime:
-    """Health-only runtime: composition gate runs before any database/provider setup."""
-    def __init__(self):
+    """No outreach; optionally process separately authorized reply containment."""
+    def __init__(self, reply_pause_worker=None, apollo_reply_monitor=None, stored_event_worker=None):
         self.running = True
+        self.reply_pause_worker = reply_pause_worker
+        self.apollo_reply_monitor = apollo_reply_monitor
+        self.stored_event_worker = stored_event_worker
         self.health_path = Path(os.environ.get("THUNDER_OS_WORKER_HEALTH", "/var/lib/thunder-os/worker-health.json"))
         self.revision = os.environ.get("THUNDER_OS_SOURCE_SHA", "unknown")
 
@@ -664,9 +688,14 @@ class DisabledRuntime:
 
     def _health(self, _state=None):
         value = {
-            "status": "disabled", "readiness": False, "pid": os.getpid(),
+            "status": "degraded" if (_state == 'degraded' or
+                        bool(getattr(self.apollo_reply_monitor, 'degraded', False)) or
+                        bool(getattr(self.stored_event_worker, 'degraded', False))) else "disabled", "readiness": False, "pid": os.getpid(),
             "source_sha": self.revision, "heartbeat_at": datetime.now(timezone.utc).isoformat(),
             "external_effects_enabled": False, "disabled_reason": "external_effects_disabled",
+            "reply_containment_enabled": self.reply_pause_worker is not None,
+            "apollo_reply_monitor_enabled": self.apollo_reply_monitor is not None,
+            "stored_event_reconciliation_enabled": self.stored_event_worker is not None,
             "processed": 0, "uncertain_retry": False,
             "capabilities": {"linkedin": "disabled", "email": "disabled", "hubspot": "disabled"},
         }
@@ -677,11 +706,33 @@ class DisabledRuntime:
 
     def process_one(self):
         self._health()
-        return False
+        if self.stored_event_worker is not None:
+            self.stored_event_worker.process_one()
+        if self.apollo_reply_monitor is not None:
+            self.apollo_reply_monitor.process_one()
+        return bool(self.reply_pause_worker is not None and self.reply_pause_worker.process_one())
 
     def run(self, poll_seconds=0.1):
         last_health = 0.0
         while self.running:
+            if self.stored_event_worker is not None:
+                try:
+                    self.stored_event_worker.process_one()
+                except Exception:
+                    self._health('degraded')
+                    last_health = time.monotonic()
+            if self.apollo_reply_monitor is not None:
+                try:
+                    self.apollo_reply_monitor.process_one()
+                except Exception:
+                    self._health('degraded')
+                    last_health = time.monotonic()
+            if self.reply_pause_worker is not None:
+                try:
+                    self.reply_pause_worker.process_one()
+                except Exception:
+                    self._health('degraded')
+                    last_health = time.monotonic()
             if time.monotonic() - last_health >= 5:
                 self._health()
                 last_health = time.monotonic()
@@ -697,9 +748,125 @@ class _SimulatedLinkedInAdapter:
         return ProviderResult(effect["effect_id"], "confirmed", "simulation:linkedin:" + effect["effect_id"])
 
 
+def _build_reply_pause_worker(repository):
+    from .apollo_linkedin_reply_pause import ApolloLinkedInReplyPause, ApolloReplyPauseWorker
+    from .apollo_linkedin_reply_coverage import ApolloContactReplyReader
+    from .connectsafely_live import credential
+    from .credential_paths import credential_path
+    repository.apollo_linkedin_store_ready()
+    company = os.environ.get('THUNDER_APOLLO_LI_COMPANY', '')
+    team = os.environ.get('THUNDER_APOLLO_LI_TEAM', '')
+    actor = os.environ.get('THUNDER_APOLLO_LI_API_ACTOR', '')
+    loader = credential(credential_path('apollo_api_key', '/root/.config/thunder/credentials/apollo_api_key.txt'))
+    reader = ApolloContactReplyReader(loader, team_id=team, api_actor_id=actor)
+    port = ApolloLinkedInReplyPause(repository, contact_reader=reader, credential_loader=loader, enabled=True)
+    return ApolloReplyPauseWorker(port, company=company, team=team)
+
+
+def _build_apollo_reply_monitor(repository):
+    from .apollo_linkedin_reply_monitor import ApolloReplyMonitor, ApolloReplyMonitorWorker
+    from .apollo_linkedin_reply_coverage import ApolloContactReplyReader
+    from .connectsafely_live import credential
+    from .credential_paths import credential_path
+    repository.apollo_linkedin_store_ready()
+    company = os.environ.get('THUNDER_APOLLO_LI_COMPANY', '')
+    team = os.environ.get('THUNDER_APOLLO_LI_TEAM', '')
+    actor = os.environ.get('THUNDER_APOLLO_LI_API_ACTOR', '')
+    loader = credential(credential_path('apollo_api_key', '/root/.config/thunder/credentials/apollo_api_key.txt'))
+    reader = ApolloContactReplyReader(loader, team_id=team, api_actor_id=actor)
+    return ApolloReplyMonitorWorker(ApolloReplyMonitor(repository, reader, company=company, team=team))
+
+
+class _StoredEventWorker:
+    """Reconcile only already-authenticated events, never new network input."""
+    def __init__(self, repository, account, *, clock=time.monotonic):
+        from .connectsafely_webhook import ConnectSafelyStoredEventReconciler
+        self.reconciler = ConnectSafelyStoredEventReconciler(repository, account_id=account)
+        self.repository, self.account = repository, account
+        self.service = ThunderService(repository)
+        self.clock, self.next_at, self.cursor = clock, None, None
+        self.degraded = False
+        self._cycle_problem = False
+
+    def _publish(self, result):
+        items = result.get('items')
+        if not isinstance(items, list):
+            raise ValueError('stored_event_reconciliation_unavailable')
+        reason = result.get('reason')
+        problem = (reason in ('binding_budget_exceeded', 'time_budget_exhausted') or
+                   any(not isinstance(item, dict) or item.get('status') in ('unverified', 'triage')
+                       for item in items))
+        self._cycle_problem = self._cycle_problem or problem
+        ident = payload_hash({'provider': 'connectsafely', 'account': self.account})
+        alert_id = 'connectsafely-event-reconciliation:' + ident
+        now = datetime.now(timezone.utc).isoformat()
+        with self.repository.transaction():
+            alert = self.repository.get_state('operator_alert', alert_id)
+            existing_problem = isinstance(alert, dict) and alert.get('active') is True
+            active = (self._cycle_problem if result['status'] == 'complete'
+                      else existing_problem or self._cycle_problem)
+            self.repository.put_state('connectsafely_event_reconciliation_status', ident,
+                {'source': 'connectsafely', 'observed_at': now, 'coverage': result['status'],
+                 'reason': reason, 'active_problem': active})
+            if active:
+                self.repository.put_state('operator_alert', alert_id,
+                    {'active': True, 'priority': 'high', 'source': 'connectsafely',
+                     'reason': 'event_reconciliation_incomplete', 'observed_at': now,
+                     'message': 'Conciliação das respostas LinkedIn incompleta; verificar eventos pendentes.'})
+            elif isinstance(alert, dict) and alert.get('reason') == 'event_reconciliation_incomplete':
+                value = {k: v for k, v in alert.items() if k not in ('id', 'version', 'updated_at')}
+                value.update(active=False, observed_at=now)
+                self.repository.put_state('operator_alert', alert_id, value)
+        self.degraded = active
+        if result['status'] == 'complete':
+            self._cycle_problem = False
+
+    def process_one(self):
+        if os.environ.get('THUNDER_OS_CONNECTSAFELY_EVENT_RECONCILE_ENABLED') != 'true':
+            return False
+        now = self.clock()
+        if self.next_at is not None and now < self.next_at:
+            return False
+        self.next_at = now + 60
+        try:
+            result = self.reconciler.reconcile_pending(self.service, after=self.cursor, limit=50)
+            if not isinstance(result, dict) or result.get('status') not in ('partial', 'complete'):
+                raise ValueError('stored_event_reconciliation_unavailable')
+            following = result.get('next_cursor')
+            no_progress = result.get('reason') == 'time_budget_exhausted' and following == self.cursor
+            if result['status'] == 'partial' and not no_progress and (not isinstance(following, str)
+                    or len(following) != 64):
+                raise ValueError('stored_event_cursor_unavailable')
+            self._publish(result)
+        except Exception:
+            self.degraded = True
+            raise
+        self.cursor = result.get('next_cursor') if result['status'] == 'partial' else None
+        return bool(result.get('items'))
+
+
+def _build_stored_event_worker(repository):
+    return _StoredEventWorker(repository, os.environ.get('THUNDER_OS_CONNECTSAFELY_WEBHOOK_ACCOUNT', ''))
+
+
 def build_runtime(*, connectsafely_app=None) -> WorkerRuntime | DisabledRuntime:
     if os.environ.get("THUNDER_EXTERNAL_EFFECTS_ENABLED", "").lower() != "true":
-        return DisabledRuntime()
+        if ((os.environ.get('THUNDER_APOLLO_LI_REPLY_STOP_ENABLED') != 'true'
+             and os.environ.get('THUNDER_APOLLO_LI_REPLY_MONITOR_ENABLED') != 'true'
+             and os.environ.get('THUNDER_OS_CONNECTSAFELY_EVENT_RECONCILE_ENABLED') != 'true')
+                or os.environ.get('THUNDER_OS_FAKE_PROVIDERS') == '1'):
+            return DisabledRuntime()
+        from .db import _official_apollo_linkedin_db
+        database = Path(os.environ.get('THUNDER_OS_DB') or os.environ.get('PAINEL_DB') or '')
+        official = _official_apollo_linkedin_db()
+        if (not database.is_absolute() or not database.is_file() or not official.is_file()
+                or database.resolve() != official.resolve()):
+            raise RuntimeError('official_store_unavailable')
+        repository = Repository(database)
+        return DisabledRuntime(
+            _build_reply_pause_worker(repository) if os.environ.get('THUNDER_APOLLO_LI_REPLY_STOP_ENABLED') == 'true' else None,
+            _build_apollo_reply_monitor(repository) if os.environ.get('THUNDER_APOLLO_LI_REPLY_MONITOR_ENABLED') == 'true' else None,
+            _build_stored_event_worker(repository) if os.environ.get('THUNDER_OS_CONNECTSAFELY_EVENT_RECONCILE_ENABLED') == 'true' else None)
     database = os.environ.get("THUNDER_OS_DB") or os.environ.get("PAINEL_DB")
     if not database:
         raise RuntimeError("THUNDER_OS_DB or PAINEL_DB is required")
@@ -719,12 +886,24 @@ def build_runtime(*, connectsafely_app=None) -> WorkerRuntime | DisabledRuntime:
     if fake:
         for adapter in adapters.values():
             adapter.capability = "simulated"
+    reply_pause_worker = None
+    if not fake and os.environ.get('THUNDER_APOLLO_LI_REPLY_STOP_ENABLED') == 'true':
+        reply_pause_worker = _build_reply_pause_worker(repository)
+    apollo_reply_monitor = None
+    if not fake and os.environ.get('THUNDER_APOLLO_LI_REPLY_MONITOR_ENABLED') == 'true':
+        apollo_reply_monitor = _build_apollo_reply_monitor(repository)
+    stored_event_worker = None
+    if not fake and os.environ.get('THUNDER_OS_CONNECTSAFELY_EVENT_RECONCILE_ENABLED') == 'true':
+        stored_event_worker = _build_stored_event_worker(repository)
     return WorkerRuntime(
         repository, ledger, adapters,
         worker_id=os.environ.get("THUNDER_OS_WORKER_ID", "worker-1"),
         health_path=Path(os.environ.get("THUNDER_OS_WORKER_HEALTH", "/var/lib/thunder-os/worker-health.json")),
         revision=os.environ.get("THUNDER_OS_SOURCE_SHA", "unknown"),
         connectsafely_app=connectsafely_app,
+        reply_pause_worker=reply_pause_worker,
+        apollo_reply_monitor=apollo_reply_monitor,
+        stored_event_worker=stored_event_worker,
         knowledge_store=KnowledgeStore(os.environ.get("THUNDER_BRAIN_ROOT", str(Path(__file__).resolve().parents[2]))),
     )
 

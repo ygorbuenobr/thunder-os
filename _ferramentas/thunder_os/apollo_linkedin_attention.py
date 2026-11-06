@@ -47,7 +47,9 @@ def reservation_attention_item(row, resolution=None):
             next_action = 'Decisão registrada como encerrada; consultar o histórico. Nenhum envio será repetido.'
         elif resolution == 'release':
             label = 'uncertain_release_recorded'
-            next_action = 'Liberação registrada; um novo canário e todas as verificações serão necessários. Nenhum envio foi feito.'
+            next_action = ('Liberação registrada; convite com resultado incerto não pode ser repetido. Verificar no provedor.'
+                           if row.get('action_type') == 'linkedin_step_connect' else
+                           'Liberação registrada; um novo canário e todas as verificações serão necessários. Nenhum envio foi feito.')
         else:
             label = row.get('reason') or 'Resultado incerto'
             next_action = 'Verificar o resultado no provedor; não repetir o envio.'
