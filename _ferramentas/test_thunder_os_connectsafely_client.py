@@ -90,6 +90,27 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(writes[0][3]['messagingChannel'],'linkedin_inbox')
         self.assertEqual(writes[0][3]['accountId'],ACCOUNT)
         self.assertNotIn('SECRET',json.dumps(result))
+    def test_synchronous_send_receipt_can_omit_optional_echo_fields(self):
+        self.post=(200,{'success':True,'recipientProfileUrn':RECIPIENT,'sentMessage':{
+            'messageUrn':'urn:li:messagingMessage:SYNTHETIC',
+            'text':PLAN['content'],'sentAt':NOW*1000}})
+        result=self.client.send(PLAN,before_dispatch=lambda:True)
+        self.assertEqual(result['status'],'sent')
+        self.assertEqual(result['receipt_ref'],'connectsafely:urn:li:messagingMessage:SYNTHETIC')
+        self.assertEqual(sum(c[0]=='POST' for c in self.calls),1)
+    def test_synchronous_receipt_with_conflicting_fields_remains_uncertain(self):
+        base={'messageUrn':'urn:li:messagingMessage:SYNTHETIC','text':PLAN['content'],'sentAt':NOW*1000}
+        for changed in ({'accountId':'b'*24},{'recipientProfileUrn':'urn:li:fsd_profile:OTHER'},
+                        {'sentMessage':{**base,'isSentByOwner':False}},
+                        {'sentMessage':{**base,'senderProfileId':'urn:li:fsd_profile:OTHER'}},
+                        {'sentMessage':{**base,'text':'different'}},
+                        {'sentMessage':{**base,'messageUrn':'urn:li:messagingMessage:'}},
+                        {'sentMessage':{**base,'sentAt':(NOW-1)*1000}},
+                        {'sentMessage':{**base,'sentAt':(NOW+6)*1000}}):
+            self.calls=[]; self.post=(200,{'success':True,'recipientProfileUrn':RECIPIENT,'sentMessage':base,**changed})
+            with self.subTest(changed=changed):
+                self.assertEqual(self.client.send(PLAN,before_dispatch=lambda:True)['status'],'uncertain')
+                self.assertEqual(sum(c[0]=='POST' for c in self.calls),1)
     def test_unknown_write_denial_no_retry_no_raw_error(self):
         for outcome in [RuntimeError('SECRET'),(401,{'error':'SECRET'}),(429,{'cookies':'SECRET'}),(500,{'error':'SECRET'})]:
             self.post=outcome;self.calls=[];result=self.client.send(PLAN,before_dispatch=lambda:True)

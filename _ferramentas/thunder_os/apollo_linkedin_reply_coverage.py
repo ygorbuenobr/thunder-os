@@ -8,11 +8,80 @@ execution boundary; an observation is not an approval or a durable stop.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import http.client
+import json
 import math
+import os
 import re
+import ssl
 
 MAX_AGE = timedelta(minutes=15)
 _ID = re.compile(r'[A-Za-z0-9_-]{1,128}\Z')
+
+
+def _contact_request(method, path, body, headers, timeout):
+    if (method != 'GET' or body is not None or
+            not (path == '/api/v1/users/api_profile' or
+                 re.fullmatch(r'/api/v1/contacts/[A-Za-z0-9_-]{1,128}', path))):
+        raise ValueError('endpoint_blocked')
+    if os.environ.get('SSL_CERT_FILE') or os.environ.get('SSL_CERT_DIR'):
+        raise ValueError('tls_override_blocked')
+    connection = http.client.HTTPSConnection('api.apollo.io', 443, timeout=timeout,
+                                             context=ssl.create_default_context())
+    try:
+        connection.request(method, path, headers=headers)
+        response = connection.getresponse()
+        raw = response.read(1_000_001)
+        if not isinstance(raw, bytes) or len(raw) > 1_000_000:
+            raise ValueError('response_invalid')
+        return response.status, raw
+    finally:
+        connection.close()
+
+
+class ApolloContactReplyReader:
+    """Read the exact Apollo contact after checking the configured API identity.
+
+    GET /api/v1/contacts/{id}: Apollo contacts/show or OAuth contact_read.
+    Missing sequence/reply fields remain unknown to the coverage classifier.
+    """
+    def __init__(self, credential_loader, *, team_id, api_actor_id, request=None, timeout=8):
+        if (not callable(credential_loader) or not all(isinstance(v, str) and _ID.fullmatch(v)
+                for v in (team_id, api_actor_id)) or type(timeout) not in (int, float)
+                or not math.isfinite(timeout) or not 0 < timeout <= 15
+                or request is not None and not callable(request)):
+            raise ValueError('configuration_invalid')
+        self._loader, self._request = credential_loader, request or _contact_request
+        self.team_id, self.api_actor_id, self.timeout = team_id, api_actor_id, timeout
+
+    def _read(self, path):
+        if not (path == '/api/v1/users/api_profile' or
+                re.fullmatch(r'/api/v1/contacts/[A-Za-z0-9_-]{1,128}', path)):
+            raise ValueError('endpoint_blocked')
+        token = self._loader()
+        if not isinstance(token, str) or not token or any(c.isspace() for c in token):
+            raise ValueError('credential_unavailable')
+        status, raw = self._request('GET', path, None,
+            {'x-api-key': token, 'Accept': 'application/json'}, self.timeout)
+        if status != 200 or not isinstance(raw, bytes) or len(raw) > 1_000_000:
+            raise ValueError('apollo_unavailable')
+        value = json.loads(raw)
+        if not isinstance(value, dict):
+            raise ValueError('response_invalid')
+        return value
+
+    def contact(self, contact_id):
+        if not isinstance(contact_id, str) or not _ID.fullmatch(contact_id):
+            raise ValueError('contact_invalid')
+        profile = self._read('/api/v1/users/api_profile')
+        identity = profile.get('user', profile)
+        if not isinstance(identity, dict) or identity.get('id') != self.api_actor_id or identity.get('team_id') != self.team_id:
+            raise ValueError('team_mismatch')
+        row = self._read('/api/v1/contacts/' + contact_id).get('contact')
+        if (not isinstance(row, dict) or row.get('id') != contact_id
+                or 'team_id' in row and row['team_id'] != self.team_id):
+            raise ValueError('contact_mismatch')
+        return row
 
 
 def _now(clock):
@@ -44,9 +113,13 @@ def coverage_current(result, now, *, hubspot_configured):
             return False
         sources = result.get('sources')
         required = result.get('required_sources')
+        optional = result.get('hubspot_applicable', True) is False
         if (not isinstance(sources, dict) or not isinstance(required, list)
-                or set(required) != ({'apollo', 'linkedin', 'hubspot'} if hubspot_configured else {'apollo', 'linkedin'})
-                or set(required) != set(sources) or len(required) != len(sources)):
+                or optional and (not hubspot_configured or sources.get('hubspot', {}).get('status') != 'not_configured'
+                                 or sources.get('hubspot', {}).get('reason') != 'email_absent')
+                or set(required) != ({'apollo', 'linkedin', 'hubspot'} if hubspot_configured and not optional else {'apollo', 'linkedin'})
+                or set(sources) != (set(required) | ({'hubspot'} if optional else set()))
+                or len(required) != len(set(required))):
             return False
         for name in required:
             item = sources[name]
@@ -139,7 +212,13 @@ class ReplyCoverage:
         self.clock = clock or (lambda: datetime.now(timezone.utc))
 
     def _apollo(self, target):
-        rows = self.apollo.contacts(target['email'])
+        read_by_id = getattr(self.apollo, 'contact', None)
+        if callable(read_by_id):
+            rows = [read_by_id(target['apollo_contact_id'])]
+        elif target.get('email'):
+            rows = self.apollo.contacts(target['email'])
+        else:
+            return 'unknown', 'apollo_contact_id_reader_unavailable'
         if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
             return 'unknown', 'apollo_contact_unavailable'
         row = rows[0]
@@ -158,9 +237,12 @@ class ReplyCoverage:
                 or any(isinstance(m, dict) and m.get('inactive_reason') in ('unsubscribed', 'bounced')
                        for m in memberships)):
             return 'unknown', 'apollo_suppression_observed'
-        if (type(row.get('email_replied')) is not bool
+        no_email = not target.get('email') and not row.get('email')
+        if ((not no_email and (type(row.get('email_replied')) is not bool
                 or type(row.get('email_unsubscribed')) is not bool
-                or not isinstance(row.get('email_status'), str) or not row['email_status']
+                or not isinstance(row.get('email_status'), str) or not row['email_status']))
+                or (no_email and any(key in row and type(row[key]) is not bool
+                                     for key in ('email_replied', 'email_unsubscribed')))
                 or any(not isinstance(m, dict) or type(m.get('replied')) is not bool
                        or not isinstance(m.get('emailer_campaign_id'), str)
                        or not m['emailer_campaign_id'] for m in memberships)):
@@ -186,13 +268,21 @@ class ReplyCoverage:
         return ('reply', 'linkedin_reply_observed') if evidence['suppressed'] else ('ok', 'linkedin_conversation_observed')
 
     def observe(self, target):
-        required = ['apollo', 'linkedin'] + (['hubspot'] if self.hubspot_configured else [])
+        email = target.get('email') if isinstance(target, dict) else None
+        if email == '':
+            email = None
+        hubspot_applicable = bool(email) or not self.hubspot_configured
+        required = ['apollo', 'linkedin'] + (['hubspot'] if self.hubspot_configured and hubspot_applicable else [])
         now = _now(self.clock)
         result = {'status': 'unknown', 'observed_at': now.isoformat().replace('+00:00', 'Z'),
                   'required_sources': required, 'sources': {}}
+        if self.hubspot_configured and not hubspot_applicable:
+            result['hubspot_applicable'] = False
+            result['sources']['hubspot'] = _observation('not_configured', now, 'email_absent')
         if (not isinstance(target, dict)
                 or not all(isinstance(target.get(k), str) and target[k] for k in
-                           ('email', 'apollo_contact_id', 'sequence_id', 'linkedin_profile_urn'))
+                           ('apollo_contact_id', 'sequence_id', 'linkedin_profile_urn'))
+                or email is not None and (not isinstance(email, str) or not email.strip())
                 or not _ID.fullmatch(target['apollo_contact_id']) or not _ID.fullmatch(target['sequence_id'])
                 or not re.fullmatch(r'urn:li:fsd_profile:[A-Za-z0-9_-]{1,200}', target['linkedin_profile_urn'])):
             for name in required:
@@ -222,12 +312,13 @@ class ReplyCoverage:
             result['sources'][name] = _observation(status, started, reason)
         now = _now(self.clock)
         result['observed_at'] = now.isoformat().replace('+00:00', 'Z')
-        for item in result['sources'].values():
+        for name in required:
+            item = result['sources'][name]
             if not timedelta(0) <= now - _stamp(item['observed_at']) <= MAX_AGE:
                 if item['status'] == 'reply':
                     item['reason'] = 'reply_observed_stale_requires_stop'
                 else:
                     item['status'], item['reason'] = 'unknown', 'observation_stale_or_clock_changed'
-        statuses = [item['status'] for item in result['sources'].values()]
+        statuses = [result['sources'][name]['status'] for name in required]
         result['status'] = 'reply' if 'reply' in statuses else 'unknown' if 'unknown' in statuses else 'ok'
         return result

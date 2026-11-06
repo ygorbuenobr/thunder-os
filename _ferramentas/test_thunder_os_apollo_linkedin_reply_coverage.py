@@ -1,8 +1,10 @@
 import unittest
+import json
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 
-from thunder_os.apollo_linkedin_reply_coverage import ReplyCoverage, HubSpotReplySource, coverage_current
+from thunder_os.apollo_linkedin_reply_coverage import (ReplyCoverage, HubSpotReplySource,
+    ApolloContactReplyReader, coverage_current)
 
 NOW = datetime(2026, 11, 6, 15, 0, tzinfo=timezone.utc)
 TARGET = {'email':'lead@example.invalid', 'apollo_contact_id':'contact', 'sequence_id':'sequence',
@@ -144,6 +146,60 @@ class CoverageTest(unittest.TestCase):
             def __call__(self, *args): raise AssertionError('unexpected')
         result = ReplyCoverage(Boom(),Boom(),clock=lambda:NOW).observe({'email':'x'})
         self.assertEqual(result['status'], 'unknown')
+
+    def test_no_email_uses_contact_id_and_hubspot_is_not_configured(self):
+        target = {**TARGET, 'email': None}
+        calls = []
+        class ApolloById:
+            def contact(_, ident):
+                calls.append(ident)
+                return {'id': ident, 'contact_campaign_statuses': [
+                    {'emailer_campaign_id':'sequence', 'status':'active', 'replied':False}]}
+        result = ReplyCoverage(ApolloById(), self.linkedin, hubspot_configured=True,
+                               clock=lambda:NOW).observe(target)
+        self.assertEqual(calls, ['contact'])
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual(result['sources']['hubspot']['status'], 'not_configured')
+        self.assertTrue(coverage_current(result, NOW, hubspot_configured=True))
+        self.assertFalse(coverage_current(result, NOW, hubspot_configured=False))
+
+    def test_no_email_reply_and_missing_apollo_coverage_block(self):
+        target = {**TARGET, 'email': None}
+        class ApolloById:
+            def __init__(self, row): self.row = row
+            def contact(self, ident): return self.row
+        row = {'id':'contact', 'contact_campaign_statuses': [
+            {'emailer_campaign_id':'sequence', 'status':'active', 'replied': True}]}
+        read = ReplyCoverage(ApolloById(row), self.linkedin, clock=lambda:NOW)
+        self.assertEqual(read.observe(target)['status'], 'reply')
+        del row['contact_campaign_statuses'][0]['replied']
+        self.assertEqual(read.observe(target)['status'], 'unknown')
+        row['id'] = 'wrong'
+        self.assertEqual(read.observe(target)['status'], 'unknown')
+
+    def test_no_email_does_not_hide_actual_email_coverage_requirement(self):
+        class ApolloById:
+            def contact(self, ident):
+                return {'id': ident, 'email': 'other@example.invalid', 'contact_campaign_statuses': [
+                    {'emailer_campaign_id':'sequence', 'status':'active', 'replied':False}]}
+        result = ReplyCoverage(ApolloById(), self.linkedin, clock=lambda:NOW).observe({**TARGET, 'email': None})
+        self.assertEqual(result['status'], 'unknown')
+
+    def test_apollo_contact_reader_pins_team_actor_and_endpoint(self):
+        calls = []
+        def wire(method, path, body, headers, timeout):
+            calls.append((method, path))
+            if path.endswith('api_profile'):
+                value = {'user': {'id':'actor', 'team_id':'team'}}
+            else:
+                value = {'contact': {'id':'contact', 'contact_campaign_statuses': []}}
+            return 200, json.dumps(value).encode()
+        reader = ApolloContactReplyReader(lambda:'synthetic-key', team_id='team', api_actor_id='actor', request=wire)
+        self.assertEqual(reader.contact('contact')['id'], 'contact')
+        self.assertEqual(calls, [('GET','/api/v1/users/api_profile'), ('GET','/api/v1/contacts/contact')])
+        with self.assertRaises(ValueError): reader.contact('../bad')
+        wrong = ApolloContactReplyReader(lambda:'synthetic-key', team_id='other', api_actor_id='actor', request=wire)
+        with self.assertRaises(ValueError): wrong.contact('contact')
 
 if __name__ == '__main__':
     unittest.main()

@@ -6,6 +6,12 @@ from pathlib import PurePosixPath
 
 
 ALLOWED_FILES = {
+    ".specs/features/apollo-linkedin/t4d-runtime.md",
+    "_ferramentas/test_thunder_os_apollo_linkedin_approve.py",
+    "_ferramentas/test_thunder_os_apollo_linkedin_canary_issue.py",
+    "_ferramentas/test_thunder_os_apollo_linkedin_runtime_safety.py",
+    "_ferramentas/test_thunder_os_apollo_linkedin_runtime_factory.py",
+    "_ferramentas/test_thunder_os_apollo_linkedin_t4d_e2e.py",
     ".specs/features/apollo-linkedin/t4c-composicao.md",
     "_ferramentas/test_thunder_os_apollo_linkedin_message.py",
     "_ferramentas/test_thunder_os_apollo_linkedin_message_coordinator.py",

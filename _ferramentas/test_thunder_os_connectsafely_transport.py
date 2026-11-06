@@ -70,6 +70,20 @@ class TransportTests(unittest.TestCase):
                 self.transport(method,path,query,body)
         self.assertEqual(before,len(self.created))
 
+    def test_messages_sync_is_scoped_and_accepts_only_literal_true(self):
+        from urllib.parse import parse_qs, urlsplit
+        self.raw=b'{}'; route='/linkedin/conversations/urn%3Ali%3Amsg_conversation%3ATHREAD/messages'
+        for extra in ({}, {'cursor':'123'}):
+            self.transport('GET',route,{'accountId':'a'*24,'count':10,'sync':'true',**extra},None)
+            self.assertEqual(parse_qs(urlsplit(self.calls[-1][0][1]).query)['sync'],['true'])
+        before=len(self.created)
+        for sync in (True,False,'false','TRUE','1','true&x=1'):
+            with self.assertRaisesRegex(ConnectSafelyError,'invalid_route'):
+                self.transport('GET',route,{'accountId':'a'*24,'count':10,'sync':sync},None)
+        with self.assertRaisesRegex(ConnectSafelyError,'invalid_route'):
+            self.transport('GET','/linkedin/conversations',{'accountId':'a'*24,'count':10,'sync':'true'},None)
+        self.assertEqual(before,len(self.created))
+
     def test_pinned_host_tls_and_no_proxy(self):
         with patch.dict(os.environ,{'HTTPS_PROXY':'http://bad.invalid'},clear=True):self.assertEqual(self.call(),(200,[]))
         self.assertEqual(self.created[0][0],('api.connectsafely.ai',443));self.assertEqual(self.created[0][1]['timeout'],15)

@@ -148,7 +148,7 @@ def prepare(task, recipient, authorization):
         raise ValueError('configuration_invalid')
     result = execution_status(task, authorization)
     command = ['env', 'PYTHONPATH=_ferramentas', 'python3', '-m',
-               'thunder_os.apollo_linkedin_t4', '--task', task,
+               'thunder_os.apollo_linkedin_live_executor', '--task', task,
                '--authorization', authorization, '--execute']
     return {'task': task, 'recipient': recipient, 'status': 'blocked',
             'execution': result,
@@ -162,8 +162,8 @@ def prepare(task, recipient, authorization):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--task', required=True)
-    parser.add_argument('--recipient', required=True, help='LinkedIn publicIdentifier')
-    parser.add_argument('--authorization', required=True)
+    parser.add_argument('--recipient', help='LinkedIn publicIdentifier (opcional)')
+    parser.add_argument('--authorization', help='ID da autorização, se já emitida')
     parser.add_argument('--db', help='existing absolute path to official SQLite database')
     parser.add_argument('--campaign')
     parser.add_argument('--cadence')
@@ -171,6 +171,30 @@ def main(argv=None):
     parser.add_argument('--apollo-actor', help='verified Apollo API actor ID for optional GET')
     parser.add_argument('--apollo-credential-file', help='absolute path to Apollo read credential')
     args = parser.parse_args(argv)
+    if not args.recipient:
+        from thunder_os.apollo_linkedin_live_executor import runtime_preflight
+        if not valid_id(args.task) or (args.authorization and not valid_id(args.authorization)):
+            parser.error('invalid task or authorization')
+        result = runtime_preflight(args.task, args.authorization)
+        checks = result.get('checks', {})
+        verified = checks.get('executable_after_enable') is True
+        result['ready'] = verified and checks.get('execution_key') == 'enabled'
+        result['readiness'] = ('pronto' if result['ready'] else
+                               'pronto_para_habilitar' if verified else 'bloqueado')
+        found_authorization = args.authorization or result.get('authorization_id')
+        if found_authorization is not None and not valid_id(found_authorization):
+            found_authorization = None
+        result['commands'] = [
+            'PYTHONPATH=_ferramentas python3 -m thunder_os.apollo_linkedin_approve --campaign <CAMPANHA> --actor ygor --config <CONFIG_JSON>',
+            shlex.join(['env', 'PYTHONPATH=_ferramentas', 'python3', '-m',
+                        'thunder_os.apollo_linkedin_canary_issue', '--task', args.task, '--actor', 'ygor']),
+            'env PYTHONPATH=_ferramentas python3 -m thunder_os.apollo_linkedin_live_executor --task ' + shlex.quote(args.task) +
+            ' --authorization ' + (shlex.quote(found_authorization) if found_authorization else '<ID_CANARIO>') + ' --execute',
+        ]
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result.get('ready') is True else 2
+    if not args.authorization:
+        parser.error('--recipient requer --authorization')
     try:
         result = prepare(args.task, args.recipient, args.authorization)
         result = inspect_observations(result, db=args.db, campaign=args.campaign,

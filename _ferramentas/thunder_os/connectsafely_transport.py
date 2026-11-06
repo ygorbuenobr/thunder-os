@@ -68,8 +68,9 @@ class ConnectSafelyHTTPS:
             elif re.fullmatch(r'/linkedin/conversations/[A-Za-z0-9_%.,()=-]+/messages',path):
                 encoded=path.split('/')[3];decoded=unquote(encoded)
                 require(urn(decoded) and quote(decoded,safe='')==encoded,'invalid_route')
-                allowed.update(('cursor','since'))
+                allowed.update(('cursor','since','sync'))
                 require(not ('cursor' in query and 'since' in query),'invalid_route')
+                if 'sync' in query:require(query['sync']=='true' and type(query['sync']) is str,'invalid_route')
                 if 'since' in query:require(type(query['since']) is int and 0<query['since']<10**16,'invalid_route')
                 if 'cursor' in query:require(isinstance(query['cursor'],str) and re.fullmatch(r'[0-9]{1,16}',query['cursor']),'invalid_route')
             else:raise ConnectSafelyError('invalid_route')

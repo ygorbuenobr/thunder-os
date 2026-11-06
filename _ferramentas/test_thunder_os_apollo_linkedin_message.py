@@ -135,5 +135,44 @@ class RealClientFakeHTTPTests(unittest.TestCase):
         self.assertEqual(self.adapter.send(self.plan, self.now-1, before_dispatch=lambda:True)['status'], 'uncertain')
         self.assertEqual(sum(call[0] == 'POST' for call in self.fixture.calls), 1)
 
+    def test_reply_source_crosses_real_https_transport_without_network(self):
+        import json
+        from urllib.parse import urlsplit, parse_qs
+        from thunder_os.connectsafely_client import ConnectSafelyClient
+        from thunder_os.connectsafely_transport import ConnectSafelyHTTPS
+        account='a'*24
+        plan={'account_id':account, 'account_public_id':'sender', 'action':'dm',
+              'recipient_public_id':'lead', 'recipient_profile_urn':'urn:li:fsd_profile:lead',
+              'channel':'linkedin', 'messaging_channel':'linkedin_inbox', 'content':'Synthetic', 'conversation_urn':None}
+        calls=[]
+        class FakeHTTPS:
+            status=200
+            def __init__(self, *args, **kwargs): pass
+            def request(self, method, path, body=None, headers=None):
+                self.path=path; calls.append((method,path))
+            def getresponse(self): return self
+            def read(self, size):
+                path=urlsplit(self.path).path
+                if path=='/linkedin/accounts':
+                    payload=[{'id':account,'publicId':'sender','status':'AVAILABLE','enabled':True}]
+                elif '/exists/' in path:
+                    payload={'success':True,'accountId':account,'profileUrn':plan['recipient_profile_urn'],
+                             'hasConversation':True,'conversationUrn':'urn:li:msg_conversation:thread'}
+                else:
+                    payload={'success':True,'accountId':account,'conversationUrn':'urn:li:msg_conversation:thread',
+                             'hasMore':False,'participants':[{'profileId':'owner'},{'profileId':'lead'}],
+                             'messages':[{'messageUrn':'urn:li:messagingMessage:sample','senderProfileId':'lead',
+                                          'isSentByOwner':False,'sentAt':101}]}
+                return json.dumps(payload).encode()
+            def close(self): pass
+        transport=ConnectSafelyHTTPS(account,lambda:'synthetic-token-only',connection_factory=FakeHTTPS)
+        client=ConnectSafelyClient(account,'sender',self_profile_id='urn:li:fsd_profile:owner',request=transport)
+        result=MessageAdapter(client).reply_source(plan,100)(plan['recipient_profile_urn'])
+        self.assertTrue(result['complete']); self.assertTrue(result['suppressed'])
+        message_requests=[path for method,path in calls if '/messages?' in path]
+        self.assertEqual(len(message_requests),1)
+        self.assertEqual(parse_qs(urlsplit(message_requests[0]).query)['sync'],['true'])
+        self.assertTrue(all(method=='GET' for method,_ in calls))
+
 
 if __name__ == '__main__': unittest.main()

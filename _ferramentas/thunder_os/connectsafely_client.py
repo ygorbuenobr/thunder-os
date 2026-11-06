@@ -425,6 +425,29 @@ class ConnectSafelyClient:
         require(attempted_at<=self._seconds(row.get('sentAt'))<=min(self.clock()+5,attempted_at+120),'receipt_unverified')
         return {'status':'sent','receipt_ref':'connectsafely:'+row['messageUrn'],'message_urn':row['messageUrn'],'account_id':self.account_id,'confirmation_kind':'provider_receipt','write_attribution_confirmed':True}
 
+    def _send_receipt(self,row,plan,attempted_at):
+        """Validate the synchronous response to this account-scoped POST.
+
+        The provider's send response may omit sender fields. Its identity comes
+        from the pinned account, recipient and authenticated request; explicit
+        contradictory sender information is never ignored. Readback has its own
+        stricter attribution rules in ``_receipt``.
+        """
+        require(isinstance(row,dict) and urn(row.get('messageUrn')),'receipt_unverified')
+        owner=self._profile_identity(self.self_profile_id)
+        require(owner is not None,'receipt_unverified')
+        value=row['messageUrn']
+        modern=bool(re.fullmatch(r'urn:li:msg_message:\(urn:li:fsd_profile:'+re.escape(owner)+r',[A-Za-z0-9_.=-]+\)',value))
+        require((value.startswith('urn:li:messagingMessage:') and len(value)>len('urn:li:messagingMessage:')) or modern,'receipt_unverified')
+        require(row.get('text')==plan['content'],'receipt_unverified')
+        require('isSentByOwner' not in row or row['isSentByOwner'] is True,'receipt_unverified')
+        sender=self._sender_identity(row)
+        require(sender is None or sender==owner,'receipt_unverified')
+        require(attempted_at<=self._seconds(row.get('sentAt'))<=min(self.clock()+5,attempted_at+120),'receipt_unverified')
+        return {'status':'sent','receipt_ref':'connectsafely:'+value,'message_urn':value,
+                'account_id':self.account_id,'confirmation_kind':'provider_receipt',
+                'write_attribution_confirmed':True}
+
     def _observed_owner(self,data,thread,previous):
         """Bind aliases for this read only, without changing the configured pin."""
         pin=self._profile_identity(self.self_profile_id)
@@ -468,10 +491,12 @@ class ConnectSafelyClient:
         try:
             data=self._call('POST',path,body=body)
             self._scope(data)
-            require(data.get('accountId')==self.account_id,'receipt_unverified')
+            # The real send response (06/11/2026) echoes accountId; a different
+            # account is a contradiction, an absent one is tolerated.
+            require(data.get('accountId') in (None,self.account_id),'receipt_unverified')
             if plan['action']=='invite':return {'status':'uncertain','error_code':'invite_receipt_unavailable'}
             require(data.get('recipientProfileUrn')==plan['recipient_profile_urn'],'receipt_unverified')
-            return self._receipt(data.get('sentMessage'),plan,attempted_at)
+            return self._send_receipt(data.get('sentMessage'),plan,attempted_at)
         except ConnectSafelyError as exc:
             return {'status':'uncertain','error_code':str(exc)}
 

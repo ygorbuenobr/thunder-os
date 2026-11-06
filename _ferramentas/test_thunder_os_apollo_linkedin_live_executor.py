@@ -17,6 +17,31 @@ _spec.loader.exec_module(_prepare)
 
 
 class SafeCompositionTest(unittest.TestCase):
+    def test_preparation_by_task_reports_real_preflight_and_three_commands(self):
+        with patch('thunder_os.apollo_linkedin_live_executor.runtime_preflight',
+                   return_value={'state': 'dry_run', 'ready': False, 'checks': {'quota': 'unknown'}}):
+            with patch('sys.stdout', new_callable=io.StringIO) as out:
+                self.assertEqual(_prepare.main(['--task', 'synthetic-task']), 2)
+        result = json.loads(out.getvalue())
+        self.assertEqual(result['checks']['quota'], 'unknown')
+        self.assertEqual(len(result['commands']), 3)
+        self.assertIn('apollo_linkedin_approve', result['commands'][0])
+        self.assertIn('apollo_linkedin_canary_issue', result['commands'][1])
+        self.assertIn('apollo_linkedin_live_executor', result['commands'][2])
+
+    def test_preparation_only_reports_ready_when_all_gates_and_key_are_ready(self):
+        for enabled, expected_status, code in [('enabled', 'pronto', 0),
+                                                ('disabled', 'pronto_para_habilitar', 2)]:
+            with self.subTest(execution_key=enabled):
+                observation = {'state': 'dry_run', 'authorization_id': 'synthetic-canary', 'checks':
+                               {'executable_after_enable': True, 'execution_key': enabled}}
+                with patch('thunder_os.apollo_linkedin_live_executor.runtime_preflight', return_value=observation):
+                    with patch('sys.stdout', new_callable=io.StringIO) as out:
+                        self.assertEqual(_prepare.main(['--task', 'synthetic-task']), code)
+                result = json.loads(out.getvalue())
+                self.assertEqual(result['readiness'], expected_status)
+                self.assertIn('--authorization synthetic-canary', result['commands'][2])
+
     def test_no_flag_or_environment_enables_dispatch(self):
         with patch.dict('os.environ', {'THUNDER_APOLLO_LI_EXECUTION_ENABLED': '1'}):
             with patch('sys.stdout', new_callable=io.StringIO) as out:
