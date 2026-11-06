@@ -59,6 +59,17 @@ O acesso foi pelo MCP da conta da Thunder (conta `6abe5fc087213e2040fb9b1b`, `pu
 | Recibo do convite | `get-sent-invitations` devolve `invitationId`, `invitationUrn`, `memberUrn`, `publicIdentifier` e `sentAt` só **relativo** ("Sent 1 hour ago"), sem horário absoluto. A paginação usa `nextStartIndex` e termina em `endOfList=true`; uma página vazia com 502/`INVITATIONS_UNAVAILABLE` não indica fim da lista. Dá para confirmar, depois de um timeout, que o convite saiu, buscando pelo `publicIdentifier` do lead; o horário exato não vem. |
 | Ainda não comprovado | Cabeçalhos `Retry-After` e reset numa resposta 429 real; se o POST de convite devolve um ID de recibo síncrono; existência de chave só de leitura. A MCP não mostra cabeçalhos HTTP. |
 
+### B2 — Primeiro envio real autorizado (06/11/2026)
+
+O Ygor autorizou em chat a mensagem exata para um lead real, um diretor comercial de uma empresa industrial, numa campanha ativa de e-mail do Apollo. O envio foi feito pelo ConnectSafely direto, **fora do executor do Thunder OS**, que continua desligado. O lead não é identificado aqui porque este repositório é público.
+
+| Ponto | Resultado observado |
+|---|---|
+| Pré-checagens | Conexão de 1º grau. Conversa existente só com mensagens anteriores do Ygor e nenhuma resposta, com o histórico lido até o fim. E-mail da sequência apenas em rascunho. |
+| Recibo síncrono | `conversations/send` devolveu `sentMessage.messageUrn`, o texto e `sentAt`. **O envio de mensagem traz ID de recibo na própria resposta.** |
+| Releitura | A conversa relida mostra a mensagem no topo, com o mesmo `messageUrn` e o texto idêntico. |
+| Apollo | Tarefa `linkedin_step_message` avulsa criada e concluída, com o recibo na nota. Por não fazer parte da sequência, ela não avança a cadência de e-mail. |
+
 ### Consequências para a jornada Apollo + LinkedIn
 
 - A pergunta pendente 1 ("de onde vem o texto do convite") tem resposta técnica comprovada: do `linkedin_emailer_template.body_text` da própria tarefa, já renderizado por contato, igual pelo CLI e pela chave do painel. A decisão de adotar essa fonte continua com o Ygor.
