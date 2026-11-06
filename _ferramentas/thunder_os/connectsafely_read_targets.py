@@ -73,9 +73,13 @@ class ReadTargetResolver:
         data=c._call('GET','/linkedin/profile',{'accountId':c.account_id,'profileId':public,'forceRefresh':'true'})
         require(data.get('success') is True and data.get('accountId')==c.account_id and data.get('profileId')==public,'account_identity_mismatch')
         profile=data.get('profile');require(isinstance(profile,dict) and profile.get('publicIdentifier')==public and isinstance(profile.get('entityUrn'),str) and PERSON.fullmatch(profile['entityUrn']),'profile_target_unverified')
-        require(type(data.get('cached')) is bool,'provider_schema_invalid')
+        # forceRefresh=true is always sent. The deployed API omits cache telemetry
+        # on forced reads (observed 06/11/2026), as the canary reader records;
+        # absence is the forced read, while an explicit cached=true still blocks.
+        require('cached' not in data or type(data['cached']) is bool,'provider_schema_invalid')
+        cached=data.get('cached',False)
         names=[_text(profile[k]) for k in ('firstName','lastName') if k in profile]
-        return {'public_id':public,'profile_urn':profile['entityUrn'],'label':' '.join(names) or public,'cached':data['cached']}
+        return {'public_id':public,'profile_urn':profile['entityUrn'],'label':' '.join(names) or public,'cached':cached}
     def _save(self,payload):
         identity=uuid4().hex
         self.repo.append_state('connectsafely_target_observation',identity,{'observation':payload,'source_hash':payload_hash(payload)})

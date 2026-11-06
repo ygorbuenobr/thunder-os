@@ -49,8 +49,11 @@ class FakeHTTPS:
                 return Response([{'id': ACCOUNT, 'publicId': 'sender'}])
             if self.path.startswith('/linkedin/profile?'):
                 assert 'forceRefresh=true' in self.path, 'identity read must bypass provider cache'
-                return Response({'success': True, 'accountId': self.profile_account, 'profileId': 'synthetic-person',
-                    'cached': self.cached, 'profile': {'publicIdentifier': 'synthetic-person', 'entityUrn': self.profile_urn}})
+                body = {'success': True, 'accountId': self.profile_account, 'profileId': 'synthetic-person',
+                    'cached': self.cached, 'profile': {'publicIdentifier': 'synthetic-person', 'entityUrn': self.profile_urn}}
+                if self.cached is None:
+                    body.pop('cached')
+                return Response(body)
         raise AssertionError('unexpected route')
     def close(self): pass
 
@@ -103,6 +106,11 @@ class IdentityBindingTests(unittest.TestCase):
         self.reader.team_id = 'other'
         with self.assertRaisesRegex(ValueError, 'identity_authority_mismatch'): self.create()
         self.assertEqual(self.repo.list_state(KIND), [])
+
+    def test_forced_read_without_cache_telemetry_binds(self):
+        # Real provider shape (06/11/2026): forceRefresh=true omits `cached`.
+        FakeHTTPS.cached = None
+        self.assertEqual(self.create()['member_urn'], FakeHTTPS.profile_urn)
 
     def test_preexisting_other_identity_cannot_be_overwritten(self):
         result = self.create()
