@@ -116,6 +116,9 @@ class CampaignBindings:
 
 
 _SEARCH = '/api/v1/tasks/search'
+# A real page of 100 tasks embeds contacts and rendered templates: 1.32 MB on
+# 06/11/2026. The cap still bounds memory without rejecting a normal page.
+MAX_RESPONSE_BYTES = 8_000_000
 _ACTIONS = {'linkedin_step_connect', 'linkedin_step_message'}
 
 
@@ -141,8 +144,8 @@ def _https_request(method, path, body, headers, timeout):
     try:
         connection.request(method, request_path, headers=headers)
         response = connection.getresponse()
-        raw = response.read(1_000_001)
-        if len(raw) > 1_000_000:
+        raw = response.read(MAX_RESPONSE_BYTES + 1)
+        if len(raw) > MAX_RESPONSE_BYTES:
             raise ValueError('response_too_large')
         return response.status, raw
     finally:

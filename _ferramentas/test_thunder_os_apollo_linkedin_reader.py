@@ -114,6 +114,25 @@ class ApolloReaderTest(unittest.TestCase):
         for method in ('PUT', 'PATCH', 'DELETE'):
             with self.assertRaises(ValueError):
                 _https_request(method, '/api/v1/tasks/search', {'page': 1, 'per_page': 100}, {}, 1)
+    def test_transport_accepts_real_page_size_and_caps_larger(self):
+        from unittest import mock
+        from thunder_os import apollo_linkedin_reader as module
+        for size, accepted in ((1_400_000, True), (module.MAX_RESPONSE_BYTES + 1, False)):
+            class Response:
+                status = 200
+                def read(self, amount): return b'x' * min(size, amount)
+            class Connection:
+                def __init__(self, *args, **kwargs): pass
+                def request(self, *args, **kwargs): pass
+                def getresponse(self): return Response()
+                def close(self): pass
+            with self.subTest(size=size), mock.patch.object(module.http.client, 'HTTPSConnection', Connection):
+                if accepted:
+                    self.assertEqual(len(module._https_request('POST', module._SEARCH,
+                                     {'page': 1, 'per_page': 100}, {}, 1)[1]), size)
+                else:
+                    with self.assertRaisesRegex(ValueError, 'response_too_large'):
+                        module._https_request('POST', module._SEARCH, {'page': 1, 'per_page': 100}, {}, 1)
     def test_missing_owner_is_exposed_to_executor_as_blocker(self):
         row = self.row('task'); row.pop('user_id')
         self.pages[1] = self.page(1, 1, [row])
