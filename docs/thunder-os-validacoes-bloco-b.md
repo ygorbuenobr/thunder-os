@@ -70,6 +70,19 @@ O Ygor autorizou em chat a mensagem exata para um lead real, um diretor comercia
 | Releitura | A conversa relida mostra a mensagem no topo, com o mesmo `messageUrn` e o texto idêntico. |
 | Apollo | Tarefa `linkedin_step_message` avulsa criada e concluída, com o recibo na nota. Por não fazer parte da sequência, ela não avança a cadência de e-mail. |
 
+### B2 — Primeiro envio pelo executor do Thunder OS (06/11/2026)
+
+O Ygor aprovou em chat o texto exato para outro lead real de 1º grau (diretor comercial de indústria), inscrito na sequência do executor. O envio saiu pelo `apollo_linkedin_live_executor` em produção, com aprovação da campanha, canário de uso único e `THUNDER_APOLLO_LI_EXECUTION_ENABLED=true` só no comando; timer e serviço continuam desligados.
+
+| Ponto | Resultado observado |
+|---|---|
+| Executor | Retornou `{"state": "confirmed", "mode": "execute_requested"}`. Antes disso falhou fechado duas vezes (`safety_unverified`, `coverage_unavailable`) e só seguiu depois das correções 94f9b36 e 7aedae7. |
+| Reserva | `apollo_linkedin_reservations`: `state=confirmed`, `apollo_status=confirmed`, `receipt.provider_id` com o `messageUrn` do ConnectSafely. Canário `consumed`. |
+| Releitura no LinkedIn | A conversa mostra a mensagem no topo, com o mesmo `messageUrn`, texto idêntico e `isSentByOwner=true`. |
+| Apollo | A tarefa da sequência ficou `completed` cerca de 90 s depois do envio, com o recibo na nota. |
+
+Isso fecha a jornada do executor para mensagem a conexão de 1º grau: reserva, envio, recibo, releitura e conclusão no Apollo. Convite a não conectados ainda não é coberto pelo executor.
+
 ### Consequências para a jornada Apollo + LinkedIn
 
 - A pergunta pendente 1 ("de onde vem o texto do convite") tem resposta técnica comprovada: do `linkedin_emailer_template.body_text` da própria tarefa, já renderizado por contato, igual pelo CLI e pela chave do painel. A decisão de adotar essa fonte continua com o Ygor.
