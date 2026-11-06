@@ -1,0 +1,18 @@
+[Unit]
+Description=Thunder OS Apollo + LinkedIn campaign worker (one task per run)
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Same identity, database and environment as the reviewed manual runs: root,
+# painel.db under the ygor-personal Hermes profile, credentials resolved by the
+# canary environment script. The approval and version come from the env file,
+# so a re-approval never edits this unit. Exit 2 is a blocked or partial scan.
+User=root
+Group=root
+EnvironmentFile=/etc/thunder-os/apollo-li-worker.env
+ExecStart=/bin/bash -c '. /root/thunder-canary-env.sh && cd /opt/thunder-os/current && exec env THUNDER_APOLLO_LI_WORKER_ENABLED=true THUNDER_APOLLO_LI_EXECUTION_ENABLED=true python3 -m thunder_os.apollo_linkedin_campaign_worker --campaign "$CAMPAIGN" --approval "$APPROVAL" --campaign-version "$VERSION" --max-pages 5 --budget-seconds 25 --execute'
+SuccessExitStatus=2
+TimeoutStartSec=15min
+NoNewPrivileges=true
+PrivateTmp=true

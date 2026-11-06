@@ -1,0 +1,12 @@
+[Unit]
+Description=Thunder OS Apollo + LinkedIn worker, business hours in São Paulo
+
+[Timer]
+# One task per run; pacing, weekly invite limit, reply coverage and the
+# approval's expiry stay enforced in code. Disable with:
+#   systemctl disable --now thunder-os-apollo-li-worker.timer
+OnCalendar=Mon..Fri *-*-* 09..17:00/20:00 America/Sao_Paulo
+Persistent=false
+
+[Install]
+WantedBy=timers.target
