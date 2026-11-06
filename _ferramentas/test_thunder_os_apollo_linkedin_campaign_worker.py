@@ -31,6 +31,7 @@ def contend_cursor(path, barrier, queue):
         def list_open_tasks(self):
             return {'coverage': 'complete', 'reason': None, 'tasks': [
                 {'id': 'first', 'type': 'linkedin_step_message', 'status': 'scheduled',
+                 'due_at': '2026-11-06T11:00:00.000+00:00',
                  'user_id': 'owner', 'emailer_campaign_id': 'sequence'}]}
     class Coordinator:
         authority = Authority()
@@ -113,7 +114,7 @@ class WorkerTest(unittest.TestCase):
     @staticmethod
     def task(ident, *, sequence='sequence', action='linkedin_step_message', owner='owner'):
         return {'id': ident, 'type': action, 'status': 'scheduled', 'user_id': owner,
-                'emailer_campaign_id': sequence}
+                'emailer_campaign_id': sequence, 'due_at': '2026-11-06T11:00:00.000+00:00'}
 
     def test_default_scans_only_and_never_dispatches(self):
         with patch.dict(os.environ, {}, clear=True):
@@ -161,6 +162,27 @@ class WorkerTest(unittest.TestCase):
                        'reason': 'skip_reconcile_pending'}, result['items'])
         self.assertEqual([], self.outcomes)
         self.assertTrue(all(method == 'GET' or path.endswith('/search') for method, path in self.calls))
+
+    def test_task_before_due_date_is_deferred_and_never_dispatched(self):
+        # Real Apollo shape (06/11/2026): the D+5 message task exists at once,
+        # scheduled, with due_at five days ahead.
+        from datetime import datetime, timezone
+        self.worker.clock = lambda: datetime(2026, 11, 6, 10, 0, tzinfo=timezone.utc)
+        with patch.dict(os.environ, {'THUNDER_APOLLO_LI_WORKER_ENABLED': 'true',
+                                    'THUNDER_APOLLO_LI_EXECUTION_ENABLED': 'true'}, clear=True):
+            result = self.worker.run_once(execute=True)
+        self.assertIn({'task_id': 'task1', 'state': 'deferred', 'reason': 'not_due'}, result['items'])
+        self.assertEqual(self.outcomes, [])
+        self.worker.clock = lambda: datetime(2026, 11, 6, 11, 0, tzinfo=timezone.utc)
+        with patch.dict(os.environ, {'THUNDER_APOLLO_LI_WORKER_ENABLED': 'true',
+                                    'THUNDER_APOLLO_LI_EXECUTION_ENABLED': 'true'}, clear=True):
+            self.worker.run_once(execute=True)
+        self.assertEqual(len(self.outcomes), 1)
+
+    def test_missing_or_naive_due_date_blocks(self):
+        from thunder_os.apollo_linkedin_live_executor import _due
+        for value in (None, '', 'tomorrow', '2026-11-06T11:00:00'):
+            self.assertIsNone(_due(value))
 
     def test_explicit_activation_calls_campaign_coordinator_once(self):
         with patch.dict(os.environ, {'THUNDER_APOLLO_LI_WORKER_ENABLED': 'true',

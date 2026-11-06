@@ -140,6 +140,16 @@ class CampaignRunnerTest(fixtures.T4dEndToEnd):
             self.assertEqual(self.run_campaign()['reason'], 'execution_disabled')
         self.assertEqual(self.posts(), [])
 
+    def test_campaign_task_before_due_date_is_not_dispatched(self):
+        task = self.fake.task
+        def future_task():
+            value = task()
+            value['due_at'] = '2999-01-01T00:00:00.000+00:00'
+            return value
+        self.fake.task = future_task
+        self.assertEqual(self.run_campaign(), {'state': 'blocked', 'reason': 'not_due'})
+        self.assertEqual(len(self.posts()), 0)
+
     def test_dotted_campaign_version_is_supported(self):
         from thunder_os.service import ThunderService
         from test_thunder_os_apollo_linkedin_authority import config

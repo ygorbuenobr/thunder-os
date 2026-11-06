@@ -179,6 +179,9 @@ class MessageCoordinator:
             if (error or not recipient
                     or task.get('status') != 'scheduled'):
                 return {'state': 'blocked', 'reason': 'task_unverified'}
+            due = _due(task.get('due_at'))
+            if due is None or due > datetime.now(timezone.utc):
+                return {'state': 'blocked', 'reason': 'not_due'}
             resolver = self.target_resolver
             if resolver is None:
                 from .connectsafely_read_targets import build_read_resolver
@@ -659,6 +662,17 @@ def build_runtime(task, authorization, *, readonly=False, campaign_id=None,
     return MessageCoordinator(repository=repo, authority=authority, apollo=apollo,
         message=message, coverage=coverage, safety=safety, completion=completion,
         invitation=InvitationAdapter(client))
+
+
+def _due(value):
+    """Apollo task due date as an aware UTC datetime, or None when unverifiable."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        stamp = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    return stamp.astimezone(timezone.utc) if stamp.tzinfo is not None else None
 
 
 def build_campaign_runtime(campaign_id, approval_id, campaign_version, *, readonly=False):

@@ -64,7 +64,8 @@ class Scenario:
                 'emailer_campaign_id': 'seq', 'user_id': 'owner', 'contact_id': 'contact',
                 'contact': {'id': 'contact', 'linkedin_url': 'https://www.linkedin.com/in/fixture-person/',
                             'typed_custom_fields': {'abm_field': TEXT}},
-                'linkedin_emailer_template': {'body_text': TEXT}, 'note': self.note}
+                'linkedin_emailer_template': {'body_text': TEXT}, 'note': self.note,
+                'due_at': '2026-11-06T11:00:00.000+00:00'}
 
     def apollo(self, method, path, body, headers, timeout):
         self.apollo_calls.append((method, path, body))

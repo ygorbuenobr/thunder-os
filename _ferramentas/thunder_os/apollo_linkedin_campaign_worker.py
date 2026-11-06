@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import argparse
 import bisect
+from datetime import datetime, timezone
 import json
 import math
 import os
 import re
 
 from .apollo_linkedin_attention import EXCLUDED_TASK
-from .apollo_linkedin_live_executor import build_campaign_runtime, valid_campaign_version, valid_id
+from .apollo_linkedin_live_executor import _due, build_campaign_runtime, valid_campaign_version, valid_id
 from .campaign_registry import sequence_allowed
 from .models import payload_hash
 
@@ -39,6 +40,7 @@ class CampaignWorker:
         self.coordinator = coordinator
         self.campaign_id, self.approval_id, self.campaign_version = campaign_id, approval_id, campaign_version
         self.budget_seconds, self.max_pages, self.max_tasks = budget_seconds, max_pages, max_tasks
+        self.clock = lambda: datetime.now(timezone.utc)
 
     def run_once(self, *, execute=False):
         if type(execute) is not bool:
@@ -107,6 +109,16 @@ class CampaignWorker:
                     continue
                 if task.get('type') not in ('linkedin_step_message', 'linkedin_step_connect'):
                     result['items'].append({'task_id': ident, 'state': 'blocked', 'reason': 'action_not_supported'})
+                    continue
+                # Apollo creates a step's task when the step opens, with its due
+                # date days ahead (a D+5 message on 2026-11-06). Acting early
+                # would skip a message before the invite could be accepted.
+                due = _due(task.get('due_at'))
+                if due is None:
+                    result['items'].append({'task_id': ident, 'state': 'blocked', 'reason': 'due_unverified'})
+                    continue
+                if due > self.clock():
+                    result['items'].append({'task_id': ident, 'state': 'deferred', 'reason': 'not_due'})
                     continue
                 previous = self.coordinator.repo.get_apollo_linkedin_reservation(
                     binding['company_id'], ident, task['type'])
