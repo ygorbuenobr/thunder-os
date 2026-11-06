@@ -76,7 +76,7 @@ def _https_request(method, path, body, headers, timeout):
         connection.close()
 
 
-def _json(raw):
+def _json(raw, limit=1_000_000):
     def unique(pairs):
         result = {}
         for key, value in pairs:
@@ -84,7 +84,7 @@ def _json(raw):
                 raise ValueError('duplicate_key')
             result[key] = value
         return result
-    if not isinstance(raw, bytes) or len(raw) > 1_000_000:
+    if not isinstance(raw, bytes) or len(raw) > limit:
         raise ValueError('invalid_response')
     value = json.loads(raw, object_pairs_hook=unique,
                        parse_constant=lambda _: (_ for _ in ()).throw(ValueError('invalid_number')))

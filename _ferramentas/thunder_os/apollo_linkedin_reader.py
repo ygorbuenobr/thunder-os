@@ -213,7 +213,7 @@ class ApolloLinkedInReader:
             raise ValueError('task_removed')
         if status != 200:
             raise ValueError('apollo_unavailable')
-        return _json(raw)
+        return _json(raw, MAX_RESPONSE_BYTES)
 
     def _verify_team(self):
         result = self._call('GET', '/api/v1/users/api_profile')

@@ -133,6 +133,13 @@ class ApolloReaderTest(unittest.TestCase):
                 else:
                     with self.assertRaisesRegex(ValueError, 'response_too_large'):
                         module._https_request('POST', module._SEARCH, {'page': 1, 'per_page': 100}, {}, 1)
+    def test_real_size_search_page_parses(self):
+        # Production page on 06/11/2026: 43 tasks with embedded records, 1.32 MB.
+        rows = [self.row(i, note='x' * 32_000) for i in range(43)]
+        self.pages[1] = self.page(1, 43, rows)
+        self.assertGreater(len(self.json.dumps(self.pages[1])), 1_000_000)
+        result = self.reader.list_open_tasks()
+        self.assertEqual((result['coverage'], len(result['tasks'])), ('complete', 43))
     def test_missing_owner_is_exposed_to_executor_as_blocker(self):
         row = self.row('task'); row.pop('user_id')
         self.pages[1] = self.page(1, 1, [row])
