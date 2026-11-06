@@ -6,6 +6,7 @@ then read back by exact IDs through REST. Pagination establishes bounded scope,
 not an atomic source snapshot. Injected transports must preserve fixed-host TLS,
 response-size/deadline limits and no redirects of apollo_readonly._https_request.
 """
+from .credential_paths import credential_path
 from collections import Counter
 from copy import deepcopy
 from datetime import datetime, timezone, timedelta
@@ -175,7 +176,7 @@ def _structured_rate_window(result):
 
 def enabled():
     try:
-        return private_text(ENABLED_FILE) == 'read-only-v1'
+        return private_text(credential_path('apollo_reader_enabled', ENABLED_FILE)) == 'read-only-v1'
     except ExternalEmailError:
         return False
 

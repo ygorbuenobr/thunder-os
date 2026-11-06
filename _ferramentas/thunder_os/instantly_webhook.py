@@ -1,4 +1,6 @@
 """Instantly custom-header capture and readback preparation, OFF by default."""
+from .credential_paths import credential_path
+
 from collections.abc import Mapping
 from copy import deepcopy
 import hmac
@@ -29,7 +31,7 @@ def load_capture_secret():
     """Read the explicit capture opt-in file, never a provider API credential."""
     try:
         # Nonblocking open also lets fstat reject a FIFO without waiting for a writer.
-        descriptor = os.open(INSTANTLY_CAPTURE_SECRET_FILE,
+        descriptor = os.open(credential_path('instantly_webhook_secret', INSTANTLY_CAPTURE_SECRET_FILE),
                              os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(descriptor, 'rb') as stream:
             info = os.fstat(stream.fileno())

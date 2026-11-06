@@ -1454,8 +1454,10 @@ class Handler(BaseHTTPRequestHandler):
     def agenttrail_ingress_actor(self):
         actor = self.thunder_proxy_actor()
         try:
-            expected = AGENTTRAIL_INGRESS_TOKEN.read_text(encoding='ascii').strip()
-        except OSError:
+            from thunder_os.credential_paths import credential_path
+            from thunder_os.instantly_reader import private_text
+            expected = private_text(credential_path('agenttrail_ingress_token', AGENTTRAIL_INGRESS_TOKEN))
+        except Exception:
             expected = ''
         supplied = self.headers.get('X-Thunder-Agenttrail-Ingress', '')
         if not expected or not supplied or not secrets.compare_digest(expected, supplied):
@@ -1768,6 +1770,43 @@ class Handler(BaseHTTPRequestHandler):
                 raise Erro('Controle de respostas indisponível.', 503)
             return self.responder(200, control.snapshot())
         external_email_base = '/api/os/v1/integrations/external-email'
+        if rota.path == '/api/os/v1/integrations/apollo/linkedin-attention':
+            if self.thunder_proxy_actor() != 'ygor':
+                raise Erro('Somente Ygor pode consultar integrações.', 403)
+            if self.command != 'GET' or rota.query:
+                raise Erro('Atenção permite apenas consulta.', 405)
+            attention = getattr(self.server, 'thunder_apollo_linkedin_attention', None)
+            if attention is None:
+                list_reservations = getattr(service, 'list_apollo_linkedin_reservations', None)
+                if not callable(list_reservations):
+                    return self.responder(200, {'status': 'unavailable', 'items': [], 'reason':
+                        getattr(self.server, 'thunder_apollo_linkedin_attention_error', 'configuration_missing'),
+                        'read_isolation': getattr(self.server, 'thunder_apollo_linkedin_read_isolation', None)})
+                try:
+                    reservations = list_reservations()
+                except Exception:
+                    return self.responder(200, {'status': 'unavailable', 'items': [], 'reason': 'official_store_unavailable',
+                        'read_isolation': getattr(self.server, 'thunder_apollo_linkedin_read_isolation', None)})
+                items = [{'task_id': row['task_id'],
+                    'reason': row.get('reason') or ('Reserva sem resultado' if row.get('state') == 'reserved' else 'Resultado incerto; não repetir.'),
+                    'stopped_at': row.get('updated_at') or row.get('created_at'),
+                    'next_action': 'Verificar o resultado no provedor antes de qualquer ação.'}
+                    for row in reservations if row.get('state') in ('uncertain', 'reserved')]
+                list_locks = getattr(service, 'list_apollo_linkedin_account_locks', None)
+                if callable(list_locks):
+                    try:
+                        items.extend({'task_id': None, 'reason': 'Lock de conta presente: ' + row['account_id'],
+                            'stopped_at': row['created_at'],
+                            'next_action': 'Verificar o processo responsável e reconciliar o lock antes de agir.'}
+                            for row in list_locks())
+                    except Exception:
+                        return self.responder(200, {'status': 'unavailable', 'items': items, 'reason': 'official_store_unavailable',
+                            'read_isolation': getattr(self.server, 'thunder_apollo_linkedin_read_isolation', None)})
+                # The reservation store alone cannot establish coverage of blocked tasks.
+                return self.responder(200, {'status': 'partial', 'items': items,
+                    'reason': getattr(self.server, 'thunder_apollo_linkedin_attention_error', 'configuration_missing'),
+                    'read_isolation': getattr(self.server, 'thunder_apollo_linkedin_read_isolation', None)})
+            return self.responder(200, attention.snapshot())
         if rota.path == '/api/os/v1/integrations/apollo/linkedin-preview':
             if self.thunder_proxy_actor() != 'ygor':
                 raise Erro('Somente Ygor pode consultar integrações.', 403)
@@ -1778,6 +1817,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.responder(200, {'status': 'unavailable', 'execution_enabled': False,
                     'dry_run': True, 'task': None, 'account': None, 'lead': None,
                     'action': None, 'text': {'value': None, 'verified': False},
+                    'read_isolation': getattr(self.server, 'thunder_apollo_linkedin_read_isolation', None),
                     'blockers': [getattr(self.server, 'thunder_apollo_linkedin_preview_error', 'configuration_missing')], 'call_preview': None})
             return self.responder(200, preview.read())
         if rota.path == '/api/os/v1/integrations/apollo/reader':
@@ -2777,8 +2817,9 @@ def configure_connectsafely_server(server, repository, factory=None):
         config_sha256 = os.environ.get('THUNDER_OS_CONNECTSAFELY_CONFIG_SHA256', '')
         if config_path or config_sha256:
             from thunder_os.connectsafely_live import build_panel_composition
+            from thunder_os.credential_paths import credential_path
             factory = lambda repo: build_panel_composition(
-                repo, config_path=config_path, config_sha256=config_sha256)
+                repo, config_path=credential_path('connectsafely_config', config_path), config_sha256=config_sha256)
     composition = (factory(repository) if factory is not None
                    else ConnectSafelyComposition(ConnectSafelyApplication(repository)))
     if (type(composition) is not ConnectSafelyComposition
@@ -2796,6 +2837,46 @@ def configure_connectsafely_server(server, repository, factory=None):
     return composition
 
 
+def configure_apollo_linkedin_read_broker(server, environ=None):
+    """Configure a read facade or isolated IPC client without startup calls."""
+    from thunder_os.connectsafely_read_broker_client import AccountStatusBrokerClient, ReadBrokerClientError
+    env = os.environ if environ is None else environ
+    server.thunder_apollo_linkedin_read_identity = None
+    server.thunder_apollo_linkedin_read_isolation = None
+    app = getattr(server, 'thunder_connectsafely_app', None)
+    provider = getattr(app, 'provider', None)
+    if provider is not None:
+        from thunder_os.connectsafely_panel_read_identity import PanelReadIdentity
+        try:
+            if not env.get('THUNDER_APOLLO_LI_COMPANY'):
+                return None
+            client = PanelReadIdentity(provider.direct_client,
+                account_id=env.get('THUNDER_APOLLO_LI_ACCOUNT'),
+                public_id=env.get('THUNDER_APOLLO_LI_PUBLIC_ID'))
+        except (AttributeError, ValueError, TypeError):
+            return None
+        server.thunder_apollo_linkedin_read_identity = client
+        server.thunder_apollo_linkedin_read_isolation = 'in_process_accepted'
+        return client
+    if env.get('THUNDER_OS_CONNECTSAFELY_CONFIG') or getattr(server, 'thunder_connectsafely_read_resolver', None) is not None:
+        return None
+    keys = ('THUNDER_APOLLO_LI_BROKER_SOCKET', 'THUNDER_APOLLO_LI_BROKER_UID',
+            'THUNDER_APOLLO_LI_COMPANY', 'THUNDER_APOLLO_LI_ACCOUNT', 'THUNDER_APOLLO_LI_PUBLIC_ID')
+    values = [env.get(key, '') for key in keys]
+    if not all(values):
+        return None
+    try:
+        if not values[1].isascii() or not values[1].isdigit():
+            return None
+        client = AccountStatusBrokerClient(values[0], broker_uid=int(values[1]), company_id=values[2],
+                                          account_id=values[3], public_id=values[4])
+    except (ReadBrokerClientError, ValueError, TypeError, OverflowError):
+        return None
+    server.thunder_apollo_linkedin_read_identity = client
+    server.thunder_apollo_linkedin_read_isolation = 'separate_broker'
+    return client
+
+
 def configure_apollo_linkedin_preview(server, loader, environ=None):
     """Explicit target configuration; never calls providers at startup."""
     from thunder_os.apollo_linkedin_preview import ApolloLinkedInPreview
@@ -2811,21 +2892,66 @@ def configure_apollo_linkedin_preview(server, loader, environ=None):
     if not all(values):
         server.thunder_apollo_linkedin_preview_error = 'configuration_incomplete'
         return None
-    app = getattr(server, 'thunder_connectsafely_app', None)
-    client = getattr(getattr(app, 'provider', None), 'direct_client', None)
-    if client is None or (client.account_id, client.expected_public_id) != (values[5], values[6]):
+    identity = getattr(server, 'thunder_apollo_linkedin_read_identity', None)
+    if identity is None:
+        server.thunder_apollo_linkedin_preview_error = 'readonly_account_unconfigured'
+        return None
+    if (getattr(identity, 'account_id', None), getattr(identity, 'public_id', None)) != (values[5], values[6]):
         server.thunder_apollo_linkedin_preview_error = 'account_mismatch'
         return None
+    def account_status():
+        read_status = getattr(identity, 'account_status', None)
+        return read_status() if callable(read_status) else None
     try:
         preview = ApolloLinkedInPreview(loader, team_id=values[0], owner_id=values[1], api_actor_id=values[2],
             sequence_id=values[3], task_id=values[4], account_id=values[5],
-            account_public_id=values[6], account_status_reader=client.account_status)
+            account_public_id=values[6], account_status_reader=account_status,
+            read_isolation=getattr(server, 'thunder_apollo_linkedin_read_isolation', None))
     except (ValueError, TypeError):
         server.thunder_apollo_linkedin_preview_error = 'configuration_invalid'
         return None
     server.thunder_apollo_linkedin_preview = preview
     return preview
 
+
+
+def configure_apollo_linkedin_attention(server, loader, environ=None):
+    """Configure a dry-run projection only when all bindings are explicit."""
+    from thunder_os.apollo_linkedin_reader import ApolloLinkedInReader, CampaignBindings
+    from thunder_os.apollo_linkedin_executor import DryRunExecutor
+    from thunder_os.apollo_linkedin_attention import ApolloLinkedInAttention
+    env = os.environ if environ is None else environ
+    server.thunder_apollo_linkedin_attention = None
+    server.thunder_apollo_linkedin_attention_error = 'configuration_missing'
+    try:
+        bindings_data = json.loads(env.get('THUNDER_APOLLO_LI_BINDINGS', ''))
+        if not isinstance(bindings_data, list) or not bindings_data or any(not isinstance(b, dict) for b in bindings_data):
+            raise ValueError('bindings_missing')
+        company = env['THUNDER_APOLLO_LI_COMPANY']
+        team = env['THUNDER_APOLLO_LI_TEAM']
+        actor = env['THUNDER_APOLLO_LI_API_ACTOR']
+        if any(b.get('company_id') != company or b.get('team_id') != team for b in bindings_data):
+            raise ValueError('binding_scope_mismatch')
+        bindings = CampaignBindings(bindings_data)
+        owners = sorted({owner for binding in bindings_data for owner in binding['owner_ids']})
+        identity = getattr(server, 'thunder_apollo_linkedin_read_identity', None)
+        def account_status(account_id):
+            if (identity is None or getattr(identity, 'account_id', None) != account_id
+                    or (getattr(server, 'thunder_apollo_linkedin_read_isolation', None) != 'in_process_accepted'
+                        and getattr(identity, 'company_id', None) != company)):
+                return None
+            read_status = getattr(identity, 'account_status', None)
+            return read_status() if callable(read_status) else None
+        reader = ApolloLinkedInReader(loader, team_id=team, api_actor_id=actor, owner_ids=owners)
+        executor = DryRunExecutor(server.thunder_service, reader, bindings, account_status, client=None)
+        attention = ApolloLinkedInAttention(server.thunder_service, reader, executor,
+                                             company_id=company, team_id=team,
+                                             read_isolation=getattr(server, 'thunder_apollo_linkedin_read_isolation', None))
+        server.thunder_apollo_linkedin_attention = attention
+        return attention
+    except (ValueError, TypeError, KeyError, RuntimeError):
+        server.thunder_apollo_linkedin_attention_error = 'configuration_invalid'
+        return None
 
 def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
     args = sys.argv[1:] if args is None else args
@@ -2877,8 +3003,9 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
             if runtime is None:
                 from thunder_os.instantly_webhook import (InstantlyCapture,
                     INSTANTLY_CAPTURE_SECRET_FILE, load_capture_secret)
+                from thunder_os.credential_paths import credential_path
                 servidor.thunder_instantly_capture = InstantlyCapture(repository,
-                    load_capture_secret, enabled=Path(INSTANTLY_CAPTURE_SECRET_FILE).is_file())
+                    load_capture_secret, enabled=Path(credential_path('instantly_webhook_secret', INSTANTLY_CAPTURE_SECRET_FILE)).is_file())
                 from thunder_os.instantly_reader import InstantlyReader
                 servidor.thunder_instantly_reader = InstantlyReader(repository)
             from thunder_os.reply_control import ReplyControl
@@ -2970,9 +3097,13 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
             from thunder_os.apollo_prospect_readonly import ApolloProspectReadonly
             from thunder_os.apollo_sequence_readonly import ApolloSequenceReadonly
             from thunder_os.instantly_reader import private_text
+            from thunder_os.credential_paths import credential_path
+            def apollo_credential():
+                return private_text(credential_path('apollo_api_key', '/root/.config/thunder/credentials/apollo_api_key.txt'))
             if runtime is None:
-                configure_apollo_linkedin_preview(servidor,
-                    lambda: private_text('/root/.config/thunder/credentials/apollo_api_key.txt'))
+                configure_apollo_linkedin_read_broker(servidor)
+                configure_apollo_linkedin_preview(servidor, apollo_credential)
+                configure_apollo_linkedin_attention(servidor, apollo_credential)
             from thunder_os.commercial_account import CommercialAccountReadonly
             from thunder_os.new_journey import NewJourney
             from thunder_os.new_journey_checks import NewJourneyChecks
@@ -2980,13 +3111,12 @@ def main(args=None, *, connectsafely_factory=None, connectsafely_runtime=None):
             from thunder_os.new_journey_refusal import RegisteredRefusalRead
             from thunder_os.external_email_import import APOLLO_TEAM
             apollo_prospects = ApolloProspectReadonly(
-                credential_loader=lambda: private_text('/root/.config/thunder/credentials/apollo_api_key.txt'),
+                credential_loader=apollo_credential,
                 enabled=runtime is None, timeout=8)
             servidor.thunder_new_journey = NewJourney(servidor.thunder_service,
                 commercial_accounts=CommercialAccountReadonly(servidor.thunder_account_cadence_readonly),
                 apollo=apollo_prospects if runtime is None else None,
-                template_reader=ApolloSequenceReadonly(
-                    lambda: private_text('/root/.config/thunder/credentials/apollo_api_key.txt'))
+                template_reader=ApolloSequenceReadonly(apollo_credential)
                     if runtime is None else None,
                 checker=NewJourneyChecks(servidor.thunder_service,
                     hubspot=HubSpotHTTP(systemd_hubspot_credential, timeout=4)

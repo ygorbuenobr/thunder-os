@@ -106,6 +106,7 @@ class ConnectionPanelTests(unittest.TestCase):
             painel_servidor, "AGENTTRAIL_INGRESS_TOKEN", Path(tmp) / "token"
         ), patch("thunder_os.agenttrail_observer.panel_state", return_value={"hosts": {}}):
             (Path(tmp) / "token").write_text("test-only-ingress")
+            (Path(tmp) / "token").chmod(0o600)
             self.assertEqual(self.route(path="/api/os/v1/agenttrail", agenttrail_ingress="test-only-ingress"),
                              (200, {"hosts": {}}))
             with self.assertRaises(painel_servidor.Erro):

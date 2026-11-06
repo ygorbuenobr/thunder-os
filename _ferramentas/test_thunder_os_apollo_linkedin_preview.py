@@ -1,4 +1,5 @@
 import json
+import hashlib
 import unittest
 
 from thunder_os.apollo_linkedin_preview import ApolloLinkedInPreview, _https_request
@@ -24,6 +25,12 @@ class PreviewTest(unittest.TestCase):
             account_status_reader=account_status or (lambda: {'id': 'account1', 'publicId': 'sender',
                 'available': True}), request=self.request, **kwargs)
 
+    def test_preview_marks_accepted_in_process_read_even_on_error(self):
+        preview = self.preview(read_isolation='in_process_accepted')
+        self.assertEqual('in_process_accepted', preview.read()['read_isolation'])
+        preview._request = lambda *args: (_ for _ in ()).throw(ValueError())
+        self.assertEqual('in_process_accepted', preview.read()['read_isolation'])
+
     def test_read_is_only_get_exact_scoped_routes(self):
         result = self.preview().read()
         self.assertEqual(self.calls, [('GET', '/api/v1/users/api_profile', None),
@@ -38,7 +45,7 @@ class PreviewTest(unittest.TestCase):
         result = self.preview().read()
         self.assertEqual(result['status'], 'blocked')
         self.assertIn('owner_unverified', result['blockers'])
-        self.assertIn('text_unverified', result['blockers'])
+        self.assertIn('text_missing', result['blockers'])
         self.assertIsNone(result['text']['value'])
         self.assertIsNone(result['call_preview'])
 
@@ -89,8 +96,43 @@ class PreviewTest(unittest.TestCase):
 
     def test_unverified_rendered_text_never_claimed_as_exact(self):
         result = self.preview().read()
-        self.assertEqual(result['text'], {'value': None, 'verified': False})
-        self.assertIn('text_unverified', result['blockers'])
+        self.assertEqual(result['text'], {'value': None, 'verified': False, 'hash': None})
+        self.assertIn('text_missing', result['blockers'])
+
+    def test_exact_rendered_text_hash_and_non_executable_call(self):
+        self.task['linkedin_emailer_template'] = {'body_text': ' Olá, Ygor! '}
+        result = self.preview().read()
+        self.assertEqual(result['text'], {'value': ' Olá, Ygor! ', 'verified': True,
+            'hash': hashlib.sha256(' Olá, Ygor! '.encode('utf-8')).hexdigest()})
+        self.assertEqual(result['call_preview']['body']['customMessage'], ' Olá, Ygor! ')
+        self.assertFalse(result['call_preview']['executable'])
+
+    def test_text_validation_and_action_limits(self):
+        for value, reason in [(None, 'text_missing'), (123, 'text_missing'),
+                              (' \n ', 'text_empty'), ('Hi {{first_name}}', 'text_unresolved_variables'),
+                              ('Hi }}', 'text_unresolved_variables'), ('x' * 301, 'text_too_long')]:
+            with self.subTest(value=value):
+                self.task['linkedin_emailer_template'] = {'body_text': value}
+                result = self.preview().read()
+                self.assertIn(reason, result['blockers'])
+                self.assertIsNone(result['text']['hash'])
+                self.assertFalse(result['call_preview']['executable'])
+        self.task['linkedin_emailer_template'] = {'body_text': 'abcd'}
+        self.assertIn('text_too_long', self.preview(invite_text_limit=3).read()['blockers'])
+        self.task['type'] = 'linkedin_step_message'
+        self.assertEqual(self.preview(message_text_limit=4).read()['text']['value'], 'abcd')
+        self.assertIn('text_too_long', self.preview(message_text_limit=3).read()['blockers'])
+
+    def test_removed_task_http_status_is_explicit(self):
+        for status in (404, 422):
+            with self.subTest(status=status):
+                preview = self.preview()
+                preview._request = lambda method, path, body, headers, timeout: (
+                    (200, json.dumps({'user': {'id': 'owner1', 'team_id': 'team1'}}).encode())
+                    if path.endswith('api_profile') else (status, b'{}'))
+                result = preview.read()
+                self.assertEqual(result['blockers'], ['task_removed'])
+                self.assertIsNone(result['call_preview'])
 
     def test_rest_task_binds_campaign_contact_and_profile_user(self):
         self.task['emailer_campaign_id'] = 'sequence1'

@@ -1,4 +1,5 @@
 """Bounded GET-only Instantly observation cache. No CRM or action ports."""
+from .credential_paths import credential_path
 from collections import Counter
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
@@ -39,7 +40,7 @@ def private_text(path):
 
 def enabled():
     try:
-        return private_text(ENABLED_FILE) == 'read-only-v1'
+        return private_text(credential_path('instantly_reader_enabled', ENABLED_FILE)) == 'read-only-v1'
     except ExternalEmailError:
         return False
 
@@ -116,7 +117,7 @@ def observation(row):
 
 class InstantlyCampaignReadOnly:
     def __init__(self, credential_loader=None, *, request=None):
-        self.loader = credential_loader or (lambda: private_text(KEY_FILE))
+        self.loader = credential_loader or (lambda: private_text(credential_path('instantly_api_key', KEY_FILE)))
         self.request = request or _https_request
 
     def _get(self, path):

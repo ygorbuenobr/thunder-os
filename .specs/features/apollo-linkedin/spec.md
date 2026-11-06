@@ -23,13 +23,13 @@ Apollo owns sequences and email, but the OS cannot yet process its manual Linked
 | --- | --- | --- | --- |
 | Campaign account | Explicit campaign default | Avoid silent sender changes | y |
 | Authorization | One approval of campaign and rules | User decision; no real send authorized here | y |
-| Missing user or personalized text | Block when needed | Actual sequence-generated task detail omitted both | n |
-| Task content and owner verification in production | Open, no inferred value | A future live validation must establish authoritative source | n |
+| Missing user or personalized text | Block when needed | Read `user_id` and `linkedin_emailer_template.body_text`; no inferred values | y |
+| Task content and owner | Task detail and search | On 04/11/2026, observed via OAuth and panel API key; sequence test rendered `{{first_name}}` per contact | y |
 | Reply coverage | Missing or stale coverage blocks | No action based on incomplete evidence | y |
 | Authoritative storage | Exactly one official shared store per installation | User decision; all executor processes must use it | y |
 | Uniqueness | Company + Apollo task ID + action type | User decision; organization and account are validated bindings, not alternative uniqueness keys | y |
 
-**Open questions:** recorded above; actual sequence content, owner and completion semantics remain unverified.
+**Open questions:** completion semantics, provider limits by action and delivery receipts remain unverified. Evidence: `docs/thunder-os-validacoes-bloco-b.md`, “Leituras reais de B1 e B2”.
 
 ## User Stories
 
@@ -44,6 +44,7 @@ Apollo owns sequences and email, but the OS cannot yet process its manual Linked
 1. WHEN an observed task includes task ID, scheduled status, supported type, contact, profile, sequence and position THEN the reader SHALL expose those values without fabricating missing fields. (AL-01)
 2. IF the task list is empty THEN the reader SHALL return an empty result without an execution. (AL-02)
 3. IF task identity, campaign association, owner or required rendered text cannot be established THEN the executor SHALL block and report the reason. (AL-03)
+   For T3, use the exact string in `linkedin_emailer_template.body_text`; reject a missing/non-string/blank value, unresolved `{{` or `}}`, or a value exceeding the configurable action limit. Default invitation limit is 300 characters and the conservative message default is 1000; both require provider/action validation before live operation. Preview exposes exact text and SHA-256, and the immediate reread must match the preview or reservation hash, otherwise `text_changed` blocks. A call preview is never executable.
 4. IF a task is not scheduled or its type is unsupported THEN the executor SHALL block it without invoking the simulated action. (AL-04)
 5. IF the campaign is not approved or its default LinkedIn account is absent or mismatched THEN the executor SHALL block without switching accounts. (AL-05)
 6. IF a reply is observed or response coverage is unavailable or stale THEN the executor SHALL block without invoking the simulated action. (AL-06)
@@ -59,6 +60,7 @@ Apollo owns sequences and email, but the OS cannot yet process its manual Linked
 16. WHEN an eligible task is processed THEN the executor SHALL acquire an executor lock for its LinkedIn account before the simulated external effect. (AL-19)
 17. WHEN an executor is about to perform the simulated effect THEN the executor SHALL reread the task and verify it remains open. (AL-20)
 18. IF that reread is unavailable, incomplete or no longer open THEN the executor SHALL block without invoking the simulated effect. (AL-21)
+19. IF an identified task from search returns 404/422 at detail THEN show `task_removed` in attention, block execution, and never treat it as completed. A 404/422 of search itself leaves coverage unknown; do not invent a removed task. A sequence deactivation was observed to delete a pending task. (AL-22)
 
 **Independent Test**: isolated fake-provider tests cover eligible and blocked tasks, empty source, concurrency, timeout, replay and completion semantics. Separate OS processes using the same temporary official store contend for the same task and account lock; missing official storage prevents initialization.
 
@@ -99,3 +101,18 @@ Apollo owns sequences and email, but the OS cannot yet process its manual Linked
 - [ ] Every scoped acceptance criterion has direct test evidence.
 - [ ] No production network, credentials, live provider, scheduler or data is used.
 - [ ] Independent review validates implementation and reports any gap.
+
+## T3: isolated ConnectSafely account read (design; not enabled)
+
+**Decisão 05/11/2026:** Ygor aceita que o painel mantenha o cliente e a credencial de envio para operação manual; a leitura T3 pode usar uma fachada no mesmo processo, identificada como `in_process_accepted`. A fachada não expõe envio em sua interface pública, mas o método vinculado mantém referência transitiva ao cliente, recuperável por introspecção. Portanto a exigência de inacessibilidade forte da credencial/cliente de RO-01/RO-02 não é satisfeita nesse modo; não se deve alegar isolamento. O broker separado continua opção sujeita às garantias abaixo. Nenhuma leitura autoriza envio ou liga o executor.
+
+The simulation-only requirements above remain unchanged. This separate T3 design prepares a safe account-status read while keeping the independently authorized ConnectSafely action path. It does not authorize a real send, provider mutation, production network in tests, or any change to the protected Apollo fixture.
+
+1. **RO-01:** WHEN the panel requests account status THEN it SHALL only access an account-status interface with no capability to invoke a ConnectSafely write and no access to a send-capable credential.
+2. **RO-02:** IF the provider credential is not proven read-scoped THEN isolation SHALL be enforced outside the panel process and security identity; a GET-only wrapper around a write-capable key is not proof of this boundary.
+3. **RO-03:** WHEN account status is queried THEN company, account and expected public identity SHALL be bound explicitly; missing, mismatched, stale or unavailable evidence SHALL produce a visible blocked/unknown result rather than a ready state.
+4. **RO-04:** IF the broker, credential, configured account mapping, transport or authorization is missing, inconsistent or times out THEN the panel SHALL fail closed with a bounded, visible status; it SHALL not fall back to the send client or default account.
+5. **RO-05:** IF a caller requests a mutation, arbitrary URL, arbitrary account, or malformed/oversized input THEN the isolated read interface SHALL reject it before any provider call. Secrets and unnecessary provider data SHALL not enter the response or logs.
+6. **RO-06:** A successful account read SHALL NOT prove or expose the separately verified execution-credential binding, a provider delivery receipt or approval to send.
+7. **RO-07:** Tests SHALL use fake credentials and fake provider responses; they SHALL exercise normal and adversarial inputs without real network or external actions. A distinct staging test SHALL establish OS identity separation and peer authorization before any operational claim.
+8. **RO-08:** The existing action path remains independently available only to its authorized executor and retains campaign approval, account binding, reservation, locking, kill switch and explicit real-send authorization.

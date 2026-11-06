@@ -7,6 +7,7 @@ in this module. Returned data is a read projection, not an authorization.
 from __future__ import annotations
 
 import http.client
+import hashlib
 import json
 import math
 import os
@@ -16,6 +17,26 @@ from urllib.parse import urlsplit
 
 _ID = re.compile(r'[A-Za-z0-9_-]{1,128}\Z')
 _SLUG = re.compile(r'[A-Za-z0-9_.-]{1,160}\Z')
+
+
+def validated_task_text(task, action, *, invite_limit=300, message_limit=1000):
+    """Validate and hash the exact per-contact Apollo body without rewriting it."""
+    if any(type(limit) is not int or not 1 <= limit <= 100_000
+           for limit in (invite_limit, message_limit)):
+        raise ValueError('configuration_invalid')
+    template = task.get('linkedin_emailer_template') if isinstance(task, dict) else None
+    text = template.get('body_text') if isinstance(template, dict) else None
+    if not isinstance(text, str):
+        return None, None, 'text_missing'
+    if not text.strip():
+        return None, None, 'text_empty'
+    if '{{' in text or '}}' in text:
+        return None, None, 'text_unresolved_variables'
+    if action not in ('invite', 'message'):
+        return None, None, 'unsupported_action'
+    if len(text) > (invite_limit if action == 'invite' else message_limit):
+        return None, None, 'text_too_long'
+    return text, hashlib.sha256(text.encode('utf-8')).hexdigest(), None
 
 
 def _identifier(value):
@@ -75,7 +96,8 @@ def _json(raw):
 class ApolloLinkedInPreview:
     def __init__(self, credential_loader, *, team_id, sequence_id, task_id,
                  account_id, account_public_id, api_actor_id, owner_id, account_status_reader,
-                 request=None, timeout=8):
+                 request=None, timeout=8, invite_text_limit=300, message_text_limit=1000,
+                 read_isolation=None):
         if not all(_identifier(x) for x in (team_id, sequence_id, task_id, account_id, api_actor_id, owner_id)):
             raise ValueError('configuration_invalid')
         if not isinstance(account_public_id, str) or not _SLUG.fullmatch(account_public_id):
@@ -84,12 +106,19 @@ class ApolloLinkedInPreview:
             raise ValueError('configuration_invalid')
         if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 15:
             raise ValueError('configuration_invalid')
+        if any(type(limit) is not int or not 1 <= limit <= 100_000
+               for limit in (invite_text_limit, message_text_limit)):
+            raise ValueError('configuration_invalid')
         self._loader, self._request = credential_loader, request or _https_request
         self._status = account_status_reader
         self.team_id, self.sequence_id, self.task_id = team_id, sequence_id, task_id
         self.account_id, self.account_public_id, self.owner_id = account_id, account_public_id, owner_id
         self.api_actor_id = api_actor_id
         self.timeout = timeout
+        if read_isolation not in (None, 'in_process_accepted', 'separate_broker'):
+            raise ValueError('configuration_invalid')
+        self.read_isolation = read_isolation
+        self.invite_text_limit, self.message_text_limit = invite_text_limit, message_text_limit
 
     def _get(self, path):
         if path not in ('/api/v1/users/api_profile', '/api/v1/tasks/' + self.task_id):
@@ -99,12 +128,15 @@ class ApolloLinkedInPreview:
             raise ValueError('credential_unavailable')
         status, raw = self._request('GET', path, None,
             {'x-api-key': token, 'Accept': 'application/json'}, self.timeout)
+        if status in (404, 422) and path == '/api/v1/tasks/' + self.task_id:
+            raise ValueError('task_removed')
         if status != 200:
             raise ValueError('apollo_unavailable')
         return _json(raw)
 
     def read(self):
         result = {'status': 'unavailable', 'execution_enabled': False, 'dry_run': True,
+                  'read_isolation': self.read_isolation,
                   'task': None, 'account': None, 'lead': None, 'action': None,
                   'text': {'value': None, 'verified': False}, 'blockers': [], 'call_preview': None}
         try:
@@ -138,10 +170,12 @@ class ApolloLinkedInPreview:
             recipient = _slug(contact.get('linkedin_url'))
             if not recipient: blockers.append('profile_unverified')
             elif recipient == self.account_public_id.lower(): blockers.append('self_invitation' if result['action'] == 'invite' else 'self_message')
-            # No authoritative per-contact rendered-content field has been
-            # verified in the real sequence task. Notes and templates do not
-            # establish the exact text and must never be presented as such.
-            blockers.append('text_unverified')
+            text, text_hash, text_blocker = validated_task_text(
+                task, result['action'], invite_limit=self.invite_text_limit,
+                message_limit=self.message_text_limit)
+            result['text'] = {'value': text, 'verified': text_blocker is None, 'hash': text_hash}
+            if text_blocker and text_blocker not in blockers:
+                blockers.append(text_blocker)
             try:
                 account = self._status()
             except Exception:
@@ -159,12 +193,12 @@ class ApolloLinkedInPreview:
                 if result['action'] == 'invite':
                     path = '/linkedin/connect'
                     body = {'accountId': self.account_id, 'profileId': recipient,
-                            'profileUrn': None, 'customMessage': None}
+                            'profileUrn': None, 'customMessage': text}
                 else:
                     path = '/linkedin/conversations/send'
                     body = {'accountId': self.account_id, 'recipientProfileId': recipient,
                             'recipientProfileUrn': None, 'messagingChannel': 'linkedin_inbox',
-                            'message': None}
+                            'message': text}
                 result['call_preview'] = {'method': 'POST', 'path': path, 'body': body,
                                           'incomplete': True, 'executable': False}
             # Provider recipient URN, approval and reply coverage are not
@@ -172,7 +206,8 @@ class ApolloLinkedInPreview:
             blockers.extend(['recipient_urn_unverified', 'approval_unverified', 'reply_coverage_unverified'])
             result['status'] = 'blocked'
             return result
-        except Exception:
+        except Exception as exc:
+            reason = 'task_removed' if isinstance(exc, ValueError) and str(exc) == 'task_removed' else 'read_unavailable'
             result.update(status='unavailable', task=None, account=None, lead=None, action=None,
-                          text={'value': None, 'verified': False}, blockers=['read_unavailable'], call_preview=None)
+                          text={'value': None, 'verified': False}, blockers=[reason], call_preview=None)
             return result
