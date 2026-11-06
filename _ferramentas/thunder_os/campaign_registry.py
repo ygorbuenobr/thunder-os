@@ -32,7 +32,7 @@ def _config(value):
     configuration = value['configuration']
     if (not isinstance(configuration, Mapping)
             or not {'flow_version', 'provider_accounts'} <= set(configuration)
-            or set(configuration) - {'flow_version', 'provider_accounts', 'linkedin_policy'}
+            or set(configuration) - {'flow_version', 'provider_accounts', 'linkedin_policy', 'apollo_linkedin'}
             or not _text(configuration['flow_version'])):
         raise ApprovalError('campaign_registry_configuration_invalid')
     accounts = configuration['provider_accounts']
@@ -42,6 +42,26 @@ def _config(value):
         raise ApprovalError('campaign_registry_accounts_invalid')
     normalized = {**value, 'providers': dict(providers), 'configuration': {
         'flow_version': configuration['flow_version'], 'provider_accounts': dict(accounts)}}
+    if 'apollo_linkedin' in configuration:
+        # Routing data only: a registered configuration is NOT an approval.
+        # All bindings are covered by the existing configuration hash/revision.
+        binding = configuration['apollo_linkedin']
+        fields = {'company_id', 'team_id', 'sequence_id', 'owner_ids', 'account_id', 'public_id'}
+        ident = re.compile(r'[A-Za-z0-9_.-]{1,160}\Z')
+        if (not isinstance(binding, Mapping) or set(binding) != fields
+                or any(not isinstance(binding[k], str) or not ident.fullmatch(binding[k])
+                       for k in fields - {'owner_ids'})
+                or not re.fullmatch(r'[a-f0-9]{24}', binding['account_id'])
+                or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', binding['public_id'])
+                or not isinstance(binding['owner_ids'], list) or not binding['owner_ids']
+                or len(binding['owner_ids']) > 100
+                or any(not isinstance(owner, str) or not ident.fullmatch(owner) for owner in binding['owner_ids'])
+                or len(set(binding['owner_ids'])) != len(binding['owner_ids'])
+                or providers.get('linkedin') != 'connectsafely'
+                or accounts.get('linkedin') != binding['account_id']):
+            raise ApprovalError('campaign_registry_apollo_linkedin_binding_invalid')
+        normalized['configuration']['apollo_linkedin'] = {
+            **dict(binding), 'owner_ids': list(binding['owner_ids'])}
     if 'linkedin_policy' in configuration:
         from .linkedin_preparation import validate_policy
         try:

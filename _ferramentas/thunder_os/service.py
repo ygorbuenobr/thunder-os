@@ -248,6 +248,57 @@ class ThunderService:
     def revoke_campaign(self, campaign_id, actor, *, expected_version):
         return self.campaign_registry.revoke(campaign_id, actor, expected_version)
 
+    def apollo_campaign_approval_review(self, campaign_id):
+        """Build an exact campaign-version review, without granting execution."""
+        with self.repository.transaction():
+            row, context = self.campaign_registry._read(campaign_id)
+            config = row['config']['configuration']
+            if (context['platform'] != 'apollo' or not isinstance(config.get('apollo_linkedin'), dict)
+                    or not isinstance(config.get('linkedin_policy'), dict)):
+                raise ApprovalError('apollo_campaign_binding_unverified')
+            control = self.repository.get_state('control', 'global')
+            if not isinstance(control, dict) or control.get('paused') is not False:
+                raise ApprovalError('global_control_unverified')
+            # Preserve the entire canonical revision, including rules and optional
+            # briefing/batches, not just their hashes in the execution context.
+            scope = {'context': deepcopy(context), 'configuration': deepcopy(config),
+                     'campaign_config': deepcopy(row['config'])}
+            scope_hash = payload_hash(scope)
+            request = execution_request(context, campaign_id, row['version'],
+                                        {'campaign_version': scope_hash}, control['version'])
+            return {'scope': scope, 'scope_hash': scope_hash, 'execution_confirmation': request}
+
+    def approve_apollo_campaign_version(self, campaign_id, actor, *, execution_confirmation):
+        """Record explicit human approval; no enrollment or provider effect."""
+        if actor != 'ygor':
+            raise AuthorizationError('human authority required to approve a campaign')
+        with self.repository.transaction():
+            review = self.apollo_campaign_approval_review(campaign_id)
+            now = datetime.now(timezone.utc)
+            expiry = now + timedelta(days=14)
+            confirmation = confirm_execution(execution_confirmation, review['execution_confirmation'], actor, expiry, now)
+            revision = review['execution_confirmation']['batch_version']
+            pack = ApprovalService(lambda: False).approve_campaign_version(
+                campaign_id, revision, review['scope_hash'], actor, expiry, now)
+            snapshot_id = 'apollo-campaign-' + review['scope_hash']
+            snapshot = {'scope': review['scope'], 'scope_hash': review['scope_hash']}
+            existing = self.repository.get_state('campaign_version_snapshot', snapshot_id)
+            if existing is None:
+                self.repository.append_state('campaign_version_snapshot', snapshot_id, snapshot)
+            elif (existing.get('version') != 1 or existing.get('scope') != snapshot['scope']
+                    or existing.get('scope_hash') != snapshot['scope_hash']):
+                raise RepositoryConflict('campaign_version_snapshot_conflict')
+            payload = {'scope': 'campaign_version', 'campaign_id': campaign_id,
+                'campaign_version': review['scope']['context']['campaign_version'],
+                'campaign_revision': revision, 'snapshot_id': snapshot_id,
+                'scope_hash': review['scope_hash'], 'actor': pack.actor, 'status': pack.status,
+                'approved_at': pack.approved_at.isoformat(), 'expires_at': pack.expires_at.isoformat(),
+                'execution_confirmation': confirmation}
+            stored = self.repository.append_state('approval', pack.id, payload)
+            self.repository.append_event(campaign_id, 'apollo_campaign_version_approved',
+                {'approval_id': pack.id, 'snapshot_id': snapshot_id, 'scope_hash': review['scope_hash'], 'actor': actor})
+            return stored
+
     def _campaign_context(self, cadence):
         context = execution_context(cadence.get("execution_context"))
         try:

@@ -33,6 +33,12 @@ class ApprovalPack:
 
 
 @dataclass(frozen=True)
+class CampaignVersionApprovalPack(ApprovalPack):
+    """Campaign-scope approval; never authorizes individual legacy steps."""
+    campaign_scope_hash: str = ''
+
+
+@dataclass(frozen=True)
 class Authorization:
     pack_id: str
     step_id: str
@@ -82,6 +88,8 @@ class ApprovalService:
     def authorize_step(
         self, step: Mapping[str, Any], pack: ApprovalPack, now: datetime
     ) -> Authorization:
+        if isinstance(pack, CampaignVersionApprovalPack):
+            raise ApprovalError('campaign_scope_does_not_authorize_step')
         if self.global_pause():
             raise ApprovalError("global pause active")
         if now >= pack.expires_at:
@@ -97,6 +105,27 @@ class ApprovalService:
         if expected is None or expected != current:
             raise ApprovalError("approval scope changed")
         return Authorization(pack.id, step_id, pack.actor, expected, pack.expires_at)
+
+    def approve_campaign_version(self, campaign_id: str, revision: int, scope_hash: str,
+                                 actor: str, expires_at: datetime, now: datetime) -> CampaignVersionApprovalPack:
+        if self.global_pause():
+            raise ApprovalError('global pause active')
+        if (actor != 'ygor' or not isinstance(campaign_id, str) or not campaign_id
+                or type(revision) is not int or revision < 1
+                or not isinstance(scope_hash, str) or not re.fullmatch(r'[a-f0-9]{64}', scope_hash)
+                or expires_at <= now):
+            raise ApprovalError('campaign_version_approval_invalid')
+        return CampaignVersionApprovalPack(id=f'approval-{uuid4().hex}', cadence_id=campaign_id,
+            cadence_version=revision, actor=actor, approved_at=now, expires_at=expires_at,
+            step_hashes=(), campaign_scope_hash=scope_hash)
+
+    def authorize_campaign_version(self, pack: CampaignVersionApprovalPack, scope_hash: str, now: datetime) -> None:
+        if (self.global_pause() or type(pack) is not CampaignVersionApprovalPack
+                or pack.actor != 'ygor' or pack.status != 'active'
+                or pack.invalidated_step_ids or pack.step_hashes
+                or not isinstance(scope_hash, str) or not re.fullmatch(r'[a-f0-9]{64}', scope_hash)
+                or pack.campaign_scope_hash != scope_hash or not pack.approved_at <= now < pack.expires_at):
+            raise ApprovalError('campaign_version_approval_invalid')
 
     def invalidate_affected(self, pack: ApprovalPack, step_ids: Sequence[str]) -> ApprovalPack:
         affected = tuple(step_id for step_id in pack.step_ids if step_id in set(step_ids))
