@@ -83,6 +83,16 @@ O Ygor aprovou em chat o texto exato para outro lead real de 1º grau (diretor c
 
 Isso fecha a jornada do executor para mensagem a conexão de 1º grau: reserva, envio, recibo, releitura e conclusão no Apollo. Convite a não conectados ainda não é coberto pelo executor.
 
+### Skip e parada no Apollo, prova real (06/11/2026)
+
+Feita com um contato interno da própria Thunder numa sequência descartável, só com dois passos `linkedin_step_message` e sem e-mail, criada, parada e arquivada no mesmo teste. Nada foi enviado. O skip usou o transporte `_skip_request` da release 29b126b com a chave de produção.
+
+| Ponto | Resultado observado |
+|---|---|
+| Skip | `POST /api/v1/tasks/{id}/skip` com `{"note": "não conectado, pulado"}` devolveu 200 com `task.status=skipped` e a nota. A releitura por `GET /api/v1/tasks/{id}` confirmou `status=skipped`, a nota e `skipped_at`. |
+| Avanço da sequência | A tarefa do passo 2 foi criada 134 ms depois do skip; a matrícula seguiu `active`. **O skip libera o passo seguinte**, então a mensagem pulada não segura os e-mails. |
+| Parada (`remove_or_stop` com `mode=stop`) | A matrícula passou a `status=finished`, `inactive_reason="manually finished"` e `finished_at` preenchido; a tarefa pendente do passo 2 sumiu. **Essa é a releitura que comprova a parada externa (T5)**: na mesma matrícula, `status` diferente de `active` e `inactive_reason` preenchido. É um encerramento, não uma pausa retomável. |
+
 ### Consequências para a jornada Apollo + LinkedIn
 
 - A pergunta pendente 1 ("de onde vem o texto do convite") tem resposta técnica comprovada: do `linkedin_emailer_template.body_text` da própria tarefa, já renderizado por contato, igual pelo CLI e pela chave do painel. A decisão de adotar essa fonte continua com o Ygor.
