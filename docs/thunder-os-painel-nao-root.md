@@ -10,7 +10,7 @@
 - Checagem do nginx sem root: peer com UID 33 e pai igual ao master do pidfile de root, e master rodando como root (risco aceito pelo Ygor em 05/11).
 - Backup e rollback completo: `/var/backups/thunder-panel-nonroot-20261106T082915/rollback.sh`.
 - A primeira tentativa (`20261106T082452`) falhou ao subir, porque o `canary_readers` lia a credencial do HubSpot por caminho fixo, e voltou sozinha ao estado anterior. A falha foi corrigida em `93807c6`.
-- Pendente: confirmar no navegador o login autenticado e a prévia do LinkedIn. A checagem do nginx não pode ser testada sem a senha do painel.
+- Login autenticado pelo nginx confirmado pelo Ygor no navegador em 06/11/2026, depois da troca.
 
 ---
 
