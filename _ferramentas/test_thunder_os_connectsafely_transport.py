@@ -14,11 +14,16 @@ class TransportTests(unittest.TestCase):
                 normalize_target_url('https://linkedin.com/in/' + slug, profile=True)
         target = TargetReadHTTPS('a'*24, lambda: 'synthetic-token-only', connection_factory=self.factory)
         self.raw = b'{}'
-        target('GET', '/linkedin/profile', {'accountId': 'a'*24, 'profileId': 'd\u2019angelo'}, None)
+        target('GET', '/linkedin/profile', {'accountId': 'a'*24, 'profileId': 'd\u2019angelo', 'forceRefresh': 'true'}, None)
         self.assertIn('profileId=d%E2%80%99angelo', self.calls[-1][0][1])
         before = len(self.created)
         with self.assertRaisesRegex(ConnectSafelyError, 'invalid_route'):
-            target('GET', '/linkedin/profile', {'accountId': 'a'*24, 'profileId': 'd\u201cangelo'}, None)
+            target('GET', '/linkedin/profile', {'accountId': 'a'*24, 'profileId': 'd\u201cangelo', 'forceRefresh': 'true'}, None)
+        # An identity read that could be served from the provider cache is refused.
+        for query in ({'accountId': 'a'*24, 'profileId': 'person-one'},
+                      {'accountId': 'a'*24, 'profileId': 'person-one', 'forceRefresh': 'false'}):
+            with self.assertRaisesRegex(ConnectSafelyError, 'invalid_route'):
+                target('GET', '/linkedin/profile', query, None)
         self.assertEqual(before, len(self.created))
 
     def setUp(self):

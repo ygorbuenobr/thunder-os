@@ -48,6 +48,7 @@ class FakeHTTPS:
             if self.path.startswith('/linkedin/accounts?'):
                 return Response([{'id': ACCOUNT, 'publicId': 'sender'}])
             if self.path.startswith('/linkedin/profile?'):
+                assert 'forceRefresh=true' in self.path, 'identity read must bypass provider cache'
                 return Response({'success': True, 'accountId': self.profile_account, 'profileId': 'synthetic-person',
                     'cached': self.cached, 'profile': {'publicIdentifier': 'synthetic-person', 'entityUrn': self.profile_urn}})
         raise AssertionError('unexpected route')

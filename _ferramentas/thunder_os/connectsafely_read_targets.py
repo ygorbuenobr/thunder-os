@@ -39,7 +39,9 @@ class TargetReadHTTPS(ConnectSafelyHTTPS):
         require(isinstance(query,dict),'invalid_route')
         if method=='GET' and path=='/linkedin/accounts':return super()._route(method,path,query,body)
         if method=='GET' and path=='/linkedin/profile':
-            require(body is None and set(query)=={'accountId','profileId'} and query['accountId']==self.account_id and recipient_id(query['profileId']),'invalid_route');return
+            # Identity reads must bypass the provider's 6-hour profile cache: the
+            # binding requires cached=false, and research reads the same profile first.
+            require(body is None and set(query)=={'accountId','profileId','forceRefresh'} and query['accountId']==self.account_id and recipient_id(query['profileId']) and query['forceRefresh']=='true','invalid_route');return
         require(method=='POST' and query=={} and isinstance(body,dict) and body.get('accountId')==self.account_id and isinstance(body.get('postUrl'),str) and POST.fullmatch(body['postUrl']),'invalid_route')
         if path=='/linkedin/posts/scrape':
             require(set(body)=={'accountId','postUrl','useCache','forceRefresh','maxProxyRetries'} and body['useCache'] is True and body['forceRefresh'] is False and type(body['maxProxyRetries']) is int and body['maxProxyRetries']==0,'invalid_route');return
@@ -68,7 +70,7 @@ class ReadTargetResolver:
             # Reserve before IO, retaining timeout/unknown calls. Refresh an
             # existing identity's timestamp so it cannot age out after a repeat.
             self.repo.put_state('connectsafely_profile_read_quota',self._quota_key(),{'reservations':{**profiles,public:self.clock()},'blocked_until':quota['blocked_until']})
-        data=c._call('GET','/linkedin/profile',{'accountId':c.account_id,'profileId':public})
+        data=c._call('GET','/linkedin/profile',{'accountId':c.account_id,'profileId':public,'forceRefresh':'true'})
         require(data.get('success') is True and data.get('accountId')==c.account_id and data.get('profileId')==public,'account_identity_mismatch')
         profile=data.get('profile');require(isinstance(profile,dict) and profile.get('publicIdentifier')==public and isinstance(profile.get('entityUrn'),str) and PERSON.fullmatch(profile['entityUrn']),'profile_target_unverified')
         require(type(data.get('cached')) is bool,'provider_schema_invalid')
