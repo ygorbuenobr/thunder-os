@@ -1,0 +1,8 @@
+[Unit]
+Description=Thunder panel non-root ACL guard (30s)
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+AccuracySec=5s
+[Install]
+WantedBy=timers.target

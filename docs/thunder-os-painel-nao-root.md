@@ -11,6 +11,8 @@
 - Backup e rollback completo: `/var/backups/thunder-panel-nonroot-20261106T082915/rollback.sh`.
 - A primeira tentativa (`20261106T082452`) falhou ao subir, porque o `canary_readers` lia a credencial do HubSpot por caminho fixo, e voltou sozinha ao estado anterior. A falha foi corrigida em `93807c6`.
 - Login autenticado pelo nginx confirmado pelo Ygor no navegador em 06/11/2026, depois da troca.
+- **Incidente de 06/11, entre 10:52 e 11:36:** um job do Hermes reaplicou `700` em `/root/.hermes/profiles/ygor-personal`, o que zera a máscara da ACL. O painel sem root perdeu o acesso ao banco, e o problema só apareceu no restart do deploy. Restaurado às 11:36.
+- **Proteção instalada (aprovada pelo Ygor):** `thunder-panel-acl-guard.sh`, mais o timer de 30 s e um `ExecStartPre=+` no painel (`zzzzzz-acl-guard.conf`). Os arquivos estão em `runtime/systemd/thunder-panel-acl-guard.*`. Testada com `chmod 700`: a máscara foi reparada e cada reparo fica registrado no journal com a tag `thunder-panel-acl-guard`. Para reverter: `systemctl disable --now thunder-panel-acl-guard.timer` e remover o drop-in.
 
 ---
 

@@ -1,0 +1,5 @@
+[Unit]
+Description=Thunder panel non-root ACL guard
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/thunder-panel-acl-guard.sh

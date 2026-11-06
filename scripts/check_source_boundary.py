@@ -6,6 +6,9 @@ from pathlib import PurePosixPath
 
 
 ALLOWED_FILES = {
+    "runtime/systemd/thunder-panel-acl-guard.sh",
+    "runtime/systemd/thunder-panel-acl-guard.service",
+    "runtime/systemd/thunder-panel-acl-guard.timer",
     ".specs/features/apollo-linkedin/t4d-runtime.md",
     "_ferramentas/test_thunder_os_apollo_linkedin_approve.py",
     "_ferramentas/test_thunder_os_apollo_linkedin_canary_issue.py",
