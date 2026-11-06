@@ -35,6 +35,18 @@ O acesso foi pelo CLI oficial `apollo` 2.2.0, autenticado como o usuário da Thu
 | Tarefas de LinkedIn abertas do usuário | Duas: a fixture (sequência `TESTE THUNDER OS - LinkedIn`, `6aea57ca9f01eb000c4d5672`, ativa, 1 passo) e uma `linkedin_step_message` manual (`6aea56153612b300105c51c3`), sem sequência e sem template. Pela regra AL-03, essa segunda deve ficar bloqueada por falta de texto. |
 | Conclusão e pausa | O CLI usa `POST /tasks/{id}/complete` (com `note` opcional) e `POST /tasks/{id}/skip`. **Nenhuma das duas foi chamada.** O efeito sobre o relógio da sequência e o readback depois da conclusão continuam sem prova e exigem teste autorizado. |
 
+### B1 — Conclusão de tarefa no Apollo (06/11/2026, escrita de teste sem envio)
+
+Prova feita na sequência de teste `6aeb8b5a592a0900187e9fe5`, só com o contato do próprio Ygor e passos manuais. Foi acrescentado um passo 2 do tipo `action_item`, com espera de 1 minuto.
+
+| Ponto | Resultado observado |
+|---|---|
+| Reativar a sequência | Contato `resumed` às 11:47:00Z, e a tarefa do passo 1 foi **gerada de novo** (`6aedbe346a6f210014fca67d`). Desativar apaga a tarefa pendente; reativar recria. |
+| `POST /tasks/{id}/complete` com `note` | 200; a releitura mostrou `status=completed`, `completed_at=11:47:19.872Z`, `completed_by_user_id` igual ao dono e a nota gravada. Nenhum convite foi enviado: a conclusão só registra no Apollo. |
+| Efeito na sequência | O Apollo criou a tarefa do passo 2 (`6aedbe486afa3c00109cef8d`) **0,2 s depois** da conclusão, com `due_at = completed_at + 1 min`. O relógio da sequência conta a partir da conclusão. Concluir sem ter enviado faz a cadência avançar, então o executor **só pode concluir depois de um recibo comprovado** (R12). |
+| Busca de tarefas abertas | Depois de concluída, a tarefa não aparece mais na busca padrão, que lista só as abertas. Para reconciliar uma conclusão, é preciso usar o GET por ID. |
+| Limpeza | Sequência desativada de novo; a tarefa pendente do passo 2 foi apagada pelo próprio Apollo. Ficaram só a fixture e a tarefa manual antiga. |
+
 ### B2 — ConnectSafely
 
 O acesso foi pelo MCP da conta da Thunder (conta `6abe5fc087213e2040fb9b1b`, `publicId=ygorbuenobr`, a única conta visível).
