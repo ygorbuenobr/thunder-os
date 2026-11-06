@@ -155,6 +155,27 @@ class ApolloCompletionTests(unittest.TestCase):
         self.assertEqual('skip_reconcile_pending', port.reconcile_skip('company', 'task1', **{**kwargs, 'recipient': 'other'})['state'])
         self.assertNotIn('POST', calls)
 
+    def test_skip_reconciliation_checks_exact_sequence_within_approved_list(self):
+        from thunder_os.apollo_linkedin_completion import skip_claim_key
+        identity = {'company': 'company', 'task_id': 'task1', 'campaign_id': 'campaign',
+                    'approval_id': 'approval', 'campaign_version': 'v1', 'account_id': 'account',
+                    'sequence_id': 'sequence2', 'state': 'attempted'}
+        self.repo.put_state('apollo_linkedin_skip', skip_claim_key('company', 'task1'), identity)
+        current = {'id': 'task1', 'type': 'linkedin_step_message', 'status': 'skipped',
+                   'note': 'não conectado, pulado', 'emailer_campaign_id': 'sequence2', 'user_id': 'owner',
+                   'contact': {'linkedin_url': 'https://www.linkedin.com/in/lead'}}
+        def http(method, path, body, headers, timeout):
+            return (200, raw({'user': {'id': 'actor', 'team_id': 'team'}})) if path.endswith('api_profile') else (200, raw({'task': current}))
+        port = ApolloLinkedInCompletion(self.load, team_id='team', actor_id='actor',
+                                        repository=self.repo, enabled=True, request=http)
+        kwargs = dict(campaign_id='campaign', approval_id='approval', campaign_version='v1',
+                      account_id='account', binding={'sequence_ids': ['sequence', 'sequence2'], 'owner_ids': ['owner']}, recipient='lead')
+        self.assertEqual('skipped', port.reconcile_skip('company', 'task1', **kwargs)['state'])
+        current['emailer_campaign_id'] = 'sequence'
+        self.assertEqual('skip_reconcile_pending', port.reconcile_skip('company', 'task1', **kwargs)['state'])
+        current['emailer_campaign_id'] = 'outside'
+        self.assertEqual('skip_reconcile_pending', port.reconcile_skip('company', 'task1', **kwargs)['state'])
+
     def test_fixture_and_invalid_id_fail_before_provider(self):
         for task_id in (EXCLUDED_TASK, '../task', 'task?x=1'):
             with self.subTest(task_id=task_id), self.assertRaises(ValueError):
@@ -290,6 +311,28 @@ class ApolloCompletionTests(unittest.TestCase):
             self.assertEqual('confirmed', port.complete_verified('company', 'message1', 'linkedin_step_message', **args)['state'])
             self.assertEqual('confirmed', self.repo.get_apollo_linkedin_reservation('company', 'message1', 'linkedin_step_message')['apollo_status'])
             self.assertEqual(1, sum(c[0] == 'POST' for c in calls))
+
+    def test_canary_cannot_complete_after_task_moves_to_another_approved_sequence(self):
+        text = 'Mensagem de teste'
+        self.repo.reserve_apollo_linkedin('company', 'message1', 'linkedin_step_message', 'account',
+            text_hash=hashlib.sha256(text.encode()).hexdigest(), campaign_version='1', recipient='lead')
+        self.repo.finish_apollo_linkedin('company', 'message1', 'linkedin_step_message', 'confirmed',
+            receipt={'provider_id': 'receipt1'}, apollo_status='pending')
+        self.repo.append_event('message1', 'apollo_linkedin_canary_reservation', {
+            'company': 'company', 'action_type': 'linkedin_step_message', 'account_id': 'account', 'apollo_sequence_id': 'seq1'})
+        task = {'id': 'message1', 'status': 'scheduled', 'type': 'linkedin_step_message',
+                'emailer_campaign_id': 'seq2', 'user_id': 'owner', 'contact_id': 'contact',
+                'contact': {'id': 'contact', 'linkedin_url': 'https://www.linkedin.com/in/lead/'},
+                'linkedin_emailer_template': {'body_text': text}}
+        binding = {'binding': {'company_id': 'company', 'team_id': 'team', 'account_id': 'account',
+                               'public_id': 'sender', 'sequence_ids': ['seq1', 'seq2'], 'owner_ids': ['owner']}}
+        def fake(method, path, body, headers, timeout):
+            return (200, raw({'user': {'id': 'actor', 'team_id': 'team'}})) if path.endswith('api_profile') else (200, raw({'task': task}))
+        port = ApolloLinkedInCompletion(self.load, team_id='team', actor_id='actor', repository=self.repo,
+                                         enabled=True, request=fake)
+        with patch('thunder_os.apollo_linkedin_completion.CampaignApprovalAuthority.require', return_value=binding):
+            with self.assertRaisesRegex(ValueError, 'execution_binding_unverified'):
+                port._verified_binding('company', 'message1', 'linkedin_step_message', 'campaign', 'approval', 1)
 
     def test_invitation_completion_requires_receipt_and_rechecks_reply_coverage(self):
         from thunder_os.apollo_linkedin_completion import write_completion_guard

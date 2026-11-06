@@ -223,6 +223,7 @@ class Repository:
         from .apollo_linkedin_authority import CampaignApprovalAuthority
         from .apollo_linkedin_identity_binding import KIND, binding_key
         from .apollo_linkedin_preview import _slug, validated_task_text
+        from .campaign_registry import sequence_allowed
 
         self.apollo_linkedin_store_ready()
         if not isinstance(task, dict):
@@ -236,10 +237,9 @@ class Repository:
                 or not contact['id'] or task.get('contact_id') != contact['id']):
             raise ValueError('contact_identity_invalid')
         recipient = _slug(contact.get('linkedin_url'))
-        _, digest, blocker = validated_task_text(task, action_name)
-        if blocker or not recipient or digest != expected_text_hash:
+        if not recipient:
             raise ValueError('task_text_or_recipient_invalid')
-        self._t4_canary_fields('placeholder', task_id, 'placeholder', recipient, digest)
+        self._t4_canary_fields('placeholder', task_id, 'placeholder', recipient, expected_text_hash)
         with self.transaction() as con:
             # Nested callers may catch an exception without rolling back their
             # outer transaction; a savepoint preserves reservation+audit atomicity.
@@ -247,8 +247,14 @@ class Repository:
             try:
                 approved = CampaignApprovalAuthority(self).require(campaign_id, approval_id, campaign_version)
                 binding = approved['binding']
+                configuration = approved.get('configuration', {})
+                fields = configuration.get('required_custom_field_ids')
+                field_id = fields.get(action) if isinstance(fields, dict) else configuration.get('required_custom_field_id')
+                _, digest, blocker = validated_task_text(task, action_name, required_custom_field_id=field_id)
+                if blocker or digest != expected_text_hash:
+                    raise ValueError('task_text_or_recipient_invalid')
                 if (binding.get('team_id') != observed_team_id
-                        or task.get('emailer_campaign_id') != binding.get('sequence_id')
+                        or not sequence_allowed(binding, task.get('emailer_campaign_id'))
                         or task.get('user_id') not in binding.get('owner_ids', ())
                         or recipient == binding.get('public_id', '').lower()):
                     raise ValueError('task_campaign_binding_invalid')
@@ -263,7 +269,7 @@ class Repository:
                         or identity.get('campaign_version') != campaign_version
                         or identity.get('scope_hash') != approved['scope_hash']
                         or identity.get('team_id') != observed_team_id
-                        or identity.get('sequence_id') != binding['sequence_id']
+                        or identity.get('sequence_id') != task.get('emailer_campaign_id')
                         or identity.get('task_id') != task_id or identity.get('action_type') != action
                         or identity.get('contact_id') != contact['id']
                         or identity.get('account_id') != account or identity.get('recipient_public_id') != recipient
@@ -278,7 +284,7 @@ class Repository:
                     'campaign_version': str(campaign_version), 'approval_scope_hash': approved['scope_hash'],
                     'actor': 'ygor', 'text_hash': digest, 'apollo_contact_id': contact['id'],
                     'binding_id': binding_id, 'member_urn': identity['member_urn'],
-                    'apollo_owner_id': task['user_id'], 'apollo_sequence_id': binding['sequence_id'],
+                    'apollo_owner_id': task['user_id'], 'apollo_sequence_id': task['emailer_campaign_id'],
                     'apollo_team_id': observed_team_id})
                 con.execute('RELEASE SAVEPOINT campaign_reservation')
                 return result
@@ -314,7 +320,7 @@ class Repository:
 
     def issue_apollo_linkedin_canary(self, company, task_id, account_id, recipient, text_hash, actor,
                                      *, action_type='linkedin_step_connect', member_urn=None,
-                                     campaign_version=None, approval_id=None):
+                                     campaign_version=None, approval_id=None, sequence_id=None):
         """Persist a bounded one-shot canary; caller must authenticate actor/role."""
         self._t4_canary_fields(company, task_id, account_id, recipient, text_hash)
         if not isinstance(actor, str) or not re.fullmatch(r'[A-Za-z0-9_.@-]{1,100}', actor):
@@ -325,6 +331,8 @@ class Repository:
             value is not None for value in (member_urn, campaign_version, approval_id))
         if extended:
             campaign_version = self._t4_message_binding(member_urn, campaign_version, approval_id)
+        if sequence_id is not None and (not isinstance(sequence_id, str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}', sequence_id)):
+            raise ValueError('invalid canary sequence')
         self.apollo_linkedin_store_ready()
         now = datetime.now(timezone.utc)
         key = uuid4().hex
@@ -335,6 +343,8 @@ class Repository:
         if extended:
             payload.update(action_type=action_type, member_urn=member_urn,
                            campaign_version=campaign_version, approval_id=approval_id)
+        if sequence_id is not None:
+            payload['sequence_id'] = sequence_id
         with self.transaction() as con:
             try:
                 con.execute('INSERT INTO thunder_state VALUES (?,?,?,?,?)',
@@ -348,7 +358,7 @@ class Repository:
 
     def reserve_apollo_linkedin_with_canary(self, canary_id, company, task_id, action_type,
                                             account_id, recipient, text_hash, campaign_version,
-                                            *, member_urn=None, approval_id=None):
+                                            *, member_urn=None, approval_id=None, sequence_id=None):
         """Consume canary and reserve atomically; any failure rolls back both."""
         self._t4_canary_fields(company, task_id, account_id, recipient, text_hash)
         if (not isinstance(canary_id, str) or not re.fullmatch(r'[a-f0-9]{32}', canary_id)
@@ -373,12 +383,18 @@ class Repository:
                 legacy_fields = {'company', 'task_id', 'account_id', 'recipient',
                                  'text_hash', 'actor', 'issued_at', 'expires_at', 'state'}
                 extended_fields = legacy_fields | {'action_type', 'member_urn', 'campaign_version', 'approval_id'}
+                if isinstance(auth, dict) and 'sequence_id' in auth:
+                    (extended_fields if extended else legacy_fields).add('sequence_id')
                 if (not isinstance(auth, dict) or
                         (set(auth) != (extended_fields if extended else legacy_fields))):
                     raise ValueError('invalid')
                 if extended and (auth['action_type'], auth['member_urn'], auth['campaign_version'], auth['approval_id']) != (
                         action_type, member_urn, str(campaign_version), approval_id):
                     raise ValueError('binding mismatch')
+                if sequence_id is not None and (not isinstance(sequence_id, str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}', sequence_id)):
+                    raise ValueError('invalid sequence')
+                if auth.get('sequence_id') is not None and auth['sequence_id'] != sequence_id:
+                    raise ValueError('sequence mismatch')
                 issued = datetime.fromisoformat(auth['issued_at'])
                 expires = datetime.fromisoformat(auth['expires_at'])
                 if (type(row['version']) is not int or row['version'] < 1
@@ -414,6 +430,11 @@ class Repository:
                 raise RepositoryConflict('Apollo LinkedIn task already reserved')
             self._put_state_in(con, 'apollo_linkedin_canary', canary_id,
                                {**auth, 'state': 'consumed'}, now.isoformat(), row['version'])
+            if sequence_id is not None:
+                self.append_event(task_id, 'apollo_linkedin_canary_reservation', {
+                    'company': company, 'task_id': task_id, 'action_type': action_type,
+                    'account_id': account_id, 'canary_id': canary_id,
+                    'apollo_sequence_id': sequence_id})
         return {'company': company, 'task_id': task_id, 'action_type': action_type,
                 'account_id': account_id, 'state': 'reserved', 'text_hash': text_hash,
                 'campaign_version': str(campaign_version), 'recipient': recipient}

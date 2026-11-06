@@ -22,6 +22,7 @@ from thunder_os.apollo_linkedin_authority import CampaignApprovalAuthority
 from thunder_os.approvals import ApprovalError
 from thunder_os.apollo_linkedin_preview import validated_task_text, _slug
 from thunder_os.apollo_linkedin_reader import ApolloLinkedInReader
+from thunder_os.campaign_registry import sequence_allowed
 
 _SLUG = re.compile(r'[A-Za-z0-9_.-]{1,160}\Z')
 
@@ -125,11 +126,17 @@ def inspect_observations(result, *, db=None, campaign=None, cadence=None, versio
             action = {'linkedin_step_connect': 'invite', 'linkedin_step_message': 'message'}.get(task.get('type'))
             if action is None:
                 raise ValueError('unsupported_action')
-            text, digest, error = validated_task_text(task, action)
+            config = authority.get('configuration', {})
+            field_map = config.get('required_custom_field_ids') if isinstance(config, dict) else None
+            field_id = (field_map.get(task.get('type')) if isinstance(field_map, dict)
+                        else config.get('required_custom_field_id') if isinstance(config, dict) else None)
+            if not isinstance(field_id, str) or not field_id:
+                raise ValueError('custom_field_configuration_missing')
+            text, digest, error = validated_task_text(task, action, required_custom_field_id=field_id)
             contact = task.get('contact')
             if (error
                     or task.get('status') != 'scheduled'
-                    or task.get('emailer_campaign_id') != binding['sequence_id']
+                    or not sequence_allowed(binding, task.get('emailer_campaign_id'))
                     or task.get('user_id') not in binding['owner_ids']
                     or not isinstance(contact, dict)
                     or _slug(contact.get('linkedin_url')) != result['recipient'].lower()):

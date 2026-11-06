@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 from .apollo_linkedin_attention import EXCLUDED_TASK
 from .apollo_linkedin_preview import _json, _slug, validated_task_text
 from .apollo_linkedin_authority import CampaignApprovalAuthority
+from .campaign_registry import sequence_allowed
 from .models import payload_hash
 from .db import Repository
 from .apollo_linkedin_reply_coverage import coverage_current
@@ -204,7 +205,7 @@ class ApolloLinkedInCompletion:
         return isinstance(control, dict) and control.get('paused') is False
 
     def skip_unconnected(self, company, task_id, *, campaign_id, approval_id,
-                         campaign_version, account_id, before_dispatch):
+                         campaign_version, account_id, before_dispatch, sequence_id=None):
         """Claim one Apollo-only skip; unknown POSTs are never retried."""
         self._task_id(task_id)
         if not all(isinstance(v, str) and _ID.fullmatch(v) for v in
@@ -213,6 +214,10 @@ class ApolloLinkedInCompletion:
         key = skip_claim_key(company, task_id)
         identity = {'company': company, 'task_id': task_id, 'campaign_id': campaign_id,
                     'approval_id': approval_id, 'campaign_version': campaign_version, 'account_id': account_id}
+        if sequence_id is not None:
+            if not isinstance(sequence_id, str) or not _ID.fullmatch(sequence_id):
+                return {'state': 'blocked', 'reason': 'skip_binding_invalid'}
+            identity['sequence_id'] = sequence_id
         try:
             if not self._execution_allowed():
                 return {'state': 'blocked', 'reason': 'execution_disabled'}
@@ -259,7 +264,8 @@ class ApolloLinkedInCompletion:
             task = self.get(task_id)
             if (task.get('deleted') is True or task.get('type') != 'linkedin_step_message'
                     or task.get('status') != 'skipped' or task.get('note') != 'não conectado, pulado'
-                    or task.get('emailer_campaign_id') != binding.get('sequence_id')
+                    or not sequence_allowed(binding, task.get('emailer_campaign_id'))
+                    or (claim.get('sequence_id') is not None and claim.get('sequence_id') != task.get('emailer_campaign_id'))
                     or task.get('user_id') not in binding.get('owner_ids', ())
                     or not isinstance(task.get('contact'), dict)
                     or _slug(task['contact'].get('linkedin_url')) != recipient):
@@ -327,17 +333,18 @@ class ApolloLinkedInCompletion:
                 or not isinstance(scope['configuration'], dict)
                 or not isinstance(scope['configuration'].get('apollo_linkedin'), dict)):
             raise ValueError('approval_unverified')
-        return scope['configuration']['apollo_linkedin']
+        return scope['configuration']['apollo_linkedin'], scope['configuration']
 
     def _verified_binding(self, company, task_id, action_type, campaign_id, approval_id, campaign_version, *, historical=False):
         """Read durable approval, reservation and provider task; fail closed."""
         if action_type not in ('linkedin_step_message', 'linkedin_step_connect') or (not historical and not self._execution_allowed()):
             raise ValueError('execution_disabled')
         if historical:
-            binding = self._historical_binding(campaign_id, approval_id, campaign_version)
+            binding, configuration = self._historical_binding(campaign_id, approval_id, campaign_version)
         else:
             approval = CampaignApprovalAuthority(self._repo).require(campaign_id, approval_id, campaign_version)
             binding = approval['binding']
+            configuration = approval.get('configuration', {})
         row = self._repo.get_apollo_linkedin_reservation(company, task_id, action_type)
         if (not isinstance(row, dict) or row.get('state') != 'confirmed'
                 or row.get('apollo_status') not in ('pending', 'attempted')
@@ -350,13 +357,31 @@ class ApolloLinkedInCompletion:
         if not isinstance(receipt_id, str) or not receipt_id.strip() or len(receipt_id) > 256 or any(ord(c) < 32 for c in receipt_id):
             raise ValueError('receipt_unverified')
         task = self.get(task_id)
-        if (task.get('deleted') is True or task.get('type') != action_type or task.get('emailer_campaign_id') != binding.get('sequence_id')
+        if (task.get('deleted') is True or task.get('type') != action_type or not sequence_allowed(binding, task.get('emailer_campaign_id'))
                 or not isinstance(binding.get('owner_ids'), list) or task.get('user_id') not in binding['owner_ids']
                 or not isinstance(task.get('contact'), dict)
                 or _slug(task['contact'].get('linkedin_url')) != row.get('recipient')):
             raise ValueError('execution_binding_unverified')
+        events = [event.get('payload') for event in self._repo.events(task_id)
+                  if event.get('type') == 'apollo_linkedin_campaign_reservation']
+        if events and (len(events) != 1 or not isinstance(events[0], dict)
+                       or events[0].get('apollo_sequence_id') != task.get('emailer_campaign_id')
+                       or events[0].get('company') != company or events[0].get('action_type') != action_type):
+            raise ValueError('execution_binding_unverified')
+        canary_events = [event.get('payload') for event in self._repo.events(task_id)
+                         if event.get('type') == 'apollo_linkedin_canary_reservation']
+        if canary_events and (len(canary_events) != 1 or not isinstance(canary_events[0], dict)
+                              or canary_events[0].get('apollo_sequence_id') != task.get('emailer_campaign_id')
+                              or canary_events[0].get('company') != company
+                              or canary_events[0].get('action_type') != action_type
+                              or canary_events[0].get('account_id') != row.get('account_id')):
+            raise ValueError('execution_binding_unverified')
+        if 'sequence_ids' in binding and not events and not canary_events:
+            raise ValueError('execution_binding_unverified')
         action = 'message' if action_type == 'linkedin_step_message' else 'invite'
-        _, text_hash, blocker = validated_task_text(task, action)
+        fields = configuration.get('required_custom_field_ids')
+        field_id = fields.get(action_type) if isinstance(fields, dict) else configuration.get('required_custom_field_id')
+        _, text_hash, blocker = validated_task_text(task, action, required_custom_field_id=field_id)
         if blocker or text_hash != row.get('text_hash'):
             raise ValueError('text_changed')
         return row, task, receipt_id
@@ -380,7 +405,7 @@ class ApolloLinkedInCompletion:
         if self._repo.get_state('apollo_linkedin_reply_stop', stop_key) is not None:
             return False
         target = {'email': contact.get('email'), 'apollo_contact_id': contact['id'],
-                  'sequence_id': binding.get('sequence_id'),
+                  'sequence_id': task.get('emailer_campaign_id'),
                   'linkedin_profile_urn': plan['recipient_profile_urn'],
                   'account_id': row['account_id'], 'recipient_public_id': row['recipient']}
         observed = coverage.observe(target)

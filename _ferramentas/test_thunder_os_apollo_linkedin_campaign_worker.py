@@ -124,6 +124,32 @@ class WorkerTest(unittest.TestCase):
         self.assertEqual(self.states, {})
         self.assertEqual(self.calls, [('GET', '/api/v1/users/api_profile'), ('POST', '/api/v1/tasks/search')])
 
+    def test_two_approved_sequences_are_observed_and_third_is_excluded(self):
+        self.rows = [self.task('a', sequence='sequence'), self.task('b', sequence='sequence-two'),
+                     self.task('c', sequence='outside')]
+        self.total = len(self.rows)
+        self.coordinator.authority.require = lambda *args: {'binding': {
+            'team_id': 'team', 'company_id': 'company', 'account_id': 'account',
+            'owner_ids': ['owner'], 'sequence_ids': ['sequence', 'sequence-two']}}
+        result = self.worker.run_once()
+        self.assertEqual(result['eligible_observed'], 2)
+        self.assertEqual(result['items'], [{'task_id': 'a', 'state': 'observed', 'reason': 'not_dispatched'}])
+        self.assertEqual(self.outcomes, [])
+        self.rows = [self.task('b', sequence='sequence-two')]
+        self.total = 1
+        with patch.dict(os.environ, {'THUNDER_APOLLO_LI_WORKER_ENABLED': 'true',
+                                    'THUNDER_APOLLO_LI_EXECUTION_ENABLED': 'true'}, clear=True):
+            self.assertEqual(self.worker.run_once(execute=True)['items'][0]['state'], 'confirmed')
+        self.assertEqual(self.outcomes, [('b', 'campaign', 'approval', 'v1', False)])
+
+    def test_invalid_sequence_list_fails_closed_before_provider_read(self):
+        self.coordinator.authority.require = lambda *args: {'binding': {
+            'team_id': 'team', 'company_id': 'company', 'account_id': 'account',
+            'owner_ids': ['owner'], 'sequence_ids': ['sequence', 'sequence']}}
+        result = self.worker.run_once()
+        self.assertEqual(result['reason'], 'reader_binding_mismatch')
+        self.assertEqual(self.calls, [])
+
     def test_attempted_skip_remains_visible_when_task_is_no_longer_open(self):
         self.rows = []
         self.total = 0

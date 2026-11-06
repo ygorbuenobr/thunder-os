@@ -90,7 +90,7 @@ class SafeCompositionTest(unittest.TestCase):
             else:
                 value = {'task': {'id': 'task1', 'type': 'linkedin_step_connect',
                     'status': 'scheduled', 'emailer_campaign_id': 'sequence', 'user_id': 'owner',
-                    'contact': {'linkedin_url': 'https://www.linkedin.com/in/person'},
+                    'contact': {'linkedin_url': 'https://www.linkedin.com/in/person', 'typed_custom_fields': {'invite': 'Olá'}},
                     'linkedin_emailer_template': {'body_text': 'Olá'}}}
             return 200, json.dumps(value).encode()
         reader = ApolloLinkedInReader(lambda: 'fake', team_id='team', api_actor_id='actor',
@@ -99,7 +99,7 @@ class SafeCompositionTest(unittest.TestCase):
                    'account_id': 'account', 'public_id': 'sender'}
         class FakeAuthority:
             def __init__(self, store): pass
-            def require(self, *args): return {'binding': binding}
+            def require(self, *args): return {'binding': binding, 'configuration': {'required_custom_field_ids': {'linkedin_step_connect': 'invite'}}}
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'db.sqlite'
             sqlite3.connect(path).close()
@@ -119,6 +119,33 @@ class SafeCompositionTest(unittest.TestCase):
         self.assertIn('--task task1 --authorization auth1 --execute', result['command'])
         self.assertFalse(result['execution']['executable'])
 
+    def test_preparer_rejects_sequence_outside_approved_list(self):
+        binding = {'team_id': 'team', 'owner_ids': ['owner'], 'sequence_ids': ['seq1', 'seq2'],
+                   'account_id': 'account', 'public_id': 'sender'}
+        class Reader:
+            team_id = 'team'
+            owner_ids = frozenset(['owner'])
+            sequence = 'seq2'
+            def get(self, task_id):
+                return {'id': task_id, 'type': 'linkedin_step_message', 'status': 'scheduled',
+                        'emailer_campaign_id': self.sequence, 'user_id': 'owner',
+                        'contact': {'linkedin_url': 'https://www.linkedin.com/in/person', 'typed_custom_fields': {'dm': 'Mensagem de teste'}},
+                        'linkedin_emailer_template': {'body_text': 'Mensagem de teste'}}
+        class Authority:
+            def __init__(self, store): pass
+            def require(self, *args): return {'binding': binding, 'configuration': {'required_custom_field_ids': {'linkedin_step_message': 'dm'}}}
+        reader = Reader()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'db.sqlite'
+            sqlite3.connect(path).close()
+            with patch.object(_prepare, 'CampaignApprovalAuthority', Authority):
+                def inspect():
+                    return _prepare.inspect_observations(_prepare.prepare('task1', 'person', 'auth1'),
+                        db=str(path), campaign='campaign', cadence='cadence', version='v1', reader=reader)
+                self.assertEqual(inspect()['checks']['text'], 'observed_not_approved')
+                reader.sequence = 'outside'
+                self.assertEqual(inspect()['checks']['text'], 'unverified')
+
     def test_preparer_observes_bound_message_without_authorizing_send(self):
         binding = {'team_id': 'team', 'owner_ids': ['owner'], 'sequence_id': 'sequence',
                    'account_id': 'account', 'public_id': 'sender'}
@@ -128,11 +155,11 @@ class SafeCompositionTest(unittest.TestCase):
             def get(self, task_id):
                 return {'id': task_id, 'type': 'linkedin_step_message', 'status': 'scheduled',
                         'emailer_campaign_id': 'sequence', 'user_id': 'owner',
-                        'contact': {'linkedin_url': 'https://www.linkedin.com/in/person'},
+                        'contact': {'linkedin_url': 'https://www.linkedin.com/in/person', 'typed_custom_fields': {'dm': 'Mensagem de teste'}},
                         'linkedin_emailer_template': {'body_text': 'Mensagem de teste'}}
         class Authority:
             def __init__(self, store): pass
-            def require(self, *args): return {'binding': binding}
+            def require(self, *args): return {'binding': binding, 'configuration': {'required_custom_field_ids': {'linkedin_step_message': 'dm'}}}
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'db.sqlite'
             sqlite3.connect(path).close()
@@ -142,6 +169,36 @@ class SafeCompositionTest(unittest.TestCase):
         self.assertEqual(result['text'], 'Mensagem de teste')
         self.assertEqual(result['checks']['text'], 'observed_not_approved')
         self.assertEqual(result['status'], 'blocked')
+
+    def test_preparer_validates_invite_field_and_empty_note(self):
+        binding = {'team_id': 'team', 'owner_ids': ['owner'], 'sequence_ids': ['seq1', 'seq2'],
+                   'account_id': 'account', 'public_id': 'sender'}
+        class Reader:
+            team_id, owner_ids = 'team', frozenset(['owner'])
+            task = {'id': 'task1', 'type': 'linkedin_step_connect', 'status': 'scheduled',
+                    'emailer_campaign_id': 'seq2', 'user_id': 'owner',
+                    'contact': {'linkedin_url': 'https://www.linkedin.com/in/person', 'typed_custom_fields': {}},
+                    'linkedin_emailer_template': {'body_text': ''}}
+            def get(self, task_id): return self.task
+        class Authority:
+            def __init__(self, store): pass
+            def require(self, *args): return {'binding': binding, 'configuration': {
+                'required_custom_field_ids': {'linkedin_step_connect': 'invite', 'linkedin_step_message': 'dm'}}}
+        reader = Reader()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'db.sqlite'; sqlite3.connect(path).close()
+            with patch.object(_prepare, 'CampaignApprovalAuthority', Authority):
+                def inspect():
+                    return _prepare.inspect_observations(_prepare.prepare('task1', 'person', 'auth1'),
+                        db=str(path), campaign='campaign', cadence='cadence', version='v1', reader=reader)
+                result = inspect()
+                self.assertEqual(result['checks']['text'], 'observed_not_approved')
+                self.assertEqual(result['text'], '')
+                reader.task['contact']['typed_custom_fields']['invite'] = 'Aprovado'
+                reader.task['linkedin_emailer_template']['body_text'] = 'Divergente'
+                self.assertEqual(inspect()['checks']['text'], 'unverified')
+                reader.task['linkedin_emailer_template']['body_text'] = '{{invite}}'
+                self.assertEqual(inspect()['checks']['text'], 'unverified')
 
 
 if __name__ == '__main__':

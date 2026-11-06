@@ -57,7 +57,7 @@ class CanaryIssuerTest(unittest.TestCase):
         self.assertEqual(row['member_urn'], 'urn:li:fsd_profile:abc')
         args = (result['id'], 'company', 'task', 'linkedin_step_message', 'a'*24,
                 'person', row['text_hash'], 'v1')
-        kw = {'member_urn': row['member_urn'], 'approval_id': self.approval['id']}
+        kw = {'member_urn': row['member_urn'], 'approval_id': self.approval['id'], 'sequence_id': 'seq'}
         self.repo.reserve_apollo_linkedin_with_canary(*args, **kw)
         with self.assertRaises(RepositoryConflict):
             self.repo.reserve_apollo_linkedin_with_canary(*args, **kw)

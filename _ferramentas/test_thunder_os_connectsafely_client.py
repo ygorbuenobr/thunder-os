@@ -90,6 +90,13 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(writes[0][3]['messagingChannel'],'linkedin_inbox')
         self.assertEqual(writes[0][3]['accountId'],ACCOUNT)
         self.assertNotIn('SECRET',json.dumps(result))
+    def test_invitation_without_note_omits_custom_message(self):
+        self.post=(200,{'success':True,'accountId':ACCOUNT,'profileUrn':RECIPIENT})
+        self.client.send({**PLAN,'action':'invite','content':'','conversation_urn':None},before_dispatch=lambda:True)
+        writes=[call for call in self.calls if call[0]=='POST']
+        self.assertEqual(len(writes),1)
+        self.assertEqual(writes[0][1],'/linkedin/connect')
+        self.assertNotIn('customMessage',writes[0][3])
     def test_synchronous_send_receipt_can_omit_optional_echo_fields(self):
         self.post=(200,{'success':True,'recipientProfileUrn':RECIPIENT,'sentMessage':{
             'messageUrn':'urn:li:messagingMessage:SYNTHETIC',

@@ -63,6 +63,24 @@ class CampaignApprovalAuthorityTest(unittest.TestCase):
         with self.assertRaises(ApprovalError):
             self.gate.require('campaign', approval['id'], 'v1')
 
+    def test_two_sequences_and_action_fields_are_in_exact_approved_snapshot(self):
+        updated = deepcopy(self.cfg)
+        binding = updated['configuration']['apollo_linkedin']
+        del binding['sequence_id']
+        binding['sequence_ids'] = ['seq-one', 'seq-two']
+        updated['configuration']['required_custom_field_ids'] = {
+            'linkedin_step_connect': 'invite-field', 'linkedin_step_message': 'message-field'}
+        self.registry.register(updated, 'ygor', 1)
+        approval = self.approve()
+        result = self.gate.require('campaign', approval['id'], 'v1')
+        self.assertEqual(result['binding']['sequence_ids'], ['seq-one', 'seq-two'])
+        self.assertEqual(result['configuration']['required_custom_field_ids']['linkedin_step_connect'], 'invite-field')
+        changed = deepcopy(updated)
+        changed['configuration']['apollo_linkedin']['sequence_ids'].append('seq-other')
+        self.registry.register(changed, 'ygor', 2)
+        with self.assertRaises(ApprovalError):
+            self.gate.require('campaign', approval['id'], 'v1')
+
     def test_snapshot_mutation_denied(self):
         approval = self.approve()
         snapshot = self.repo.get_state('campaign_version_snapshot', approval['snapshot_id'])

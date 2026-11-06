@@ -58,6 +58,25 @@ class SequenceCohortTest(unittest.TestCase):
         self.assertEqual((result['coverage'], result['next_page']), ('partial', 2))
         self.assertEqual([m['contact_id'] for m in result['members']], ['one'])
 
+    def test_multiple_sequences_keep_each_real_membership_and_ignore_outside(self):
+        self.contacts = [self.row('one', 'seq'), self.row('two', 'other'), self.row('three', 'outside')]
+        self.contacts[0]['contact_campaign_statuses'].append({'emailer_campaign_id': 'other', 'status': 'paused'})
+        approved = {'binding': {'sequence_ids': ['seq', 'other'], 'team_id': 'team'}, 'scope_hash': 'a' * 64}
+        with patch.object(self.reader, '_approved_binding', return_value=approved):
+            result = self.scan(max_pages=2)
+        self.assertEqual([(m['contact_id'], m['sequence_id'], m['membership_status']) for m in result['members']],
+                         [('one', 'seq', 'active'), ('one', 'other', 'paused'), ('two', 'other', 'active')])
+
+    def test_invalid_or_ambiguous_sequence_binding_fails_before_provider_read(self):
+        for binding in ({'sequence_ids': [], 'team_id': 'team'},
+                        {'sequence_ids': ['seq', 'seq'], 'team_id': 'team'},
+                        {'sequence_ids': ['seq'], 'sequence_id': 'seq', 'team_id': 'team'}):
+            with self.subTest(binding=binding), patch.object(self.reader, '_approved_binding', return_value={'binding': binding}):
+                self.calls.clear()
+                result = self.scan(max_pages=2)
+                self.assertEqual(result['coverage'], 'unknown')
+                self.assertEqual(self.calls, [])
+
     def test_resume_observes_next_page_without_claiming_previous_coverage(self):
         first = self.scan(max_pages=1)
         second = self.scan(max_pages=1, start_page=first['next_page'])

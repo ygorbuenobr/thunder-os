@@ -95,6 +95,29 @@ class InvitationEndToEnd(unittest.TestCase):
         self.run_executor()
         self.assertEqual(len(self.posts()), 1)
 
+    def test_empty_rendered_field_sends_invite_without_note_and_records_receipt(self):
+        class BlankInvitationScenario(InvitationScenario):
+            def task(self):
+                task = super().task()
+                task['contact']['typed_custom_fields'] = {}
+                task['linkedin_emailer_template']['body_text'] = ''
+                return task
+        case = type(self)(methodName='runTest')
+        with patch(__name__ + '.InvitationScenario', BlankInvitationScenario):
+            case.setUp()
+        try:
+            code, result = case.run_executor()
+            self.assertEqual((code, result['state']), (0, 'confirmed'))
+            row = case.repo.get_apollo_linkedin_reservation('company', 'fixture-task', 'linkedin_step_connect')
+            self.assertEqual('confirmed', row['state'])
+            self.assertEqual('confirmed', row['apollo_status'])
+            self.assertEqual('connectsafely:invitation-id:123', row['receipt']['provider_id'])
+            self.assertEqual(1, len(case.posts()))
+            self.assertNotIn('customMessage', case.posts()[0][2])
+            self.assertEqual(1, sum(call[0] == 'POST' for call in case.fake.apollo_calls))
+        finally:
+            case.doCleanups()
+
     def test_unverified_after_dispatch_never_retries_or_completes(self):
         for mode in ('timeout', '502', 'partial'):
             with self.subTest(mode=mode):

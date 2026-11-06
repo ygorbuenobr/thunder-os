@@ -16,6 +16,7 @@ import re
 
 from .apollo_linkedin_attention import EXCLUDED_TASK
 from .apollo_linkedin_live_executor import build_campaign_runtime, valid_campaign_version, valid_id
+from .campaign_registry import sequence_allowed
 from .models import payload_hash
 
 
@@ -50,9 +51,11 @@ class CampaignWorker:
             approval = self.coordinator.authority.require(self.campaign_id, self.approval_id, self.campaign_version)
             binding = approval['binding']
             reader = self.coordinator.apollo
+            sequences = binding.get('sequence_ids')
+            candidate_sequence = (sequences[0] if isinstance(sequences, list) and sequences
+                                  else binding.get('sequence_id'))
             if (reader.team_id != binding['team_id'] or reader.owner_ids != frozenset(binding['owner_ids'])
-                    or not isinstance(binding.get('sequence_id'), str)
-                    or not re.fullmatch(r'[A-Za-z0-9_.-]{1,160}', binding['sequence_id'])
+                    or not sequence_allowed(binding, candidate_sequence)
                     or not isinstance(binding.get('company_id'), str)
                     or not re.fullmatch(r'[A-Za-z0-9_.-]{1,160}', binding['company_id'])):
                 return {**result, 'reason': 'reader_binding_mismatch'}
@@ -97,7 +100,7 @@ class CampaignWorker:
                 if sequence is None:
                     result['items'].append({'task_id': ident, 'state': 'blocked', 'reason': 'sequence_unverified'})
                     continue
-                if sequence != binding['sequence_id']:
+                if not sequence_allowed(binding, sequence):
                     continue
                 if task.get('status') != 'scheduled' or task.get('user_id') not in binding['owner_ids']:
                     result['items'].append({'task_id': ident, 'state': 'blocked', 'reason': 'task_binding_unverified'})

@@ -31,6 +31,7 @@ class Repo:
     def get_apollo_linkedin_reservation(self, *args): return self.row
     def reserve_apollo_linkedin_with_canary(self, *args, **kwargs):
         if self.row: raise ValueError('duplicate')
+        self.reservation_kwargs = kwargs
         self.row = {'state': 'reserved'}
     def finish_apollo_linkedin(self, *args, **kwargs):
         if not self.row or self.row['state'] != 'reserved': raise ValueError('bad transition')
@@ -98,6 +99,52 @@ class CoordinatorTests(unittest.TestCase):
     def run_one(self):
         with patch.dict(os.environ, {'THUNDER_APOLLO_LI_EXECUTION_ENABLED': 'true'}):
             return self.subject.run('task', 'auth', dry_run=False)
+
+    def test_multi_sequence_pins_the_observed_task_on_reread(self):
+        binding = {'sequence_ids': ['sequence', 'sequence2'], 'owner_ids': ['owner']}
+        auth = {**self.repo.auth, 'sequence_id': 'sequence'}
+        task = Apollo().get('task')
+        self.assertEqual('hello', self.subject._task(task, 'task', auth, binding, 'abm_field'))
+        task['emailer_campaign_id'] = 'sequence2'
+        with self.assertRaisesRegex(ValueError, 'task_binding_changed'):
+            self.subject._task(task, 'task', auth, binding, 'abm_field')
+        task['emailer_campaign_id'] = 'outside'
+        with self.assertRaisesRegex(ValueError, 'task_binding_changed'):
+            self.subject._task(task, 'task', auth, binding, 'abm_field')
+
+    def test_canary_uses_field_for_its_action(self):
+        class MappedAuthority:
+            def require(self, *args):
+                return {'binding': {'company_id': 'company', 'account_id': 'account', 'public_id': 'sender',
+                                    'sequence_ids': ['sequence', 'sequence2'], 'owner_ids': ['owner']},
+                        'configuration': {'required_custom_field_ids': {'linkedin_step_connect': 'invite_field',
+                                                                         'linkedin_step_message': 'message_field'}}}
+        self.subject.authority = MappedAuthority()
+        task = Apollo().get('task')
+        task['contact']['typed_custom_fields'] = {'invite_field': 'wrong', 'message_field': 'hello'}
+        self.subject.apollo.get = lambda _: task
+        self.assertEqual('confirmed', self.run_one()['state'])
+        self.assertEqual('sequence', self.coverage.targets[0]['sequence_id'])
+        self.assertEqual('sequence', self.repo.reservation_kwargs['sequence_id'])
+
+    def test_sequence_switch_between_reads_never_dispatches(self):
+        class MultiAuthority(Authority):
+            def require(self, *args):
+                value = super().require(*args)
+                value['binding']['sequence_ids'] = ['sequence', 'sequence2']
+                value['binding'].pop('sequence_id')
+                return value
+        self.subject.authority = MultiAuthority()
+        count = []
+        def get(task_id):
+            task = Apollo().get(task_id)
+            count.append(1)
+            if len(count) > 1:
+                task['emailer_campaign_id'] = 'sequence2'
+            return task
+        self.subject.apollo.get = get
+        self.assertNotEqual('confirmed', self.run_one()['state'])
+        self.assertEqual(0, self.message.sent)
 
     def test_invitation_uses_invite_action_and_persists_provider_receipt(self):
         task = Apollo().get('task')

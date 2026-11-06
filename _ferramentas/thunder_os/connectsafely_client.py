@@ -485,7 +485,9 @@ class ConnectSafelyClient:
             if plan.get('conversation_urn'):body['conversationUrn']=plan['conversation_urn']
             path='/linkedin/conversations/send'
         else:
-            body.update(profileId=plan['recipient_public_id'],profileUrn=plan['recipient_profile_urn'],customMessage=plan['content']);path='/linkedin/connect'
+            body.update(profileId=plan['recipient_public_id'],profileUrn=plan['recipient_profile_urn'])
+            if plan['content']:body['customMessage']=plan['content']
+            path='/linkedin/connect'
         self._quota_allowed(plan['action'])
         require(before_dispatch() is True,'dispatch_authority_denied')
         try:

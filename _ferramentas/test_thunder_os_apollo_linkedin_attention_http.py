@@ -241,7 +241,7 @@ class AttentionHttpTests(unittest.TestCase):
             args, kw = repo.issue_apollo_linkedin_canary.call_args
             self.assertEqual(args[:4], ('company', 'task', 'account', 'person'))
             self.assertEqual(kw, {'action_type': 'linkedin_step_message', 'member_urn': 'urn:li:fsd_profile:abc',
-                                  'campaign_version': 'v1', 'approval_id': 'approval'})
+                                  'campaign_version': 'v1', 'approval_id': 'approval', 'sequence_id': 'seq'})
             self.assertEqual(authority.require.call_count, 2)
             repo.issue_apollo_linkedin_canary.reset_mock()
             resolver.return_value['target']['account_id'] = 'other'
@@ -275,8 +275,38 @@ class AttentionHttpTests(unittest.TestCase):
         args, kwargs = repo.issue_apollo_linkedin_canary.call_args
         self.assertEqual(args[4], hashlib.sha256('Oi, convite.'.encode()).hexdigest())
         self.assertEqual(kwargs['action_type'], 'linkedin_step_connect')
+        self.assertEqual(kwargs['sequence_id'], 'seq')
         self.assertEqual(kwargs['member_urn'], 'urn:li:fsd_profile:abc')
         self.assertEqual(authority.require.call_count, 2)
+
+    def test_canary_uses_observed_sequence_and_action_field_from_approval(self):
+        from contextlib import nullcontext
+        binding = {'company_id': 'company', 'team_id': 'team', 'owner_ids': ['owner'],
+                   'sequence_ids': ['seq-one', 'seq-two'], 'account_id': 'account', 'public_id': 'sender'}
+        task = {'id': 'task', 'type': 'linkedin_step_connect', 'status': 'scheduled',
+                'emailer_campaign_id': 'seq-two', 'user_id': 'owner', 'contact_id': 'contact',
+                'contact': {'id': 'contact', 'linkedin_url': 'https://www.linkedin.com/in/person/',
+                            'typed_custom_fields': {'invite-field': 'Oi, convite.'}},
+                'linkedin_emailer_template': {'body_text': 'Oi, convite.'}}
+        reader = SimpleNamespace(team_id='team', owner_ids=frozenset(['owner']), get=Mock(return_value=task))
+        resolver = Mock(return_value={'resolved': True, 'read_only': True, 'source': 'provider_observation',
+            'target': {'account_id': 'account', 'account_public_id': 'sender', 'action': 'invite',
+                       'recipient_public_id': 'person', 'recipient_profile_urn': 'urn:li:fsd_profile:abc'}})
+        server = SimpleNamespace(thunder_apollo_linkedin_attention=SimpleNamespace(
+            reader=reader, team_id='team', company_id='company'), thunder_connectsafely_read_resolver=resolver)
+        repo = Mock(); repo.transaction = lambda: nullcontext(); repo.issue_apollo_linkedin_canary.return_value = {'id': 'auth'}
+        authority = Mock(); authority.require.return_value = {'binding': binding, 'configuration': {
+            'required_custom_field_ids': {'linkedin_step_connect': 'invite-field', 'linkedin_step_message': 'dm-field'}}}
+        body = {'company': 'company', 'task_id': 'task', 'campaign_id': 'campaign',
+                'approval_id': 'approval', 'campaign_version': 'v1'}
+        with patch('thunder_os.apollo_linkedin_authority.CampaignApprovalAuthority', return_value=authority):
+            self.assertEqual(panel.issue_apollo_linkedin_panel_canary(server, repo, body, 'ygor'), {'id': 'auth'})
+            self.assertEqual(repo.issue_apollo_linkedin_canary.call_args.kwargs['sequence_id'], 'seq-two')
+            repo.issue_apollo_linkedin_canary.reset_mock()
+            task['emailer_campaign_id'] = 'outside'
+            with self.assertRaises(panel.Erro):
+                panel.issue_apollo_linkedin_panel_canary(server, repo, body, 'ygor')
+            repo.issue_apollo_linkedin_canary.assert_not_called()
 
     def test_invite_canary_rejects_unresolved_overlong_and_wrong_target_action(self):
         from contextlib import nullcontext
@@ -400,7 +430,7 @@ class AttentionHttpTests(unittest.TestCase):
                                  ('issued', 'v1', 'urn:li:fsd_profile:abc'))
                 args = (authorization['id'], 'company', 'task', 'linkedin_step_message', 'a'*24,
                         'person', persisted['text_hash'], 'v1')
-                kwargs = {'member_urn': 'urn:li:fsd_profile:abc', 'approval_id': approval['id']}
+                kwargs = {'member_urn': 'urn:li:fsd_profile:abc', 'approval_id': approval['id'], 'sequence_id': 'seq'}
                 repo.reserve_apollo_linkedin_with_canary(*args, **kwargs)
                 self.assertEqual(repo.get_state('apollo_linkedin_canary', authorization['id'])['state'], 'consumed')
                 with self.assertRaises(RepositoryConflict): repo.reserve_apollo_linkedin_with_canary(*args, **kwargs)

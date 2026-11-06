@@ -17,6 +17,7 @@ from .connectsafely_live import credential
 from .connectsafely_read_targets import build_read_resolver
 from .credential_paths import credential_path
 from .db import Repository, _official_apollo_linkedin_db
+from .campaign_registry import sequence_allowed
 
 _ID = re.compile(r'[A-Za-z0-9_-]{1,128}\Z')
 _APOLLO_KEY = '/root/.config/thunder/credentials/apollo_api_key.txt'
@@ -55,7 +56,7 @@ def issue(repo, *, task_id, actor, company, team, api_actor, loader, resolver, r
     reader = ApolloLinkedInReader(loader, team_id=team, api_actor_id=api_actor, owner_ids=owners)
     task = reader.get(task_id)
     matches = [(approval, binding) for approval, binding in candidates
-               if task.get('emailer_campaign_id') == binding['sequence_id']
+               if sequence_allowed(binding, task.get('emailer_campaign_id'))
                and task.get('user_id') in binding['owner_ids']]
     # Multiple active approvals of the same exact campaign version and hash
     # are equivalent. Different campaigns or revisions remain ambiguous.

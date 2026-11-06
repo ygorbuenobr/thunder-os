@@ -60,7 +60,6 @@ class CampaignRunnerTest(fixtures.T4dEndToEnd):
         result = self.run_campaign()
         self.assertEqual(result['state'], 'confirmed')
         self.assertEqual(len(self.posts()), 1)
-
         row = self.repo.get_apollo_linkedin_reservation('company', 'fixture-task', 'linkedin_step_message')
         self.assertEqual(row['state'], 'confirmed')
         self.assertEqual(row['apollo_status'], 'confirmed')
@@ -77,6 +76,50 @@ class CampaignRunnerTest(fixtures.T4dEndToEnd):
         self.assertEqual(evidence['member_urn'], fixtures.RECIPIENT)
         self.assertNotEqual(self.run_campaign()['state'], 'confirmed')
         self.assertEqual(len(self.posts()), 1)
+
+    def test_one_approval_accepts_two_sequences_and_rejects_third(self):
+        from thunder_os.service import ThunderService
+        for sequence, expected in [('seq', 'confirmed'), ('seq2', 'confirmed'), ('foreign', 'blocked')]:
+            with self.subTest(sequence=sequence):
+                case = type(self)(methodName='runTest')
+                case.setUp()
+                try:
+                    service = ThunderService(case.repo)
+                    cfg = fixtures.config()
+                    binding = cfg['configuration']['apollo_linkedin']
+                    binding.pop('sequence_id')
+                    binding['sequence_ids'] = ['seq', 'seq2']
+                    cfg['configuration'].pop('required_custom_field_id', None)
+                    cfg['configuration']['required_custom_field_ids'] = {
+                        'linkedin_step_connect': 'invite_field', 'linkedin_step_message': 'message_field'}
+                    service.configure_campaign(cfg, 'ygor', expected_version=1)
+                    review = service.apollo_campaign_approval_review('campaign')
+                    approval = service.approve_apollo_campaign_version('campaign', 'ygor',
+                        execution_confirmation=review['execution_confirmation'])
+                    case.approval = {'approval_id': approval['id']}
+                    task = case.fake.task
+                    def scoped_task():
+                        item = task()
+                        item['emailer_campaign_id'] = sequence
+                        item['contact']['typed_custom_fields'] = {'message_field': fixtures.TEXT}
+                        return item
+                    case.fake.task = scoped_task
+                    def contact_request(method, path, body, headers, timeout):
+                        status, payload = case.fake.apollo(method, path, body, headers, timeout)
+                        if '/contacts/' in path:
+                            value = json.loads(payload)
+                            value['contact']['contact_campaign_statuses'][0]['emailer_campaign_id'] = sequence
+                            payload = json.dumps(value).encode()
+                        return status, payload
+                    with patch('thunder_os.apollo_linkedin_reply_coverage._contact_request', contact_request):
+                        result = case.run_campaign()
+                    self.assertEqual(expected, result['state'], result)
+                    self.assertEqual(1 if expected == 'confirmed' else 0, len(case.posts()))
+                    if expected == 'confirmed':
+                        identity = case.repo.list_state('apollo_linkedin_identity_binding')
+                        self.assertEqual(sequence, identity[0]['sequence_id'])
+                finally:
+                    case.doCleanups()
 
     def test_automated_campaign_without_required_field_stops_before_provider(self):
         class Authority:

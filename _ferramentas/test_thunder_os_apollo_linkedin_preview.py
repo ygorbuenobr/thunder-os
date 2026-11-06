@@ -15,10 +15,38 @@ class PreviewTest(unittest.TestCase):
         task['contact']['typed_custom_fields']['abm_field'] = 'Pesquisa sintética'
         self.assertEqual(validated_task_text(task, 'invite', required_custom_field_id='abm_field')[2],
                          'custom_field_not_rendered')
-        task['linkedin_emailer_template']['body_text'] = 'Olá! Pesquisa sintética'
+        task['linkedin_emailer_template']['body_text'] = 'Pesquisa sintética'
         self.assertIsNone(validated_task_text(task, 'invite', required_custom_field_id='abm_field')[2])
+        task['linkedin_emailer_template']['body_text'] = 'Olá! Pesquisa sintética'
+        self.assertEqual(validated_task_text(task, 'invite', required_custom_field_id='abm_field')[2],
+                         'custom_field_not_rendered')
         with self.assertRaises(ValueError):
             validated_task_text(task, 'invite', required_custom_field_id='')
+
+    def test_empty_invitation_requires_empty_field_and_body(self):
+        task = {'contact': {'typed_custom_fields': {}}, 'linkedin_emailer_template': {'body_text': ''}}
+        expected = ('', hashlib.sha256(b'').hexdigest(), None)
+        for value in (None, '', '  '):
+            task['contact']['typed_custom_fields']['note'] = value
+            self.assertEqual(validated_task_text(task, 'invite', required_custom_field_id='note'), expected)
+        del task['contact']['typed_custom_fields']['note']
+        self.assertEqual(validated_task_text(task, 'invite', required_custom_field_id='note'), expected)
+        self.assertIsNotNone(validated_task_text(task, 'message', required_custom_field_id='note')[2])
+        for body in ('texto fixo', '{{tm_d3_nota_convite}}'):
+            task['linkedin_emailer_template']['body_text'] = body
+            self.assertIsNotNone(validated_task_text(task, 'invite', required_custom_field_id='note')[2])
+        task['linkedin_emailer_template']['body_text'] = None
+        self.assertEqual(validated_task_text(task, 'invite', required_custom_field_id='note')[2], 'text_missing')
+
+    def test_field_and_rendered_text_must_match_exactly_in_both_actions(self):
+        task = {'contact': {'typed_custom_fields': {'field': 'linha 1\nlinha 2'}},
+                'linkedin_emailer_template': {'body_text': 'linha 1\nlinha 2'}}
+        for action in ('invite', 'message'):
+            self.assertIsNone(validated_task_text(task, action, required_custom_field_id='field')[2])
+            task['linkedin_emailer_template']['body_text'] = 'prefixo linha 1\nlinha 2'
+            self.assertEqual(validated_task_text(task, action, required_custom_field_id='field')[2],
+                             'custom_field_not_rendered')
+            task['linkedin_emailer_template']['body_text'] = 'linha 1\nlinha 2'
 
     def test_preview_blocks_when_configured_custom_field_was_rendered_empty(self):
         self.task['linkedin_emailer_template'] = {'body_text': 'Olá, pessoa!'}
@@ -26,6 +54,30 @@ class PreviewTest(unittest.TestCase):
         result = self.preview(required_custom_field_id='abm_field').read()
         self.assertIn('custom_field_missing_or_empty', result['blockers'])
         self.assertFalse(result['call_preview']['executable'])
+
+    def test_preview_uses_observed_sequence_and_action_specific_field(self):
+        fields = {'linkedin_step_connect': 'field_invite', 'linkedin_step_message': 'field_message'}
+        self.task['emailer_campaign_id'] = 'sequence2'
+        self.task['linkedin_emailer_template'] = {'body_text': 'Nota'}
+        self.task['contact']['typed_custom_fields'] = {'field_invite': 'Nota', 'field_message': 'Mensagem'}
+        result = self.preview(sequence_ids=['sequence1', 'sequence2'], required_custom_field_ids=fields).read()
+        self.assertEqual(result['task']['sequence_id'], 'sequence2')
+        self.assertTrue(result['text']['verified'])
+        self.task['type'] = 'linkedin_step_message'
+        self.assertIn('custom_field_not_rendered', self.preview(sequence_ids=['sequence1', 'sequence2'],
+            required_custom_field_ids=fields).read()['blockers'])
+        self.task['emailer_campaign_id'] = 'sequence3'
+        result = self.preview(sequence_ids=['sequence1', 'sequence2'], required_custom_field_ids=fields).read()
+        self.assertEqual(result['status'], 'unavailable')
+        self.assertIsNone(result['task'])
+
+    def test_preview_invitation_without_note_is_valid_when_field_empty(self):
+        self.task['linkedin_emailer_template'] = {'body_text': ''}
+        self.task['contact']['typed_custom_fields'] = {'field_invite': ''}
+        result = self.preview(required_custom_field_ids={'linkedin_step_connect': 'field_invite',
+            'linkedin_step_message': 'field_message'}).read()
+        self.assertEqual(result['text']['value'], '')
+        self.assertTrue(result['text']['verified'])
     def setUp(self):
         self.calls = []
         self.task = {'id': 'task1', 'type': 'linkedin_step_connect', 'status': 'scheduled',

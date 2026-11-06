@@ -19,6 +19,7 @@ from contextlib import contextmanager
 
 from .apollo_linkedin_attention import EXCLUDED_TASK
 from .apollo_linkedin_preview import _slug, validated_task_text
+from .campaign_registry import sequence_allowed
 
 
 class BeforeDispatchError(Exception):
@@ -166,7 +167,10 @@ class T4SimulationCoordinator:
                 and str(binding.get('version')) == str(version)
                 and all(isinstance(binding.get(key), str) and binding[key].strip()
                         and binding[key] == binding[key].strip()
-                        for key in ('company_id', 'sequence_id', 'account_id', 'account_public_id'))
+                        for key in ('company_id', 'account_id', 'account_public_id'))
+                and (sequence_allowed(binding, binding.get('sequence_id'))
+                     or (isinstance(binding.get('sequence_ids'), list) and bool(binding['sequence_ids'])
+                         and sequence_allowed(binding, binding['sequence_ids'][0])))
                 and isinstance(binding.get('owner_ids'), list) and bool(binding['owner_ids'])
                 and all(isinstance(owner, str) and owner for owner in binding['owner_ids'])
                 and type(binding.get('weekly_limit')) is int and binding['weekly_limit'] > 0
@@ -180,7 +184,7 @@ class T4SimulationCoordinator:
             return 'task_not_open'
         if task.get('type') != 'linkedin_step_connect':
             return 'unsupported_action'
-        if (task.get('emailer_campaign_id') != binding['sequence_id']
+        if (not sequence_allowed(binding, task.get('emailer_campaign_id'))
                 or task.get('user_id') not in binding['owner_ids']):
             return 'task_binding_changed'
         contact = task.get('contact')

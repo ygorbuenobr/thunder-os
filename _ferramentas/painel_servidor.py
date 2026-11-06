@@ -3079,6 +3079,7 @@ def issue_apollo_linkedin_panel_canary(server, repo, body, actor):
     from thunder_os.apollo_linkedin_authority import CampaignApprovalAuthority
     from thunder_os.approvals import ApprovalError
     from thunder_os.apollo_linkedin_preview import _slug, validated_task_text
+    from thunder_os.campaign_registry import sequence_allowed
     from thunder_os.apollo_linkedin_attention import EXCLUDED_TASK
     if body.get('task_id') == EXCLUDED_TASK:
         raise Erro('Fixture protegida.', 403)
@@ -3099,12 +3100,18 @@ def issue_apollo_linkedin_panel_canary(server, repo, body, actor):
         contact = task.get('contact')
         action = {'linkedin_step_message': 'dm', 'linkedin_step_connect': 'invite'}.get(task.get('type'))
         if (task.get('id') != body['task_id'] or action is None
-                or task.get('status') != 'scheduled' or task.get('emailer_campaign_id') != binding['sequence_id']
+                or task.get('status') != 'scheduled' or not sequence_allowed(binding, task.get('emailer_campaign_id'))
                 or task.get('user_id') not in binding['owner_ids'] or not isinstance(contact, dict)
                 or not contact.get('id') or task.get('contact_id') != contact['id']):
             raise ValueError('task_mismatch')
         recipient = _slug(contact.get('linkedin_url'))
-        _, digest, text_error = validated_task_text(task, 'message' if action == 'dm' else 'invite')
+        config = approved.get('configuration', {})
+        field_map = config.get('required_custom_field_ids')
+        field_id = field_map.get(task['type']) if isinstance(field_map, dict) else config.get('required_custom_field_id')
+        if field_map is not None and (not isinstance(field_id, str) or not field_id):
+            raise ValueError('custom_field_configuration_missing')
+        _, digest, text_error = validated_task_text(task, 'message' if action == 'dm' else 'invite',
+                                                    required_custom_field_id=field_id)
         if not recipient or recipient == binding['public_id'].lower() or text_error:
             raise ValueError('recipient_or_text_invalid')
         observation = resolver({'action': action, 'profile_url': 'https://www.linkedin.com/in/' + recipient + '/'})
@@ -3127,7 +3134,8 @@ def issue_apollo_linkedin_panel_canary(server, repo, body, actor):
             return repo.issue_apollo_linkedin_canary(
                 body['company'], body['task_id'], binding['account_id'], recipient, digest, actor,
                 action_type=task['type'], member_urn=target['recipient_profile_urn'],
-                campaign_version=body['campaign_version'], approval_id=body['approval_id'])
+                campaign_version=body['campaign_version'], approval_id=body['approval_id'],
+                sequence_id=task['emailer_campaign_id'])
     except ApprovalError:
         raise Erro('Aprovação de campanha indisponível ou inválida.', 409) from None
     except RepositoryConflict:

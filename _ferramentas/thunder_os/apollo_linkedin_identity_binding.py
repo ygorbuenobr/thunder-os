@@ -13,6 +13,7 @@ from .apollo_linkedin_authority import CampaignApprovalAuthority
 from .apollo_linkedin_attention import EXCLUDED_TASK
 from .apollo_linkedin_preview import _slug
 from .apollo_linkedin_reader import ApolloLinkedInReader, _https_request
+from .campaign_registry import sequence_allowed
 from .connectsafely_client import ConnectSafelyClient
 from .connectsafely_read_targets import ReadTargetResolver, TargetReadHTTPS
 from .models import payload_hash
@@ -33,7 +34,7 @@ def _task_identity(task, task_id, binding):
     if (not isinstance(task, dict) or task.get('id') != task_id
             or task.get('type') not in ('linkedin_step_message', 'linkedin_step_connect')
             or task.get('status') != 'scheduled'
-            or task.get('emailer_campaign_id') != binding['sequence_id']
+            or not sequence_allowed(binding, task.get('emailer_campaign_id'))
             or task.get('user_id') not in binding['owner_ids']
             or not isinstance(contact, dict) or not isinstance(contact.get('id'), str)
             or not _ID.fullmatch(contact['id']) or task.get('contact_id') != contact['id']):
@@ -41,7 +42,7 @@ def _task_identity(task, task_id, binding):
     recipient = _slug(contact.get('linkedin_url'))
     if not recipient or recipient == binding['public_id'].lower():
         raise ValueError('recipient_unverified')
-    return contact['id'], recipient, task['user_id'], task['type']
+    return contact['id'], recipient, task['user_id'], task['type'], task['emailer_campaign_id']
 
 
 def create_identity_binding(repo, *, reader, resolver, campaign_id, approval_id,
@@ -85,7 +86,7 @@ def create_identity_binding(repo, *, reader, resolver, campaign_id, approval_id,
     value = {'company': binding['company_id'], 'campaign_id': campaign_id,
              'approval_id': approval_id, 'campaign_version': campaign_version,
              'scope_hash': approved['scope_hash'], 'team_id': binding['team_id'],
-             'sequence_id': binding['sequence_id'], 'task_id': task_id,
+             'sequence_id': observed_task[4], 'task_id': task_id,
              'action_type': observed_task[3],
              'contact_id': contact_id, 'account_id': binding['account_id'],
              'recipient_public_id': recipient, 'member_urn': target['recipient_profile_urn']}

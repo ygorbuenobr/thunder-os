@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 from thunder_os.approvals import ApprovalError
-from thunder_os.campaign_registry import CampaignRegistry
+from thunder_os.campaign_registry import CampaignRegistry, sequence_allowed
 from thunder_os.db import Repository
 from thunder_os.models import payload_hash
 
@@ -83,6 +83,51 @@ class CampaignRegistryTests(unittest.TestCase):
         changed['configuration']['required_custom_field_id'] = 'field_abm_2'
         second = self.registry.register(changed, 'ygor', 1)
         self.assertNotEqual(first['context']['configuration_hash'], second['context']['configuration_hash'])
+
+    def test_action_fields_and_sequences_are_exact_and_versioned(self):
+        value = self.apollo_config()
+        binding = value['configuration']['apollo_linkedin']
+        del binding['sequence_id']
+        binding['sequence_ids'] = ['sequence-one', 'sequence-two']
+        fields = {'linkedin_step_connect': 'invite-field', 'linkedin_step_message': 'message-field'}
+        value['configuration']['required_custom_field_ids'] = fields
+        first = self.registry.register(value, 'ygor', 0)
+        stored = self.registry.configuration('synthetic')
+        self.assertEqual(stored['apollo_linkedin']['sequence_ids'], ['sequence-one', 'sequence-two'])
+        self.assertEqual(stored['required_custom_field_ids'], fields)
+        changed = deepcopy(value)
+        changed['configuration']['required_custom_field_ids']['linkedin_step_message'] = 'different'
+        second = self.registry.register(changed, 'ygor', 1)
+        self.assertNotEqual(first['context']['configuration_hash'], second['context']['configuration_hash'])
+
+    def test_action_fields_and_sequence_list_reject_ambiguous_inputs(self):
+        for invalid in ({}, {'linkedin_step_connect': 'a'},
+                        {'linkedin_step_connect': 'a', 'linkedin_step_message': '../bad'},
+                        {'linkedin_step_connect': 'a', 'linkedin_step_message': 'b', 'extra': 'c'}):
+            value = self.apollo_config()
+            value['configuration']['required_custom_field_ids'] = invalid
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ApprovalError, 'custom_field_invalid'):
+                self.registry.register(value, 'ygor', 0)
+        for sequences in ([], ['seq', 'seq'], ['../bad'], 'seq', [None]):
+            value = self.apollo_config()
+            binding = value['configuration']['apollo_linkedin']
+            del binding['sequence_id']; binding['sequence_ids'] = sequences
+            with self.subTest(sequences=sequences), self.assertRaisesRegex(ApprovalError, 'apollo_linkedin_binding_invalid'):
+                self.registry.register(value, 'ygor', 0)
+        value = self.apollo_config()
+        value['configuration']['apollo_linkedin']['sequence_ids'] = ['seq']
+        with self.assertRaisesRegex(ApprovalError, 'apollo_linkedin_binding_invalid'):
+            self.registry.register(value, 'ygor', 0)
+
+    def test_sequence_membership_never_accepts_invalid_or_outside_scope(self):
+        binding = {'sequence_ids': ['first', 'second']}
+        self.assertTrue(sequence_allowed(binding, 'first'))
+        self.assertTrue(sequence_allowed(binding, 'second'))
+        self.assertFalse(sequence_allowed(binding, 'third'))
+        self.assertFalse(sequence_allowed({'sequence_id': 'first', 'sequence_ids': ['first']}, 'first'))
+        self.assertFalse(sequence_allowed({'sequence_ids': ['first', 'first']}, 'first'))
+        self.assertFalse(sequence_allowed({'sequence_ids': ['first', None]}, 'first'))
+        self.assertTrue(sequence_allowed({'sequence_id': 'first'}, 'first'))
 
     def test_digests_and_binding_are_derived_and_detached(self):
         cfg = config()

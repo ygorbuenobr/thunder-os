@@ -74,6 +74,53 @@ class CampaignReservationTest(unittest.TestCase):
         self.assertIn(self.identity_id, events[0]['payload'])
         self.assertIn('urn:li:fsd_profile:member', events[0]['payload'])
 
+    def test_multi_sequence_reservation_binds_actual_sequence_and_rejects_other(self):
+        cfg = config()
+        binding = cfg['configuration']['apollo_linkedin']
+        del binding['sequence_id']
+        binding['sequence_ids'] = ['seq', 'seq2']
+        self.service.configure_campaign(cfg, 'ygor', expected_version=1)
+        review = self.service.apollo_campaign_approval_review('campaign')
+        approval = self.service.approve_apollo_campaign_version('campaign', 'ygor',
+            execution_confirmation=review['execution_confirmation'])['id']
+        approval_row = self.repo.get_state('approval', approval)
+        for i, sequence in enumerate(('seq', 'seq2', 'outside')):
+            current = task(); current['id'] = 'multi' + str(i); current['emailer_campaign_id'] = sequence
+            identity_id = binding_key('company', 'campaign', current['id'], 'a' * 24, approval)
+            identity = dict(self.identity, approval_id=approval, scope_hash=approval_row['scope_hash'],
+                            sequence_id=sequence, task_id=current['id'])
+            self.repo.append_state(KIND, identity_id, identity)
+            args = ('campaign', approval, 'v1', current)
+            kwargs = dict(observed_team_id='team', expected_text_hash=self.digest, binding_id=identity_id)
+            if sequence == 'outside':
+                with self.assertRaises(ValueError): self.repo.reserve_apollo_linkedin_for_campaign(*args, **kwargs)
+            else:
+                self.repo.reserve_apollo_linkedin_for_campaign(*args, **kwargs)
+                events = self.repo.events(current['id'])
+                event = next(e for e in events if e['type'] == 'apollo_linkedin_campaign_reservation')
+                self.assertEqual(sequence, event['payload']['apollo_sequence_id'])
+
+    def test_campaign_invite_without_note_reserves_empty_text_hash(self):
+        cfg = config()
+        cfg['configuration']['required_custom_field_ids'] = {
+            'linkedin_step_connect': 'invite_field', 'linkedin_step_message': 'message_field'}
+        self.service.configure_campaign(cfg, 'ygor', expected_version=1)
+        review = self.service.apollo_campaign_approval_review('campaign')
+        approval = self.service.approve_apollo_campaign_version('campaign', 'ygor',
+            execution_confirmation=review['execution_confirmation'])['id']
+        current = task(); current['id'] = 'emptyinvite'; current['type'] = 'linkedin_step_connect'
+        current['linkedin_emailer_template']['body_text'] = ''
+        current['contact']['typed_custom_fields'] = {}
+        identity_id = binding_key('company', 'campaign', current['id'], 'a' * 24, approval)
+        approval_row = self.repo.get_state('approval', approval)
+        identity = dict(self.identity, approval_id=approval, scope_hash=approval_row['scope_hash'],
+                        task_id=current['id'], action_type=current['type'])
+        self.repo.append_state(KIND, identity_id, identity)
+        result = self.repo.reserve_apollo_linkedin_for_campaign('campaign', approval, 'v1', current,
+            observed_team_id='team', expected_text_hash=sha256(b'').hexdigest(), binding_id=identity_id)
+        self.assertEqual('reserved', result['state'])
+        self.assertEqual(sha256(b'').hexdigest(), result['text_hash'])
+
     def test_missing_approval_and_all_binding_changes_fail_before_reservation(self):
         with self.assertRaises(ApprovalError): self.reserve(approval='missing')
         cases = [('emailer_campaign_id', 'other'), ('user_id', 'other'), ('contact_id', 'other'),

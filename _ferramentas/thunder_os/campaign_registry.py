@@ -21,6 +21,22 @@ def _text(value, limit=200):
     return isinstance(value, str) and bool(value.strip()) and len(value) <= limit
 
 
+def sequence_allowed(binding, sequence_id):
+    """Match an actual task sequence against the exact, non-ambiguous approved scope."""
+    ident = re.compile(r'[A-Za-z0-9_.-]{1,160}\Z')
+    if (not isinstance(binding, Mapping) or not isinstance(sequence_id, str)
+            or not ident.fullmatch(sequence_id)
+            or ('sequence_id' in binding) == ('sequence_ids' in binding)):
+        return False
+    if 'sequence_id' in binding:
+        value = binding['sequence_id']
+        return isinstance(value, str) and bool(ident.fullmatch(value)) and sequence_id == value
+    values = binding['sequence_ids']
+    return (isinstance(values, list) and 0 < len(values) <= 100
+            and all(isinstance(value, str) and ident.fullmatch(value) for value in values)
+            and len(set(values)) == len(values) and sequence_id in values)
+
+
 def _config(value):
     if (not isinstance(value, Mapping) or not _FIELDS <= set(value)
             or set(value) - _FIELDS - _OPTIONAL):
@@ -32,7 +48,7 @@ def _config(value):
     configuration = value['configuration']
     if (not isinstance(configuration, Mapping)
             or not {'flow_version', 'provider_accounts'} <= set(configuration)
-            or set(configuration) - {'flow_version', 'provider_accounts', 'linkedin_policy', 'apollo_linkedin', 'required_custom_field_id'}
+            or set(configuration) - {'flow_version', 'provider_accounts', 'linkedin_policy', 'apollo_linkedin', 'required_custom_field_id', 'required_custom_field_ids'}
             or not _text(configuration['flow_version'])):
         raise ApprovalError('campaign_registry_configuration_invalid')
     accounts = configuration['provider_accounts']
@@ -48,15 +64,31 @@ def _config(value):
                 or 'apollo_linkedin' not in configuration):
             raise ApprovalError('campaign_registry_custom_field_invalid')
         normalized['configuration']['required_custom_field_id'] = field_id
+    if 'required_custom_field_ids' in configuration:
+        fields_map = configuration['required_custom_field_ids']
+        if (not isinstance(fields_map, Mapping)
+                or set(fields_map) != {'linkedin_step_connect', 'linkedin_step_message'}
+                or 'required_custom_field_id' in configuration or 'apollo_linkedin' not in configuration
+                or any(not isinstance(field, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', field)
+                       for field in fields_map.values())):
+            raise ApprovalError('campaign_registry_custom_field_invalid')
+        normalized['configuration']['required_custom_field_ids'] = dict(fields_map)
     if 'apollo_linkedin' in configuration:
         # Routing data only: a registered configuration is NOT an approval.
         # All bindings are covered by the existing configuration hash/revision.
         binding = configuration['apollo_linkedin']
-        fields = {'company_id', 'team_id', 'sequence_id', 'owner_ids', 'account_id', 'public_id'}
+        fields = {'company_id', 'team_id', 'owner_ids', 'account_id', 'public_id'}
         ident = re.compile(r'[A-Za-z0-9_.-]{1,160}\Z')
-        if (not isinstance(binding, Mapping) or set(binding) != fields
+        if (not isinstance(binding, Mapping)
+                or set(binding) not in (fields | {'sequence_id'}, fields | {'sequence_ids'})
                 or any(not isinstance(binding[k], str) or not ident.fullmatch(binding[k])
                        for k in fields - {'owner_ids'})
+                or ('sequence_id' in binding and (not isinstance(binding['sequence_id'], str)
+                    or not ident.fullmatch(binding['sequence_id'])))
+                or ('sequence_ids' in binding and (not isinstance(binding['sequence_ids'], list)
+                    or not binding['sequence_ids'] or len(binding['sequence_ids']) > 100
+                    or any(not isinstance(seq, str) or not ident.fullmatch(seq) for seq in binding['sequence_ids'])
+                    or len(set(binding['sequence_ids'])) != len(binding['sequence_ids'])))
                 or not re.fullmatch(r'[a-f0-9]{24}', binding['account_id'])
                 or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', binding['public_id'])
                 or not isinstance(binding['owner_ids'], list) or not binding['owner_ids']
@@ -68,6 +100,8 @@ def _config(value):
             raise ApprovalError('campaign_registry_apollo_linkedin_binding_invalid')
         normalized['configuration']['apollo_linkedin'] = {
             **dict(binding), 'owner_ids': list(binding['owner_ids'])}
+        if 'sequence_ids' in binding:
+            normalized['configuration']['apollo_linkedin']['sequence_ids'] = list(binding['sequence_ids'])
     if 'linkedin_policy' in configuration:
         from .linkedin_preparation import validate_policy
         try:

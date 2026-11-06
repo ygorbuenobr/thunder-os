@@ -104,8 +104,15 @@ class ApolloSequenceCohort:
         try:
             approved = self._approved_binding(campaign_id, approval_id, campaign_version)
             binding = approved['binding']
-            sequence, team = binding['sequence_id'], binding['team_id']
-            if not all(isinstance(x, str) and _ID.fullmatch(x) for x in (sequence, team)):
+            team = binding['team_id']
+            sequences = binding.get('sequence_ids')
+            if sequences is None:
+                sequences = [binding.get('sequence_id')]
+            if (not isinstance(sequences, list) or not sequences
+                    or any(not isinstance(x, str) or not _ID.fullmatch(x) for x in sequences)
+                    or len(set(sequences)) != len(sequences)
+                    or ('sequence_ids' in binding and 'sequence_id' in binding)
+                    or not isinstance(team, str) or not _ID.fullmatch(team)):
                 raise ValueError('cohort_scope_invalid')
             token = self.loader()
             if not isinstance(token, str) or not token or any(c.isspace() for c in token):
@@ -146,14 +153,14 @@ class ApolloSequenceCohort:
                     if not isinstance(memberships, list) or any(not isinstance(m, dict)
                             or not isinstance(m.get('emailer_campaign_id'), str) for m in memberships):
                         raise ValueError('cohort_membership_unknown')
-                    matches = [m for m in memberships if m['emailer_campaign_id'] == sequence]
-                    if len(matches) > 1:
+                    matches = [m for m in memberships if m['emailer_campaign_id'] in sequences]
+                    if len({m['emailer_campaign_id'] for m in matches}) != len(matches):
                         raise ValueError('cohort_membership_ambiguous')
-                    if matches:
-                        state = matches[0].get('status')
+                    for membership in matches:
+                        state = membership.get('status')
                         if state not in ('active', 'paused', 'failed', 'finished'):
                             raise ValueError('cohort_membership_unknown')
-                        result['members'].append({'contact_id': row['id'], 'sequence_id': sequence,
+                        result['members'].append({'contact_id': row['id'], 'sequence_id': membership['emailer_campaign_id'],
                                                   'membership_status': state})
                 result.update(pages=page, source_total=total)
                 if self.clock() > deadline:

@@ -22,8 +22,18 @@ from .apollo_linkedin_attention import EXCLUDED_TASK
 from .apollo_linkedin_preview import _slug, validated_task_text
 from .apollo_linkedin_reply_coverage import coverage_current
 from .apollo_linkedin_completion import write_completion_guard, skip_claim_key
+from .campaign_registry import sequence_allowed
 
 _ID = re.compile(r'[A-Za-z0-9_-]{1,128}\Z')
+
+
+def _field_for_action(configuration, action_type):
+    if not isinstance(configuration, dict):
+        return None
+    fields = configuration.get('required_custom_field_ids')
+    if fields is not None:
+        return fields.get(action_type) if isinstance(fields, dict) else None
+    return configuration.get('required_custom_field_id')
 
 
 def hermes_unit_inactive():
@@ -96,7 +106,8 @@ class MessageCoordinator:
         if (not isinstance(task, dict) or task.get('id') != task_id
                 or action_type not in ('linkedin_step_message', 'linkedin_step_connect')
                 or task.get('type') != action_type or task.get('status') != 'scheduled'
-                or task.get('emailer_campaign_id') != binding['sequence_id']
+                or not sequence_allowed(binding, task.get('emailer_campaign_id'))
+                or (auth.get('sequence_id') is not None and task.get('emailer_campaign_id') != auth['sequence_id'])
                 or task.get('user_id') not in binding['owner_ids']):
             raise ValueError('task_binding_changed')
         contact = task.get('contact')
@@ -146,8 +157,8 @@ class MessageCoordinator:
             approved = self.authority.require(campaign_id, approval_id, campaign_version)
             binding = approved['binding']
             config = approved.get('configuration')
-            required_custom_field_id = config.get('required_custom_field_id') if isinstance(config, dict) else None
-            if not isinstance(required_custom_field_id, str) or not required_custom_field_id.strip():
+            if not all(isinstance(_field_for_action(config, action), str) and _field_for_action(config, action).strip()
+                       for action in ('linkedin_step_connect', 'linkedin_step_message')):
                 return {'state': 'blocked', 'reason': 'required_custom_field_unconfigured'}
             if (self.apollo.team_id != binding['team_id']
                     or self.apollo.owner_ids != frozenset(binding['owner_ids'])):
@@ -157,6 +168,11 @@ class MessageCoordinator:
             recipient = _slug(contact.get('linkedin_url')) if isinstance(contact, dict) else None
             action_type = task.get('type')
             if action_type not in ('linkedin_step_message', 'linkedin_step_connect'):
+                return {'state': 'blocked', 'reason': 'task_unverified'}
+            required_custom_field_id = _field_for_action(approved.get('configuration'), action_type)
+            if not isinstance(required_custom_field_id, str) or not required_custom_field_id.strip():
+                return {'state': 'blocked', 'reason': 'required_custom_field_unconfigured'}
+            if not sequence_allowed(binding, task.get('emailer_campaign_id')):
                 return {'state': 'blocked', 'reason': 'task_unverified'}
             _, digest, error = validated_task_text(task, 'invite' if action_type == 'linkedin_step_connect' else 'message',
                 required_custom_field_id=required_custom_field_id)
@@ -180,7 +196,7 @@ class MessageCoordinator:
                     or identity.get('approval_id') != approval_id
                     or identity.get('campaign_version') != campaign_version
                     or identity.get('team_id') != binding['team_id']
-                    or identity.get('sequence_id') != binding['sequence_id']
+                    or identity.get('sequence_id') != task.get('emailer_campaign_id')
                     or identity.get('task_id') != task_id
                     or identity.get('action_type') != task['type']
                     or identity.get('contact_id') != contact.get('id')
@@ -190,7 +206,7 @@ class MessageCoordinator:
                     'company': binding['company_id'], 'account_id': binding['account_id'],
                     'recipient': recipient, 'member_urn': identity['member_urn'],
                     'text_hash': digest, 'contact_id': contact.get('id'), 'binding_id': identity['id'],
-                    'action_type': action_type}
+                    'action_type': action_type, 'sequence_id': task['emailer_campaign_id']}
             return self._run_bound(task_id, auth, campaign_id, campaign_version, canary_id=None)
         except Exception:
             return {'state': 'blocked', 'reason': 'preflight_unavailable'}
@@ -201,10 +217,10 @@ class MessageCoordinator:
         try:
             approved = self.authority.require(campaign, auth['approval_id'], version)
             binding = approved['binding']
-            required_custom_field_id = approved.get('configuration', {}).get('required_custom_field_id')
+            action_type = auth.get('action_type', 'linkedin_step_message')
+            required_custom_field_id = _field_for_action(approved.get('configuration'), action_type)
             if not isinstance(required_custom_field_id, str) or not required_custom_field_id.strip():
                 return {'state': 'blocked', 'reason': 'required_custom_field_unconfigured'}
-            action_type = auth.get('action_type', 'linkedin_step_message')
             is_invite = action_type == 'linkedin_step_connect'
             adapter = self.invitation if is_invite else self.message
             if adapter is None:
@@ -217,6 +233,13 @@ class MessageCoordinator:
             with self.repo.apollo_linkedin_account_lock(binding['account_id']):
                 if not self._gate():
                     return {'state': 'blocked', 'reason': 'execution_disabled'}
+                task = self.apollo.get(task_id)
+                sequence_id = task.get('emailer_campaign_id') if isinstance(task, dict) else None
+                if not sequence_allowed(binding, sequence_id) or (auth.get('sequence_id') is not None and auth['sequence_id'] != sequence_id):
+                    return {'state': 'blocked', 'reason': 'task_binding_changed'}
+                binding = {**binding, 'sequence_id': sequence_id}
+                binding.pop('sequence_ids', None)
+                auth = {**auth, 'sequence_id': sequence_id}
                 if not is_invite and self.repo.get_state('apollo_linkedin_skip', skip_claim_key(auth['company'], task_id)) is not None:
                     reconcile = getattr(self.completion, 'reconcile_skip', None)
                     if not callable(reconcile):
@@ -224,7 +247,6 @@ class MessageCoordinator:
                     return reconcile(auth['company'], task_id, campaign_id=campaign,
                                      approval_id=auth['approval_id'], campaign_version=version,
                                      account_id=binding['account_id'], binding=binding, recipient=auth['recipient'])
-                task = self.apollo.get(task_id)
                 text = self._task(task, task_id, auth, binding, required_custom_field_id)
                 contact = task['contact']
                 if canary_id is None and contact.get('id') != auth.get('contact_id'):
@@ -286,7 +308,8 @@ class MessageCoordinator:
                         return {'state': 'blocked', 'reason': 'skip_unavailable'}
                     return skip(auth['company'], task_id, campaign_id=campaign,
                                 approval_id=auth['approval_id'], campaign_version=version,
-                                account_id=binding['account_id'], before_dispatch=before_skip)
+                                account_id=binding['account_id'], before_dispatch=before_skip,
+                                sequence_id=sequence_id)
                 key = (auth['company'], task_id, action_type)
                 if canary_id is None:
                     self.repo.reserve_apollo_linkedin_for_campaign(campaign, auth['approval_id'], version,
@@ -295,7 +318,7 @@ class MessageCoordinator:
                 else:
                     self.repo.reserve_apollo_linkedin_with_canary(canary_id, *key, binding['account_id'],
                         auth['recipient'], auth['text_hash'], version,
-                        member_urn=auth['member_urn'], approval_id=auth['approval_id'])
+                        member_urn=auth['member_urn'], approval_id=auth['approval_id'], sequence_id=sequence_id)
                 reserved = True
                 reserved_at = self.clock()
                 # BEGIN IMMEDIATE serializes pause and approval updates in the
@@ -438,7 +461,7 @@ def runtime_preflight(task, authorization=None):
             approval = coordinator.repo.get_state('approval', auth['approval_id'])
             approved = coordinator.authority.require(approval['campaign_id'], auth['approval_id'], auth['campaign_version'])
             binding = approved['binding']
-            required_custom_field_id = approved.get('configuration', {}).get('required_custom_field_id')
+            required_custom_field_id = _field_for_action(approved.get('configuration'), auth.get('action_type'))
             if not isinstance(required_custom_field_id, str) or not required_custom_field_id.strip():
                 checks['personalization'] = 'required_custom_field_unconfigured'
                 raise ValueError('required_custom_field_unconfigured')
@@ -447,6 +470,8 @@ def runtime_preflight(task, authorization=None):
                 binding = {**binding, '_linkedin_policy': approved.get('configuration', {}).get('linkedin_policy')}
             task_data = coordinator.apollo.get(task)
             content = coordinator._task(task_data, task, auth, binding, required_custom_field_id)
+            binding = {**binding, 'sequence_id': task_data['emailer_campaign_id']}
+            binding.pop('sequence_ids', None)
             checks['personalization'] = 'verified'
             contact = task_data['contact']
             plan = {'account_id': binding['account_id'], 'account_public_id': binding['public_id'],

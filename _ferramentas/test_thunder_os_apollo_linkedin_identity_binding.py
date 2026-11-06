@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from thunder_os.apollo_linkedin_identity_binding import KIND, binding_key, create_identity_binding
+from thunder_os.apollo_linkedin_authority import CampaignApprovalAuthority
 from thunder_os.apollo_linkedin_reader import ApolloLinkedInReader
 from thunder_os.connectsafely_client import ConnectSafelyClient
 from thunder_os.connectsafely_read_targets import ReadTargetResolver, TargetReadHTTPS
@@ -144,6 +145,46 @@ class IdentityBindingTests(unittest.TestCase):
             return result
         with patch.object(self.reader, 'get', side_effect=changed):
             with self.assertRaisesRegex(ValueError, 'task_identity_changed'): self.create()
+        self.assertEqual(self.repo.list_state(KIND), [])
+
+    def test_real_sequence_is_persisted_and_changes_between_authorized_sequences_rejected(self):
+        approved = CampaignApprovalAuthority(self.repo).require('campaign', self.approval, 'v1')
+        approved['binding'] = {**approved['binding'], 'sequence_ids': ['seq', 'seq-two']}
+        approved['binding'].pop('sequence_id')
+        original_get = self.reader.get
+        def get_second(task_id):
+            task = original_get(task_id)
+            task['emailer_campaign_id'] = 'seq-two'
+            return task
+        with patch.object(CampaignApprovalAuthority, 'require', return_value=approved):
+            with patch.object(self.reader, 'get', side_effect=get_second):
+                self.assertEqual(self.create()['sequence_id'], 'seq-two')
+
+    def test_task_cannot_change_between_two_allowed_sequences_during_resolution(self):
+        approved = CampaignApprovalAuthority(self.repo).require('campaign', self.approval, 'v1')
+        approved['binding'] = {**approved['binding'], 'sequence_ids': ['seq', 'seq-two']}
+        approved['binding'].pop('sequence_id')
+        original_get = self.reader.get
+        calls = []
+        def changing(task_id):
+            task = original_get(task_id)
+            calls.append(task_id)
+            if len(calls) == 2:
+                task['emailer_campaign_id'] = 'seq-two'
+            return task
+        with patch.object(CampaignApprovalAuthority, 'require', return_value=approved):
+            with patch.object(self.reader, 'get', side_effect=changing):
+                with self.assertRaisesRegex(ValueError, 'task_identity_changed'):
+                    self.create()
+        self.assertEqual(self.repo.list_state(KIND), [])
+
+    def test_sequence_outside_approval_cannot_create_identity(self):
+        approved = CampaignApprovalAuthority(self.repo).require('campaign', self.approval, 'v1')
+        approved['binding'] = {**approved['binding'], 'sequence_ids': ['seq-two', 'seq-three']}
+        approved['binding'].pop('sequence_id')
+        with patch.object(CampaignApprovalAuthority, 'require', return_value=approved):
+            with self.assertRaisesRegex(ValueError, 'task_identity_unverified'):
+                self.create()
         self.assertEqual(self.repo.list_state(KIND), [])
 
 
