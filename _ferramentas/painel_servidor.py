@@ -1788,58 +1788,6 @@ class Handler(BaseHTTPRequestHandler):
                 raise Erro('Controle de respostas indisponível.', 503)
             return self.responder(200, control.snapshot())
         external_email_base = '/api/os/v1/integrations/external-email'
-        if rota.path in {'/api/os/v1/integrations/apollo/linkedin-uncertain/resolve',
-                         '/api/os/v1/integrations/apollo/linkedin-canary'}:
-            actor = self.thunder_proxy_actor()
-            if self.command != 'POST' or rota.query:
-                raise Erro('Operação exige POST sem parâmetros.', 405)
-            from thunder_os.apollo_linkedin_roles import RolesUnavailable, authorize_manager
-            try:
-                allowed = authorize_manager(actor, os.environ.get(
-                    'THUNDER_APOLLO_LI_ROLES_FILE', '/etc/thunder-os/roles.json'))
-            except RolesUnavailable:
-                raise Erro('Papéis de acesso indisponíveis.', 503) from None
-            if not allowed:
-                raise Erro('Somente gestor ou administrador pode realizar esta operação.', 403)
-            # Existing one-use nonce and same-origin guard complement the
-            # authenticated proxy; the request body never supplies the actor.
-            if self.thunder_actor() != actor:
-                raise Erro('Identidade autenticada divergente.', 401)
-            body = self.corpo()
-            # Role files alone grant no tenant membership. The server must be
-            # explicitly bound by a trusted, separately verified composition.
-            scoped_company = getattr(self.server, 'thunder_apollo_linkedin_authorized_company', None)
-            if not isinstance(scoped_company, str) or not scoped_company:
-                raise Erro('Escopo de empresa não verificado.', 503)
-            if body.get('company') != scoped_company:
-                raise Erro('Empresa não autorizada.', 403)
-            repo = getattr(service, 'repository', None)
-            if repo is None:
-                raise Erro('Armazenamento oficial indisponível.', 503)
-            from thunder_os.apollo_linkedin_attention import EXCLUDED_TASK
-            if body.get('task_id') == EXCLUDED_TASK:
-                raise Erro('Fixture protegida.', 403)
-            from thunder_os.db import RepositoryConflict
-            try:
-                if rota.path.endswith('/resolve'):
-                    expected = {'company', 'task_id', 'action_type', 'decision', 'justification'}
-                    if set(body) != expected or not isinstance(body['justification'], str) or not body['justification'].strip():
-                        raise Erro('Justificativa e dados completos são obrigatórios.', 400)
-                    method = getattr(repo, 'resolve_apollo_linkedin_uncertain', None)
-                    if not callable(method): raise Erro('Resolução indisponível.', 503)
-                    result = method(body['company'], body['task_id'], body['action_type'],
-                                    body['decision'], body['justification'], actor)
-                    return self.responder(200, result)
-                expected = {'company', 'task_id', 'account_id', 'recipient', 'text_hash'}
-                if set(body) != expected:
-                    raise Erro('Dados do canário inválidos.', 400)
-                # Current legacy preview is not bound to an approved campaign
-                # version. Do not mint an authorization from caller data.
-                raise Erro('Canário indisponível: versão aprovada e prévia não vinculadas.', 503)
-            except (ValueError, TypeError):
-                raise Erro('Dados inválidos.', 400) from None
-            except RepositoryConflict:
-                raise Erro('Reserva ou autorização indisponível.', 409) from None
         if rota.path == '/api/os/v1/integrations/apollo/linkedin-attention':
             if self.thunder_proxy_actor() != 'ygor':
                 raise Erro('Somente Ygor pode consultar integrações.', 403)
@@ -1857,8 +1805,11 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     return self.responder(200, {'status': 'unavailable', 'items': [], 'reason': 'official_store_unavailable',
                         'read_isolation': getattr(self.server, 'thunder_apollo_linkedin_read_isolation', None)})
-                from thunder_os.apollo_linkedin_attention import reservation_attention_item
-                items = [item for row in reservations if (item := reservation_attention_item(row)) is not None]
+                items = [{'task_id': row['task_id'],
+                    'reason': row.get('reason') or ('Reserva sem resultado' if row.get('state') == 'reserved' else 'Resultado incerto; não repetir.'),
+                    'stopped_at': row.get('updated_at') or row.get('created_at'),
+                    'next_action': 'Verificar o resultado no provedor antes de qualquer ação.'}
+                    for row in reservations if row.get('state') in ('uncertain', 'reserved')]
                 list_locks = getattr(service, 'list_apollo_linkedin_account_locks', None)
                 if callable(list_locks):
                     try:

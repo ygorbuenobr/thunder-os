@@ -7,27 +7,6 @@ import threading
 EXCLUDED_TASK = '6aea584a2b8c4b0020f93935'
 
 
-def reservation_attention_item(row):
-    """Present durable states without interpreting a reservation as a receipt."""
-    state = row.get('state')
-    if state == 'confirmed' and row.get('apollo_status') in ('pending', 'attempted'):
-        label = 'apollo_reconcile_pending'
-        next_action = ('Consultar a tarefa no Apollo antes de qualquer nova conclusão; não reenviar no LinkedIn.'
-                       if row.get('apollo_status') == 'attempted' else
-                       'Reconciliar a conclusão no Apollo; não reenviar no LinkedIn.')
-    elif state == 'uncertain':
-        label = row.get('reason') or 'Resultado incerto'
-        next_action = 'Verificar o resultado no provedor; não repetir o envio.'
-    elif state == 'reserved':
-        label = row.get('reason') or 'Reserva sem resultado'
-        next_action = 'Verificar o resultado no provedor antes de qualquer ação; não repetir.'
-    else:
-        return None
-    return {'task_id': row['task_id'], 'state': state, 'reason': label,
-            'stopped_at': row.get('updated_at') or row.get('created_at'),
-            'next_action': next_action, 'execution_enabled': False}
-
-
 class ApolloLinkedInAttention:
     def __init__(self, service, reader, executor, *, company_id, team_id, budget_seconds=5, max_pages=3, read_isolation=None):
         if read_isolation not in (None, 'in_process_accepted', 'separate_broker'):
@@ -72,11 +51,11 @@ class ApolloLinkedInAttention:
         items = [] if items is None else items
         try:
             for row in self.service.list_apollo_linkedin_reservations():
-                if row.get('company') != self.company_id:
-                    continue
-                item = reservation_attention_item(row)
-                if item:
-                    items.append(item)
+                if row['state'] in ('uncertain', 'reserved'):
+                    items.append({'task_id': row['task_id'], 'reason': row.get('reason') or
+                                  ('Resultado incerto' if row['state'] == 'uncertain' else 'Reserva sem resultado'),
+                                  'stopped_at': row.get('updated_at') or row.get('created_at'),
+                                  'next_action': 'Verificar o resultado no provedor antes de qualquer ação; não repetir.'})
             for lock in self.service.list_apollo_linkedin_account_locks():
                 items.append({'task_id': None, 'reason': 'Lock de conta presente: ' + lock['account_id'],
                               'stopped_at': lock['created_at'],

@@ -27,48 +27,6 @@ class CampaignRegistryTests(unittest.TestCase):
         self.repo = Repository(Path(self.temp.name) / 'offline.db')
         self.registry = CampaignRegistry(self.repo)
 
-    @staticmethod
-    def apollo_config():
-        value = config()
-        value['platform'] = 'apollo'
-        value['providers'] = {'linkedin': 'connectsafely'}
-        value['configuration'] = {
-            'flow_version': '1', 'provider_accounts': {'linkedin': 'a' * 24},
-            'apollo_linkedin': {'company_id': 'company', 'team_id': 'team',
-                'sequence_id': 'sequence', 'owner_ids': ['owner'],
-                'account_id': 'a' * 24, 'public_id': 'sender'},
-        }
-        return value
-
-    def test_apollo_linkedin_metadata_is_versioned_but_not_approval(self):
-        value = self.apollo_config()
-        row = self.registry.register(value, 'ygor', 0)
-        stored = self.registry.configuration('synthetic')['apollo_linkedin']
-        self.assertEqual(stored, value['configuration']['apollo_linkedin'])
-        self.assertEqual(self.repo.list_state('approval'), [])
-        self.assertEqual(self.repo.list_state('operation_approval'), [])
-        stored['owner_ids'].append('injected')
-        self.assertEqual(self.registry.configuration('synthetic')['apollo_linkedin']['owner_ids'], ['owner'])
-        changed = deepcopy(value)
-        changed['configuration']['apollo_linkedin']['sequence_id'] = 'other'
-        newer = self.registry.register(changed, 'ygor', 1)
-        self.assertNotEqual(row['context']['configuration_hash'], newer['context']['configuration_hash'])
-
-    def test_apollo_linkedin_metadata_rejects_unbound_or_invalid_routes(self):
-        for field, invalid in [('company_id', ''), ('team_id', None), ('sequence_id', '../x'),
-                               ('owner_ids', []), ('owner_ids', ['owner', 'owner']),
-                               ('account_id', 'b' * 24), ('public_id', 'bad/name'),
-                               ('extra', 'unexpected')]:
-            value = self.apollo_config()
-            value['configuration']['apollo_linkedin'][field] = invalid
-            with self.subTest(field=field), self.assertRaisesRegex(ApprovalError, 'apollo_linkedin_binding_invalid'):
-                self.registry.register(value, 'ygor', 0)
-        value = self.apollo_config()
-        value['providers']['linkedin'] = 'other'
-        with self.assertRaisesRegex(ApprovalError, 'apollo_linkedin_binding_invalid'):
-            self.registry.register(value, 'ygor', 0)
-        self.assertIsNone(self.repo.get_state('campaign_config', 'synthetic'))
-
     def test_digests_and_binding_are_derived_and_detached(self):
         cfg = config()
         row = self.registry.register(cfg, 'ygor', 0)

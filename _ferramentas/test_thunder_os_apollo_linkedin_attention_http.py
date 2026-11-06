@@ -2,7 +2,7 @@
 from types import SimpleNamespace
 from urllib.parse import urlsplit
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 import painel_servidor as panel
 
 class AttentionHttpTests(unittest.TestCase):
@@ -166,52 +166,6 @@ class AttentionHttpTests(unittest.TestCase):
             {'task_id': 'orphan', 'state': 'reserved'}])
         self.assertEqual(self.request()[1]['items'][0]['task_id'], 'orphan')
 
-    def test_attention_keeps_reconcile_pending_and_scopes_company(self):
-        from thunder_os.apollo_linkedin_attention import ApolloLinkedInAttention
-        rows = [
-            {'company': 'c', 'task_id': 'p', 'state': 'confirmed', 'apollo_status': 'pending'},
-            {'company': 'c', 'task_id': 'crash', 'state': 'confirmed', 'apollo_status': 'attempted'},
-            {'company': 'c', 'task_id': 'u', 'state': 'uncertain'},
-            {'company': 'c', 'task_id': 'r', 'state': 'reserved'},
-            {'company': 'other', 'task_id': 'secret', 'state': 'uncertain'},
-            {'company': 'c', 'task_id': 'done', 'state': 'confirmed', 'apollo_status': 'completed'},
-        ]
-        service = SimpleNamespace(list_apollo_linkedin_reservations=lambda: rows,
-                                  list_apollo_linkedin_account_locks=lambda: [])
-        reader = Mock(); reader.list_open_tasks.return_value = {'tasks': [], 'coverage': 'complete'}
-        result = ApolloLinkedInAttention(service, reader, Mock(), company_id='c', team_id='t').snapshot()
-        self.assertEqual([r['task_id'] for r in result['items']], ['p', 'crash', 'u', 'r'])
-        self.assertEqual(result['items'][0]['reason'], 'apollo_reconcile_pending')
-        self.assertIn('não reenviar', result['items'][0]['next_action'])
-        self.assertEqual(result['items'][1]['reason'], 'apollo_reconcile_pending')
-        self.assertIn('antes de qualquer nova conclusão', result['items'][1]['next_action'])
-        self.assertIn('não reenviar', result['items'][1]['next_action'])
-        self.assertTrue(all(item['execution_enabled'] is False for item in result['items']))
-
-    def test_reconcile_pending_visible_in_fallback(self):
-        self.handler.server.thunder_apollo_linkedin_attention = None
-        self.handler.server.thunder_service = SimpleNamespace(list_apollo_linkedin_reservations=lambda: [
-            {'task_id': 'p', 'state': 'confirmed', 'apollo_status': 'pending'},
-            {'task_id': 'crash', 'state': 'confirmed', 'apollo_status': 'attempted'}])
-        items = self.request()[1]['items']
-        self.assertEqual([item['reason'] for item in items], ['apollo_reconcile_pending'] * 2)
-        self.assertTrue(all('não reenviar' in item['next_action'] for item in items))
-        self.assertIn('antes de qualquer nova conclusão', items[1]['next_action'])
-
-    def test_uncertain_resolution_fails_closed_without_verified_roles(self):
-        from thunder_os.apollo_linkedin_roles import RolesUnavailable
-        self.handler.command = 'POST'
-        path = urlsplit('/api/os/v1/integrations/apollo/linkedin-uncertain/resolve')
-        # A missing role file is unavailable for every authenticated actor;
-        # operator denial is separately exercised with a valid roles file.
-        with patch('thunder_os.apollo_linkedin_roles.authorize_manager', side_effect=RolesUnavailable('missing')):
-            for actor in ('ygor', 'other'):
-                self.handler.thunder_proxy_actor.return_value = actor
-                with self.assertRaises(panel.Erro) as exc:
-                    self.handler.thunder_api(path)
-                self.assertEqual(exc.exception.status, 503)
-        self.assertEqual(self.handler.server.thunder_service.mock_calls, [])
-
     def test_protected_fixture_is_visible_and_never_prepared(self):
         from thunder_os.apollo_linkedin_attention import ApolloLinkedInAttention, EXCLUDED_TASK
         reader = Mock(); reader.list_open_tasks.return_value = {'tasks': [{'id': EXCLUDED_TASK}], 'coverage': 'complete'}
@@ -300,7 +254,7 @@ class AttentionHttpTests(unittest.TestCase):
         from thunder_os.apollo_linkedin_attention import ApolloLinkedInAttention
         gate = threading.Event()
         reader = Mock(); reader.list_open_tasks.side_effect = lambda: gate.wait(2)
-        service = SimpleNamespace(list_apollo_linkedin_reservations=lambda: [{'company': 'c', 'task_id': 'orphan', 'state': 'reserved'}], list_apollo_linkedin_account_locks=lambda: [])
+        service = SimpleNamespace(list_apollo_linkedin_reservations=lambda: [{'task_id': 'orphan', 'state': 'reserved'}], list_apollo_linkedin_account_locks=lambda: [])
         attention = ApolloLinkedInAttention(service, reader, Mock(), company_id='c', team_id='t', budget_seconds=.02)
         try:
             result = attention.snapshot()
