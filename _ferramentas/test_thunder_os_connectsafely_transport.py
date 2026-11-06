@@ -26,6 +26,14 @@ class TransportTests(unittest.TestCase):
                 target('GET', '/linkedin/profile', query, None)
         self.assertEqual(before, len(self.created))
 
+    def test_symbol_slug_is_canonical_recipient(self):
+        from thunder_os.connectsafely_client import canonical_recipient_id
+        slug = 'synthetic-✔-person'
+        self.assertEqual(canonical_recipient_id(slug), slug)
+        for bad in ('synthetic person', 'a/b', '✔' * 101):
+            with self.assertRaisesRegex(ConnectSafelyError, 'invalid_recipient'):
+                canonical_recipient_id(bad)
+
     def setUp(self):
         self.calls=[];self.closed=0;self.status=200;self.raw=b'[]';self.created=[]
         self.transport=ConnectSafelyHTTPS('a'*24,lambda:'synthetic-token-only',connection_factory=self.factory)

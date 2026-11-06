@@ -24,8 +24,10 @@ def canonical_profile_slug(value: str) -> str:
     if not isinstance(value, str):
         raise ConnectionIntakeError("connection_profile_invalid")
     slug = value
+    # Real slugs also carry other symbols (category So, e.g. a check mark): one
+    # such row in a sent-invitation page failed the whole read on 2026-11-06.
     if not (1 <= len(slug) <= 100 and all(
-            char.isalnum() or char in "._-\u2018\u2019" or unicodedata.category(char) == "Sm"
+            char.isalnum() or char in "._-\u2018\u2019" or unicodedata.category(char) in ("Sm", "So")
             for char in slug)):
         raise ConnectionIntakeError("connection_profile_invalid")
     return "".join(char.lower() if char.isascii() else char for char in slug)
