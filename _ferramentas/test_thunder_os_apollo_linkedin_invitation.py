@@ -31,7 +31,10 @@ class FakeClient:
 
     def sent_invitations(self, *, max_pages, start_index):
         self.offsets.append(start_index)
-        return {'account_id': ACCOUNT, 'complete': self.complete, 'invitations': self.rows}
+        page = {'account_id': ACCOUNT, 'complete': self.complete, 'invitations': self.rows}
+        if not self.complete:
+            page['next_start_index'] = start_index + 30
+        return page
 
     def send(self, plan, *, before_dispatch):
         self.posts += 1
@@ -61,9 +64,14 @@ class InvitationTests(unittest.TestCase):
     def test_incomplete_or_conflicting_observation_blocks_before_post(self):
         client = FakeClient()
         client.complete = False
+        # Only the newest window is read; the relationship covers older invites.
         result = InvitationAdapter(client).send(PLAN, 1000, before_dispatch=lambda: True)
-        self.assertEqual(result['status'], 'blocked')
+        self.assertEqual(result, {'status': 'blocked', 'reason': 'provider_freshness_unverified'})
+        self.assertEqual(client.offsets, [0])
         self.assertEqual(client.posts, 0)
+        client.status = 'INVITATION_SENT'
+        self.assertEqual(InvitationAdapter(client).send(PLAN, 1000, before_dispatch=lambda: True)['status'], 'blocked')
+        client.status = 'NOT_CONNECTED'
         client.complete = True
         client.rows = [{'invitationId': '123', 'profile': {'publicIdentifier': 'synthetic-person'},
                         'memberUrn': 'urn:li:fsd_profile:OTHER'}]
@@ -79,8 +87,10 @@ class InvitationTests(unittest.TestCase):
                 return {'account_id': ACCOUNT, 'complete': False, 'next_start_index': 20, 'invitations': []}
             return {'account_id': ACCOUNT, 'complete': True, 'invitations': []}
         client.sent_invitations = pages
-        self.assertEqual(InvitationAdapter(client).send(PLAN, 1000, before_dispatch=lambda: True)['status'], 'blocked')
+        self.assertEqual(InvitationAdapter(client, window_calls=2).send(PLAN, 1000, before_dispatch=lambda: True)['status'], 'blocked')
         self.assertEqual(client.offsets, [0, 20])
+        with self.assertRaises(ValueError):
+            InvitationAdapter(client, window_calls=0)
         ticks = iter([100, 100, 121])
         adapter = InvitationAdapter(client, clock=lambda: next(ticks), time_budget=20)
         self.assertEqual(adapter.send(PLAN, 1000, before_dispatch=lambda: True)['status'], 'blocked')

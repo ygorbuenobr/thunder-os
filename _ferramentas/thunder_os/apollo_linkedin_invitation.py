@@ -2,7 +2,13 @@
 
 The caller owns campaign authority, durable reservations, account locking,
 reply coverage, pacing and pause. A synchronous provider confirmation plus a
-complete matching invitation listing is required to create a receipt.
+matching row in the newest invitation window is required to create a receipt.
+
+The sent list is newest first and held 743 pending rows on 2026-11-06 (about
+6 minutes to read in full, three times per invite). An older pending invite is
+already reported by the relationship read as INVITATION_SENT, and dispatch
+requires NOT_CONNECTED; the newest window covers an invite that the relationship
+read may not reflect yet and carries the receipt of this attempt.
 """
 from __future__ import annotations
 
@@ -15,12 +21,14 @@ from .connectsafely_client import ConnectSafelyClient
 
 
 class InvitationAdapter:
-    def __init__(self, client, *, clock=time.monotonic, page_budget=30, time_budget=20):
+    def __init__(self, client, *, clock=time.monotonic, page_budget=30, time_budget=20, window_calls=1):
         if (not callable(clock) or type(page_budget) is not int or not 3 <= page_budget <= 30
-                or type(time_budget) not in (int, float) or not 0 < time_budget <= 30):
+                or type(time_budget) not in (int, float) or not 0 < time_budget <= 30
+                or type(window_calls) is not int or not 1 <= window_calls <= page_budget // 3):
             raise ValueError('invitation_budget_invalid')
         self.client = client
         self.clock, self.page_budget, self.time_budget = clock, page_budget, time_budget
+        self.window_calls = window_calls
 
     def relationship(self, plan):
         """Allow invitations only for an exact, not-yet-connected recipient."""
@@ -50,7 +58,7 @@ class InvitationAdapter:
                 or relation.get('recipient_profile_urn') != plan['recipient_profile_urn']):
             raise ValueError('relationship_unverified')
         started, start, matches, seen = self.clock(), 0, [], set()
-        for _ in range(self.page_budget // 3):
+        for _ in range(self.window_calls):
             if self.clock() - started > self.time_budget:
                 raise ValueError('invitation_history_budget_exceeded')
             page = self.client.sent_invitations(max_pages=3, start_index=start)
@@ -74,7 +82,9 @@ class InvitationAdapter:
             if type(following) is not int or following <= start:
                 raise ValueError('invitation_history_incomplete')
             start = following
-        raise ValueError('invitation_history_budget_exceeded')
+        # Newest window read; older pending invites are covered by the
+        # relationship status that every caller requires to be NOT_CONNECTED.
+        return relation, matches
 
     @staticmethod
     def _is_target(row, plan):
