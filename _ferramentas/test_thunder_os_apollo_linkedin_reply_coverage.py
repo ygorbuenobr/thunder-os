@@ -203,3 +203,45 @@ class CoverageTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ApolloActivityFallbackTest(unittest.TestCase):
+    """Real contacts/show omits reply booleans (observed 06/11/2026)."""
+    class Feed:
+        def __init__(self, events=None, fail=False):
+            self.events, self.fail = events or [], fail
+            self.row = {'id': 'contact', 'email': 'lead@example.invalid', 'email_replied': None,
+                        'email_unsubscribed': None, 'email_status': 'verified',
+                        'contact_campaign_statuses': [{'emailer_campaign_id': 'sequence', 'status': 'active',
+                                                       'replied': None, 'inactive_reason': None}]}
+        def contact(self, ident): return deepcopy(self.row)
+        def activity(self, ident):
+            if self.fail: raise ValueError('activity_incomplete')
+            return deepcopy(self.events)
+
+    def observe(self, apollo):
+        return ReplyCoverage(apollo, LinkedIn(), clock=lambda: NOW).observe(TARGET)['sources']['apollo']
+
+    def test_activity_without_reply_is_ok_for_active_sequence(self):
+        result = self.observe(self.Feed([{'type': 'enrolled', 'sequence_id': 'sequence'}]))
+        self.assertEqual(result['status'], 'ok')
+
+    def test_replied_event_in_any_sequence_is_reply(self):
+        result = self.observe(self.Feed([{'type': 'replied', 'sequence_id': 'other'}]))
+        self.assertEqual(result['status'], 'reply')
+
+    def test_feed_failure_or_inactive_membership_stays_unknown(self):
+        self.assertEqual(self.observe(self.Feed(fail=True))['status'], 'unknown')
+        feed = self.Feed([])
+        feed.row['contact_campaign_statuses'][0]['status'] = 'paused'
+        self.assertEqual(self.observe(feed)['status'], 'unknown')
+
+    def test_full_page_is_incomplete(self):
+        calls = []
+        def request(method, path, body, headers, timeout):
+            calls.append((method, path))
+            return 200, json.dumps({'contact_id': 'contact', 'events': [{'type': 'enrolled'}] * 100}).encode()
+        reader = ApolloContactReplyReader(lambda: 'synthetic-key', team_id='team', api_actor_id='actor', request=request)
+        with self.assertRaises(ValueError):
+            reader.activity('contact')
+        self.assertEqual(calls, [('POST', '/api/v1/emailer_campaigns/activity_feed')])

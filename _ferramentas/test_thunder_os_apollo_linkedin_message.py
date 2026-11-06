@@ -86,6 +86,26 @@ class MessageAdapterTests(unittest.TestCase):
         self.client.pages = [FakeClient().pages[0]]; self.client.pages[0]['hasMore'] = True
         self.assertFalse(read(PLAN['recipient_profile_urn'])['complete'])
 
+    def test_real_provider_shape_empty_participants_and_tail_page(self):
+        # Shape observed on 06/11/2026: participants=[] and an empty tail page.
+        def row(urn, sender, stamp):
+            return {'messageUrn': urn, 'senderProfileId': sender, 'isSentByOwner': sender == 'owner', 'sentAt': stamp}
+        first = {'success': True, 'accountId': 'account', 'conversationUrn': 'urn:li:msg_conversation:thread',
+                 'hasMore': True, 'nextCursor': '50000', 'fetchingMore': False, 'participants': [],
+                 'messages': [row('m2', 'owner', 90), row('m1', 'owner', 50)]}
+        tail = {'success': True, 'conversationUrn': 'urn:li:msg_conversation:thread', 'hasMore': True,
+                'nextCursor': None, 'fetchingMore': False, 'participants': [], 'messages': []}
+        self.client.pages = [first, tail]
+        result = self.adapter.reply_source(PLAN, 100)(PLAN['recipient_profile_urn'])
+        self.assertTrue(result['complete'])
+        self.assertFalse(result['suppressed'])
+        # A lead message after the last touch on the first page is still a reply.
+        self.client.pages = [dict(first, messages=[row('m3', 'lead', 120), row('m1', 'owner', 50)]), dict(tail)]
+        self.assertTrue(self.adapter.reply_source(PLAN, 100)(PLAN['recipient_profile_urn'])['suppressed'])
+        # The tail without a prior cursor is not proof of completeness.
+        self.client.pages = [dict(tail, conversationUrn='urn:li:msg_conversation:thread', accountId='account')]
+        self.assertFalse(self.adapter.reply_source(PLAN, 100)(PLAN['recipient_profile_urn'])['complete'])
+
     def test_reply_source_composes_with_apollo_coverage(self):
         class Apollo:
             def contacts(self, email):

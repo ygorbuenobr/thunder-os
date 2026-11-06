@@ -19,17 +19,24 @@ MAX_AGE = timedelta(minutes=15)
 _ID = re.compile(r'[A-Za-z0-9_-]{1,128}\Z')
 
 
+ACTIVITY_FEED = '/api/v1/emailer_campaigns/activity_feed'
+ACTIVITY_PAGE = 100
+
+
 def _contact_request(method, path, body, headers, timeout):
-    if (method != 'GET' or body is not None or
-            not (path == '/api/v1/users/api_profile' or
-                 re.fullmatch(r'/api/v1/contacts/[A-Za-z0-9_-]{1,128}', path))):
+    read_get = (method == 'GET' and body is None and
+                (path == '/api/v1/users/api_profile' or
+                 re.fullmatch(r'/api/v1/contacts/[A-Za-z0-9_-]{1,128}', path)))
+    # The activity feed is a read issued as POST (observed 06/11/2026).
+    read_feed = method == 'POST' and path == ACTIVITY_FEED and isinstance(body, bytes)
+    if not (read_get or read_feed):
         raise ValueError('endpoint_blocked')
     if os.environ.get('SSL_CERT_FILE') or os.environ.get('SSL_CERT_DIR'):
         raise ValueError('tls_override_blocked')
     connection = http.client.HTTPSConnection('api.apollo.io', 443, timeout=timeout,
                                              context=ssl.create_default_context())
     try:
-        connection.request(method, path, headers=headers)
+        connection.request(method, path, body=body, headers=headers)
         response = connection.getresponse()
         raw = response.read(1_000_001)
         if not isinstance(raw, bytes) or len(raw) > 1_000_000:
@@ -69,6 +76,25 @@ class ApolloContactReplyReader:
         if not isinstance(value, dict):
             raise ValueError('response_invalid')
         return value
+
+    def activity(self, contact_id):
+        """Sequence events for one contact; a full page is treated as incomplete."""
+        if not isinstance(contact_id, str) or not _ID.fullmatch(contact_id):
+            raise ValueError('contact_invalid')
+        token = self._loader()
+        if not isinstance(token, str) or not token or any(c.isspace() for c in token):
+            raise ValueError('credential_unavailable')
+        body = json.dumps({'contact_id': contact_id, 'per_page': ACTIVITY_PAGE, 'page': 1}).encode()
+        status, raw = self._request('POST', ACTIVITY_FEED, body,
+            {'x-api-key': token, 'Accept': 'application/json', 'Content-Type': 'application/json'}, self.timeout)
+        if status != 200 or not isinstance(raw, bytes) or len(raw) > 1_000_000:
+            raise ValueError('apollo_unavailable')
+        value = json.loads(raw)
+        events = value.get('events') if isinstance(value, dict) else None
+        if (not isinstance(events, list) or value.get('contact_id') not in (None, contact_id)
+                or len(events) >= ACTIVITY_PAGE or any(not isinstance(e, dict) for e in events)):
+            raise ValueError('activity_incomplete')
+        return events
 
     def contact(self, contact_id):
         if not isinstance(contact_id, str) or not _ID.fullmatch(contact_id):
@@ -237,6 +263,26 @@ class ReplyCoverage:
                 or any(isinstance(m, dict) and m.get('inactive_reason') in ('unsubscribed', 'bounced')
                        for m in memberships)):
             return 'unknown', 'apollo_suppression_observed'
+        activity = getattr(self.apollo, 'activity', None)
+        fields_absent = (row.get('email_replied') is None
+                         and all(isinstance(m, dict) and m.get('replied') is None for m in memberships))
+        if fields_absent and callable(activity):
+            # Real contacts/show omits reply booleans; the activity feed is the
+            # authoritative per-sequence event history (replied/paused/finished).
+            try:
+                events = activity(target['apollo_contact_id'])
+            except Exception:
+                return 'unknown', 'apollo_activity_unavailable'
+            if any(e.get('type') == 'replied' for e in events):
+                return 'reply', 'apollo_reply_observed'
+            if not isinstance(row.get('email_status'), str) or not row['email_status']:
+                return 'unknown', 'apollo_coverage_incomplete'
+            matches = [m for m in memberships if isinstance(m, dict)
+                       and m.get('emailer_campaign_id') == target['sequence_id']]
+            if (len(matches) != 1 or matches[0].get('status') != 'active'
+                    or matches[0].get('inactive_reason') not in (None, '')):
+                return 'unknown', 'apollo_reply_or_sequence_state_unverified'
+            return 'ok', 'apollo_active_sequence_no_reply_activity'
         no_email = not target.get('email') and not row.get('email')
         if ((not no_email and (type(row.get('email_replied')) is not bool
                 or type(row.get('email_unsubscribed')) is not bool

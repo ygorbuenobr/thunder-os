@@ -113,11 +113,20 @@ class MessageAdapter:
                             or data.get('fetchingMore', False) is not False):
                         return unknown
                     people, rows = data.get('participants'), data.get('messages')
-                    if (not isinstance(people, list) or not 2 <= len(people) <= 20
+                    # Observed 06/11/2026: the provider returns participants=[]
+                    # for 1:1 threads. The thread is already bound to this exact
+                    # recipient by conversations/exists, and every message sender
+                    # is checked below; a non-empty list must still match exactly.
+                    if (not isinstance(people, list) or len(people) > 20
                             or not all(isinstance(p, dict) and isinstance(p.get('profileId'), str) for p in people)
-                            or {aliases.get(p['profileId'], client._profile_identity(p['profileId'])) for p in people} != {owner, recipient}
+                            or people and {aliases.get(p['profileId'], client._profile_identity(p['profileId'])) for p in people} != {owner, recipient}
                             or not isinstance(rows, list) or len(rows) > 10):
                         return unknown
+                    if (cursor is not None and not rows and data['hasMore'] is True
+                            and data.get('nextCursor') is None and data.get('fetchingMore', False) is False):
+                        # Provider tail after a cursor (seen 03/11 and 06/11/2026):
+                        # an empty page without a next cursor ends the history.
+                        return {**unknown, 'complete': True, 'no_record': not seen}
                     times = []
                     for row in rows:
                         if (not isinstance(row, dict) or not isinstance(row.get('messageUrn'), str)
