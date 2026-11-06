@@ -28,3 +28,9 @@ This repository is the source and release-assembly home for Thunder OS code. Kee
 - After the task's checks pass, make one focused Conventional Commit and push it to `origin main` before starting another task. Do not accumulate completed local commits for a later batch push.
 - Verify synchronization by comparing `git rev-parse HEAD` with `git ls-remote origin refs/heads/main`. A mismatch means the task is not published; report it and do not claim GitHub is current.
 - A source commit or push never authorizes deployment, service changes, or production data changes.
+
+## Diretrizes de Execução Enxuta (Thunder OS)
+- **Escopo por tarefa:** Altere apenas os arquivos necessários para o requisito atual. Preserve diffs, checkpoints e dependências existentes. Não crie wrappers de isolamento, runners paralelos ou alterações no núcleo do Hermes durante tarefas de produto.
+- **Testes mínimos obrigatórios:** Valide alterações rodando apenas os testes focados do módulo modificado (`pytest` ou `node --test` nos arquivos afetados). Não execute a suíte global do repositório em PRs de funcionalidade.
+- **Revisão sem loop:** A revisão técnica valida apenas regressões diretas no diff, integridade de rollback de banco/estado e bloqueio de efeitos externos não autorizados (envios reais para leads, ativação de Instantly/Gmail ou escrita no HubSpot). Limites fora do escopo devem ser documentados sem reprovar o commit.
+- **Entrega do executor:** Conclua a subtarefa com commit local limpo e saída dos testes focados registrada, devolvendo imediatamente o controle ao Coordenador para publicação.
