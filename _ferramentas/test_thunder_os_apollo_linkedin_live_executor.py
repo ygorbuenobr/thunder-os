@@ -94,6 +94,30 @@ class SafeCompositionTest(unittest.TestCase):
         self.assertIn('--task task1 --authorization auth1 --execute', result['command'])
         self.assertFalse(result['execution']['executable'])
 
+    def test_preparer_observes_bound_message_without_authorizing_send(self):
+        binding = {'team_id': 'team', 'owner_ids': ['owner'], 'sequence_id': 'sequence',
+                   'account_id': 'account', 'public_id': 'sender'}
+        class Reader:
+            team_id = 'team'
+            owner_ids = frozenset(['owner'])
+            def get(self, task_id):
+                return {'id': task_id, 'type': 'linkedin_step_message', 'status': 'scheduled',
+                        'emailer_campaign_id': 'sequence', 'user_id': 'owner',
+                        'contact': {'linkedin_url': 'https://www.linkedin.com/in/person'},
+                        'linkedin_emailer_template': {'body_text': 'Mensagem de teste'}}
+        class Authority:
+            def __init__(self, store): pass
+            def require(self, *args): return {'binding': binding}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'db.sqlite'
+            sqlite3.connect(path).close()
+            with patch.object(_prepare, 'CampaignApprovalAuthority', Authority):
+                result = _prepare.inspect_observations(_prepare.prepare('task1', 'person', 'auth1'),
+                    db=str(path), campaign='campaign', cadence='cadence', version='v1', reader=Reader())
+        self.assertEqual(result['text'], 'Mensagem de teste')
+        self.assertEqual(result['checks']['text'], 'observed_not_approved')
+        self.assertEqual(result['status'], 'blocked')
+
 
 if __name__ == '__main__':
     unittest.main()

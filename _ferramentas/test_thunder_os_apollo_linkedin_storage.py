@@ -64,6 +64,19 @@ def contend_canary(path, queue, gate, canary_id):
         queue.put('conflict')
 
 
+def contend_message_canary(path, queue, gate, canary_id):
+    patcher = patch('thunder_os.db.OFFICIAL_PANEL_DB', Path(path)); patcher.start()
+    repo = Repository(path)
+    gate.wait()
+    try:
+        repo.reserve_apollo_linkedin_with_canary(canary_id, 'company', 'message-task',
+            'linkedin_step_message', 'account', 'lead', 'c' * 64, 'v1',
+            member_urn='urn:li:fsd_profile:member', approval_id='approval1')
+        queue.put('reserved')
+    except RepositoryConflict:
+        queue.put('conflict')
+
+
 class ApolloLinkedinStorageTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -132,7 +145,86 @@ class ApolloLinkedinStorageTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             repo.issue_apollo_linkedin_canary('company', '6aea584a2b8c4b0020f93935',
                                               'account', 'lead', 'c'*64, 'ygor')
+        with self.assertRaises(ValueError):
+            repo.issue_apollo_linkedin_canary('company', '6aea584a2b8c4b0020f93935',
+                'account', 'lead', 'c'*64, 'ygor', action_type='linkedin_step_message',
+                member_urn='urn:li:fsd_profile:member', campaign_version='v1', approval_id='approval1')
         self.assertEqual(repo.list_apollo_linkedin_reservations(), [])
+
+    def test_message_canary_binds_every_identifier_and_consumes_atomically(self):
+        repo = self.service.repository
+        auth = repo.issue_apollo_linkedin_canary('company', 'message-task', 'account', 'lead',
+            'c' * 64, 'ygor', action_type='linkedin_step_message',
+            member_urn='urn:li:fsd_profile:member', campaign_version='v1', approval_id='approval1')
+        args = ['company', 'message-task', 'linkedin_step_message', 'account', 'lead', 'c' * 64, 'v1']
+        for index, replacement in ((0, 'other'), (1, 'other'), (2, 'linkedin_step_connect'),
+                                   (3, 'other'), (4, 'other'), (5, 'd' * 64), (6, 'v2')):
+            altered = args.copy(); altered[index] = replacement
+            with self.subTest(index=index), self.assertRaises(RepositoryConflict):
+                repo.reserve_apollo_linkedin_with_canary(auth['id'], *altered,
+                    member_urn='urn:li:fsd_profile:member', approval_id='approval1')
+        for urn, approval in [('urn:li:fsd_profile:other', 'approval1'),
+                              ('urn:li:fsd_profile:member', 'approval2')]:
+            with self.subTest(urn=urn, approval=approval), self.assertRaises(RepositoryConflict):
+                repo.reserve_apollo_linkedin_with_canary(auth['id'], *args,
+                    member_urn=urn, approval_id=approval)
+        self.assertEqual(repo.get_state('apollo_linkedin_canary', auth['id'])['state'], 'issued')
+        self.assertEqual(repo.list_apollo_linkedin_reservations(), [])
+        row = repo.reserve_apollo_linkedin_with_canary(auth['id'], *args,
+            member_urn='urn:li:fsd_profile:member', approval_id='approval1')
+        self.assertEqual(row['state'], 'reserved')
+        self.assertEqual(repo.get_state('apollo_linkedin_canary', auth['id'])['state'], 'consumed')
+
+    def test_message_canary_requires_complete_binding_and_rejects_legacy_invitation(self):
+        repo = self.service.repository
+        for kwargs in ({}, {'member_urn': 'urn:li:fsd_profile:member', 'campaign_version': 'v1'},
+                       {'member_urn': 'bad', 'campaign_version': 'v1', 'approval_id': 'approval1'}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                repo.issue_apollo_linkedin_canary('company', 'message-task', 'account', 'lead',
+                    'c' * 64, 'ygor', action_type='linkedin_step_message', **kwargs)
+        legacy = repo.issue_apollo_linkedin_canary('company', 'message-task', 'account', 'lead', 'c'*64, 'ygor')
+        with self.assertRaises(RepositoryConflict):
+            repo.reserve_apollo_linkedin_with_canary(legacy['id'], 'company', 'message-task',
+                'linkedin_step_message', 'account', 'lead', 'c'*64, 'v1',
+                member_urn='urn:li:fsd_profile:member', approval_id='approval1')
+        self.assertEqual(repo.get_state('apollo_linkedin_canary', legacy['id'])['state'], 'issued')
+
+    def test_message_canary_two_processes_only_one_reserves(self):
+        repo = self.service.repository
+        auth = repo.issue_apollo_linkedin_canary('company', 'message-task', 'account', 'lead', 'c'*64,
+            'ygor', action_type='linkedin_step_message', member_urn='urn:li:fsd_profile:member',
+            campaign_version='v1', approval_id='approval1')
+        ctx = multiprocessing.get_context('spawn')
+        queue, gate = ctx.Queue(), ctx.Event()
+        processes = [ctx.Process(target=contend_message_canary, args=(self.path, queue, gate, auth['id']))
+                     for _ in range(2)]
+        for process in processes: process.start()
+        gate.set()
+        results = [queue.get(timeout=15) for _ in processes]
+        for process in processes:
+            process.join(15)
+            self.assertEqual(process.exitcode, 0)
+        self.assertCountEqual(results, ['reserved', 'conflict'])
+        self.assertEqual(repo.get_state('apollo_linkedin_canary', auth['id'])['state'], 'consumed')
+
+    def test_uncertain_message_never_retried_even_after_release(self):
+        repo = self.service.repository
+        kwargs = dict(action_type='linkedin_step_message', member_urn='urn:li:fsd_profile:member',
+                      campaign_version='v1', approval_id='approval1')
+        auth = repo.issue_apollo_linkedin_canary('company', 'message-task', 'account', 'lead', 'c'*64,
+                                                'ygor', **kwargs)
+        args = ('company', 'message-task', 'linkedin_step_message', 'account', 'lead', 'c'*64, 'v1')
+        repo.reserve_apollo_linkedin_with_canary(auth['id'], *args,
+            member_urn=kwargs['member_urn'], approval_id=kwargs['approval_id'])
+        repo.finish_apollo_linkedin('company', 'message-task', 'linkedin_step_message', 'uncertain', 'timeout')
+        repo.resolve_apollo_linkedin_uncertain('company', 'message-task', 'linkedin_step_message',
+                                               'release', 'operator reviewed', 'ygor')
+        second = repo.issue_apollo_linkedin_canary('company', 'message-task', 'account', 'lead', 'c'*64,
+                                                  'ygor', **kwargs)
+        with self.assertRaises(RepositoryConflict):
+            repo.reserve_apollo_linkedin_with_canary(second['id'], *args,
+                member_urn=kwargs['member_urn'], approval_id=kwargs['approval_id'])
+        self.assertEqual(repo.get_state('apollo_linkedin_canary', second['id'])['state'], 'issued')
 
     def test_two_processes_cannot_consume_same_canary(self):
         repo = self.service.repository

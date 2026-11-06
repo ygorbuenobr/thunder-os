@@ -2,7 +2,7 @@ from .operation_campaign import OperationCampaign
 from .approvals import ApprovalError
 """Offline copilot console; explicit client and canonical ledger, no activation."""
 import json
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 import math
 import re
 import time
@@ -27,7 +27,7 @@ SAFE_CODES=frozenset({'campaign_confirmation_integration_required','social_attem
     'reaction_receipt_unavailable','post_identity_mismatch','post_author_unverified','parent_author_unverified','post_author_changed',
     'history_evidence_incomplete','history_incomplete','pagination_unverified','pagination_contradictory','parent_comment_unverified',
     'reaction_identity_unverified','owner_identity_unconfigured','existing_comment','existing_reaction','tagging_unsupported',
-    'legacy_lookup_incomplete','has_reply_or_suppressed','suppressed','touch_not_dispatchable','current_approval_changed','dispatch_already_authorized','dispatch_callback_not_used'})
+    'legacy_lookup_incomplete','has_reply_or_suppressed','suppressed','touch_not_dispatchable','current_approval_changed','dispatch_already_authorized','dispatch_callback_not_used','account_lock_unavailable'})
 
 def _error(value,default):
     return value if isinstance(value,str) and value in SAFE_CODES else default
@@ -148,7 +148,21 @@ class ConnectSafelyConsole:
         return self.campaign_gate().review(body['preview_id'], body['campaign_id'])
 
     def execute(self,body,actor=None,*,dispatch_guard=None,pre_dispatch_check=None):
-        return self._execute(body, actor, dispatch_guard=dispatch_guard,pre_dispatch_check=pre_dispatch_check)
+        # Acquire before approving or reserving: contention is known to be a
+        # zero-dispatch refusal and must not consume the reviewed action.
+        self._actor(actor)
+        if not isinstance(body, dict) or 'execution_confirmation' not in body:
+            raise ConnectSafelyError('campaign_confirmation_required')
+        return self._locked_execution(body, actor, dispatch_guard=dispatch_guard,
+                                      pre_dispatch_check=pre_dispatch_check)
+
+    def _locked_execution(self, body, actor, **kwargs):
+        with ExitStack() as stack:
+            try:
+                stack.enter_context(self.repo.apollo_linkedin_account_lock(self.account_id))
+            except (RepositoryConflict, OSError, ValueError, AttributeError):
+                raise ConnectSafelyError('account_lock_unavailable') from None
+            return self._execute(body, actor, **kwargs)
 
     def execute_native(self, body, job, *, before_dispatch):
         """Trusted application entry; consume the canonical Service authority once.
@@ -161,7 +175,7 @@ class ConnectSafelyConsole:
                 or current['lease_owner'] != job['lease_owner']
                 or getattr(self.repo._local, 'dispatch_fence', None) != (job['id'], job['lease_owner'])):
             raise ConnectSafelyError('native_dispatch_fence_required')
-        return self._execute(body, 'ygor', dispatch_guard=before_dispatch, native_job=job)
+        return self._locked_execution(body, 'ygor', dispatch_guard=before_dispatch, native_job=job)
 
     def _execute(self,body,actor=None,*,dispatch_guard=None,native_job=None,pre_dispatch_check=None):
         self._actor(actor)

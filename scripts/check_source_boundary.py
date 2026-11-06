@@ -6,6 +6,10 @@ from pathlib import PurePosixPath
 
 
 ALLOWED_FILES = {
+    ".specs/features/apollo-linkedin/t4c-composicao.md",
+    "_ferramentas/test_thunder_os_apollo_linkedin_message.py",
+    "_ferramentas/test_thunder_os_apollo_linkedin_message_coordinator.py",
+    "_ferramentas/test_thunder_os_connectsafely_account_lock.py",
     ".specs/features/apollo-linkedin/t4b-composicao.md",
     "_ferramentas/test_thunder_os_apollo_linkedin_authority.py",
     "_ferramentas/test_thunder_os_apollo_linkedin_roles.py",

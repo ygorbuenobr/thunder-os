@@ -1830,12 +1830,14 @@ class Handler(BaseHTTPRequestHandler):
                     result = method(body['company'], body['task_id'], body['action_type'],
                                     body['decision'], body['justification'], actor)
                     return self.responder(200, result)
-                expected = {'company', 'task_id', 'account_id', 'recipient', 'text_hash'}
-                if set(body) != expected:
+                expected = {'company', 'task_id', 'campaign_id', 'approval_id', 'campaign_version'}
+                if set(body) == {'company', 'task_id', 'account_id', 'recipient', 'text_hash'}:
+                    # The former preview-only contract cannot prove approval
+                    # or recipient identity and must remain unavailable.
+                    raise Erro('Canário indisponível: versão aprovada e prévia não vinculadas.', 503)
+                if set(body) != expected or any(not isinstance(body[k], str) or not body[k].strip() for k in expected):
                     raise Erro('Dados do canário inválidos.', 400)
-                # Current legacy preview is not bound to an approved campaign
-                # version. Do not mint an authorization from caller data.
-                raise Erro('Canário indisponível: versão aprovada e prévia não vinculadas.', 503)
+                return self.responder(201, issue_apollo_linkedin_panel_canary(self.server, repo, body, actor))
             except (ValueError, TypeError):
                 raise Erro('Dados inválidos.', 400) from None
             except RepositoryConflict:
@@ -2984,6 +2986,67 @@ def configure_apollo_linkedin_preview(server, loader, environ=None):
 
 
 
+def issue_apollo_linkedin_panel_canary(server, repo, body, actor):
+    """Bind a human authorization to an approved campaign and observed task.
+
+    The caller supplies no account, recipient, URN, or text. Those values must
+    come from the current campaign approval and independently verified reads.
+    """
+    from thunder_os.apollo_linkedin_authority import CampaignApprovalAuthority
+    from thunder_os.approvals import ApprovalError
+    from thunder_os.apollo_linkedin_preview import _slug, validated_task_text
+    attention = getattr(server, 'thunder_apollo_linkedin_attention', None)
+    resolver = getattr(server, 'thunder_connectsafely_read_resolver', None)
+    reader = getattr(attention, 'reader', None)
+    if not callable(getattr(reader, 'get', None)) or not callable(resolver):
+        raise Erro('Leituras de identidade indisponíveis.', 503)
+    authority = CampaignApprovalAuthority(repo)
+    try:
+        approved = authority.require(body['campaign_id'], body['approval_id'], body['campaign_version'])
+        binding = approved['binding']
+        if (binding['company_id'] != body['company'] or binding['team_id'] != attention.team_id
+                or binding['company_id'] != attention.company_id or reader.team_id != binding['team_id']
+                or reader.owner_ids != frozenset(binding['owner_ids'])):
+            raise ValueError('binding_mismatch')
+        task = reader.get(body['task_id'])
+        contact = task.get('contact')
+        if (task.get('id') != body['task_id'] or task.get('type') != 'linkedin_step_message'
+                or task.get('status') != 'scheduled' or task.get('emailer_campaign_id') != binding['sequence_id']
+                or task.get('user_id') not in binding['owner_ids'] or not isinstance(contact, dict)
+                or not contact.get('id') or task.get('contact_id') != contact['id']):
+            raise ValueError('task_mismatch')
+        recipient = _slug(contact.get('linkedin_url'))
+        _, digest, text_error = validated_task_text(task, 'message')
+        if not recipient or recipient == binding['public_id'].lower() or text_error:
+            raise ValueError('recipient_or_text_invalid')
+        observation = resolver({'action': 'dm', 'profile_url': 'https://www.linkedin.com/in/' + recipient + '/'})
+        target = observation.get('target') if isinstance(observation, dict) else None
+        if (observation.get('resolved') is not True or observation.get('read_only') is not True
+                or observation.get('source') != 'provider_observation' or not isinstance(target, dict)
+                or target.get('account_id') != binding['account_id']
+                or target.get('account_public_id') != binding['public_id']
+                or target.get('recipient_public_id') != recipient
+                or not isinstance(target.get('recipient_profile_urn'), str)
+                or not re.fullmatch(r'urn:li:fsd_profile:[A-Za-z0-9_-]{1,200}', target['recipient_profile_urn'])):
+            raise ValueError('recipient_identity_unavailable')
+        # Recheck the approval and write its bound authorization in one local
+        # transaction. No provider IO occurs while holding the database lock.
+        with repo.transaction():
+            current = authority.require(body['campaign_id'], body['approval_id'], body['campaign_version'])
+            if current != approved:
+                raise ValueError('approval_changed')
+            return repo.issue_apollo_linkedin_canary(
+                body['company'], body['task_id'], binding['account_id'], recipient, digest, actor,
+                action_type='linkedin_step_message', member_urn=target['recipient_profile_urn'],
+                campaign_version=body['campaign_version'], approval_id=body['approval_id'])
+    except ApprovalError:
+        raise Erro('Aprovação de campanha indisponível ou inválida.', 409) from None
+    except RepositoryConflict:
+        raise
+    except Exception:
+        raise Erro('Não foi possível verificar campanha, tarefa ou destinatário.', 503) from None
+
+
 def configure_apollo_linkedin_attention(server, loader, environ=None):
     """Configure a dry-run projection only when all bindings are explicit."""
     from thunder_os.apollo_linkedin_reader import ApolloLinkedInReader, CampaignBindings
@@ -2992,6 +3055,7 @@ def configure_apollo_linkedin_attention(server, loader, environ=None):
     env = os.environ if environ is None else environ
     server.thunder_apollo_linkedin_attention = None
     server.thunder_apollo_linkedin_attention_error = 'configuration_missing'
+    server.thunder_apollo_linkedin_authorized_company = None
     try:
         bindings_data = json.loads(env.get('THUNDER_APOLLO_LI_BINDINGS', ''))
         if not isinstance(bindings_data, list) or not bindings_data or any(not isinstance(b, dict) for b in bindings_data):
@@ -3017,6 +3081,9 @@ def configure_apollo_linkedin_attention(server, loader, environ=None):
                                              company_id=company, team_id=team,
                                              read_isolation=getattr(server, 'thunder_apollo_linkedin_read_isolation', None))
         server.thunder_apollo_linkedin_attention = attention
+        # The installation is explicitly configured for exactly this company;
+        # a valid global role never supplies a company from the HTTP body.
+        server.thunder_apollo_linkedin_authorized_company = company
         return attention
     except (ValueError, TypeError, KeyError, RuntimeError):
         server.thunder_apollo_linkedin_attention_error = 'configuration_invalid'

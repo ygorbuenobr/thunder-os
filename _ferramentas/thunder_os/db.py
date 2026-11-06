@@ -223,11 +223,32 @@ class Repository:
         if not isinstance(text_hash, str) or not re.fullmatch(r'[a-f0-9]{64}', text_hash):
             raise ValueError('invalid canary text hash')
 
-    def issue_apollo_linkedin_canary(self, company, task_id, account_id, recipient, text_hash, actor):
+    @staticmethod
+    def _t4_message_binding(member_urn, campaign_version, approval_id):
+        if (not isinstance(member_urn, str)
+                or not re.fullmatch(r'urn:li:fsd_profile:[A-Za-z0-9_-]{1,200}', member_urn)
+                or isinstance(campaign_version, bool) or not isinstance(campaign_version, (str, int))
+                or (isinstance(campaign_version, int) and campaign_version < 1)
+                or not str(campaign_version).strip() or str(campaign_version) != str(campaign_version).strip()
+                or len(str(campaign_version)) > 128
+                or not isinstance(approval_id, str)
+                or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}', approval_id)):
+            raise ValueError('invalid canary campaign or recipient binding')
+        return str(campaign_version)
+
+    def issue_apollo_linkedin_canary(self, company, task_id, account_id, recipient, text_hash, actor,
+                                     *, action_type='linkedin_step_connect', member_urn=None,
+                                     campaign_version=None, approval_id=None):
         """Persist a bounded one-shot canary; caller must authenticate actor/role."""
         self._t4_canary_fields(company, task_id, account_id, recipient, text_hash)
         if not isinstance(actor, str) or not re.fullmatch(r'[A-Za-z0-9_.@-]{1,100}', actor):
             raise ValueError('invalid canary actor')
+        if action_type not in ('linkedin_step_connect', 'linkedin_step_message'):
+            raise ValueError('invalid canary action')
+        extended = action_type == 'linkedin_step_message' or any(
+            value is not None for value in (member_urn, campaign_version, approval_id))
+        if extended:
+            campaign_version = self._t4_message_binding(member_urn, campaign_version, approval_id)
         self.apollo_linkedin_store_ready()
         now = datetime.now(timezone.utc)
         key = uuid4().hex
@@ -235,6 +256,9 @@ class Repository:
                    'recipient': recipient, 'text_hash': text_hash, 'actor': actor,
                    'issued_at': now.isoformat(), 'expires_at': (now + timedelta(minutes=30)).isoformat(),
                    'state': 'issued'}
+        if extended:
+            payload.update(action_type=action_type, member_urn=member_urn,
+                           campaign_version=campaign_version, approval_id=approval_id)
         with self.transaction() as con:
             try:
                 con.execute('INSERT INTO thunder_state VALUES (?,?,?,?,?)',
@@ -247,16 +271,20 @@ class Repository:
         return {**payload, 'id': key, 'version': 1, 'updated_at': now.isoformat()}
 
     def reserve_apollo_linkedin_with_canary(self, canary_id, company, task_id, action_type,
-                                            account_id, recipient, text_hash, campaign_version):
+                                            account_id, recipient, text_hash, campaign_version,
+                                            *, member_urn=None, approval_id=None):
         """Consume canary and reserve atomically; any failure rolls back both."""
         self._t4_canary_fields(company, task_id, account_id, recipient, text_hash)
         if (not isinstance(canary_id, str) or not re.fullmatch(r'[a-f0-9]{32}', canary_id)
-                or action_type != 'linkedin_step_connect'
+                or action_type not in ('linkedin_step_connect', 'linkedin_step_message')
                 or isinstance(campaign_version, bool) or not isinstance(campaign_version, (str, int))
                 or not str(campaign_version).strip() or str(campaign_version) != str(campaign_version).strip()
                 or len(str(campaign_version)) > 128
                 or (isinstance(campaign_version, int) and campaign_version < 1)):
             raise ValueError('invalid canary reservation')
+        extended = action_type == 'linkedin_step_message' or member_urn is not None or approval_id is not None
+        if extended:
+            self._t4_message_binding(member_urn, campaign_version, approval_id)
         self.apollo_linkedin_store_ready()
         now = datetime.now(timezone.utc)
         with self.transaction() as con:
@@ -266,9 +294,15 @@ class Repository:
                 if row is None:
                     raise ValueError('missing')
                 auth = json.loads(row['payload'])
-                if not isinstance(auth, dict) or set(auth) != {'company', 'task_id', 'account_id', 'recipient',
-                        'text_hash', 'actor', 'issued_at', 'expires_at', 'state'}:
+                legacy_fields = {'company', 'task_id', 'account_id', 'recipient',
+                                 'text_hash', 'actor', 'issued_at', 'expires_at', 'state'}
+                extended_fields = legacy_fields | {'action_type', 'member_urn', 'campaign_version', 'approval_id'}
+                if (not isinstance(auth, dict) or
+                        (set(auth) != (extended_fields if extended else legacy_fields))):
                     raise ValueError('invalid')
+                if extended and (auth['action_type'], auth['member_urn'], auth['campaign_version'], auth['approval_id']) != (
+                        action_type, member_urn, str(campaign_version), approval_id):
+                    raise ValueError('binding mismatch')
                 issued = datetime.fromisoformat(auth['issued_at'])
                 expires = datetime.fromisoformat(auth['expires_at'])
                 if (type(row['version']) is not int or row['version'] < 1
@@ -296,6 +330,10 @@ class Repository:
                 except sqlite3.IntegrityError as exc:
                     raise RepositoryConflict('Apollo LinkedIn task already reserved') from exc
             else:
+                # A message without a proven receipt must never be retried by
+                # this canary, even if a later operator marks it for release.
+                if action_type == 'linkedin_step_message':
+                    raise RepositoryConflict('uncertain message cannot be retried')
                 # A human release never dispatches. It permits exactly one later,
                 # explicitly requested reservation using a fresh matching canary.
                 resolution_key = payload_hash({'company': company, 'task_id': task_id, 'action_type': action_type})

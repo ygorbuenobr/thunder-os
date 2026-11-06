@@ -102,7 +102,11 @@ class MigratedOperationsTests(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
-        self.repo = Repository(Path(temp.name) / 'synthetic.db')
+        path = (Path(temp.name) / 'synthetic.db').resolve()
+        path.touch()
+        env = patch.dict(os.environ, {'THUNDER_APOLLO_LI_OFFICIAL_DB': str(path)})
+        env.start(); self.addCleanup(env.stop)
+        self.repo = Repository(path)
         self.observer = Repository(self.repo.path)
         self.now = 1800000000
         self.registry = CampaignRegistry(self.repo)

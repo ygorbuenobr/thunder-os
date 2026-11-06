@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 import hashlib
 import json
+import os
 from pathlib import Path
 import socket
 import subprocess
@@ -124,7 +125,10 @@ class NativeExecutionTests(unittest.TestCase):
             guard=patch(name,side_effect=AssertionError('S51 network forbidden'));guard.start();self.addCleanup(guard.stop)
         guard=patch('thunder_os.touch_ledger.toques._banco',side_effect=AssertionError('production DB forbidden'))
         guard.start();self.addCleanup(guard.stop)
-        self.repo=Repository(self.root/'workflow.db');self.touchpath=self.root/'touches.db'
+        workflow=(self.root/'workflow.db').resolve();workflow.touch()
+        guard=patch.dict(os.environ, {'THUNDER_APOLLO_LI_OFFICIAL_DB': str(workflow)})
+        guard.start();self.addCleanup(guard.stop)
+        self.repo=Repository(workflow);self.touchpath=self.root/'touches.db'
         with self.database() as (con,_):
             con.executescript('''CREATE TABLE toques(id INTEGER PRIMARY KEY,canal TEXT,acao TEXT,pessoa_chave TEXT,alvo TEXT,status TEXT,provider_id TEXT,detalhe TEXT,agente TEXT,ref TEXT,atualizado_em TEXT DEFAULT CURRENT_TIMESTAMP);
             CREATE TABLE respostas(id INTEGER PRIMARY KEY,canal TEXT,pessoa_chave TEXT,pessoa_nome TEXT,conta TEXT,toque_id INTEGER,classificacao TEXT,resumo TEXT,ref TEXT);

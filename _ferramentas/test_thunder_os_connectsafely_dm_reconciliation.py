@@ -1,5 +1,6 @@
 """Synthetic provider reads and temporary SQLite only; no runtime fixtures."""
 import copy
+import os
 from contextlib import contextmanager
 from pathlib import Path
 import sqlite3
@@ -131,6 +132,10 @@ class DmIdentityTests(unittest.TestCase):
             fixture=ReadFixture();fixture.page[field]=value
             self.assertEqual('uncertain',fixture.reconcile()['status'])
 
+    def test_has_more_without_cursor_never_confirms_even_with_exact_message(self):
+        fixture=ReadFixture();fixture.page['hasMore']=True
+        self.assertEqual({'status':'uncertain','error_code':'pagination_contradictory'},fixture.reconcile())
+
     def test_receipt_body_time_or_ambiguity_never_confirms(self):
         for key,value in [('text','Different content'),('sentAt',(NOW-1)*1000),('sentAt',(NOW+121)*1000)]:
             fixture=ReadFixture();fixture.page['messages'][0][key]=value
@@ -179,7 +184,11 @@ class DmJobTests(unittest.TestCase):
             con.execute('CREATE TABLE thunder_effect_touches (effect_key TEXT PRIMARY KEY,touch_id INTEGER)')
             con.execute('CREATE TABLE thunder_suppressions (canal TEXT,pessoa_chave TEXT,reason TEXT)')
             con.execute('CREATE TABLE respostas (id INTEGER PRIMARY KEY,canal TEXT,pessoa_chave TEXT)')
-        self.repo=Repository(self.root/'workflow.db');self.fixture=ReadFixture()
+        workflow = self.root/'workflow.db'
+        workflow.touch()
+        env = patch.dict(os.environ, {'THUNDER_APOLLO_LI_OFFICIAL_DB': str(workflow.resolve())})
+        env.start(); self.addCleanup(env.stop)
+        self.repo=Repository(workflow);self.fixture=ReadFixture()
         self.ledger=ConnectSafelyLedger(db_context=database)
         self.console=ConnectSafelyConsole(self.repo,self.fixture.client,self.ledger,
             account_id=ACCOUNT,account_public_id=PUBLIC,writes_enabled=True,clock=lambda:NOW)

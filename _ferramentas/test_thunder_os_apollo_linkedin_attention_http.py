@@ -212,6 +212,102 @@ class AttentionHttpTests(unittest.TestCase):
                 self.assertEqual(exc.exception.status, 503)
         self.assertEqual(self.handler.server.thunder_service.mock_calls, [])
 
+    def test_canary_uses_approved_campaign_and_provider_identity(self):
+        from contextlib import nullcontext
+        self.handler.command = 'POST'
+        self.handler.thunder_actor = Mock(return_value='ygor')
+        self.handler.corpo = Mock(return_value={'company': 'company', 'task_id': 'task',
+            'campaign_id': 'campaign', 'approval_id': 'approval', 'campaign_version': 'v1'})
+        binding = {'company_id': 'company', 'team_id': 'team', 'owner_ids': ['owner'],
+                   'sequence_id': 'seq', 'account_id': 'account', 'public_id': 'sender'}
+        task = {'id': 'task', 'type': 'linkedin_step_message', 'status': 'scheduled',
+                'emailer_campaign_id': 'seq', 'user_id': 'owner', 'contact_id': 'contact',
+                'contact': {'id': 'contact', 'linkedin_url': 'https://www.linkedin.com/in/person/'},
+                'linkedin_emailer_template': {'body_text': 'Oi, teste.'}}
+        reader = SimpleNamespace(team_id='team', owner_ids=frozenset(['owner']), get=Mock(return_value=task))
+        self.handler.server.thunder_apollo_linkedin_attention = SimpleNamespace(reader=reader, team_id='team', company_id='company')
+        self.handler.server.thunder_apollo_linkedin_authorized_company = 'company'
+        resolver = Mock(return_value={'resolved': True, 'read_only': True, 'source': 'provider_observation',
+            'target': {'account_id': 'account', 'account_public_id': 'sender',
+                       'recipient_public_id': 'person', 'recipient_profile_urn': 'urn:li:fsd_profile:abc'}})
+        self.handler.server.thunder_connectsafely_read_resolver = resolver
+        repo = Mock(); repo.transaction = lambda: nullcontext(); repo.issue_apollo_linkedin_canary.return_value = {'id': 'auth'}
+        self.handler.server.thunder_service.repository = repo
+        authority = Mock(); authority.require.return_value = {'binding': binding}
+        path = urlsplit('/api/os/v1/integrations/apollo/linkedin-canary')
+        with patch('thunder_os.apollo_linkedin_roles.authorize_manager', return_value=True), \
+             patch('thunder_os.apollo_linkedin_authority.CampaignApprovalAuthority', return_value=authority):
+            self.assertEqual(self.handler.thunder_api(path), (201, {'id': 'auth'}))
+            args, kw = repo.issue_apollo_linkedin_canary.call_args
+            self.assertEqual(args[:4], ('company', 'task', 'account', 'person'))
+            self.assertEqual(kw, {'action_type': 'linkedin_step_message', 'member_urn': 'urn:li:fsd_profile:abc',
+                                  'campaign_version': 'v1', 'approval_id': 'approval'})
+            self.assertEqual(authority.require.call_count, 2)
+            repo.issue_apollo_linkedin_canary.reset_mock()
+            resolver.return_value['target']['account_id'] = 'other'
+            with self.assertRaises(panel.Erro) as error: self.handler.thunder_api(path)
+            self.assertEqual(error.exception.status, 503)
+            repo.issue_apollo_linkedin_canary.assert_not_called()
+
+    def test_canary_denies_operator_and_protected_fixture(self):
+        self.handler.command = 'POST'; self.handler.thunder_actor = Mock(return_value='ygor')
+        self.handler.corpo = Mock(return_value={'company': 'company', 'task_id': '6aea584a2b8c4b0020f93935'})
+        self.handler.server.thunder_apollo_linkedin_authorized_company = 'company'
+        path = urlsplit('/api/os/v1/integrations/apollo/linkedin-canary')
+        with patch('thunder_os.apollo_linkedin_roles.authorize_manager', return_value=False):
+            with self.assertRaises(panel.Erro) as error: self.handler.thunder_api(path)
+            self.assertEqual(error.exception.status, 403)
+        with patch('thunder_os.apollo_linkedin_roles.authorize_manager', return_value=True):
+            with self.assertRaises(panel.Erro) as error: self.handler.thunder_api(path)
+            self.assertEqual(error.exception.status, 403)
+        self.handler.server.thunder_service.repository.issue_apollo_linkedin_canary.assert_not_called()
+
+    def test_canary_route_persists_and_consumes_real_sqlite_authorization(self):
+        import tempfile
+        from pathlib import Path
+        from thunder_os.db import Repository, RepositoryConflict
+        from thunder_os.campaign_registry import CampaignRegistry
+        from thunder_os.service import ThunderService
+        from test_thunder_os_apollo_linkedin_authority import config
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / 'panel.db')
+            Path(path).touch()
+            with patch.dict('os.environ', {'THUNDER_APOLLO_LI_OFFICIAL_DB': path}):
+                repo = Repository(path)
+                service = ThunderService(repo)
+                cfg = config(); CampaignRegistry(repo).register(cfg, 'ygor', 0)
+                repo.put_state('control', 'global', {'paused': False, 'actor': 'ygor'})
+                review = service.apollo_campaign_approval_review('campaign')
+                approval = service.approve_apollo_campaign_version('campaign', 'ygor',
+                    execution_confirmation=review['execution_confirmation'])
+                reader = SimpleNamespace(team_id='team', owner_ids=frozenset(['owner']), get=lambda _: {
+                    'id': 'task', 'type': 'linkedin_step_message', 'status': 'scheduled',
+                    'emailer_campaign_id': 'seq', 'user_id': 'owner', 'contact_id': 'contact',
+                    'contact': {'id': 'contact', 'linkedin_url': 'https://linkedin.com/in/person'},
+                    'linkedin_emailer_template': {'body_text': 'Teste'}})
+                self.handler.server.thunder_service = service
+                self.handler.server.thunder_apollo_linkedin_attention = SimpleNamespace(reader=reader, team_id='team', company_id='company')
+                self.handler.server.thunder_apollo_linkedin_authorized_company = 'company'
+                self.handler.server.thunder_connectsafely_read_resolver = lambda _: {
+                    'resolved': True, 'read_only': True, 'source': 'provider_observation',
+                    'target': {'account_id': 'a'*24, 'account_public_id': 'sender',
+                               'recipient_public_id': 'person', 'recipient_profile_urn': 'urn:li:fsd_profile:abc'}}
+                self.handler.command = 'POST'; self.handler.thunder_actor = Mock(return_value='ygor')
+                self.handler.corpo = Mock(return_value={'company': 'company', 'task_id': 'task',
+                    'campaign_id': 'campaign', 'approval_id': approval['id'], 'campaign_version': 'v1'})
+                with patch('thunder_os.apollo_linkedin_roles.authorize_manager', return_value=True):
+                    status, authorization = self.handler.thunder_api(urlsplit('/api/os/v1/integrations/apollo/linkedin-canary'))
+                self.assertEqual(status, 201)
+                persisted = repo.get_state('apollo_linkedin_canary', authorization['id'])
+                self.assertEqual((persisted['state'], persisted['campaign_version'], persisted['member_urn']),
+                                 ('issued', 'v1', 'urn:li:fsd_profile:abc'))
+                args = (authorization['id'], 'company', 'task', 'linkedin_step_message', 'a'*24,
+                        'person', persisted['text_hash'], 'v1')
+                kwargs = {'member_urn': 'urn:li:fsd_profile:abc', 'approval_id': approval['id']}
+                repo.reserve_apollo_linkedin_with_canary(*args, **kwargs)
+                self.assertEqual(repo.get_state('apollo_linkedin_canary', authorization['id'])['state'], 'consumed')
+                with self.assertRaises(RepositoryConflict): repo.reserve_apollo_linkedin_with_canary(*args, **kwargs)
+
     def test_protected_fixture_is_visible_and_never_prepared(self):
         from thunder_os.apollo_linkedin_attention import ApolloLinkedInAttention, EXCLUDED_TASK
         reader = Mock(); reader.list_open_tasks.return_value = {'tasks': [{'id': EXCLUDED_TASK}], 'coverage': 'complete'}

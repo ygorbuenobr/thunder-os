@@ -57,7 +57,11 @@ class PanelWiringTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        self.repo = Repository(self.root / 'panel.db')
+        db = (self.root / 'panel.db').resolve()
+        db.touch()
+        original_env = patch.dict(os.environ, {'THUNDER_APOLLO_LI_OFFICIAL_DB': str(db)})
+        original_env.start(); self.addCleanup(original_env.stop)
+        self.repo = Repository(db)
         self.source = self.root / 'source.json'
         self.source.write_text('{"fixture":true}')
         self.contract = self.root / 'contract.json'
@@ -86,6 +90,7 @@ class PanelWiringTests(unittest.TestCase):
         self.environment = patch.dict(os.environ, {
             'THUNDER_EXTERNAL_EFFECTS_ENABLED': 'true',
             'THUNDER_OS_COPILOT_MODE': 'human_approval',
+            'THUNDER_APOLLO_LI_OFFICIAL_DB': str(db),
         }, clear=True)
         self.environment.start()
         self.addCleanup(self.environment.stop)

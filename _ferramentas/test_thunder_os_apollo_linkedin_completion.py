@@ -1,4 +1,5 @@
 import json
+import hashlib
 import multiprocessing
 import os
 from pathlib import Path
@@ -6,9 +7,10 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from thunder_os.apollo_linkedin_completion import ApolloLinkedInCompletion, _request
+from thunder_os.apollo_linkedin_completion import ApolloLinkedInCompletion, _request, _complete_request
 from thunder_os.apollo_linkedin_attention import EXCLUDED_TASK
 from thunder_os.db import Repository
+from thunder_os.models import payload_hash
 
 
 def raw(data):
@@ -154,6 +156,91 @@ class ApolloCompletionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'fixture_protegida'):
                 _request('GET', '/api/v1/tasks/' + EXCLUDED_TASK, None, {}, 1)
             connection.assert_not_called()
+
+    def test_completion_transport_restricts_target_body_and_fixture(self):
+        with patch('http.client.HTTPSConnection') as connection:
+            for method, path, body in (
+                ('GET', '/api/v1/tasks/task1/complete', b'{}'),
+                ('POST', '/api/v1/tasks/task1/complete?x=1', b'{}'),
+                ('POST', '/api/v1/tasks/task1/complete', b'{"note":"other"}'),
+                ('POST', '/api/v1/tasks/' + EXCLUDED_TASK + '/complete', b'{}')):
+                with self.subTest(path=path), self.assertRaises(ValueError):
+                    _complete_request(method, path, body, {}, 1)
+            connection.assert_not_called()
+
+    def test_message_completion_requires_persisted_receipt_and_verified_readback(self):
+        text = 'Mensagem de teste'
+        digest = hashlib.sha256(text.encode()).hexdigest()
+        self.repo.reserve_apollo_linkedin('company', 'message1', 'linkedin_step_message', 'account',
+            text_hash=digest, campaign_version='1', recipient='lead')
+        task = {'id': 'message1', 'status': 'scheduled', 'type': 'linkedin_step_message',
+                'emailer_campaign_id': 'seq', 'user_id': 'owner',
+                'contact': {'linkedin_url': 'https://www.linkedin.com/in/lead/'},
+                'linkedin_emailer_template': {'body_text': text}}
+        calls = []
+        def fake(method, path, body, headers, timeout):
+            calls.append((method, path, body))
+            if path.endswith('api_profile'):
+                return 200, raw({'user': {'id': 'actor', 'team_id': 'team'}})
+            if method == 'POST':
+                self.assertEqual({'note': 'Thunder OS: enviado via ConnectSafely, recibo receipt1'}, json.loads(body))
+                task['status'] = 'completed'
+                task['note'] = json.loads(body)['note']
+            return 200, raw({'task': task})
+        binding = {'binding': {'company_id': 'company', 'team_id': 'team', 'account_id': 'account',
+                               'sequence_id': 'seq', 'owner_ids': ['owner']}}
+        port = ApolloLinkedInCompletion(self.load, team_id='team', actor_id='actor', repository=self.repo,
+                                         enabled=True, request=fake)
+        args = dict(campaign_id='campaign', approval_id='approval', campaign_version=1)
+        with patch('thunder_os.apollo_linkedin_completion.CampaignApprovalAuthority.require', return_value=binding):
+            self.assertEqual('apollo_reconcile_pending', port.complete_verified('company', 'message1', 'linkedin_step_message', **args)['state'])
+            self.assertFalse(any(c[0] == 'POST' for c in calls))
+            self.repo.finish_apollo_linkedin('company', 'message1', 'linkedin_step_message', 'confirmed',
+                receipt={'provider_id': 'receipt1'}, apollo_status='pending')
+            self.assertEqual('confirmed', port.complete_verified('company', 'message1', 'linkedin_step_message', **args)['state'])
+            self.assertEqual('confirmed', self.repo.get_apollo_linkedin_reservation('company', 'message1', 'linkedin_step_message')['apollo_status'])
+            self.assertEqual(1, sum(c[0] == 'POST' for c in calls))
+
+    def test_completion_timeout_is_never_retried_and_reconciliation_only_reads(self):
+        digest = hashlib.sha256(b'text').hexdigest()
+        self.repo.reserve_apollo_linkedin('company', 'message1', 'linkedin_step_message', 'account',
+            text_hash=digest, campaign_version='1', recipient='lead')
+        self.repo.finish_apollo_linkedin('company', 'message1', 'linkedin_step_message', 'confirmed',
+            receipt={'provider_id': 'receipt1'}, apollo_status='pending')
+        task = {'id': 'message1', 'status': 'scheduled', 'type': 'linkedin_step_message',
+                'emailer_campaign_id': 'seq', 'user_id': 'owner',
+                'contact': {'linkedin_url': 'https://www.linkedin.com/in/lead/'},
+                'linkedin_emailer_template': {'body_text': 'text'}}
+        calls = []
+        def fake(method, path, body, headers, timeout):
+            calls.append(method)
+            if path.endswith('api_profile'): return 200, raw({'user': {'id': 'actor', 'team_id': 'team'}})
+            if method == 'POST': raise TimeoutError('unknown outcome')
+            return 200, raw({'task': task})
+        binding = {'binding': {'company_id': 'company', 'team_id': 'team', 'account_id': 'account',
+                               'sequence_id': 'seq', 'owner_ids': ['owner']}}
+        port = ApolloLinkedInCompletion(self.load, team_id='team', actor_id='actor', repository=self.repo, enabled=True, request=fake)
+        args = dict(campaign_id='campaign', approval_id='approval', campaign_version=1)
+        scope = {'context': {'platform': 'apollo', 'campaign_version': 1},
+                 'configuration': {'apollo_linkedin': binding['binding']}, 'campaign_config': {}}
+        digest = payload_hash(scope)
+        self.repo.put_state('campaign_version_snapshot', 'apollo-campaign-' + digest,
+                            {'scope': scope, 'scope_hash': digest})
+        self.repo.put_state('approval', 'approval', {'scope': 'campaign_version', 'campaign_id': 'campaign',
+                            'campaign_version': 1, 'actor': 'ygor', 'scope_hash': digest,
+                            'snapshot_id': 'apollo-campaign-' + digest})
+        with patch('thunder_os.apollo_linkedin_completion.CampaignApprovalAuthority.require', return_value=binding):
+            self.assertEqual('apollo_reconcile_pending', port.complete_verified('company', 'message1', 'linkedin_step_message', **args)['state'])
+            self.assertEqual('apollo_reconcile_pending', port.complete_verified('company', 'message1', 'linkedin_step_message', **args)['state'])
+            self.assertEqual(1, calls.count('POST'))
+            task['status'] = 'completed'
+            self.repo.put_state('control', 'global', {'paused': True})
+            task['note'] = 'other actor completed this task'
+            with patch.dict(os.environ, {'THUNDER_APOLLO_LI_EXECUTION_ENABLED': 'false'}):
+                self.assertEqual('apollo_reconcile_pending', port.reconcile_verified('company', 'message1', 'linkedin_step_message', **args)['state'])
+                task['note'] = 'Thunder OS: enviado via ConnectSafely, recibo receipt1'
+                self.assertEqual('confirmed', port.reconcile_verified('company', 'message1', 'linkedin_step_message', **args)['state'])
+            self.assertEqual(1, calls.count('POST'))
 
 
 if __name__ == '__main__':

@@ -122,9 +122,12 @@ def inspect_observations(result, *, db=None, campaign=None, cadence=None, versio
             if reader.team_id != binding['team_id'] or reader.owner_ids != frozenset(binding['owner_ids']):
                 raise ValueError('reader_binding_mismatch')
             task = reader.get(result['task'])
-            text, digest, error = validated_task_text(task, 'invite')
+            action = {'linkedin_step_connect': 'invite', 'linkedin_step_message': 'message'}.get(task.get('type'))
+            if action is None:
+                raise ValueError('unsupported_action')
+            text, digest, error = validated_task_text(task, action)
             contact = task.get('contact')
-            if (error or task.get('type') != 'linkedin_step_connect'
+            if (error
                     or task.get('status') != 'scheduled'
                     or task.get('emailer_campaign_id') != binding['sequence_id']
                     or task.get('user_id') not in binding['owner_ids']
@@ -145,13 +148,13 @@ def prepare(task, recipient, authorization):
         raise ValueError('configuration_invalid')
     result = execution_status(task, authorization)
     command = ['env', 'PYTHONPATH=_ferramentas', 'python3', '-m',
-               'thunder_os.apollo_linkedin_live_executor', '--task', task,
+               'thunder_os.apollo_linkedin_t4', '--task', task,
                '--authorization', authorization, '--execute']
     return {'task': task, 'recipient': recipient, 'status': 'blocked',
             'execution': result,
             'checks': {key: 'unverified' for key in
                        ('campaign_approval', 'account', 'quota', 'reply_coverage',
-                        'pending_invitation', 'text')},
+                        'relationship', 'text')},
             'command': shlex.join(command),
             'command_status': 'blocked; does not send'}
 

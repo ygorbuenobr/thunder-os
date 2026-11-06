@@ -356,6 +356,7 @@ def main(argv=None):
     """CLI is intentionally non-operational until trusted composition exists."""
     parser = argparse.ArgumentParser(description='Apollo LinkedIn T4 — default dry-run')
     parser.add_argument('--task', required=True)
+    parser.add_argument('--authorization')
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--dry-run', action='store_true')
     mode.add_argument('--execute', action='store_true')

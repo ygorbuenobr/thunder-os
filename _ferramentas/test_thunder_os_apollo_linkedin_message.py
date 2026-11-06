@@ -1,0 +1,139 @@
+import unittest
+
+from thunder_os.apollo_linkedin_message import MessageAdapter
+from thunder_os.apollo_linkedin_reply_coverage import ReplyCoverage
+
+PLAN = {'account_id':'account', 'account_public_id':'owner', 'action':'dm',
+        'recipient_public_id':'lead', 'recipient_profile_urn':'urn:li:fsd_profile:lead',
+        'channel':'linkedin', 'messaging_channel':'linkedin_inbox', 'content':'Hello', 'conversation_urn':None}
+
+
+class FakeClient:
+    account_id, expected_public_id, self_profile_id = 'account', 'owner', 'urn:li:fsd_profile:owner'
+
+    def __init__(self):
+        self.status, self.calls = 'CONNECTED', []
+        self.sent = {'status':'sent','receipt_ref':'connectsafely:message'}
+        self.readback = {'status':'uncertain'}
+        self.pages = [{'success':True, 'accountId':'account', 'conversationUrn':'urn:li:msg_conversation:thread',
+                       'hasMore':False, 'participants':[{'profileId':'owner'}, {'profileId':'lead'}], 'messages':[]}]
+
+    def _plan(self, plan):
+        if plan != PLAN: raise ValueError('invalid')
+    def verify_identity(self): pass
+    def _profile_identity(self, value): return value.split(':')[-1] if value else None
+    def _sender_identity(self, row): return self._profile_identity(row.get('senderProfileId'))
+    def _seconds(self, n): return n / 1000 if n > 100_000_000_000 else n
+    def relationship(self, plan):
+        return {'account_id':'account','recipient_public_id':'lead',
+                'recipient_profile_urn':PLAN['recipient_profile_urn'],'relationship_status':self.status}
+    def send(self, plan, *, before_dispatch):
+        if before_dispatch() is not True: raise ValueError('denied')
+        self.calls.append('POST')
+        return self.sent
+    def reconcile(self, plan, attempted_at):
+        self.calls.append(('GET', attempted_at))
+        return self.readback
+    def _call(self, method, path, query):
+        self.calls.append((method, path, query))
+        if path.startswith('/linkedin/conversations/exists/'):
+            return {'success':True,'accountId':'account','profileUrn':PLAN['recipient_profile_urn'],
+                    'hasConversation':True,'conversationUrn':'urn:li:msg_conversation:thread'}
+        return self.pages.pop(0)
+
+
+class MessageAdapterTests(unittest.TestCase):
+    def setUp(self): self.client = FakeClient(); self.adapter = MessageAdapter(self.client)
+
+    def test_message_receipt_and_no_retry(self):
+        result = self.adapter.send(PLAN, 100, before_dispatch=lambda: True)
+        self.assertEqual(result['receipt_ref'], 'connectsafely:message')
+        self.assertEqual(self.client.calls, ['POST'])
+
+    def test_readback_or_uncertainty_never_repeats_post(self):
+        self.client.sent = {'status':'uncertain'}
+        self.client.readback = {'status':'sent', 'receipt_ref':'connectsafely:readback'}
+        result = self.adapter.send(PLAN, 100, before_dispatch=lambda: True)
+        self.assertEqual(result['receipt_ref'], 'connectsafely:readback')
+        self.assertGreater(self.client.calls[1][1], 100)
+        self.client.calls = []; self.client.readback = {'status':'uncertain'}
+        self.assertEqual(self.adapter.send(PLAN, 100, before_dispatch=lambda: True)['status'], 'uncertain')
+        self.assertEqual(self.client.calls.count('POST'), 1)
+
+    def test_no_connection_or_pause_prevents_post(self):
+        self.client.status = 'NOT_CONNECTED'
+        self.assertEqual(self.adapter.send(PLAN, 100, before_dispatch=lambda:True)['status'], 'blocked')
+        self.client.status = 'CONNECTED'
+        self.assertEqual(self.adapter.send(PLAN, 100, before_dispatch=lambda:False)['status'], 'blocked')
+        self.assertNotIn('POST', self.client.calls)
+
+    def test_reply_since_last_touch_and_unknown_coverage(self):
+        def row(stamp):
+            return {'messageUrn':'urn:li:messagingMessage:1','senderProfileId':'lead',
+                    'isSentByOwner':False,'sentAt':stamp}
+        read = self.adapter.reply_source(PLAN, 100)
+        self.client.pages[0]['messages'] = [row(101)]
+        self.assertTrue(read(PLAN['recipient_profile_urn'])['suppressed'])
+        self.client.pages = [FakeClient().pages[0]]; self.client.pages[0]['messages'] = [row(99)]
+        self.assertFalse(read(PLAN['recipient_profile_urn'])['suppressed'])
+        self.client.pages = [FakeClient().pages[0]]; self.client.pages[0]['messages'] = [row(None)]
+        self.assertFalse(read(PLAN['recipient_profile_urn'])['complete'])
+
+    def test_partial_history_and_wrong_participant_are_unknown(self):
+        read = self.adapter.reply_source(PLAN, 100)
+        self.client.pages[0]['participants'] = [{'profileId':'owner'}, {'profileId':'other'}]
+        self.assertFalse(read(PLAN['recipient_profile_urn'])['complete'])
+        self.client.pages = [FakeClient().pages[0]]; self.client.pages[0]['hasMore'] = True
+        self.assertFalse(read(PLAN['recipient_profile_urn'])['complete'])
+
+    def test_reply_source_composes_with_apollo_coverage(self):
+        class Apollo:
+            def contacts(self, email):
+                return [{'id':'contact', 'email_replied':False, 'email_unsubscribed':False,
+                         'email_status':'verified','contact_campaign_statuses':[
+                             {'emailer_campaign_id':'sequence','status':'active','replied':False}]}]
+        self.client.pages[0]['messages'] = [{'messageUrn':'id','senderProfileId':'lead',
+                                             'isSentByOwner':False,'sentAt':101}]
+        from datetime import datetime, timezone
+        coverage = ReplyCoverage(Apollo(), self.adapter.reply_source(PLAN, 100),
+                                 clock=lambda:datetime(2026, 1, 1, tzinfo=timezone.utc))
+        target = {'email':'lead@example.invalid', 'apollo_contact_id':'contact','sequence_id':'sequence',
+                  'linkedin_profile_urn':PLAN['recipient_profile_urn']}
+        self.assertEqual(coverage.observe(target)['status'], 'reply')
+
+
+class RealClientFakeHTTPTests(unittest.TestCase):
+    def setUp(self):
+        from test_thunder_os_connectsafely_client import ClientTests, ACCOUNT, OWNER, RECIPIENT, PLAN, NOW
+        self.fixture = ClientTests(); self.fixture.setUp()
+        self.plan, self.now = PLAN, NOW
+        request = self.fixture.request
+        def http(method, path, query, body):
+            if '/relationship/' in path:
+                self.fixture.calls.append((method, path, query, body))
+                return 200, {'accountId':ACCOUNT, 'profileUrn':RECIPIENT, 'status':'CONNECTED',
+                             'connected':True, 'invitationSent':False, 'invitationReceived':False}
+            return request(method, path, query, body)
+        self.fixture.client.request = http
+        self.adapter = MessageAdapter(self.fixture.client)
+
+    def test_real_client_fake_http_receipt(self):
+        result = self.adapter.send(self.plan, self.now-1, before_dispatch=lambda:True)
+        self.assertEqual(result['status'], 'sent')
+        self.assertEqual(sum(call[0] == 'POST' for call in self.fixture.calls), 1)
+
+    def test_real_client_fake_http_ambiguous_response_readback(self):
+        self.fixture.post = (500, {})
+        result = self.adapter.send(self.plan, self.now-1, before_dispatch=lambda:True)
+        self.assertEqual(result['status'], 'sent')
+        self.assertEqual(result['confirmation_kind'], 'observed_outbound')
+        self.assertEqual(sum(call[0] == 'POST' for call in self.fixture.calls), 1)
+
+    def test_real_client_fake_http_readback_wrong_text_remains_uncertain(self):
+        self.fixture.post = (500, {})
+        self.fixture.message['text'] = 'not the approved text'
+        self.assertEqual(self.adapter.send(self.plan, self.now-1, before_dispatch=lambda:True)['status'], 'uncertain')
+        self.assertEqual(sum(call[0] == 'POST' for call in self.fixture.calls), 1)
+
+
+if __name__ == '__main__': unittest.main()
