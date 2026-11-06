@@ -83,6 +83,33 @@ O Ygor aprovou em chat o texto exato para outro lead real de 1º grau (diretor c
 
 Isso fecha a jornada do executor para mensagem a conexão de 1º grau: reserva, envio, recibo, releitura e conclusão no Apollo. Convite a não conectados ainda não é coberto pelo executor.
 
+### Primeiro convite pelo worker de campanha (06/11/2026)
+
+Dois leads reais de uma conta industrial, com textos aprovados pelo Ygor, entraram em uma sequência Apollo só LinkedIn (convite e, 5 dias depois, mensagem pós-aceite), com a nota vinda de um campo do contato. O worker rodou com as duas chaves de execução só no comando; timer e serviço continuaram desligados.
+
+Defeitos que o caminho real revelou, corrigidos em ordem (cada um com teste que falha sem a correção):
+
+| Commit | Defeito observado no provedor real |
+|---|---|
+| 5f3a444 | A leitura de identidade vinha do cache de 6 h do perfil (a pesquisa ABM lê o mesmo perfil antes); exige `forceRefresh=true`. |
+| e0f669f | Com `forceRefresh`, a API omite o campo `cached`; leitura forçada sem telemetria conta como fresca, `cached=true` continua bloqueando. |
+| 2544d33 | Contato só LinkedIn não tem `email_status`; a cobertura Apollo dispensava o campo só sem endereço. |
+| d05014b | Um identificador real com símbolo da categoria Unicode So derrubava a leitura inteira da lista de convites. |
+| 4e2f4b0, 4db0831 | A lista de convites enviados tinha 743 pendentes (cerca de 6 min por leitura completa). O adaptador lê a janela mais recente (lista do mais novo para o mais antigo), e convite antigo é coberto pela relação `INVITATION_SENT`, confirmada no provedor para convites de um mês, fora da janela. Orçamento de 60 s. |
+| 787110a | O POST de convite saiu, mas a resposta passou dos 15 s do socket e a tentativa virou `uncertain`; escritas esperam até 90 s. |
+| 8494f85 | O Apollo cria a tarefa do passo seguinte na hora, com vencimento dias à frente; o worker pularia a mensagem antes do aceite. Tarefas só rodam depois de `due_at`. |
+
+Resultado:
+
+| Ponto | Lead 1 | Lead 2 |
+|---|---|---|
+| Envio | `confirmed`, recibo `connectsafely:invitation-id:<id>` na reserva | `uncertain` (tempo limite do POST, antes de 787110a) |
+| LinkedIn | relação `INVITATION_SENT` | convite no topo da lista de enviados, relação `INVITATION_SENT` |
+| Apollo | tarefa de convite concluída pelo executor; mensagem D+5 criada | revisão humana registrada (`close`, sem reenvio) e tarefa concluída com o ID do convite |
+| Prévia seguinte | as duas mensagens D+5 aparecem `deferred / not_due` | |
+
+Uma reserva `rejected` antes do envio é terminal: para tentar de novo, o lead entrou em uma segunda sequência idêntica, coberta por nova aprovação (v3). O timer do worker está versionado em `runtime/systemd/`, mas a ativação na VPS depende do Ygor.
+
 ### Skip e parada no Apollo, prova real (06/11/2026)
 
 Feita com um contato interno da própria Thunder numa sequência descartável, só com dois passos `linkedin_step_message` e sem e-mail, criada, parada e arquivada no mesmo teste. Nada foi enviado. O skip usou o transporte `_skip_request` da release 29b126b com a chave de produção.
