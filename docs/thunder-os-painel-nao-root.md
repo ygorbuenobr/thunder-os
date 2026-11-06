@@ -1,4 +1,18 @@
-# Painel não root e broker de leitura — candidato de migração
+# Painel não root e broker de leitura
+
+## Implantado em 06/11/2026 (srv1433640)
+
+- Release ativa do painel: `93807c67d809f86d102f401881bd70129d07feb8`. Rollback de release: apontar `/opt/thunder-os/current` para `1e204b9…`, `6acf9a7…` ou `7d5b3d1…` e reiniciar.
+- `painel-thunder` roda como `thunder-panel` (UID 992), grupos `thunder-panel-db` e `www-data`, `NoNewPrivs=1` e capabilities zeradas. Drop-in: `/etc/systemd/system/painel-thunder.service.d/zzzzz-non-root.conf` (conteúdo = `runtime/systemd/painel-thunder-non-root.conf.candidate` sem comentários).
+- Banco: `painel.db` com dono `thunder-panel:thunder-panel-db`, modo `0660`, e diretório `2770`. O monitor root gravou depois da troca e os arquivos mantiveram o dono.
+- ACLs: travessia `--x` para `thunder-panel` em `/root/.hermes` e no perfil; `rwX`, com ACL padrão, no brain; leitura no arquivo de evidência do canário ConnectSafely.
+- Credenciais via `LoadCredential`, a partir das fontes reais; os caminhos legados são resolvidos por `credential_paths.resolve_legacy`.
+- Checagem do nginx sem root: peer com UID 33 e pai igual ao master do pidfile de root, e master rodando como root (risco aceito pelo Ygor em 05/11).
+- Backup e rollback completo: `/var/backups/thunder-panel-nonroot-20261106T082915/rollback.sh`.
+- A primeira tentativa (`20261106T082452`) falhou ao subir, porque o `canary_readers` lia a credencial do HubSpot por caminho fixo, e voltou sozinha ao estado anterior. A falha foi corrigida em `93807c6`.
+- Pendente: confirmar no navegador o login autenticado e a prévia do LinkedIn. A checagem do nginx não pode ser testada sem a senha do painel.
+
+---
 
 Estado em 05/11/2026: **desenho bloqueado para implantação**. A decisão atual aceita o envio manual do ConnectSafely pelo painel e o adaptador T3 no mesmo processo (`in_process_accepted`); portanto a unit separada do broker é opcional e os passos relacionados abaixo só se aplicam quando essa opção for escolhida. Nenhum comando deste documento foi executado na VPS nesta rodada. Os caminhos operacionais do host foram relatados pelo Claude e precisam de nova verificação; o checkout e as units de exemplo não provam a configuração instalada. O painel tem capacidade de envio e escrita em CRM: mudar sua identidade pode interromper funções existentes. Não habilitar executor ou timer de LinkedIn.
 
